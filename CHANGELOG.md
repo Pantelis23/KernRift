@@ -2,6 +2,15 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## v0.2.3 - 2026-02-23
+
+### Changed
+- Infra: CI guards + release automation; no compiler behavior changes since v0.2.0.
+- Versioning policy: tags/releases now track `kernriftc --version` (product-aligned).
+
+### Notes
+- v0.2.1 and v0.2.2 were infra-only tags; v0.2.3 is the aligned product tag.
+
 ## v0.2.0 - 2026-02-22
 
 ### Added
