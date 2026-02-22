@@ -95,3 +95,11 @@ Gate contents:
 - `cargo test -p kernriftc --test cli_contract`
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `cargo run -q -p kernriftc -- --emit lockgraph tests/must_pass/callee_acquires_lock.kr`
+
+## Dev
+
+Enable repo hooks:
+
+```bash
+git config core.hooksPath tools/hooks
+```
