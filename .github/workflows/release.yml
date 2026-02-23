@@ -132,7 +132,7 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          $re = "^https://github.com/Pantelis23/KernRift/\\.github/workflows/release\\.yml@refs/tags/$($env:GITHUB_REF_NAME)$"
+          $re = "^https://github.com/Pantelis23/KernRift/\.github/workflows/release\.yml@refs/tags/$($env:GITHUB_REF_NAME)$"
           $files = Get-ChildItem dist | Where-Object { $_.Name -match '\.zip(\.sha256)?$' }
           foreach ($f in $files) {
             $p = $f.FullName
