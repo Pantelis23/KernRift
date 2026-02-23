@@ -2,6 +2,15 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## v0.2.6 - 2026-02-23
+
+### Changed
+- Linux release checksum files now use archive basenames (portable `sha256sum -c` outside CI workspace layout).
+- Release pipeline now self-verifies cosign signatures/certificates before uploading artifacts.
+
+### Notes
+- Infra-only release: no compiler behavior changes vs v0.2.5.
+
 ## v0.2.5 - 2026-02-23
 
 ### Changed
