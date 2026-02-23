@@ -2,6 +2,16 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## v0.2.4 - 2026-02-23
+
+### Changed
+- Release pipeline now runs `fmt`/`clippy`/`test` gates before packaging artifacts.
+- Release pipeline now signs artifacts with cosign keyless and publishes `.sig` + `.cert` files.
+- Release build uses `--locked` and enforces tag/version match (`vX.Y.Z` == `kernriftc --version`).
+
+### Notes
+- This release is product-aligned and supersedes infra-only release tags (`v0.2.1`, `v0.2.2`).
+
 ## v0.2.3 - 2026-02-23
 
 ### Changed
