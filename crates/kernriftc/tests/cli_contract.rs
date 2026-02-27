@@ -15,6 +15,8 @@ use sha2::{Digest, Sha256};
 
 const CONTRACTS_SCHEMA_V1: &str =
     include_str!("../../../docs/schemas/kernrift_contracts_v1.schema.json");
+const CONTRACTS_SCHEMA_V2: &str =
+    include_str!("../../../docs/schemas/kernrift_contracts_v2.schema.json");
 const VERIFY_REPORT_SCHEMA_V1: &str =
     include_str!("../../../docs/schemas/kernrift_verify_report_v1.schema.json");
 
@@ -278,6 +280,86 @@ fn check_with_contracts_out_must_fail_does_not_write_file() {
     );
 }
 
+#[test]
+fn contracts_v2_contains_contexts_and_effects_fields() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("critical_yield.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let out_path = std::env::temp_dir().join(format!("kernrift-contracts-v2-{}.json", ts));
+    fs::remove_file(&out_path).ok();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--contracts-schema")
+        .arg("v2")
+        .arg("--contracts-out")
+        .arg(out_path.as_os_str())
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().success();
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let lines = stderr
+        .lines()
+        .filter(|line| line.starts_with("analysis: KERNEL_FEATURE_UNIMPLEMENTED:"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lines,
+        vec![
+            "analysis: KERNEL_FEATURE_UNIMPLEMENTED: alloc_sites_count",
+            "analysis: KERNEL_FEATURE_UNIMPLEMENTED: block_sites_count",
+        ]
+    );
+
+    let text = fs::read_to_string(&out_path).expect("read contracts output");
+    let json: Value = serde_json::from_str(&text).expect("contracts json");
+    validate_contracts_schema_v2(&json);
+    assert_eq!(
+        json["schema_version"],
+        Value::String("kernrift_contracts_v2".to_string())
+    );
+    let report = json["report"].as_object().expect("report object");
+    let report_keys = report.keys().cloned().collect::<BTreeSet<_>>();
+    assert_eq!(
+        report_keys,
+        BTreeSet::from([
+            "contexts".to_string(),
+            "effects".to_string(),
+            "max_lock_depth".to_string(),
+            "no_yield_spans".to_string(),
+        ])
+    );
+    assert!(
+        json["report"]["contexts"]["critical_functions"]
+            .as_array()
+            .expect("critical functions")
+            .iter()
+            .any(|v| v == "critical_entry"),
+        "critical_functions should include critical marker function"
+    );
+    assert!(
+        json["report"]["effects"]["yield_sites_count"]
+            .as_u64()
+            .expect("yield count")
+            >= 1
+    );
+    assert_eq!(
+        json["report"]["effects"]["alloc_sites_count"],
+        Value::Number(0_u64.into())
+    );
+    assert_eq!(
+        json["report"]["effects"]["block_sites_count"],
+        Value::Number(0_u64.into())
+    );
+
+    fs::remove_file(&out_path).ok();
+}
+
 fn validate_contracts_schema(instance: &Value) {
     let schema_json: Value = serde_json::from_str(CONTRACTS_SCHEMA_V1).expect("schema json");
     let compiled = JSONSchema::compile(&schema_json).expect("compile schema");
@@ -285,6 +367,18 @@ fn validate_contracts_schema(instance: &Value) {
         let details = errors.map(|e| e.to_string()).collect::<Vec<_>>();
         panic!(
             "contracts JSON must validate against contracts_v1 schema: {}",
+            details.join(" | ")
+        );
+    }
+}
+
+fn validate_contracts_schema_v2(instance: &Value) {
+    let schema_json: Value = serde_json::from_str(CONTRACTS_SCHEMA_V2).expect("schema json");
+    let compiled = JSONSchema::compile(&schema_json).expect("compile schema");
+    if let Err(errors) = compiled.validate(instance) {
+        let details = errors.map(|e| e.to_string()).collect::<Vec<_>>();
+        panic!(
+            "contracts JSON must validate against contracts_v2 schema: {}",
             details.join(" | ")
         );
     }

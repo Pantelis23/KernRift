@@ -6,6 +6,9 @@ This profile defines a stricter `kernriftc check` mode for kernel/OS builds:
 kernriftc check --profile kernel <file.kr>
 ```
 
+When kernel profile is enabled, contracts emission is upgraded to `kernrift_contracts_v2`
+internally (or explicitly via `--contracts-schema v2`).
+
 The goal is to enforce kernel-facing invariants with existing analyzers while keeping default profile behavior unchanged.
 
 ## Kernel Subset Rules
@@ -16,6 +19,9 @@ Current `kernel` profile defaults (from `policies/kernel.toml`):
 - bounded no-yield spans (`max_no_yield_span = 64`)
 - shallow lock nesting (`max_lock_depth = 1`)
 - forbidden lock ordering edge (`ConsoleLock -> SchedLock`)
+- forbid `alloc` effects in IRQ-reachable functions
+- forbid `block` effects in IRQ-reachable functions
+- forbid yield in critical functions
 
 Planned kernel subset rules (next phases):
 
@@ -31,6 +37,7 @@ Planned kernel subset rules (next phases):
 - `blocking`: operation that may sleep or block scheduler progress.
 - `allocation`: operation that requests dynamic memory.
 - `critical section`: region where preemption/yield must not occur.
+  - KR0.x marker: `@noyield` is used as the critical marker for kernel profile policy checks.
 
 ## Compile-Time vs Runtime
 
@@ -56,4 +63,3 @@ Runtime responsibilities (outside KR0.x compiler checks):
 - Are no-yield spans bounded in kernel profile? (target answer: yes)
 
 Each invariant must map to deterministic diagnostics + regression tests.
-

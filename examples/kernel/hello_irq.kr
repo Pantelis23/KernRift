@@ -1,0 +1,7 @@
+@ctx(irq)
+fn irq_tick() {
+}
+
+fn main() {
+  irq_tick();
+}

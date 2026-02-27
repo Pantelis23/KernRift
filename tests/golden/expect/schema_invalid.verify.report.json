@@ -5,7 +5,7 @@
     "utf8_valid": true
   },
   "diagnostics": [
-    "contracts schema validation failed: \"kernrift_contracts_v1\" was expected"
+    "unsupported contracts schema_version 'kernrift_contracts_v999', expected 'kernrift_contracts_v1' or 'kernrift_contracts_v2'"
   ],
   "hash": {
     "computed_sha256": "ceb286bc4567d16222f22fe7a46345ab560d8ad9d7e39295b768c529d77b1a5e",

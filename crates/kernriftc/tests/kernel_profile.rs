@@ -15,7 +15,12 @@ fn repo_root() -> PathBuf {
 fn default_profile_behavior_is_unchanged() {
     let root = repo_root();
 
-    for fixture in ["deny_unbounded_no_yield.kr", "deny_lock_depth_and_order.kr"] {
+    for fixture in [
+        "deny_unbounded_no_yield.kr",
+        "deny_lock_depth_and_order.kr",
+        "critical_yield.kr",
+        "irq_alloc_effect.kr",
+    ] {
         let path = root.join("tests").join("kernel_profile").join(fixture);
         let mut cmd: Command = cargo_bin_cmd!("kernriftc");
         cmd.current_dir(&root).arg("check").arg(path.as_os_str());
@@ -116,4 +121,50 @@ fn kernel_profile_rejects_unknown_profile_name() {
         .arg("nope")
         .arg(fixture.as_os_str());
     cmd.assert().failure().code(2);
+}
+
+#[test]
+fn kernel_profile_denies_yield_in_critical() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("critical_yield.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--profile")
+        .arg("kernel")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.contains("policy: KERNEL_CRITICAL_YIELD:"),
+        "expected KERNEL_CRITICAL_YIELD violation, got:\n{}",
+        stderr
+    );
+}
+
+#[test]
+fn kernel_profile_denies_alloc_in_irq() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("irq_alloc_effect.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--profile")
+        .arg("kernel")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.contains("policy: KERNEL_IRQ_ALLOC:"),
+        "expected KERNEL_IRQ_ALLOC violation, got:\n{}",
+        stderr
+    );
 }

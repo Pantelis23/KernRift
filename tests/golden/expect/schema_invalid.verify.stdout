@@ -2,4 +2,4 @@ exit=2
 stdout:
 <empty>
 stderr:
-contracts schema validation failed: "kernrift_contracts_v1" was expected
+unsupported contracts schema_version 'kernrift_contracts_v999', expected 'kernrift_contracts_v1' or 'kernrift_contracts_v2'
