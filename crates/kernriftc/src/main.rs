@@ -612,15 +612,15 @@ fn run_check(args: &CheckArgs) -> ExitCode {
             return ExitCode::from(EXIT_POLICY_VIOLATION);
         }
     };
-    if let Err(errs) = check_module(&module) {
-        print_errors(&errs);
-        return ExitCode::from(EXIT_POLICY_VIOLATION);
-    }
-    let (report, errs) = analyze(&module);
-    if !errs.is_empty() {
-        print_errors(&errs);
-        return ExitCode::from(EXIT_POLICY_VIOLATION);
-    }
+    let check_errs = match check_module(&module) {
+        Ok(()) => Vec::new(),
+        Err(errs) => errs,
+    };
+    let (report, analysis_errs) = analyze(&module);
+    let mut semantic_errs = check_errs.clone();
+    semantic_errs.extend(analysis_errs.clone());
+    semantic_errs.sort();
+    semantic_errs.dedup();
 
     let contracts_schema = match resolve_contracts_schema(args.profile, args.contracts_schema) {
         Ok(schema) => schema,
@@ -669,10 +669,15 @@ fn run_check(args: &CheckArgs) -> ExitCode {
         policy_violations.extend(evaluate_policy(&file_policy, &contracts_bundle));
     }
 
+    if !semantic_errs.is_empty() {
+        print_errors(&semantic_errs);
+    }
     if !policy_violations.is_empty() {
         policy_violations.sort();
         policy_violations.dedup();
         print_policy_violations(&policy_violations);
+    }
+    if !semantic_errs.is_empty() || !policy_violations.is_empty() {
         return ExitCode::from(EXIT_POLICY_VIOLATION);
     }
 

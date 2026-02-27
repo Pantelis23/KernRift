@@ -28,6 +28,13 @@ fn default_profile_behavior_is_unchanged() {
         cmd.current_dir(&root).arg("check").arg(path.as_os_str());
         cmd.assert().success();
     }
+
+    for fixture in ["irq_alloc_transitive.kr", "irq_block_transitive.kr"] {
+        let path = root.join("tests").join("kernel_profile").join(fixture);
+        let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+        cmd.current_dir(&root).arg("check").arg(path.as_os_str());
+        cmd.assert().failure().code(1);
+    }
 }
 
 #[test]
@@ -172,12 +179,58 @@ fn kernel_profile_denies_alloc_in_irq() {
 }
 
 #[test]
+fn kernel_profile_denies_alloc_in_irq_transitive() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("irq_alloc_transitive.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--profile")
+        .arg("kernel")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.contains("policy: KERNEL_IRQ_ALLOC:"),
+        "expected KERNEL_IRQ_ALLOC violation, got:\n{}",
+        stderr
+    );
+}
+
+#[test]
 fn kernel_profile_denies_block_in_irq() {
     let root = repo_root();
     let fixture = root
         .join("tests")
         .join("kernel_profile")
         .join("irq_block_site.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--profile")
+        .arg("kernel")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.contains("policy: KERNEL_IRQ_BLOCK:"),
+        "expected KERNEL_IRQ_BLOCK violation, got:\n{}",
+        stderr
+    );
+}
+
+#[test]
+fn kernel_profile_denies_block_in_irq_transitive() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("irq_block_transitive.kr");
 
     let mut cmd: Command = cargo_bin_cmd!("kernriftc");
     cmd.current_dir(&root)

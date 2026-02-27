@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use krir::{Ctx, KrirModule, KrirOp};
 use passes::{AnalysisReport, NoYieldSpan};
@@ -259,12 +259,41 @@ fn no_yield_json(spans: &BTreeMap<String, NoYieldSpan>) -> Map<String, Value> {
 }
 
 fn report_v2_value(module: &KrirModule, report: &AnalysisReport) -> Value {
-    let irq_functions = module
+    let non_extern_names = module
+        .functions
+        .iter()
+        .filter(|f| !f.is_extern)
+        .map(|f| f.name.clone())
+        .collect::<BTreeSet<_>>();
+    let outgoing = module
+        .call_edges
+        .iter()
+        .filter(|edge| non_extern_names.contains(&edge.caller))
+        .filter(|edge| non_extern_names.contains(&edge.callee))
+        .fold(BTreeMap::<&str, Vec<&str>>::new(), |mut map, edge| {
+            map.entry(edge.caller.as_str())
+                .or_default()
+                .push(edge.callee.as_str());
+            map
+        });
+
+    let mut irq_reachable = module
         .functions
         .iter()
         .filter(|f| !f.is_extern && f.ctx_ok.contains(&Ctx::Irq))
         .map(|f| f.name.clone())
-        .collect::<Vec<_>>();
+        .collect::<BTreeSet<_>>();
+    let mut work = irq_reachable.iter().cloned().collect::<VecDeque<_>>();
+    while let Some(caller) = work.pop_front() {
+        if let Some(callees) = outgoing.get(caller.as_str()) {
+            for callee in callees {
+                if irq_reachable.insert((*callee).to_string()) {
+                    work.push_back((*callee).to_string());
+                }
+            }
+        }
+    }
+    let irq_functions = irq_reachable.into_iter().collect::<Vec<_>>();
     let critical_functions = module
         .functions
         .iter()

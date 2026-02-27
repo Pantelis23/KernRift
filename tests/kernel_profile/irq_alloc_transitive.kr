@@ -1,0 +1,4 @@
+@ctx(irq)
+fn isr() { helper(); }
+
+fn helper() { allocpoint(); }
