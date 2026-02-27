@@ -726,6 +726,10 @@ struct InspectArgs {
     contracts_path: String,
 }
 
+struct InspectReportArgs {
+    report_path: String,
+}
+
 impl PartialOrd for PolicyViolation {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
@@ -832,6 +836,45 @@ struct VerifyReport {
     diagnostics: Vec<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct DecodedVerifyReport {
+    schema_version: String,
+    result: String,
+    inputs: DecodedVerifyReportInputs,
+    hash: DecodedVerifyReportHash,
+    contracts: DecodedVerifyReportContracts,
+    signature: DecodedVerifyReportSignature,
+    diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DecodedVerifyReportInputs {
+    contracts: String,
+    hash: String,
+    sig: Option<String>,
+    pubkey: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DecodedVerifyReportHash {
+    expected_sha256: Option<String>,
+    computed_sha256: Option<String>,
+    matched: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct DecodedVerifyReportContracts {
+    utf8_valid: bool,
+    schema_valid: bool,
+    schema_version: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DecodedVerifyReportSignature {
+    checked: bool,
+    valid: Option<bool>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct VerifyReportInputs {
     contracts: String,
@@ -898,6 +941,14 @@ fn main() -> ExitCode {
         },
         "inspect" => match parse_inspect_args(&args[2..]) {
             Ok(parsed) => run_inspect(&parsed.contracts_path),
+            Err(err) => {
+                eprintln!("{}", err);
+                print_usage();
+                ExitCode::from(EXIT_INVALID_INPUT)
+            }
+        },
+        "inspect-report" => match parse_inspect_report_args(&args[2..]) {
+            Ok(parsed) => run_inspect_report(&parsed.report_path),
             Err(err) => {
                 eprintln!("{}", err);
                 print_usage();
@@ -1155,6 +1206,40 @@ fn parse_inspect_args(args: &[String]) -> Result<InspectArgs, String> {
     };
 
     Ok(InspectArgs { contracts_path })
+}
+
+fn parse_inspect_report_args(args: &[String]) -> Result<InspectReportArgs, String> {
+    let mut report_path = None::<String>;
+    let mut idx = 0usize;
+    while idx < args.len() {
+        match args[idx].as_str() {
+            "--report" => {
+                if report_path.is_some() {
+                    return Err("invalid inspect-report mode: duplicate --report".to_string());
+                }
+                idx += 1;
+                if idx >= args.len() {
+                    return Err(
+                        "invalid inspect-report mode: --report requires a file path".to_string()
+                    );
+                }
+                report_path = Some(args[idx].clone());
+            }
+            other => {
+                return Err(format!(
+                    "invalid inspect-report mode: unexpected argument '{}'",
+                    other
+                ));
+            }
+        }
+        idx += 1;
+    }
+
+    let Some(report_path) = report_path else {
+        return Err("invalid inspect-report mode: missing --report".to_string());
+    };
+
+    Ok(InspectReportArgs { report_path })
 }
 
 fn parse_verify_args(args: &[String]) -> Result<VerifyArgs, String> {
@@ -1592,6 +1677,46 @@ fn emit_verify_report_json(report: &VerifyReport) -> Result<String, String> {
         .map_err(|e| format!("failed to format verify report JSON: {}", e))
 }
 
+fn decode_verify_report(
+    report_text: &str,
+    source_name: &str,
+) -> Result<DecodedVerifyReport, String> {
+    let report_json: Value = serde_json::from_str(report_text).map_err(|e| {
+        format!(
+            "failed to parse verify report JSON '{}': {}",
+            source_name, e
+        )
+    })?;
+    let schema_version = report_json
+        .get("schema_version")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            format!(
+                "failed to decode verify report '{}': missing string field 'schema_version'",
+                source_name
+            )
+        })?;
+    if schema_version != VERIFY_REPORT_SCHEMA_VERSION {
+        return Err(format!(
+            "unsupported verify report schema_version '{}', expected '{}'",
+            schema_version, VERIFY_REPORT_SCHEMA_VERSION
+        ));
+    }
+    validate_json_against_schema_text(
+        &report_json,
+        VERIFY_REPORT_SCHEMA_V1,
+        "embedded verify report schema",
+        "verify report",
+    )?;
+
+    serde_json::from_value(report_json).map_err(|e| {
+        format!(
+            "failed to decode verify report '{}' into inspect model: {}",
+            source_name, e
+        )
+    })
+}
+
 fn canonicalize_json_value(value: &Value) -> Value {
     match value {
         Value::Object(map) => {
@@ -1700,6 +1825,26 @@ fn run_inspect(contracts_path: &str) -> ExitCode {
     };
 
     println!("{}", format_contracts_inspect_summary(&contracts));
+    ExitCode::SUCCESS
+}
+
+fn run_inspect_report(report_path: &str) -> ExitCode {
+    let report_text = match fs::read_to_string(Path::new(report_path)) {
+        Ok(text) => text,
+        Err(err) => {
+            eprintln!("failed to read verify report '{}': {}", report_path, err);
+            return ExitCode::from(EXIT_INVALID_INPUT);
+        }
+    };
+    let report = match decode_verify_report(&report_text, report_path) {
+        Ok(report) => report,
+        Err(err) => {
+            eprintln!("{}", err);
+            return ExitCode::from(EXIT_INVALID_INPUT);
+        }
+    };
+
+    println!("{}", format_verify_report_inspect_summary(&report));
     ExitCode::SUCCESS
 }
 
@@ -3898,6 +4043,48 @@ fn format_contracts_inspect_summary(contracts: &ContractsBundle) -> String {
     lines.join("\n")
 }
 
+fn format_verify_report_inspect_summary(report: &DecodedVerifyReport) -> String {
+    let mut lines = vec![
+        format!("schema: {}", report.schema_version),
+        format!("result: {}", report.result),
+        "inputs:".to_string(),
+        format!("contracts: {}", report.inputs.contracts),
+        format!("hash: {}", report.inputs.hash),
+        format!("sig: {}", format_option_value(report.inputs.sig.as_deref())),
+        format!(
+            "pubkey: {}",
+            format_option_value(report.inputs.pubkey.as_deref())
+        ),
+        "hash_status:".to_string(),
+        format!("matched: {}", report.hash.matched),
+        format!(
+            "expected_sha256: {}",
+            format_option_value(report.hash.expected_sha256.as_deref())
+        ),
+        format!(
+            "computed_sha256: {}",
+            format_option_value(report.hash.computed_sha256.as_deref())
+        ),
+        "contracts_status:".to_string(),
+        format!("utf8_valid: {}", report.contracts.utf8_valid),
+        format!("schema_valid: {}", report.contracts.schema_valid),
+        format!(
+            "schema_version: {}",
+            format_option_value(report.contracts.schema_version.as_deref())
+        ),
+        "signature_status:".to_string(),
+        format!("checked: {}", report.signature.checked),
+        format!("valid: {}", format_option_bool(report.signature.valid)),
+        format!("diagnostics: {}", report.diagnostics.len()),
+    ];
+
+    for diagnostic in &report.diagnostics {
+        lines.push(format!("diagnostic: {}", diagnostic));
+    }
+
+    lines.join("\n")
+}
+
 fn collect_sorted_symbol_names_by<F>(symbols: &[ContractsFactSymbol], predicate: F) -> Vec<String>
 where
     F: Fn(&ContractsFactSymbol) -> bool,
@@ -3913,6 +4100,16 @@ where
 
 fn format_list(items: &[String]) -> String {
     format!("[{}]", items.join(","))
+}
+
+fn format_option_value(value: Option<&str>) -> &str {
+    value.unwrap_or("<none>")
+}
+
+fn format_option_bool(value: Option<bool>) -> String {
+    value
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "<none>".to_string())
 }
 
 fn print_usage() {
@@ -3936,6 +4133,7 @@ fn print_usage() {
     eprintln!("  kernriftc policy --policy <policy.toml> --contracts <contracts.json>");
     eprintln!("  kernriftc policy --evidence --policy <policy.toml> --contracts <contracts.json>");
     eprintln!("  kernriftc inspect --contracts <contracts.json>");
+    eprintln!("  kernriftc inspect-report --report <verify-report.json>");
     eprintln!("  kernriftc verify --contracts <contracts.json> --hash <contracts.sha256>");
     eprintln!(
         "  kernriftc verify --contracts <contracts.json> --hash <contracts.sha256> --sig <contracts.sig> --pubkey <pubkey.hex>"
