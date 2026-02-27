@@ -755,6 +755,166 @@ fn contracts_v2_facts_include_transitive_effects() {
 }
 
 #[test]
+fn contracts_v2_facts_include_transitive_capabilities() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("transitive_caps.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let out_path =
+        std::env::temp_dir().join(format!("kernrift-contracts-v2-cap-transitive-{}.json", ts));
+    fs::remove_file(&out_path).ok();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--contracts-schema")
+        .arg("v2")
+        .arg("--contracts-out")
+        .arg(out_path.as_os_str())
+        .arg(fixture.as_os_str());
+    cmd.assert().success();
+
+    let json: Value = serde_json::from_str(&fs::read_to_string(&out_path).expect("contracts text"))
+        .expect("contracts json");
+    validate_contracts_schema_v2(&json);
+
+    let symbols = json["facts"]["symbols"]
+        .as_array()
+        .expect("facts symbols array");
+    let helper = symbols
+        .iter()
+        .find(|sym| sym["name"] == "helper")
+        .expect("helper symbol");
+    let isr = symbols
+        .iter()
+        .find(|sym| sym["name"] == "isr")
+        .expect("isr symbol");
+
+    assert_eq!(
+        helper["caps_transitive"],
+        Value::Array(vec![Value::String("PhysMap".to_string())])
+    );
+    assert_eq!(
+        helper["caps_provenance"],
+        json!([{
+            "capability": "PhysMap",
+            "provenance": {
+                "direct": true,
+                "via_callee": [],
+                "via_extern": []
+            }
+        }])
+    );
+    assert_eq!(
+        isr["caps_transitive"],
+        Value::Array(vec![Value::String("PhysMap".to_string())])
+    );
+    assert_eq!(
+        isr["caps_provenance"],
+        json!([{
+            "capability": "PhysMap",
+            "provenance": {
+                "direct": false,
+                "via_callee": ["helper"],
+                "via_extern": []
+            }
+        }])
+    );
+
+    fs::remove_file(&out_path).ok();
+}
+
+#[test]
+fn contracts_v2_transitive_capabilities_include_extern_stubs() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("transitive_caps_extern.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let out_path = std::env::temp_dir().join(format!(
+        "kernrift-contracts-v2-cap-extern-transitive-{}.json",
+        ts
+    ));
+    fs::remove_file(&out_path).ok();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--contracts-schema")
+        .arg("v2")
+        .arg("--contracts-out")
+        .arg(out_path.as_os_str())
+        .arg(fixture.as_os_str());
+    cmd.assert().success();
+
+    let json: Value = serde_json::from_str(&fs::read_to_string(&out_path).expect("contracts text"))
+        .expect("contracts json");
+    validate_contracts_schema_v2(&json);
+
+    let symbols = json["facts"]["symbols"]
+        .as_array()
+        .expect("facts symbols array");
+    let map_io = symbols
+        .iter()
+        .find(|sym| sym["name"] == "map_io")
+        .expect("map_io symbol");
+    let helper = symbols
+        .iter()
+        .find(|sym| sym["name"] == "helper")
+        .expect("helper symbol");
+    let isr = symbols
+        .iter()
+        .find(|sym| sym["name"] == "isr")
+        .expect("isr symbol");
+
+    assert_eq!(map_io["is_extern"], Value::Bool(true));
+    assert_eq!(
+        map_io["caps_provenance"],
+        json!([{
+            "capability": "PhysMap",
+            "provenance": {
+                "direct": true,
+                "via_callee": [],
+                "via_extern": []
+            }
+        }])
+    );
+    assert_eq!(
+        helper["caps_provenance"],
+        json!([{
+            "capability": "PhysMap",
+            "provenance": {
+                "direct": false,
+                "via_callee": [],
+                "via_extern": ["map_io"]
+            }
+        }])
+    );
+    assert_eq!(
+        isr["caps_provenance"],
+        json!([{
+            "capability": "PhysMap",
+            "provenance": {
+                "direct": false,
+                "via_callee": ["helper"],
+                "via_extern": ["map_io"]
+            }
+        }])
+    );
+
+    fs::remove_file(&out_path).ok();
+}
+
+#[test]
 fn contracts_v2_transitive_effects_include_eff_attr_annotations() {
     let root = repo_root();
     let fixture = root
@@ -943,7 +1103,7 @@ fn contracts_v2_facts_include_ctx_reachable_transitive_irq() {
 }
 
 #[test]
-fn contracts_v2_irq_functions_include_transitive_callees() {
+fn contracts_v2_ctx_reachable_transitive_irq_drives_policy() {
     let root = repo_root();
     let fixture = root
         .join("tests")
@@ -963,6 +1123,81 @@ fn contracts_v2_irq_functions_include_transitive_callees() {
         "expected transitive KERNEL_IRQ_ALLOC for helper, got:\n{}",
         stderr
     );
+}
+
+#[test]
+fn contracts_v2_semantic_fields_coexist_and_validate_schema() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("policy_families_order.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let out_path = std::env::temp_dir().join(format!("kernrift-contracts-v2-abi-{}.json", ts));
+    fs::remove_file(&out_path).ok();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--contracts-schema")
+        .arg("v2")
+        .arg("--contracts-out")
+        .arg(out_path.as_os_str())
+        .arg(fixture.as_os_str());
+    cmd.assert().success();
+
+    let json: Value = serde_json::from_str(&fs::read_to_string(&out_path).expect("contracts text"))
+        .expect("contracts json");
+    validate_contracts_schema_v2(&json);
+
+    let entry = json["facts"]["symbols"]
+        .as_array()
+        .expect("facts symbols")
+        .iter()
+        .find(|sym| sym["name"] == "entry")
+        .expect("entry symbol");
+    assert_eq!(entry["ctx_reachable"], json!(["irq"]));
+    assert_eq!(entry["eff_transitive"], json!(["alloc"]));
+    assert_eq!(
+        entry["eff_provenance"],
+        json!([{
+            "effect": "alloc",
+            "provenance": {
+                "direct": true,
+                "via_callee": [],
+                "via_extern": []
+            }
+        }])
+    );
+    assert_eq!(entry["caps_transitive"], json!(["PhysMap"]));
+    assert_eq!(
+        entry["caps_provenance"],
+        json!([{
+            "capability": "PhysMap",
+            "provenance": {
+                "direct": true,
+                "via_callee": [],
+                "via_extern": []
+            }
+        }])
+    );
+    assert_eq!(
+        json["report"]["critical"]["violations"],
+        json!([{
+            "function": "entry",
+            "effect": "alloc",
+            "provenance": {
+                "direct": true,
+                "via_callee": [],
+                "via_extern": []
+            }
+        }])
+    );
+
+    fs::remove_file(&out_path).ok();
 }
 
 fn validate_contracts_schema(instance: &Value) {
@@ -1193,6 +1428,232 @@ allow_module = ["IoPort"]
             "policy: CAP_MODULE_ALLOWLIST: module capability 'PhysMap' is not in allow_module"
         ),
         "expected caps allowlist violation, got:\n{}",
+        stderr
+    );
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn policy_kernel_forbid_caps_in_irq_is_artifact_driven_and_deterministic() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("irq_caps_transitive.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path =
+        std::env::temp_dir().join(format!("kernrift-policy-cap-irq-src-{}.json", ts));
+    let policy_path = std::env::temp_dir().join(format!("kernrift-policy-cap-irq-{}.toml", ts));
+    let mutated_path =
+        std::env::temp_dir().join(format!("kernrift-policy-cap-irq-mut-{}.json", ts));
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+    fs::remove_file(&mutated_path).ok();
+
+    let mut check_cmd: Command = cargo_bin_cmd!("kernriftc");
+    check_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--contracts-schema")
+        .arg("v2")
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg(fixture.as_os_str());
+    check_cmd.assert().success();
+
+    fs::write(
+        &policy_path,
+        r#"
+[kernel]
+forbid_caps_in_irq = ["PhysMap"]
+"#,
+    )
+    .expect("write policy");
+
+    let mut fail_cmd: Command = cargo_bin_cmd!("kernriftc");
+    fail_cmd
+        .current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    let fail_assert = fail_cmd.assert().failure().code(1);
+    let fail_stderr = String::from_utf8(fail_assert.get_output().stderr.clone()).expect("stderr");
+    let lines = fail_stderr
+        .lines()
+        .filter(|line| line.starts_with("policy: "))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lines,
+        vec![
+            "policy: KERNEL_IRQ_CAP_FORBID: function 'helper' is irq-reachable and uses forbidden capability 'PhysMap' (direct=true, via_callee=[], via_extern=[])",
+            "policy: KERNEL_IRQ_CAP_FORBID: function 'isr' is irq-reachable and uses forbidden capability 'PhysMap' (direct=false, via_callee=[helper], via_extern=[])",
+        ],
+        "expected deterministic capability violations, got:\n{}",
+        fail_stderr
+    );
+
+    let mut contracts_json: Value =
+        serde_json::from_str(&fs::read_to_string(&contracts_path).expect("contracts text"))
+            .expect("contracts json");
+    let symbols = contracts_json["facts"]["symbols"]
+        .as_array_mut()
+        .expect("facts symbols array");
+    for symbol in symbols {
+        symbol["caps_transitive"] = json!([]);
+        symbol["caps_provenance"] = json!([]);
+    }
+    fs::write(
+        &mutated_path,
+        serde_json::to_string(&contracts_json).expect("contracts json text"),
+    )
+    .expect("write mutated contracts");
+
+    let mut pass_cmd: Command = cargo_bin_cmd!("kernriftc");
+    pass_cmd
+        .current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(mutated_path.as_os_str());
+    pass_cmd.assert().success();
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+    fs::remove_file(&mutated_path).ok();
+}
+
+#[test]
+fn policy_kernel_capability_rule_requires_contracts_v2() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path = std::env::temp_dir().join(format!("kernrift-policy-v1-cap-{}.json", ts));
+    let policy_path = std::env::temp_dir().join(format!("kernrift-policy-v1-cap-{}.toml", ts));
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+
+    let mut check_cmd: Command = cargo_bin_cmd!("kernriftc");
+    check_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg(fixture.as_os_str());
+    check_cmd.assert().success();
+
+    fs::write(
+        &policy_path,
+        r#"
+[kernel]
+forbid_caps_in_irq = ["PhysMap"]
+"#,
+    )
+    .expect("write policy");
+
+    let mut policy_cmd: Command = cargo_bin_cmd!("kernriftc");
+    policy_cmd
+        .current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    let assert = policy_cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let lines = stderr
+        .lines()
+        .filter(|line| line.starts_with("policy: "))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lines,
+        vec![
+            "policy: KERNEL_POLICY_REQUIRES_V2: kernel policy rules require contracts schema 'kernrift_contracts_v2'"
+        ]
+    );
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn policy_outputs_cross_family_violations_in_deterministic_order() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("policy_families_order.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path = std::env::temp_dir().join(format!("kernrift-policy-families-{}.json", ts));
+    let policy_path = std::env::temp_dir().join(format!("kernrift-policy-families-{}.toml", ts));
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+
+    let mut check_cmd: Command = cargo_bin_cmd!("kernriftc");
+    check_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--contracts-schema")
+        .arg("v2")
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg(fixture.as_os_str());
+    check_cmd.assert().success();
+
+    fs::write(
+        &policy_path,
+        r#"
+[limits]
+max_lock_depth = 1
+
+[locks]
+forbid_edges = [["ConsoleLock", "SchedLock"]]
+
+[kernel]
+forbid_alloc_in_irq = true
+forbid_effects_in_critical = ["alloc"]
+forbid_caps_in_irq = ["PhysMap"]
+"#,
+    )
+    .expect("write policy");
+
+    let mut policy_cmd: Command = cargo_bin_cmd!("kernriftc");
+    policy_cmd
+        .current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    let assert = policy_cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let lines = stderr
+        .lines()
+        .filter(|line| line.starts_with("policy: "))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lines,
+        vec![
+            "policy: KERNEL_CRITICAL_REGION_ALLOC: function 'entry' uses alloc effect in critical region (direct=true, via_callee=[], via_extern=[])",
+            "policy: KERNEL_IRQ_ALLOC: function 'entry' is irq-reachable and uses alloc effect (direct=true, via_callee=[], via_extern=[])",
+            "policy: KERNEL_IRQ_CAP_FORBID: function 'entry' is irq-reachable and uses forbidden capability 'PhysMap' (direct=true, via_callee=[], via_extern=[])",
+            "policy: LIMIT_MAX_LOCK_DEPTH: max_lock_depth 2 exceeds limit 1",
+            "policy: LOCK_FORBID_EDGE: forbidden lock edge 'ConsoleLock -> SchedLock' is present",
+        ],
+        "cross-family ordering must be deterministic, got:\n{}",
         stderr
     );
 

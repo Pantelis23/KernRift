@@ -169,6 +169,11 @@ fn contracts_value(
     } else {
         None
     };
+    let capability_semantics = if schema == ContractsSchema::V2 {
+        Some(capability_semantics_by_function(&canonical))
+    } else {
+        None
+    };
     let ctx_reachable = if schema == ContractsSchema::V2 {
         Some(ctx_reachable_by_function(&canonical))
     } else {
@@ -186,9 +191,6 @@ fn contracts_value(
         ContractsSchema::V2 => report_v2_value(
             &canonical,
             report,
-            ctx_reachable
-                .as_ref()
-                .expect("v2 context reachability must exist"),
             effect_semantics
                 .as_ref()
                 .expect("v2 effect semantics must exist"),
@@ -212,6 +214,7 @@ fn contracts_value(
             &canonical,
             schema,
             effect_semantics.as_ref(),
+            capability_semantics.as_ref(),
             ctx_reachable.as_ref(),
         ),
     );
@@ -225,6 +228,7 @@ fn facts_manifest_value(
     module: &KrirModule,
     schema: ContractsSchema,
     effect_semantics: Option<&BTreeMap<String, FunctionEffectSemantics>>,
+    capability_semantics: Option<&BTreeMap<String, FunctionCapabilitySemantics>>,
     ctx_reachable: Option<&BTreeMap<String, BTreeSet<Ctx>>>,
 ) -> Value {
     let symbols = module
@@ -317,6 +321,34 @@ fn facts_manifest_value(
                 "caps_req".to_string(),
                 Value::Array(f.caps_req.iter().cloned().map(Value::String).collect()),
             );
+            if let Some(caps_map) = capability_semantics {
+                let semantics = caps_map.get(&f.name).cloned().unwrap_or_default();
+                symbol.insert(
+                    "caps_transitive".to_string(),
+                    Value::Array(
+                        semantics
+                            .transitive
+                            .iter()
+                            .cloned()
+                            .map(Value::String)
+                            .collect(),
+                    ),
+                );
+                let entries = semantics
+                    .provenance
+                    .iter()
+                    .map(|(capability, provenance)| {
+                        let mut entry = Map::new();
+                        entry.insert("capability".to_string(), Value::String(capability.clone()));
+                        entry.insert(
+                            "provenance".to_string(),
+                            effect_provenance_value(provenance),
+                        );
+                        Value::Object(entry)
+                    })
+                    .collect::<Vec<_>>();
+                symbol.insert("caps_provenance".to_string(), Value::Array(entries));
+            }
             symbol.insert("attrs".to_string(), Value::Object(attrs));
             Value::Object(symbol)
         })
@@ -342,20 +374,8 @@ fn no_yield_json(spans: &BTreeMap<String, NoYieldSpan>) -> Map<String, Value> {
 fn report_v2_value(
     module: &KrirModule,
     report: &AnalysisReport,
-    ctx_reachable: &BTreeMap<String, BTreeSet<Ctx>>,
     effect_semantics: &BTreeMap<String, FunctionEffectSemantics>,
 ) -> Value {
-    let _irq_reachable_count = module
-        .functions
-        .iter()
-        .filter(|f| !f.is_extern)
-        .filter(|f| {
-            ctx_reachable
-                .get(&f.name)
-                .map(|ctxs| ctxs.contains(&Ctx::Irq))
-                .unwrap_or(false)
-        })
-        .count();
     let yield_sites_count = module
         .functions
         .iter()
@@ -478,6 +498,12 @@ struct EffectProvenance {
 struct FunctionEffectSemantics {
     transitive: BTreeSet<Eff>,
     provenance: BTreeMap<Eff, EffectProvenance>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct FunctionCapabilitySemantics {
+    transitive: BTreeSet<String>,
+    provenance: BTreeMap<String, EffectProvenance>,
 }
 
 fn critical_region_findings(
@@ -682,6 +708,117 @@ fn effect_semantics_by_function(module: &KrirModule) -> BTreeMap<String, Functio
             },
         );
     }
+    by_name
+}
+
+fn capability_semantics_by_function(
+    module: &KrirModule,
+) -> BTreeMap<String, FunctionCapabilitySemantics> {
+    let names = module
+        .functions
+        .iter()
+        .map(|f| f.name.clone())
+        .collect::<Vec<_>>();
+    let index_by_name = names
+        .iter()
+        .enumerate()
+        .map(|(idx, name)| (name.clone(), idx))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut direct = vec![BTreeSet::<String>::new(); names.len()];
+    let mut is_extern = vec![false; names.len()];
+    for function in &module.functions {
+        if let Some(&idx) = index_by_name.get(&function.name) {
+            direct[idx].extend(function.caps_req.iter().cloned());
+            is_extern[idx] = function.is_extern;
+        }
+    }
+
+    let mut outgoing_sets = vec![BTreeSet::<usize>::new(); names.len()];
+    for edge in &module.call_edges {
+        let (Some(&caller), Some(&callee)) = (
+            index_by_name.get(&edge.caller),
+            index_by_name.get(&edge.callee),
+        ) else {
+            continue;
+        };
+        outgoing_sets[caller].insert(callee);
+    }
+    let outgoing = outgoing_sets
+        .into_iter()
+        .map(|set| set.into_iter().collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+
+    let mut transitive = direct.clone();
+    let mut provenance = vec![BTreeMap::<String, EffectProvenance>::new(); names.len()];
+    for (idx, direct_caps) in direct.iter().enumerate() {
+        for capability in direct_caps {
+            provenance
+                .get_mut(idx)
+                .expect("provenance index")
+                .entry(capability.clone())
+                .or_default()
+                .direct = true;
+        }
+    }
+
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for caller_idx in 0..names.len() {
+            for &callee_idx in &outgoing[caller_idx] {
+                let callee_caps = transitive[callee_idx].iter().cloned().collect::<Vec<_>>();
+                for capability in callee_caps {
+                    if transitive[caller_idx].insert(capability.clone()) {
+                        changed = true;
+                    }
+
+                    let callee_provenance = provenance[callee_idx]
+                        .get(&capability)
+                        .cloned()
+                        .unwrap_or_default();
+                    let entry = provenance[caller_idx].entry(capability).or_default();
+                    if is_extern[callee_idx] {
+                        if entry.via_extern.insert(names[callee_idx].clone()) {
+                            changed = true;
+                        }
+                    } else if entry.via_callee.insert(names[callee_idx].clone()) {
+                        changed = true;
+                    }
+
+                    let before_callee = entry.via_callee.len();
+                    entry.via_callee.extend(callee_provenance.via_callee);
+                    if entry.via_callee.len() != before_callee {
+                        changed = true;
+                    }
+                    let before_extern = entry.via_extern.len();
+                    entry.via_extern.extend(callee_provenance.via_extern);
+                    if entry.via_extern.len() != before_extern {
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+
+    let mut by_name = BTreeMap::<String, FunctionCapabilitySemantics>::new();
+    for (idx, name) in names.iter().enumerate() {
+        let mut cap_map = BTreeMap::<String, EffectProvenance>::new();
+        for capability in &transitive[idx] {
+            let mut entry = provenance[idx].get(capability).cloned().unwrap_or_default();
+            entry.via_callee.remove(name);
+            entry.via_extern.remove(name);
+            cap_map.insert(capability.clone(), entry);
+        }
+        by_name.insert(
+            name.clone(),
+            FunctionCapabilitySemantics {
+                transitive: transitive[idx].clone(),
+                provenance: cap_map,
+            },
+        );
+    }
+
     by_name
 }
 
@@ -1539,6 +1676,279 @@ mod tests {
             .provenance
             .get(&Eff::Block)
             .expect("self_fn block");
+        assert!(self_fn.direct);
+        assert!(self_fn.via_callee.is_empty());
+        assert!(self_fn.via_extern.is_empty());
+    }
+
+    #[test]
+    fn capability_provenance_direct_only() {
+        let module = KrirModule {
+            module_caps: vec![],
+            functions: vec![Function {
+                name: "f".to_string(),
+                is_extern: false,
+                ctx_ok: vec![Ctx::Thread],
+                eff_used: vec![],
+                caps_req: vec!["PhysMap".to_string()],
+                attrs: FunctionAttrs::default(),
+                ops: vec![],
+            }],
+            call_edges: vec![],
+        };
+        let semantics = capability_semantics_by_function(&module);
+        let provenance = semantics["f"]
+            .provenance
+            .get("PhysMap")
+            .expect("PhysMap provenance");
+        assert!(provenance.direct);
+        assert!(provenance.via_callee.is_empty());
+        assert!(provenance.via_extern.is_empty());
+    }
+
+    #[test]
+    fn capability_provenance_via_callee_only() {
+        let module = KrirModule {
+            module_caps: vec![],
+            functions: vec![
+                Function {
+                    name: "helper".to_string(),
+                    is_extern: false,
+                    ctx_ok: vec![Ctx::Thread],
+                    eff_used: vec![],
+                    caps_req: vec!["PhysMap".to_string()],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![],
+                },
+                Function {
+                    name: "entry".to_string(),
+                    is_extern: false,
+                    ctx_ok: vec![Ctx::Thread],
+                    eff_used: vec![],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![KrirOp::Call {
+                        callee: "helper".to_string(),
+                    }],
+                },
+            ],
+            call_edges: vec![CallEdge {
+                caller: "entry".to_string(),
+                callee: "helper".to_string(),
+            }],
+        };
+        let semantics = capability_semantics_by_function(&module);
+        let provenance = semantics["entry"]
+            .provenance
+            .get("PhysMap")
+            .expect("PhysMap provenance");
+        assert!(!provenance.direct);
+        assert_eq!(
+            provenance.via_callee,
+            BTreeSet::from(["helper".to_string()])
+        );
+        assert!(provenance.via_extern.is_empty());
+    }
+
+    #[test]
+    fn capability_provenance_via_extern_only() {
+        let module = KrirModule {
+            module_caps: vec![],
+            functions: vec![
+                Function {
+                    name: "map_io".to_string(),
+                    is_extern: true,
+                    ctx_ok: vec![Ctx::Thread, Ctx::Boot],
+                    eff_used: vec![],
+                    caps_req: vec!["PhysMap".to_string()],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![],
+                },
+                Function {
+                    name: "entry".to_string(),
+                    is_extern: false,
+                    ctx_ok: vec![Ctx::Thread],
+                    eff_used: vec![],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![KrirOp::Call {
+                        callee: "map_io".to_string(),
+                    }],
+                },
+            ],
+            call_edges: vec![CallEdge {
+                caller: "entry".to_string(),
+                callee: "map_io".to_string(),
+            }],
+        };
+        let semantics = capability_semantics_by_function(&module);
+        let provenance = semantics["entry"]
+            .provenance
+            .get("PhysMap")
+            .expect("PhysMap provenance");
+        assert!(!provenance.direct);
+        assert!(provenance.via_callee.is_empty());
+        assert_eq!(
+            provenance.via_extern,
+            BTreeSet::from(["map_io".to_string()])
+        );
+    }
+
+    #[test]
+    fn capability_provenance_mixed_direct_via_callee_and_via_extern() {
+        let module = KrirModule {
+            module_caps: vec![],
+            functions: vec![
+                Function {
+                    name: "map_io".to_string(),
+                    is_extern: true,
+                    ctx_ok: vec![Ctx::Thread, Ctx::Boot],
+                    eff_used: vec![],
+                    caps_req: vec!["PhysMap".to_string()],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![],
+                },
+                Function {
+                    name: "helper".to_string(),
+                    is_extern: false,
+                    ctx_ok: vec![Ctx::Thread],
+                    eff_used: vec![],
+                    caps_req: vec!["PhysMap".to_string()],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![KrirOp::Call {
+                        callee: "map_io".to_string(),
+                    }],
+                },
+                Function {
+                    name: "entry".to_string(),
+                    is_extern: false,
+                    ctx_ok: vec![Ctx::Thread],
+                    eff_used: vec![],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![KrirOp::Call {
+                        callee: "helper".to_string(),
+                    }],
+                },
+            ],
+            call_edges: vec![
+                CallEdge {
+                    caller: "helper".to_string(),
+                    callee: "map_io".to_string(),
+                },
+                CallEdge {
+                    caller: "entry".to_string(),
+                    callee: "helper".to_string(),
+                },
+            ],
+        };
+        let semantics = capability_semantics_by_function(&module);
+
+        let helper = semantics["helper"]
+            .provenance
+            .get("PhysMap")
+            .expect("helper PhysMap provenance");
+        assert!(helper.direct);
+        assert!(helper.via_callee.is_empty());
+        assert_eq!(helper.via_extern, BTreeSet::from(["map_io".to_string()]));
+
+        let entry = semantics["entry"]
+            .provenance
+            .get("PhysMap")
+            .expect("entry PhysMap provenance");
+        assert!(!entry.direct);
+        assert_eq!(entry.via_callee, BTreeSet::from(["helper".to_string()]));
+        assert_eq!(entry.via_extern, BTreeSet::from(["map_io".to_string()]));
+    }
+
+    #[test]
+    fn capability_provenance_recursive_and_cyclic_is_deterministic() {
+        let module = KrirModule {
+            module_caps: vec![],
+            functions: vec![
+                Function {
+                    name: "map_io".to_string(),
+                    is_extern: true,
+                    ctx_ok: vec![Ctx::Thread, Ctx::Boot],
+                    eff_used: vec![],
+                    caps_req: vec!["PhysMap".to_string()],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![],
+                },
+                Function {
+                    name: "a".to_string(),
+                    is_extern: false,
+                    ctx_ok: vec![Ctx::Thread],
+                    eff_used: vec![],
+                    caps_req: vec!["PhysMap".to_string()],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![KrirOp::Call {
+                        callee: "b".to_string(),
+                    }],
+                },
+                Function {
+                    name: "b".to_string(),
+                    is_extern: false,
+                    ctx_ok: vec![Ctx::Thread],
+                    eff_used: vec![],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![
+                        KrirOp::Call {
+                            callee: "a".to_string(),
+                        },
+                        KrirOp::Call {
+                            callee: "map_io".to_string(),
+                        },
+                    ],
+                },
+                Function {
+                    name: "self_fn".to_string(),
+                    is_extern: false,
+                    ctx_ok: vec![Ctx::Thread],
+                    eff_used: vec![],
+                    caps_req: vec!["IoPort".to_string()],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![KrirOp::Call {
+                        callee: "self_fn".to_string(),
+                    }],
+                },
+            ],
+            call_edges: vec![
+                CallEdge {
+                    caller: "a".to_string(),
+                    callee: "b".to_string(),
+                },
+                CallEdge {
+                    caller: "b".to_string(),
+                    callee: "a".to_string(),
+                },
+                CallEdge {
+                    caller: "b".to_string(),
+                    callee: "map_io".to_string(),
+                },
+                CallEdge {
+                    caller: "self_fn".to_string(),
+                    callee: "self_fn".to_string(),
+                },
+            ],
+        };
+        let semantics = capability_semantics_by_function(&module);
+
+        let a = semantics["a"].provenance.get("PhysMap").expect("a PhysMap");
+        assert!(a.direct);
+        assert_eq!(a.via_callee, BTreeSet::from(["b".to_string()]));
+        assert_eq!(a.via_extern, BTreeSet::from(["map_io".to_string()]));
+
+        let b = semantics["b"].provenance.get("PhysMap").expect("b PhysMap");
+        assert!(!b.direct);
+        assert_eq!(b.via_callee, BTreeSet::from(["a".to_string()]));
+        assert_eq!(b.via_extern, BTreeSet::from(["map_io".to_string()]));
+
+        let self_fn = semantics["self_fn"]
+            .provenance
+            .get("IoPort")
+            .expect("self_fn IoPort");
         assert!(self_fn.direct);
         assert!(self_fn.via_callee.is_empty());
         assert!(self_fn.via_extern.is_empty());

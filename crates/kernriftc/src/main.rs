@@ -74,6 +74,8 @@ struct PolicyKernel {
     forbid_yield_in_critical: bool,
     #[serde(default)]
     forbid_effects_in_critical: Vec<String>,
+    #[serde(default)]
+    forbid_caps_in_irq: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -106,8 +108,6 @@ struct ContractsReport {
     max_lock_depth: u64,
     no_yield_spans: BTreeMap<String, ContractsNoYieldSpan>,
     #[serde(default)]
-    effects: ContractsReportEffects,
-    #[serde(default)]
     critical: ContractsReportCritical,
 }
 
@@ -119,13 +119,16 @@ struct ContractsFacts {
 #[derive(Debug, Deserialize)]
 struct ContractsFactSymbol {
     name: String,
-    eff_used: Vec<String>,
     #[serde(default)]
     ctx_reachable: Vec<String>,
     #[serde(default)]
     eff_transitive: Vec<String>,
     #[serde(default)]
     eff_provenance: Vec<ContractsEffectProvenance>,
+    #[serde(default)]
+    caps_transitive: Vec<String>,
+    #[serde(default)]
+    caps_provenance: Vec<ContractsCapabilityProvenance>,
 }
 
 impl ContractsFactSymbol {
@@ -136,22 +139,30 @@ impl ContractsFactSymbol {
     fn has_eff_transitive(&self, eff: &str) -> bool {
         self.eff_transitive.iter().any(|e| e == eff)
     }
-}
 
-#[derive(Debug, Deserialize, Default)]
-struct ContractsReportEffects {
-    #[serde(default)]
-    yield_sites_count: u64,
-    #[serde(default)]
-    alloc_sites_count: u64,
-    #[serde(default)]
-    block_sites_count: u64,
+    fn has_cap_transitive(&self, cap: &str) -> bool {
+        self.caps_transitive.iter().any(|c| c == cap)
+    }
+
+    fn eff_provenance(&self, eff: &str) -> Option<&ContractsProvenance> {
+        self.eff_provenance
+            .iter()
+            .find(|entry| entry.effect == eff)
+            .map(|entry| &entry.provenance)
+    }
+
+    fn cap_provenance(&self, cap: &str) -> Option<&ContractsProvenance> {
+        self.caps_provenance
+            .iter()
+            .find(|entry| entry.capability == cap)
+            .map(|entry| &entry.provenance)
+    }
 }
 
 #[derive(Debug, Deserialize, Default)]
 struct ContractsReportCritical {
-    #[serde(default)]
-    depth_max: u64,
+    #[serde(default, rename = "depth_max")]
+    _depth_max: u64,
     #[serde(default)]
     violations: Vec<ContractsCriticalViolation>,
 }
@@ -176,6 +187,12 @@ struct ContractsProvenance {
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct ContractsEffectProvenance {
     effect: String,
+    provenance: ContractsProvenance,
+}
+
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ContractsCapabilityProvenance {
+    capability: String,
     provenance: ContractsProvenance,
 }
 
@@ -1716,6 +1733,18 @@ fn parse_policy_text(text: &str, source_name: &str) -> Result<PolicyFile, String
     policy.kernel.forbid_effects_in_critical.sort();
     policy.kernel.forbid_effects_in_critical.dedup();
 
+    for cap in &mut policy.kernel.forbid_caps_in_irq {
+        *cap = cap.trim().to_string();
+        if cap.is_empty() {
+            return Err(format!(
+                "invalid policy '{}': forbid_caps_in_irq entries must be non-empty strings",
+                source_name
+            ));
+        }
+    }
+    policy.kernel.forbid_caps_in_irq.sort();
+    policy.kernel.forbid_caps_in_irq.dedup();
+
     Ok(policy)
 }
 
@@ -1765,33 +1794,76 @@ fn decode_contracts_bundle(
 }
 
 fn evaluate_policy(policy: &PolicyFile, contracts: &ContractsBundle) -> Vec<PolicyViolation> {
+    let view = PolicyEvalView::build(contracts);
     let mut violations = Vec::<PolicyViolation>::new();
-    let symbol_by_name = contracts
-        .facts
-        .symbols
-        .iter()
-        .map(|symbol| (symbol.name.as_str(), symbol))
-        .collect::<BTreeMap<_, _>>();
 
-    // Parsed for deterministic v2 policy/report compatibility even when
-    // current rule-set only consumes a subset of effect counters.
-    let _effect_counters = (
-        contracts.report.effects.yield_sites_count,
-        contracts.report.effects.alloc_sites_count,
-        contracts.report.effects.block_sites_count,
-    );
-    let _provenance_counters = contracts
-        .facts
-        .symbols
-        .iter()
-        .map(|symbol| symbol.eff_provenance.len() + symbol.eff_used.len())
-        .sum::<usize>();
+    let (context_violations, kernel_v2_allowed) = evaluate_context_rules(policy, contracts);
+    violations.extend(context_violations);
+    violations.extend(evaluate_lock_rules(policy, contracts));
+    violations.extend(evaluate_effect_rules(
+        policy,
+        contracts,
+        &view,
+        kernel_v2_allowed,
+    ));
+    violations.extend(evaluate_region_rules(policy, contracts, kernel_v2_allowed));
+    violations.extend(evaluate_capability_rules(
+        policy,
+        contracts,
+        &view,
+        kernel_v2_allowed,
+    ));
 
-    let kernel_rules_enabled = policy.kernel.forbid_alloc_in_irq
+    violations.sort();
+    violations.dedup();
+    violations
+}
+
+struct PolicyEvalView<'a> {
+    symbol_by_name: BTreeMap<&'a str, &'a ContractsFactSymbol>,
+    irq_symbol_names: Vec<&'a str>,
+}
+
+impl<'a> PolicyEvalView<'a> {
+    fn build(contracts: &'a ContractsBundle) -> Self {
+        let symbol_by_name = contracts
+            .facts
+            .symbols
+            .iter()
+            .map(|symbol| (symbol.name.as_str(), symbol))
+            .collect::<BTreeMap<_, _>>();
+
+        let mut irq_symbol_names = contracts
+            .facts
+            .symbols
+            .iter()
+            .filter(|symbol| symbol.has_ctx_reachable("irq"))
+            .map(|symbol| symbol.name.as_str())
+            .collect::<Vec<_>>();
+        irq_symbol_names.sort();
+        irq_symbol_names.dedup();
+
+        Self {
+            symbol_by_name,
+            irq_symbol_names,
+        }
+    }
+}
+
+fn kernel_rules_enabled(policy: &PolicyFile) -> bool {
+    policy.kernel.forbid_alloc_in_irq
         || policy.kernel.forbid_block_in_irq
         || policy.kernel.forbid_yield_in_critical
-        || !policy.kernel.forbid_effects_in_critical.is_empty();
-    if kernel_rules_enabled && contracts.schema_version != CONTRACTS_SCHEMA_VERSION_V2 {
+        || !policy.kernel.forbid_effects_in_critical.is_empty()
+        || !policy.kernel.forbid_caps_in_irq.is_empty()
+}
+
+fn evaluate_context_rules(
+    policy: &PolicyFile,
+    contracts: &ContractsBundle,
+) -> (Vec<PolicyViolation>, bool) {
+    let mut violations = Vec::<PolicyViolation>::new();
+    if kernel_rules_enabled(policy) && contracts.schema_version != CONTRACTS_SCHEMA_VERSION_V2 {
         violations.push(PolicyViolation {
             code: "KERNEL_POLICY_REQUIRES_V2",
             msg: format!(
@@ -1799,10 +1871,13 @@ fn evaluate_policy(policy: &PolicyFile, contracts: &ContractsBundle) -> Vec<Poli
                 CONTRACTS_SCHEMA_VERSION_V2
             ),
         });
-        violations.sort();
-        violations.dedup();
-        return violations;
+        return (violations, false);
     }
+    (violations, true)
+}
+
+fn evaluate_lock_rules(policy: &PolicyFile, contracts: &ContractsBundle) -> Vec<PolicyViolation> {
+    let mut violations = Vec::<PolicyViolation>::new();
 
     if let Some(limit) = policy.limits.max_lock_depth
         && contracts.report.max_lock_depth > limit
@@ -1815,6 +1890,35 @@ fn evaluate_policy(policy: &PolicyFile, contracts: &ContractsBundle) -> Vec<Poli
             ),
         });
     }
+
+    let observed_edges = contracts
+        .lockgraph
+        .edges
+        .iter()
+        .map(|e| (e.from.as_str(), e.to.as_str()))
+        .collect::<BTreeSet<_>>();
+    for edge in &policy.locks.forbid_edges {
+        if observed_edges.contains(&(edge[0].as_str(), edge[1].as_str())) {
+            violations.push(PolicyViolation {
+                code: "LOCK_FORBID_EDGE",
+                msg: format!(
+                    "forbidden lock edge '{} -> {}' is present",
+                    edge[0], edge[1]
+                ),
+            });
+        }
+    }
+
+    violations
+}
+
+fn evaluate_effect_rules(
+    policy: &PolicyFile,
+    contracts: &ContractsBundle,
+    view: &PolicyEvalView<'_>,
+    kernel_v2_allowed: bool,
+) -> Vec<PolicyViolation> {
+    let mut violations = Vec::<PolicyViolation>::new();
 
     if let Some(limit) = policy.limits.max_no_yield_span {
         for (symbol, span) in &contracts.report.no_yield_spans {
@@ -1853,23 +1957,110 @@ fn evaluate_policy(policy: &PolicyFile, contracts: &ContractsBundle) -> Vec<Poli
         }
     }
 
-    let observed_edges = contracts
-        .lockgraph
-        .edges
-        .iter()
-        .map(|e| (e.from.as_str(), e.to.as_str()))
-        .collect::<BTreeSet<_>>();
-    for edge in &policy.locks.forbid_edges {
-        if observed_edges.contains(&(edge[0].as_str(), edge[1].as_str())) {
-            violations.push(PolicyViolation {
-                code: "LOCK_FORBID_EDGE",
-                msg: format!(
-                    "forbidden lock edge '{} -> {}' is present",
-                    edge[0], edge[1]
-                ),
-            });
+    if kernel_v2_allowed {
+        if policy.kernel.forbid_alloc_in_irq {
+            for symbol_name in &view.irq_symbol_names {
+                if let Some(symbol) = view.symbol_by_name.get(*symbol_name)
+                    && symbol.has_eff_transitive("alloc")
+                {
+                    violations.push(PolicyViolation {
+                        code: "KERNEL_IRQ_ALLOC",
+                        msg: format!(
+                            "function '{}' is irq-reachable and uses alloc effect ({})",
+                            symbol_name,
+                            symbol
+                                .eff_provenance("alloc")
+                                .map(format_provenance)
+                                .unwrap_or_else(
+                                    || "direct=false, via_callee=[], via_extern=[]".to_string()
+                                )
+                        ),
+                    });
+                }
+            }
+        }
+
+        if policy.kernel.forbid_block_in_irq {
+            for symbol_name in &view.irq_symbol_names {
+                if let Some(symbol) = view.symbol_by_name.get(*symbol_name)
+                    && symbol.has_eff_transitive("block")
+                {
+                    violations.push(PolicyViolation {
+                        code: "KERNEL_IRQ_BLOCK",
+                        msg: format!(
+                            "function '{}' is irq-reachable and uses block effect ({})",
+                            symbol_name,
+                            symbol
+                                .eff_provenance("block")
+                                .map(format_provenance)
+                                .unwrap_or_else(
+                                    || "direct=false, via_callee=[], via_extern=[]".to_string()
+                                )
+                        ),
+                    });
+                }
+            }
         }
     }
+
+    violations
+}
+
+fn evaluate_region_rules(
+    policy: &PolicyFile,
+    contracts: &ContractsBundle,
+    kernel_v2_allowed: bool,
+) -> Vec<PolicyViolation> {
+    let mut violations = Vec::<PolicyViolation>::new();
+    if !kernel_v2_allowed {
+        return violations;
+    }
+
+    let mut forbidden_critical_effects = policy.kernel.forbid_effects_in_critical.clone();
+    if policy.kernel.forbid_yield_in_critical {
+        forbidden_critical_effects.push("yield".to_string());
+    }
+    forbidden_critical_effects.sort();
+    forbidden_critical_effects.dedup();
+    let forbidden_critical_effects = forbidden_critical_effects
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+
+    if forbidden_critical_effects.is_empty() {
+        return violations;
+    }
+
+    for violation in &contracts.report.critical.violations {
+        if !forbidden_critical_effects.contains(violation.effect.as_str()) {
+            continue;
+        }
+        let code = match violation.effect.as_str() {
+            "yield" => "KERNEL_CRITICAL_REGION_YIELD",
+            "alloc" => "KERNEL_CRITICAL_REGION_ALLOC",
+            "block" => "KERNEL_CRITICAL_REGION_BLOCK",
+            _ => continue,
+        };
+        violations.push(PolicyViolation {
+            code,
+            msg: format!(
+                "function '{}' uses {} effect in critical region ({})",
+                violation.function,
+                violation.effect,
+                format_provenance(&violation.provenance)
+            ),
+        });
+    }
+
+    violations
+}
+
+fn evaluate_capability_rules(
+    policy: &PolicyFile,
+    contracts: &ContractsBundle,
+    view: &PolicyEvalView<'_>,
+    kernel_v2_allowed: bool,
+) -> Vec<PolicyViolation> {
+    let mut violations = Vec::<PolicyViolation>::new();
 
     if !policy.caps.allow_module.is_empty() {
         let allowed_caps = policy
@@ -1896,91 +2087,48 @@ fn evaluate_policy(policy: &PolicyFile, contracts: &ContractsBundle) -> Vec<Poli
         }
     }
 
-    let mut irq_functions = contracts
-        .facts
-        .symbols
-        .iter()
-        .filter(|symbol| symbol.has_ctx_reachable("irq"))
-        .map(|symbol| symbol.name.as_str())
-        .collect::<Vec<_>>();
-    irq_functions.sort();
-    irq_functions.dedup();
-
-    if policy.kernel.forbid_alloc_in_irq {
-        for symbol_name in &irq_functions {
-            if let Some(symbol) = symbol_by_name.get(*symbol_name)
-                && symbol.has_eff_transitive("alloc")
-            {
-                violations.push(PolicyViolation {
-                    code: "KERNEL_IRQ_ALLOC",
-                    msg: format!(
-                        "function '{}' is irq-reachable and uses alloc effect",
-                        symbol_name
-                    ),
-                });
+    if kernel_v2_allowed {
+        let mut forbidden_caps = policy.kernel.forbid_caps_in_irq.clone();
+        forbidden_caps.sort();
+        forbidden_caps.dedup();
+        for cap in forbidden_caps {
+            for symbol_name in &view.irq_symbol_names {
+                if let Some(symbol) = view.symbol_by_name.get(*symbol_name)
+                    && symbol.has_cap_transitive(&cap)
+                {
+                    violations.push(PolicyViolation {
+                        code: "KERNEL_IRQ_CAP_FORBID",
+                        msg: format!(
+                            "function '{}' is irq-reachable and uses forbidden capability '{}' ({})",
+                            symbol_name,
+                            cap,
+                            symbol
+                                .cap_provenance(&cap)
+                                .map(format_provenance)
+                                .unwrap_or_else(|| "direct=false, via_callee=[], via_extern=[]".to_string())
+                        ),
+                    });
+                }
             }
         }
     }
 
-    if policy.kernel.forbid_block_in_irq {
-        for symbol_name in &irq_functions {
-            if let Some(symbol) = symbol_by_name.get(*symbol_name)
-                && symbol.has_eff_transitive("block")
-            {
-                violations.push(PolicyViolation {
-                    code: "KERNEL_IRQ_BLOCK",
-                    msg: format!(
-                        "function '{}' is irq-reachable and uses block effect",
-                        symbol_name
-                    ),
-                });
-            }
-        }
-    }
-
-    let mut forbidden_critical_effects = policy.kernel.forbid_effects_in_critical.clone();
-    if policy.kernel.forbid_yield_in_critical {
-        forbidden_critical_effects.push("yield".to_string());
-    }
-    forbidden_critical_effects.sort();
-    forbidden_critical_effects.dedup();
-    let forbidden_critical_effects = forbidden_critical_effects
-        .into_iter()
-        .collect::<BTreeSet<_>>();
-
-    if !forbidden_critical_effects.is_empty() {
-        let _critical_depth_max = contracts.report.critical.depth_max;
-        for violation in &contracts.report.critical.violations {
-            if !forbidden_critical_effects.contains(violation.effect.as_str()) {
-                continue;
-            }
-            let code = match violation.effect.as_str() {
-                "yield" => "KERNEL_CRITICAL_REGION_YIELD",
-                "alloc" => "KERNEL_CRITICAL_REGION_ALLOC",
-                "block" => "KERNEL_CRITICAL_REGION_BLOCK",
-                _ => continue,
-            };
-            let mut via_callee = violation.provenance.via_callee.clone();
-            via_callee.sort();
-            via_callee.dedup();
-            let mut via_extern = violation.provenance.via_extern.clone();
-            via_extern.sort();
-            via_extern.dedup();
-            let msg = format!(
-                "function '{}' uses {} effect in critical region (direct={}, via_callee=[{}], via_extern=[{}])",
-                violation.function,
-                violation.effect,
-                violation.provenance.direct,
-                via_callee.join(","),
-                via_extern.join(",")
-            );
-            violations.push(PolicyViolation { code, msg });
-        }
-    }
-
-    violations.sort();
-    violations.dedup();
     violations
+}
+
+fn format_provenance(provenance: &ContractsProvenance) -> String {
+    let mut via_callee = provenance.via_callee.clone();
+    via_callee.sort();
+    via_callee.dedup();
+    let mut via_extern = provenance.via_extern.clone();
+    via_extern.sort();
+    via_extern.dedup();
+    format!(
+        "direct={}, via_callee=[{}], via_extern=[{}]",
+        provenance.direct,
+        via_callee.join(","),
+        via_extern.join(",")
+    )
 }
 
 fn format_policy_violation(violation: &PolicyViolation) -> String {

@@ -16,7 +16,9 @@ The layer is organized around four first-class dimensions:
    - explicit region boundaries (`critical { ... }`)
    - deterministic region findings (depth + violations with provenance)
 4. Capability semantics:
-   - explicit capability requirements and module boundaries
+   - `caps_req` (direct requirements)
+   - `caps_transitive` (call-graph closure)
+   - `caps_provenance` (direct / via-callee / via-extern)
 
 Why this is better than incremental rules:
 - policies consume stable contract facts instead of hidden compiler state
@@ -74,6 +76,12 @@ Files:
 Proves:
 - policy rules are grouped by semantic category (context/effect/region/lock/capability)
 - each rule has a stable code, deterministic message shape, and deterministic order
+- policy reads contracts semantics directly instead of reconstructing hidden state
+  (for v2/kernel mode):
+  - IRQ checks consume `facts.symbols[*].ctx_reachable`
+  - effect checks consume `facts.symbols[*].eff_transitive` + `eff_provenance`
+  - capability checks consume `facts.symbols[*].caps_transitive` + `caps_provenance`
+  - region checks consume `report.critical.violations`
 
 Files:
 - `crates/kernriftc/src/main.rs`
