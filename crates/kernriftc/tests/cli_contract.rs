@@ -359,6 +359,75 @@ fn check_yield_hidden_two_levels_exits_nonzero_with_lockgraph_message() {
 }
 
 #[test]
+fn check_rejects_irq_block_effect_boundary_direct() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("irq_block_site.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec![
+            "ctx-check: CTX_IRQ_BLOCK_BOUNDARY: function 'isr_block' is @ctx(irq) and uses block effect (direct=true, via_callee=[], via_extern=[])"
+        ]
+    );
+}
+
+#[test]
+fn check_rejects_irq_block_effect_boundary_transitive() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("irq_block_transitive.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec![
+            "ctx-check: CTX_IRQ_BLOCK_BOUNDARY: function 'helper' is @ctx(irq) and uses block effect (direct=true, via_callee=[], via_extern=[])",
+            "ctx-check: CTX_IRQ_BLOCK_BOUNDARY: function 'isr' is @ctx(irq) and uses block effect (direct=false, via_callee=[helper], via_extern=[])"
+        ]
+    );
+}
+
+#[test]
+fn check_allows_block_effect_outside_irq() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("blockpoint_thread.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    cmd.assert().success();
+}
+
+#[test]
+fn check_alloc_in_irq_behavior_is_unchanged() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_fail").join("alloc_in_irq.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec!["effect-check: call 'isr -> allocy' in ctx 'irq' uses forbidden effects: alloc"]
+    );
+}
+
+#[test]
 fn emit_lockgraph_outputs_only_expected_top_level_keys() {
     let root = repo_root();
     let fixture = root
@@ -893,8 +962,8 @@ fn contracts_v2_effect_counters_track_alloc_and_block_sites() {
         .join("irq_alloc_site.kr");
     let block_fixture = root
         .join("tests")
-        .join("kernel_profile")
-        .join("irq_block_site.kr");
+        .join("must_pass")
+        .join("blockpoint_thread.kr");
 
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)

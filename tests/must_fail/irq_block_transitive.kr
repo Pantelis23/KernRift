@@ -1,0 +1,5 @@
+@ctx(irq)
+fn isr() { helper(); }
+
+@ctx(irq)
+fn helper() { blockpoint(); }

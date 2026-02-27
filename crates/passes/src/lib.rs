@@ -40,6 +40,19 @@ struct FnSummary {
     has_yield: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct EffectProvenance {
+    direct: bool,
+    via_callee: BTreeSet<String>,
+    via_extern: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct FunctionEffectSemantics {
+    transitive: BTreeSet<Eff>,
+    provenance: BTreeMap<Eff, EffectProvenance>,
+}
+
 #[derive(Debug, Clone)]
 struct LockFrame {
     class: String,
@@ -123,6 +136,7 @@ fn ctx_check(module: &KrirModule) -> Vec<CheckError> {
 fn effect_check(module: &KrirModule) -> Vec<CheckError> {
     let mut errs = Vec::new();
     let map = fn_map(module);
+    let effect_semantics = effect_semantics_by_function(module);
 
     for edge in &module.call_edges {
         let Some(caller) = map.get(&edge.caller) else {
@@ -136,6 +150,7 @@ fn effect_check(module: &KrirModule) -> Vec<CheckError> {
             let bad = callee
                 .eff_used
                 .iter()
+                .filter(|eff| !matches!((*ctx, **eff), (Ctx::Irq, Eff::Block)))
                 .filter(|eff| !is_effect_allowed(*ctx, **eff))
                 .map(|eff| eff.as_str().to_string())
                 .collect::<Vec<_>>();
@@ -156,6 +171,21 @@ fn effect_check(module: &KrirModule) -> Vec<CheckError> {
     }
 
     for f in &module.functions {
+        if f.ctx_ok.contains(&Ctx::Irq)
+            && let Some(semantics) = effect_semantics.get(&f.name)
+            && semantics.transitive.contains(&Eff::Block)
+            && let Some(provenance) = semantics.provenance.get(&Eff::Block)
+        {
+            errs.push(CheckError {
+                pass: "ctx-check",
+                message: format!(
+                    "CTX_IRQ_BLOCK_BOUNDARY: function '{}' is @ctx(irq) and uses block effect ({})",
+                    f.name,
+                    format_effect_provenance(provenance)
+                ),
+            });
+        }
+
         if f.attrs.noyield && f.ops.iter().any(|op| matches!(op, KrirOp::YieldPoint)) {
             errs.push(CheckError {
                 pass: "effect-check",
@@ -210,6 +240,121 @@ fn cap_check(module: &KrirModule) -> Vec<CheckError> {
     }
 
     errs
+}
+
+fn effect_semantics_by_function(module: &KrirModule) -> BTreeMap<String, FunctionEffectSemantics> {
+    let names = module
+        .functions
+        .iter()
+        .map(|f| f.name.clone())
+        .collect::<Vec<_>>();
+    let index_by_name = names
+        .iter()
+        .enumerate()
+        .map(|(idx, name)| (name.clone(), idx))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut direct = vec![BTreeSet::<Eff>::new(); names.len()];
+    let mut is_extern = vec![false; names.len()];
+    for function in &module.functions {
+        if let Some(&idx) = index_by_name.get(&function.name) {
+            direct[idx].extend(function.eff_used.iter().copied());
+            is_extern[idx] = function.is_extern;
+        }
+    }
+
+    let mut outgoing_sets = vec![BTreeSet::<usize>::new(); names.len()];
+    for edge in &module.call_edges {
+        let (Some(&caller), Some(&callee)) = (
+            index_by_name.get(&edge.caller),
+            index_by_name.get(&edge.callee),
+        ) else {
+            continue;
+        };
+        outgoing_sets[caller].insert(callee);
+    }
+    let outgoing = outgoing_sets
+        .into_iter()
+        .map(|set| set.into_iter().collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+
+    let mut transitive = direct.clone();
+    let mut provenance = vec![BTreeMap::<Eff, EffectProvenance>::new(); names.len()];
+    for (idx, direct_effects) in direct.iter().enumerate() {
+        for effect in direct_effects {
+            provenance[idx].entry(*effect).or_default().direct = true;
+        }
+    }
+
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for caller_idx in 0..names.len() {
+            for &callee_idx in &outgoing[caller_idx] {
+                let callee_effects = transitive[callee_idx].iter().copied().collect::<Vec<_>>();
+                for effect in callee_effects {
+                    if transitive[caller_idx].insert(effect) {
+                        changed = true;
+                    }
+
+                    let callee_provenance = provenance[callee_idx]
+                        .get(&effect)
+                        .cloned()
+                        .unwrap_or_default();
+                    let entry = provenance[caller_idx].entry(effect).or_default();
+                    if is_extern[callee_idx] {
+                        if entry.via_extern.insert(names[callee_idx].clone()) {
+                            changed = true;
+                        }
+                    } else if entry.via_callee.insert(names[callee_idx].clone()) {
+                        changed = true;
+                    }
+
+                    let before_callee = entry.via_callee.len();
+                    entry.via_callee.extend(callee_provenance.via_callee);
+                    if entry.via_callee.len() != before_callee {
+                        changed = true;
+                    }
+                    let before_extern = entry.via_extern.len();
+                    entry.via_extern.extend(callee_provenance.via_extern);
+                    if entry.via_extern.len() != before_extern {
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+
+    let mut by_name = BTreeMap::<String, FunctionEffectSemantics>::new();
+    for (idx, name) in names.iter().enumerate() {
+        let mut effect_map = BTreeMap::<Eff, EffectProvenance>::new();
+        for effect in &transitive[idx] {
+            let mut entry = provenance[idx].get(effect).cloned().unwrap_or_default();
+            entry.via_callee.remove(name);
+            entry.via_extern.remove(name);
+            effect_map.insert(*effect, entry);
+        }
+        by_name.insert(
+            name.clone(),
+            FunctionEffectSemantics {
+                transitive: transitive[idx].clone(),
+                provenance: effect_map,
+            },
+        );
+    }
+
+    by_name
+}
+
+fn format_effect_provenance(provenance: &EffectProvenance) -> String {
+    let via_callee = provenance.via_callee.iter().cloned().collect::<Vec<_>>();
+    let via_extern = provenance.via_extern.iter().cloned().collect::<Vec<_>>();
+    format!(
+        "direct={}, via_callee=[{}], via_extern=[{}]",
+        provenance.direct,
+        via_callee.join(", "),
+        via_extern.join(", ")
+    )
 }
 
 fn critical_region_balance_check(module: &KrirModule) -> Vec<CheckError> {

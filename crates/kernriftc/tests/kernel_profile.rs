@@ -27,7 +27,6 @@ fn default_profile_behavior_is_unchanged() {
         "policy_families_order.kr",
         "irq_alloc_effect.kr",
         "irq_alloc_site.kr",
-        "irq_block_site.kr",
         "irq_caps_transitive.kr",
         "irq_caps_unlisted.kr",
         "irq_caps_extern.kr",
@@ -40,6 +39,7 @@ fn default_profile_behavior_is_unchanged() {
 
     for fixture in [
         "irq_alloc_transitive.kr",
+        "irq_block_site.kr",
         "irq_block_transitive.kr",
         "irq_alloc_extern_stub.kr",
         "irq_block_extern_stub.kr",
