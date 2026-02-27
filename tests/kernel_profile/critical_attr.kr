@@ -1,0 +1,3 @@
+@critical
+fn critical_entry() {
+}

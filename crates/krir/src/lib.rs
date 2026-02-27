@@ -61,6 +61,7 @@ impl Eff {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 pub struct FunctionAttrs {
     pub noyield: bool,
+    pub critical: bool,
     pub leaf: bool,
     pub hotpath: bool,
     pub lock_budget: Option<u64>,

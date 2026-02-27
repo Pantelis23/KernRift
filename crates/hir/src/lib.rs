@@ -115,6 +115,7 @@ fn lower_function(item: &FnAst) -> Result<Function, Vec<String>> {
                 eff_used.insert(Eff::PreemptOff);
             }
             "noyield" => attrs.noyield = true,
+            "critical" => attrs.critical = true,
             "leaf" => attrs.leaf = true,
             "hotpath" => attrs.hotpath = true,
             "lock_budget" => match parse_lock_budget(attr) {

@@ -187,20 +187,26 @@ fn contracts_value(
         Value::String(schema.version_str().to_string()),
     );
     root.insert("capabilities".to_string(), caps_value);
-    root.insert("facts".to_string(), facts_manifest_value(&canonical));
+    root.insert(
+        "facts".to_string(),
+        facts_manifest_value(&canonical, schema),
+    );
     root.insert("lockgraph".to_string(), lockgraph_value);
     root.insert("report".to_string(), report_value);
 
     Ok(Value::Object(root))
 }
 
-fn facts_manifest_value(module: &KrirModule) -> Value {
+fn facts_manifest_value(module: &KrirModule, schema: ContractsSchema) -> Value {
     let symbols = module
         .functions
         .iter()
         .map(|f| {
             let mut attrs = Map::new();
             attrs.insert("noyield".to_string(), Value::Bool(f.attrs.noyield));
+            if schema == ContractsSchema::V2 {
+                attrs.insert("critical".to_string(), Value::Bool(f.attrs.critical));
+            }
             attrs.insert("leaf".to_string(), Value::Bool(f.attrs.leaf));
             attrs.insert("hotpath".to_string(), Value::Bool(f.attrs.hotpath));
             attrs.insert(
@@ -573,6 +579,7 @@ mod tests {
                     caps_req: vec!["PhysMap".to_string(), "PhysMap".to_string()],
                     attrs: FunctionAttrs {
                         noyield: false,
+                        critical: true,
                         leaf: false,
                         hotpath: true,
                         lock_budget: Some(2),

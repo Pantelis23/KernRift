@@ -343,6 +343,46 @@ fn contracts_v2_contains_contexts_and_effects_fields() {
 }
 
 #[test]
+fn contracts_v2_facts_attrs_include_critical_flag() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("critical_attr.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let out_path = std::env::temp_dir().join(format!("kernrift-contracts-v2-critical-{}.json", ts));
+    fs::remove_file(&out_path).ok();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--contracts-schema")
+        .arg("v2")
+        .arg("--contracts-out")
+        .arg(out_path.as_os_str())
+        .arg(fixture.as_os_str());
+    cmd.assert().success();
+
+    let text = fs::read_to_string(&out_path).expect("read contracts output");
+    let json: Value = serde_json::from_str(&text).expect("contracts json");
+    validate_contracts_schema_v2(&json);
+
+    let symbols = json["facts"]["symbols"]
+        .as_array()
+        .expect("facts symbols array");
+    let critical_symbol = symbols
+        .iter()
+        .find(|sym| sym["name"] == "critical_entry")
+        .expect("critical_entry symbol must exist");
+    assert_eq!(critical_symbol["attrs"]["critical"], Value::Bool(true));
+
+    fs::remove_file(&out_path).ok();
+}
+
+#[test]
 fn contracts_v2_effect_counters_track_alloc_and_block_sites() {
     let root = repo_root();
     let alloc_fixture = root

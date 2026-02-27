@@ -179,12 +179,16 @@
       "additionalProperties": false,
       "required": [
         "noyield",
+        "critical",
         "leaf",
         "hotpath",
         "lock_budget"
       ],
       "properties": {
         "noyield": {
+          "type": "boolean"
+        },
+        "critical": {
           "type": "boolean"
         },
         "leaf": {
