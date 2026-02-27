@@ -253,6 +253,43 @@ const KERNEL_PROFILE_DEFAULT_MAX_NO_YIELD_SPAN: u64 = 64;
 const KERNEL_PROFILE_DEFAULT_FORBID_EDGES: [(&str, &str); 1] = [("ConsoleLock", "SchedLock")];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PolicyMaterializationAction {
+    AppendCriticalEffect(&'static str),
+    SetForbidAllocInIrq,
+    SetForbidBlockInIrq,
+    SetMaxLockDepth(u64),
+    SetLockForbidEdges(&'static [(&'static str, &'static str)]),
+    SetMaxNoYieldSpan(u64),
+    SetForbidUnboundedNoYield,
+}
+
+const MATERIALIZE_NONE: &[PolicyMaterializationAction] = &[];
+const MATERIALIZE_KERNEL_CRITICAL_REGION_ALLOC: &[PolicyMaterializationAction] =
+    &[PolicyMaterializationAction::AppendCriticalEffect("alloc")];
+const MATERIALIZE_KERNEL_CRITICAL_REGION_BLOCK: &[PolicyMaterializationAction] =
+    &[PolicyMaterializationAction::AppendCriticalEffect("block")];
+const MATERIALIZE_KERNEL_CRITICAL_REGION_YIELD: &[PolicyMaterializationAction] =
+    &[PolicyMaterializationAction::AppendCriticalEffect("yield")];
+const MATERIALIZE_KERNEL_IRQ_ALLOC: &[PolicyMaterializationAction] =
+    &[PolicyMaterializationAction::SetForbidAllocInIrq];
+const MATERIALIZE_KERNEL_IRQ_BLOCK: &[PolicyMaterializationAction] =
+    &[PolicyMaterializationAction::SetForbidBlockInIrq];
+const MATERIALIZE_LIMIT_MAX_LOCK_DEPTH: &[PolicyMaterializationAction] =
+    &[PolicyMaterializationAction::SetMaxLockDepth(
+        KERNEL_PROFILE_DEFAULT_MAX_LOCK_DEPTH,
+    )];
+const MATERIALIZE_LOCK_FORBID_EDGE: &[PolicyMaterializationAction] =
+    &[PolicyMaterializationAction::SetLockForbidEdges(
+        &KERNEL_PROFILE_DEFAULT_FORBID_EDGES,
+    )];
+const MATERIALIZE_NO_YIELD_SPAN_LIMIT: &[PolicyMaterializationAction] =
+    &[PolicyMaterializationAction::SetMaxNoYieldSpan(
+        KERNEL_PROFILE_DEFAULT_MAX_NO_YIELD_SPAN,
+    )];
+const MATERIALIZE_NO_YIELD_UNBOUNDED: &[PolicyMaterializationAction] =
+    &[PolicyMaterializationAction::SetForbidUnboundedNoYield];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PolicyRuleSpec {
     rule: PolicyRule,
     code: &'static str,
@@ -261,6 +298,7 @@ struct PolicyRuleSpec {
     requires_v2: bool,
     default_enabled_in_profile_kernel: bool,
     diagnostic_template_id: &'static str,
+    materialization_actions: &'static [PolicyMaterializationAction],
 }
 
 const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
@@ -272,6 +310,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         requires_v2: false,
         default_enabled_in_profile_kernel: false,
         diagnostic_template_id: "cap.module_allowlist",
+        materialization_actions: MATERIALIZE_NONE,
     },
     PolicyRuleSpec {
         rule: PolicyRule::KernelCriticalRegionAlloc,
@@ -281,6 +320,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         requires_v2: true,
         default_enabled_in_profile_kernel: true,
         diagnostic_template_id: "kernel.critical_region.alloc",
+        materialization_actions: MATERIALIZE_KERNEL_CRITICAL_REGION_ALLOC,
     },
     PolicyRuleSpec {
         rule: PolicyRule::KernelCriticalRegionBlock,
@@ -290,6 +330,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         requires_v2: true,
         default_enabled_in_profile_kernel: true,
         diagnostic_template_id: "kernel.critical_region.block",
+        materialization_actions: MATERIALIZE_KERNEL_CRITICAL_REGION_BLOCK,
     },
     PolicyRuleSpec {
         rule: PolicyRule::KernelCriticalRegionYield,
@@ -299,6 +340,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         requires_v2: true,
         default_enabled_in_profile_kernel: true,
         diagnostic_template_id: "kernel.critical_region.yield",
+        materialization_actions: MATERIALIZE_KERNEL_CRITICAL_REGION_YIELD,
     },
     PolicyRuleSpec {
         rule: PolicyRule::KernelIrqAlloc,
@@ -308,6 +350,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         requires_v2: true,
         default_enabled_in_profile_kernel: true,
         diagnostic_template_id: "kernel.irq.alloc",
+        materialization_actions: MATERIALIZE_KERNEL_IRQ_ALLOC,
     },
     PolicyRuleSpec {
         rule: PolicyRule::KernelIrqBlock,
@@ -317,6 +360,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         requires_v2: true,
         default_enabled_in_profile_kernel: true,
         diagnostic_template_id: "kernel.irq.block",
+        materialization_actions: MATERIALIZE_KERNEL_IRQ_BLOCK,
     },
     PolicyRuleSpec {
         rule: PolicyRule::KernelIrqCapForbid,
@@ -326,6 +370,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         requires_v2: true,
         default_enabled_in_profile_kernel: false,
         diagnostic_template_id: "kernel.irq.cap_forbid",
+        materialization_actions: MATERIALIZE_NONE,
     },
     PolicyRuleSpec {
         rule: PolicyRule::KernelPolicyRequiresV2,
@@ -335,6 +380,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         requires_v2: false,
         default_enabled_in_profile_kernel: true,
         diagnostic_template_id: "kernel.requires_v2",
+        materialization_actions: MATERIALIZE_NONE,
     },
     PolicyRuleSpec {
         rule: PolicyRule::LimitMaxLockDepth,
@@ -344,6 +390,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         requires_v2: false,
         default_enabled_in_profile_kernel: true,
         diagnostic_template_id: "limit.max_lock_depth",
+        materialization_actions: MATERIALIZE_LIMIT_MAX_LOCK_DEPTH,
     },
     PolicyRuleSpec {
         rule: PolicyRule::LockForbidEdge,
@@ -353,6 +400,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         requires_v2: false,
         default_enabled_in_profile_kernel: true,
         diagnostic_template_id: "lock.forbid_edge",
+        materialization_actions: MATERIALIZE_LOCK_FORBID_EDGE,
     },
     PolicyRuleSpec {
         rule: PolicyRule::NoYieldSpanLimit,
@@ -362,6 +410,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         requires_v2: false,
         default_enabled_in_profile_kernel: true,
         diagnostic_template_id: "no_yield.span_limit",
+        materialization_actions: MATERIALIZE_NO_YIELD_SPAN_LIMIT,
     },
     PolicyRuleSpec {
         rule: PolicyRule::NoYieldUnbounded,
@@ -371,6 +420,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         requires_v2: false,
         default_enabled_in_profile_kernel: true,
         diagnostic_template_id: "no_yield.unbounded",
+        materialization_actions: MATERIALIZE_NO_YIELD_UNBOUNDED,
     },
 ];
 
@@ -1992,43 +2042,39 @@ fn materialize_kernel_profile_policy() -> Result<PolicyFile, String> {
 }
 
 fn materialize_kernel_profile_rule(policy: &mut PolicyFile, rule: PolicyRule) {
-    match rule {
-        PolicyRule::CapModuleAllowlist => {}
-        PolicyRule::KernelCriticalRegionAlloc => {
-            policy
-                .kernel
-                .forbid_effects_in_critical
-                .push("alloc".to_string());
+    for action in policy_rule_spec(rule).materialization_actions {
+        apply_policy_materialization_action(policy, *action);
+    }
+}
+
+fn apply_policy_materialization_action(
+    policy: &mut PolicyFile,
+    action: PolicyMaterializationAction,
+) {
+    match action {
+        PolicyMaterializationAction::AppendCriticalEffect(effect) => policy
+            .kernel
+            .forbid_effects_in_critical
+            .push(effect.to_string()),
+        PolicyMaterializationAction::SetForbidAllocInIrq => {
+            policy.kernel.forbid_alloc_in_irq = true
         }
-        PolicyRule::KernelCriticalRegionBlock => {
-            policy
-                .kernel
-                .forbid_effects_in_critical
-                .push("block".to_string());
+        PolicyMaterializationAction::SetForbidBlockInIrq => {
+            policy.kernel.forbid_block_in_irq = true
         }
-        PolicyRule::KernelCriticalRegionYield => {
-            policy
-                .kernel
-                .forbid_effects_in_critical
-                .push("yield".to_string());
+        PolicyMaterializationAction::SetMaxLockDepth(limit) => {
+            policy.limits.max_lock_depth = Some(limit);
         }
-        PolicyRule::KernelIrqAlloc => policy.kernel.forbid_alloc_in_irq = true,
-        PolicyRule::KernelIrqBlock => policy.kernel.forbid_block_in_irq = true,
-        PolicyRule::KernelIrqCapForbid => {}
-        PolicyRule::KernelPolicyRequiresV2 => {}
-        PolicyRule::LimitMaxLockDepth => {
-            policy.limits.max_lock_depth = Some(KERNEL_PROFILE_DEFAULT_MAX_LOCK_DEPTH);
-        }
-        PolicyRule::LockForbidEdge => {
-            policy.locks.forbid_edges = KERNEL_PROFILE_DEFAULT_FORBID_EDGES
+        PolicyMaterializationAction::SetLockForbidEdges(edges) => {
+            policy.locks.forbid_edges = edges
                 .iter()
                 .map(|(from, to)| [(*from).to_string(), (*to).to_string()])
                 .collect::<Vec<_>>();
         }
-        PolicyRule::NoYieldSpanLimit => {
-            policy.limits.max_no_yield_span = Some(KERNEL_PROFILE_DEFAULT_MAX_NO_YIELD_SPAN);
+        PolicyMaterializationAction::SetMaxNoYieldSpan(span) => {
+            policy.limits.max_no_yield_span = Some(span);
         }
-        PolicyRule::NoYieldUnbounded => {
+        PolicyMaterializationAction::SetForbidUnboundedNoYield => {
             policy.limits.forbid_unbounded_no_yield = true;
         }
     }
@@ -2735,6 +2781,10 @@ mod tests {
                 looked_up.diagnostic_template_id,
                 spec.diagnostic_template_id
             );
+            assert_eq!(
+                looked_up.materialization_actions,
+                spec.materialization_actions
+            );
         }
     }
 
@@ -2874,6 +2924,47 @@ mod tests {
                 assert_eq!(count, 1, "rule {:?} must map to one policy effect", rule);
             }
         }
+    }
+
+    #[test]
+    fn default_enabled_rules_declare_actions_or_metadata_only_exception() {
+        let metadata_only = BTreeSet::from([PolicyRule::KernelPolicyRequiresV2]);
+        for spec in POLICY_RULE_CATALOG
+            .iter()
+            .filter(|spec| spec.default_enabled_in_profile_kernel)
+        {
+            if metadata_only.contains(&spec.rule) {
+                assert!(
+                    spec.materialization_actions.is_empty(),
+                    "metadata-only rule {:?} must declare no actions",
+                    spec.rule
+                );
+            } else {
+                assert!(
+                    !spec.materialization_actions.is_empty(),
+                    "default-enabled rule {:?} must declare actions",
+                    spec.rule
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn materialized_profile_from_declared_actions_matches_default_materialization() {
+        let mut from_actions = PolicyFile::default();
+        for spec in POLICY_RULE_CATALOG
+            .iter()
+            .filter(|spec| spec.default_enabled_in_profile_kernel)
+        {
+            for action in spec.materialization_actions {
+                apply_policy_materialization_action(&mut from_actions, *action);
+            }
+        }
+        let from_actions = normalize_policy(from_actions, "<from-actions>")
+            .expect("actions policy should normalize");
+        let from_rules = materialize_kernel_profile_policy()
+            .expect("materialized kernel profile must build and normalize");
+        assert_eq!(from_actions, from_rules);
     }
 
     fn materialization_effect_count(rule: PolicyRule) -> usize {
