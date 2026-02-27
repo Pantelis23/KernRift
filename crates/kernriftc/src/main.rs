@@ -675,6 +675,15 @@ fn run_verify(args: &VerifyArgs) -> ExitCode {
     }
 
     report.result = status.as_str();
+
+    let mut stderr_diagnostics = report.diagnostics.clone();
+    stderr_diagnostics.sort();
+    stderr_diagnostics.dedup();
+
+    report.diagnostics = stderr_diagnostics
+        .iter()
+        .map(|diag| normalize_verify_diagnostic_for_report(diag, args))
+        .collect();
     report.diagnostics.sort();
     report.diagnostics.dedup();
 
@@ -692,7 +701,7 @@ fn run_verify(args: &VerifyArgs) -> ExitCode {
         }
     }
 
-    print_errors(&report.diagnostics);
+    print_errors(&stderr_diagnostics);
 
     ExitCode::from(status.as_exit_code())
 }
@@ -768,6 +777,33 @@ fn stable_display_path(path: &str) -> String {
     } else {
         normalized
     }
+}
+
+fn normalize_verify_diagnostic_for_report(diag: &str, args: &VerifyArgs) -> String {
+    let mut out = diag.replace('\\', "/");
+    let mut replacements = vec![
+        (
+            args.contracts_path.as_str(),
+            stable_display_path(&args.contracts_path),
+        ),
+        (
+            args.hash_path.as_str(),
+            stable_display_path(&args.hash_path),
+        ),
+    ];
+    if let Some(sig) = args.sig_path.as_deref() {
+        replacements.push((sig, stable_display_path(sig)));
+    }
+    if let Some(pubkey) = args.pubkey_path.as_deref() {
+        replacements.push((pubkey, stable_display_path(pubkey)));
+    }
+
+    for (raw, stable) in replacements {
+        let normalized = raw.replace('\\', "/");
+        out = out.replace(&normalized, &stable);
+    }
+
+    out
 }
 
 fn run_policy(policy_path: &str, contracts_path: &str) -> ExitCode {

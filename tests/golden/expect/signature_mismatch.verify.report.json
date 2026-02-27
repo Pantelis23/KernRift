@@ -1,0 +1,27 @@
+{
+  "contracts": {
+    "schema_valid": true,
+    "schema_version": "kernrift_contracts_v1",
+    "utf8_valid": true
+  },
+  "diagnostics": [
+    "verify: SIG_MISMATCH: signature error: Verification equation was not satisfied"
+  ],
+  "hash": {
+    "computed_sha256": "5dfaa0f29f157fe42ef1cf904bc50272013a61b67b368217a86b2af7acd165f0",
+    "expected_sha256": "5dfaa0f29f157fe42ef1cf904bc50272013a61b67b368217a86b2af7acd165f0",
+    "matched": true
+  },
+  "inputs": {
+    "contracts": "contracts.json",
+    "hash": "contracts.sha256",
+    "pubkey": "pubkey.hex",
+    "sig": "contracts.sig"
+  },
+  "result": "deny",
+  "schema_version": "kernrift_verify_report_v1",
+  "signature": {
+    "checked": true,
+    "valid": false
+  }
+}
