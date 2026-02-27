@@ -1531,6 +1531,178 @@ forbid_caps_in_irq = ["PhysMap"]
 }
 
 #[test]
+fn policy_kernel_allow_caps_in_irq_overrides_forbid() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("irq_caps_transitive.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path =
+        std::env::temp_dir().join(format!("kernrift-policy-cap-allow-override-{}.json", ts));
+    let policy_path =
+        std::env::temp_dir().join(format!("kernrift-policy-cap-allow-override-{}.toml", ts));
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+
+    let mut check_cmd: Command = cargo_bin_cmd!("kernriftc");
+    check_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--contracts-schema")
+        .arg("v2")
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg(fixture.as_os_str());
+    check_cmd.assert().success();
+
+    fs::write(
+        &policy_path,
+        r#"
+[kernel]
+forbid_caps_in_irq = ["PhysMap"]
+allow_caps_in_irq = ["PhysMap"]
+"#,
+    )
+    .expect("write policy");
+
+    let mut policy_cmd: Command = cargo_bin_cmd!("kernriftc");
+    policy_cmd
+        .current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    policy_cmd.assert().success();
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn policy_kernel_non_listed_irq_capability_is_allowed() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("irq_caps_unlisted.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path =
+        std::env::temp_dir().join(format!("kernrift-policy-cap-unlisted-{}.json", ts));
+    let policy_path =
+        std::env::temp_dir().join(format!("kernrift-policy-cap-unlisted-{}.toml", ts));
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+
+    let mut check_cmd: Command = cargo_bin_cmd!("kernriftc");
+    check_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--contracts-schema")
+        .arg("v2")
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg(fixture.as_os_str());
+    check_cmd.assert().success();
+
+    fs::write(
+        &policy_path,
+        r#"
+[kernel]
+forbid_caps_in_irq = ["PhysMap"]
+allow_caps_in_irq = []
+"#,
+    )
+    .expect("write policy");
+
+    let mut policy_cmd: Command = cargo_bin_cmd!("kernriftc");
+    policy_cmd
+        .current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    policy_cmd.assert().success();
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn policy_kernel_forbid_caps_in_irq_via_extern_is_deterministic() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("irq_caps_extern.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path =
+        std::env::temp_dir().join(format!("kernrift-policy-cap-extern-src-{}.json", ts));
+    let policy_path = std::env::temp_dir().join(format!("kernrift-policy-cap-extern-{}.toml", ts));
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+
+    let mut check_cmd: Command = cargo_bin_cmd!("kernriftc");
+    check_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--contracts-schema")
+        .arg("v2")
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg(fixture.as_os_str());
+    check_cmd.assert().success();
+
+    fs::write(
+        &policy_path,
+        r#"
+[kernel]
+forbid_caps_in_irq = ["PhysMap"]
+"#,
+    )
+    .expect("write policy");
+
+    let mut policy_cmd: Command = cargo_bin_cmd!("kernriftc");
+    policy_cmd
+        .current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    let assert = policy_cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let lines = stderr
+        .lines()
+        .filter(|line| line.starts_with("policy: "))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lines,
+        vec![
+            "policy: KERNEL_IRQ_CAP_FORBID: function 'helper' is irq-reachable and uses forbidden capability 'PhysMap' (direct=false, via_callee=[], via_extern=[map_io])",
+            "policy: KERNEL_IRQ_CAP_FORBID: function 'isr' is irq-reachable and uses forbidden capability 'PhysMap' (direct=false, via_callee=[helper], via_extern=[map_io])",
+            "policy: KERNEL_IRQ_CAP_FORBID: function 'map_io' is irq-reachable and uses forbidden capability 'PhysMap' (direct=true, via_callee=[], via_extern=[])",
+        ],
+        "expected deterministic extern capability propagation violations, got:\n{}",
+        stderr
+    );
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
 fn policy_kernel_capability_rule_requires_contracts_v2() {
     let root = repo_root();
     let fixture = root.join("tests").join("must_pass").join("basic.kr");
@@ -1557,6 +1729,7 @@ fn policy_kernel_capability_rule_requires_contracts_v2() {
         r#"
 [kernel]
 forbid_caps_in_irq = ["PhysMap"]
+allow_caps_in_irq = ["IoPort"]
 "#,
     )
     .expect("write policy");
@@ -1625,7 +1798,8 @@ forbid_edges = [["ConsoleLock", "SchedLock"]]
 [kernel]
 forbid_alloc_in_irq = true
 forbid_effects_in_critical = ["alloc"]
-forbid_caps_in_irq = ["PhysMap"]
+forbid_caps_in_irq = ["IoPort", "PhysMap"]
+allow_caps_in_irq = ["PhysMap"]
 "#,
     )
     .expect("write policy");
@@ -1649,7 +1823,6 @@ forbid_caps_in_irq = ["PhysMap"]
         vec![
             "policy: KERNEL_CRITICAL_REGION_ALLOC: function 'entry' uses alloc effect in critical region (direct=true, via_callee=[], via_extern=[])",
             "policy: KERNEL_IRQ_ALLOC: function 'entry' is irq-reachable and uses alloc effect (direct=true, via_callee=[], via_extern=[])",
-            "policy: KERNEL_IRQ_CAP_FORBID: function 'entry' is irq-reachable and uses forbidden capability 'PhysMap' (direct=true, via_callee=[], via_extern=[])",
             "policy: LIMIT_MAX_LOCK_DEPTH: max_lock_depth 2 exceeds limit 1",
             "policy: LOCK_FORBID_EDGE: forbidden lock edge 'ConsoleLock -> SchedLock' is present",
         ],
@@ -1695,6 +1868,60 @@ fn policy_bad_parse_exits_with_invalid_input_code() {
         .arg("--contracts")
         .arg(contracts_path.as_os_str());
     policy_cmd.assert().failure().code(2);
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn policy_allow_caps_in_irq_empty_entry_exits_with_invalid_input_code() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("callee_acquires_lock.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path =
+        std::env::temp_dir().join(format!("kernrift-policy-allow-cap-empty-{}.json", ts));
+    let policy_path =
+        std::env::temp_dir().join(format!("kernrift-policy-allow-cap-empty-{}.toml", ts));
+
+    let mut check_cmd: Command = cargo_bin_cmd!("kernriftc");
+    check_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg(fixture.as_os_str());
+    check_cmd.assert().success();
+
+    fs::write(
+        &policy_path,
+        r#"
+[kernel]
+allow_caps_in_irq = [""]
+"#,
+    )
+    .expect("write policy");
+
+    let mut policy_cmd: Command = cargo_bin_cmd!("kernriftc");
+    policy_cmd
+        .current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    let assert = policy_cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.contains("allow_caps_in_irq entries must be non-empty strings"),
+        "expected allow_caps_in_irq parse validation error, got:\n{}",
+        stderr
+    );
 
     fs::remove_file(&contracts_path).ok();
     fs::remove_file(&policy_path).ok();

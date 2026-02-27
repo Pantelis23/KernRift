@@ -1,0 +1,9 @@
+@module_caps(PhysMap);
+
+extern @ctx(thread, boot, irq) @eff(mmio) @caps(PhysMap) fn map_io();
+
+@ctx(irq)
+fn isr() { helper(); }
+
+@ctx(irq)
+fn helper() { map_io(); }

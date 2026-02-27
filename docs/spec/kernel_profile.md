@@ -24,6 +24,8 @@ Current `kernel` profile defaults (from `policies/kernel.toml`):
 - forbid `yield`/`alloc`/`block` effects inside `critical { ... }` regions
 - optional capability deny in IRQ context via policy:
   - `[kernel] forbid_caps_in_irq = ["CapA", ...]`
+  - `[kernel] allow_caps_in_irq = ["CapA", ...]`
+  - precedence is explicit: allowlist > forbidlist > default allow
 
 Planned kernel subset rules (next phases):
 
