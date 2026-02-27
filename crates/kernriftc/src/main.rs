@@ -123,6 +123,8 @@ struct ContractsFacts {
 struct ContractsFactSymbol {
     name: String,
     #[serde(default)]
+    attrs: ContractsFactAttrs,
+    #[serde(default)]
     ctx_reachable: Vec<String>,
     #[serde(default)]
     eff_transitive: Vec<String>,
@@ -132,6 +134,12 @@ struct ContractsFactSymbol {
     caps_transitive: Vec<String>,
     #[serde(default)]
     caps_provenance: Vec<ContractsCapabilityProvenance>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ContractsFactAttrs {
+    #[serde(default)]
+    critical: bool,
 }
 
 impl ContractsFactSymbol {
@@ -714,6 +722,10 @@ struct PolicyArgs {
     evidence: bool,
 }
 
+struct InspectArgs {
+    contracts_path: String,
+}
+
 impl PartialOrd for PolicyViolation {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
@@ -878,6 +890,14 @@ fn main() -> ExitCode {
         },
         "policy" => match parse_policy_args(&args[2..]) {
             Ok(parsed) => run_policy(&parsed.policy_path, &parsed.contracts_path, parsed.evidence),
+            Err(err) => {
+                eprintln!("{}", err);
+                print_usage();
+                ExitCode::from(EXIT_INVALID_INPUT)
+            }
+        },
+        "inspect" => match parse_inspect_args(&args[2..]) {
+            Ok(parsed) => run_inspect(&parsed.contracts_path),
             Err(err) => {
                 eprintln!("{}", err);
                 print_usage();
@@ -1101,6 +1121,40 @@ fn parse_policy_args(args: &[String]) -> Result<PolicyArgs, String> {
         contracts_path,
         evidence,
     })
+}
+
+fn parse_inspect_args(args: &[String]) -> Result<InspectArgs, String> {
+    let mut contracts_path = None::<String>;
+    let mut idx = 0usize;
+    while idx < args.len() {
+        match args[idx].as_str() {
+            "--contracts" => {
+                if contracts_path.is_some() {
+                    return Err("invalid inspect mode: duplicate --contracts".to_string());
+                }
+                idx += 1;
+                if idx >= args.len() {
+                    return Err(
+                        "invalid inspect mode: --contracts requires a file path".to_string()
+                    );
+                }
+                contracts_path = Some(args[idx].clone());
+            }
+            other => {
+                return Err(format!(
+                    "invalid inspect mode: unexpected argument '{}'",
+                    other
+                ));
+            }
+        }
+        idx += 1;
+    }
+
+    let Some(contracts_path) = contracts_path else {
+        return Err("invalid inspect mode: missing --contracts".to_string());
+    };
+
+    Ok(InspectArgs { contracts_path })
 }
 
 fn parse_verify_args(args: &[String]) -> Result<VerifyArgs, String> {
@@ -1627,6 +1681,26 @@ fn run_policy(policy_path: &str, contracts_path: &str, evidence: bool) -> ExitCo
         print_policy_violations(&violations, evidence);
         ExitCode::from(EXIT_POLICY_VIOLATION)
     }
+}
+
+fn run_inspect(contracts_path: &str) -> ExitCode {
+    let contracts_text = match fs::read_to_string(Path::new(contracts_path)) {
+        Ok(text) => text,
+        Err(err) => {
+            eprintln!("failed to read contracts '{}': {}", contracts_path, err);
+            return ExitCode::from(EXIT_INVALID_INPUT);
+        }
+    };
+    let contracts = match decode_contracts_bundle(&contracts_text, contracts_path) {
+        Ok(bundle) => bundle,
+        Err(err) => {
+            eprintln!("{}", err);
+            return ExitCode::from(EXIT_INVALID_INPUT);
+        }
+    };
+
+    println!("{}", format_contracts_inspect_summary(&contracts));
+    ExitCode::SUCCESS
 }
 
 fn run_selftest() -> ExitCode {
@@ -3745,6 +3819,102 @@ fn print_errors(errs: &[String]) {
     }
 }
 
+fn format_contracts_inspect_summary(contracts: &ContractsBundle) -> String {
+    let irq_reachable = collect_sorted_symbol_names_by(&contracts.facts.symbols, |symbol| {
+        symbol.has_ctx_reachable("irq")
+    });
+    let critical_functions =
+        collect_sorted_symbol_names_by(&contracts.facts.symbols, |symbol| symbol.attrs.critical);
+    let alloc_symbols = collect_sorted_symbol_names_by(&contracts.facts.symbols, |symbol| {
+        symbol.has_eff_transitive("alloc")
+    });
+    let block_symbols = collect_sorted_symbol_names_by(&contracts.facts.symbols, |symbol| {
+        symbol.has_eff_transitive("block")
+    });
+    let yield_symbols = collect_sorted_symbol_names_by(&contracts.facts.symbols, |symbol| {
+        symbol.has_eff_transitive("yield")
+    });
+    let cap_symbols = collect_sorted_symbol_names_by(&contracts.facts.symbols, |symbol| {
+        !symbol.caps_transitive.is_empty()
+    });
+
+    let mut critical_violations = contracts.report.critical.violations.clone();
+    critical_violations.sort();
+    critical_violations.dedup();
+
+    let mut lines = vec![
+        format!("schema: {}", contracts.schema_version),
+        format!("symbols: total={}", contracts.facts.symbols.len()),
+        "contexts:".to_string(),
+        format!(
+            "irq_reachable: {} {}",
+            irq_reachable.len(),
+            format_list(&irq_reachable)
+        ),
+        format!(
+            "critical_functions: {} {}",
+            critical_functions.len(),
+            format_list(&critical_functions)
+        ),
+        "effects:".to_string(),
+        format!(
+            "alloc: {} {}",
+            alloc_symbols.len(),
+            format_list(&alloc_symbols)
+        ),
+        format!(
+            "block: {} {}",
+            block_symbols.len(),
+            format_list(&block_symbols)
+        ),
+        format!(
+            "yield: {} {}",
+            yield_symbols.len(),
+            format_list(&yield_symbols)
+        ),
+        "capabilities:".to_string(),
+        format!(
+            "symbols_with_caps: {} {}",
+            cap_symbols.len(),
+            format_list(&cap_symbols)
+        ),
+        "critical_report:".to_string(),
+        format!("violations: {}", critical_violations.len()),
+    ];
+
+    for violation in critical_violations {
+        let (direct, via_callee, via_extern) =
+            canonicalize_provenance_fields(Some(&violation.provenance));
+        lines.push(format!(
+            "violation: function={} effect={} direct={} via_callee={} via_extern={}",
+            violation.function,
+            violation.effect,
+            direct,
+            format_list(&via_callee),
+            format_list(&via_extern)
+        ));
+    }
+
+    lines.join("\n")
+}
+
+fn collect_sorted_symbol_names_by<F>(symbols: &[ContractsFactSymbol], predicate: F) -> Vec<String>
+where
+    F: Fn(&ContractsFactSymbol) -> bool,
+{
+    symbols
+        .iter()
+        .filter(|symbol| predicate(symbol))
+        .map(|symbol| symbol.name.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn format_list(items: &[String]) -> String {
+    format!("[{}]", items.join(","))
+}
+
 fn print_usage() {
     eprintln!("usage:");
     eprintln!("  kernriftc --version");
@@ -3765,6 +3935,7 @@ fn print_usage() {
     );
     eprintln!("  kernriftc policy --policy <policy.toml> --contracts <contracts.json>");
     eprintln!("  kernriftc policy --evidence --policy <policy.toml> --contracts <contracts.json>");
+    eprintln!("  kernriftc inspect --contracts <contracts.json>");
     eprintln!("  kernriftc verify --contracts <contracts.json> --hash <contracts.sha256>");
     eprintln!(
         "  kernriftc verify --contracts <contracts.json> --hash <contracts.sha256> --sig <contracts.sig> --pubkey <pubkey.hex>"
