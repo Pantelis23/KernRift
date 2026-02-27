@@ -127,6 +127,33 @@ Not guaranteed today:
 - provenance/identity checks beyond explicit signature and hash inputs,
 - execution/runtime safety guarantees.
 
+## Verify Report ABI (v1)
+
+Schema file: `docs/schemas/kernrift_verify_report_v1.schema.json`
+
+`kernriftc verify --report <path>` emits a deterministic JSON report with:
+
+- `schema_version: "kernrift_verify_report_v1"`
+- `result: "pass" | "deny" | "invalid_input"`
+- `inputs`: contracts/hash required, sig/pubkey optional
+- `hash`: expected/computed SHA-256 and match flag
+- `contracts`: UTF-8/schema validity and observed contracts schema version
+- `signature`: whether signature checking was requested and whether it validated
+- `diagnostics`: stable sorted diagnostic strings
+
+Output write safety matches other guarded outputs:
+
+- refuses overwrite when destination exists,
+- stages writes through temp files and commits via rename.
+
+## Verify Exit Codes
+
+| Exit | Meaning |
+|---|---|
+| `0` | verify passed |
+| `1` | deny (`HASH_MISMATCH` / `SIG_MISMATCH`) |
+| `2` | invalid input/config (`UTF-8`, schema/decode, key/sig parsing, report write refusal) |
+
 ## Determinism Rules (KR0.x)
 
 - Canonical contracts output (`check --contracts-out`) is minified JSON with stable field/array ordering.
@@ -134,8 +161,10 @@ Not guaranteed today:
   - module caps, symbol lists, lock edges, and policy diagnostics are sorted/deduped.
 - Deterministic diagnostics:
   - checker and policy diagnostics are sorted by `(pass/code, message)`.
+  - verify report diagnostics are sorted and deduped before emit.
 - Path normalization:
-  - verify/report paths must be normalized for stable machine output (no absolute-path dependence).
+  - verify report `inputs.*` uses basenames when absolute input paths are provided.
+  - diagnostics in verify report are path-stripped to remove absolute-path instability.
 - Stable JSON object key order:
-  - report/contract JSON is emitted from canonicalized object trees.
+  - report/contract/verify-report JSON is emitted from canonicalized object trees.
 - No timestamps or host-specific nondeterministic values in governance artifacts.
