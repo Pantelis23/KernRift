@@ -677,7 +677,6 @@ fn run_verify(args: &VerifyArgs) -> ExitCode {
     report.result = status.as_str();
     report.diagnostics.sort();
     report.diagnostics.dedup();
-    print_errors(&report.diagnostics);
 
     if let Some(report_path) = args.report_path.as_ref() {
         let report_json = match emit_verify_report_json(&report) {
@@ -692,6 +691,8 @@ fn run_verify(args: &VerifyArgs) -> ExitCode {
             return ExitCode::from(EXIT_INVALID_INPUT);
         }
     }
+
+    print_errors(&report.diagnostics);
 
     ExitCode::from(status.as_exit_code())
 }
