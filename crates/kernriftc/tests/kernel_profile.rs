@@ -32,7 +32,12 @@ fn default_profile_behavior_is_unchanged() {
         cmd.assert().success();
     }
 
-    for fixture in ["irq_alloc_transitive.kr", "irq_block_transitive.kr"] {
+    for fixture in [
+        "irq_alloc_transitive.kr",
+        "irq_block_transitive.kr",
+        "irq_alloc_extern_stub.kr",
+        "irq_block_extern_stub.kr",
+    ] {
         let path = root.join("tests").join("kernel_profile").join(fixture);
         let mut cmd: Command = cargo_bin_cmd!("kernriftc");
         cmd.current_dir(&root).arg("check").arg(path.as_os_str());
@@ -309,6 +314,52 @@ fn kernel_profile_denies_block_in_irq_transitive() {
     assert!(
         stderr.contains("policy: KERNEL_IRQ_BLOCK:"),
         "expected KERNEL_IRQ_BLOCK violation, got:\n{}",
+        stderr
+    );
+}
+
+#[test]
+fn kernel_profile_denies_alloc_in_irq_via_extern_eff_stub() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("irq_alloc_extern_stub.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--profile")
+        .arg("kernel")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.contains("policy: KERNEL_IRQ_ALLOC:"),
+        "expected KERNEL_IRQ_ALLOC violation via extern effect stub, got:\n{}",
+        stderr
+    );
+}
+
+#[test]
+fn kernel_profile_denies_block_in_irq_via_extern_eff_stub() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("irq_block_extern_stub.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--profile")
+        .arg("kernel")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.contains("policy: KERNEL_IRQ_BLOCK:"),
+        "expected KERNEL_IRQ_BLOCK violation via extern effect stub, got:\n{}",
         stderr
     );
 }

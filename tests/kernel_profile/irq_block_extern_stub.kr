@@ -1,0 +1,4 @@
+extern @ctx(irq, thread, boot) @eff(block) fn schedule();
+
+@ctx(irq)
+fn isr() { schedule(); }
