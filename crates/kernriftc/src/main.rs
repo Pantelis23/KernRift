@@ -20,6 +20,7 @@ const CONTRACTS_SCHEMA_V1: &str =
     include_str!("../../../docs/schemas/kernrift_contracts_v1.schema.json");
 const VERIFY_REPORT_SCHEMA_V1: &str =
     include_str!("../../../docs/schemas/kernrift_verify_report_v1.schema.json");
+const KERNEL_POLICY_PROFILE: &str = include_str!("../../../policies/kernel.toml");
 const CONTRACTS_SCHEMA_VERSION: &str = "kernrift_contracts_v1";
 const VERIFY_REPORT_SCHEMA_VERSION: &str = "kernrift_verify_report_v1";
 const EXIT_POLICY_VIOLATION: u8 = 1;
@@ -109,11 +110,29 @@ struct PolicyViolation {
 #[derive(Debug)]
 struct CheckArgs {
     path: String,
+    profile: Option<CheckProfile>,
     contracts_out: Option<String>,
     policy_path: Option<String>,
     hash_out: Option<String>,
     sign_key_path: Option<String>,
     sig_out: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckProfile {
+    Kernel,
+}
+
+impl CheckProfile {
+    fn parse(raw: &str) -> Result<Self, String> {
+        match raw {
+            "kernel" => Ok(Self::Kernel),
+            other => Err(format!(
+                "invalid check mode: unknown profile '{}', expected 'kernel'",
+                other
+            )),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -266,6 +285,7 @@ fn main() -> ExitCode {
 }
 
 fn parse_check_args(args: &[String]) -> Result<CheckArgs, String> {
+    let mut profile = None::<CheckProfile>;
     let mut contracts_out = None::<String>;
     let mut policy_path = None::<String>;
     let mut hash_out = None::<String>;
@@ -276,6 +296,16 @@ fn parse_check_args(args: &[String]) -> Result<CheckArgs, String> {
     let mut idx = 0usize;
     while idx < args.len() {
         match args[idx].as_str() {
+            "--profile" => {
+                if profile.is_some() {
+                    return Err("invalid check mode: duplicate --profile".to_string());
+                }
+                let Some(value) = args.get(idx + 1) else {
+                    return Err("invalid check mode: --profile requires a value".to_string());
+                };
+                profile = Some(CheckProfile::parse(value)?);
+                idx += 2;
+            }
             "--contracts-out" => {
                 if contracts_out.is_some() {
                     return Err("invalid check mode: duplicate --contracts-out".to_string());
@@ -353,6 +383,7 @@ fn parse_check_args(args: &[String]) -> Result<CheckArgs, String> {
 
     Ok(CheckArgs {
         path: positionals.remove(0),
+        profile,
         contracts_out,
         policy_path,
         hash_out,
@@ -449,7 +480,8 @@ fn parse_verify_args(args: &[String]) -> Result<VerifyArgs, String> {
 }
 
 fn run_check(args: &CheckArgs) -> ExitCode {
-    if args.contracts_out.is_none()
+    if args.profile.is_none()
+        && args.contracts_out.is_none()
         && args.policy_path.is_none()
         && args.hash_out.is_none()
         && args.sign_key_path.is_none()
@@ -496,19 +528,35 @@ fn run_check(args: &CheckArgs) -> ExitCode {
         }
     };
 
-    if let Some(policy_path) = args.policy_path.as_deref() {
-        let policy = match load_policy_file(policy_path) {
+    let mut policy_violations = Vec::<PolicyViolation>::new();
+
+    if let Some(profile) = args.profile {
+        let profile_policy = match load_profile_policy(profile) {
             Ok(policy) => policy,
             Err(err) => {
                 eprintln!("{}", err);
                 return ExitCode::from(EXIT_INVALID_INPUT);
             }
         };
-        let violations = evaluate_policy(&policy, &contracts_bundle);
-        if !violations.is_empty() {
-            print_policy_violations(&violations);
-            return ExitCode::from(EXIT_POLICY_VIOLATION);
-        }
+        policy_violations.extend(evaluate_policy(&profile_policy, &contracts_bundle));
+    }
+
+    if let Some(policy_path) = args.policy_path.as_deref() {
+        let file_policy = match load_policy_file(policy_path) {
+            Ok(policy) => policy,
+            Err(err) => {
+                eprintln!("{}", err);
+                return ExitCode::from(EXIT_INVALID_INPUT);
+            }
+        };
+        policy_violations.extend(evaluate_policy(&file_policy, &contracts_bundle));
+    }
+
+    if !policy_violations.is_empty() {
+        policy_violations.sort();
+        policy_violations.dedup();
+        print_policy_violations(&policy_violations);
+        return ExitCode::from(EXIT_POLICY_VIOLATION);
     }
 
     let hash_hex = sha256_hex(contracts.as_bytes());
@@ -1425,6 +1473,14 @@ fn load_policy_file(policy_path: &str) -> Result<PolicyFile, String> {
     parse_policy_text(&policy_text, policy_path)
 }
 
+fn load_profile_policy(profile: CheckProfile) -> Result<PolicyFile, String> {
+    match profile {
+        CheckProfile::Kernel => {
+            parse_policy_text(KERNEL_POLICY_PROFILE, "<embedded-kernel-profile>")
+        }
+    }
+}
+
 fn parse_policy_text(text: &str, source_name: &str) -> Result<PolicyFile, String> {
     let mut policy: PolicyFile = toml::from_str(text)
         .map_err(|e| format!("failed to parse policy '{}': {}", source_name, e))?;
@@ -1642,6 +1698,7 @@ fn print_usage() {
     eprintln!("usage:");
     eprintln!("  kernriftc --version");
     eprintln!("  kernriftc check <file.kr>");
+    eprintln!("  kernriftc check --profile kernel <file.kr>");
     eprintln!("  kernriftc check --policy <policy.toml> <file.kr>");
     eprintln!("  kernriftc check --contracts-out <contracts.json> <file.kr>");
     eprintln!(

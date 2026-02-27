@@ -1,0 +1,10 @@
+fn inner() {
+  acquire(SchedLock);
+  release(SchedLock);
+}
+
+fn outer() {
+  acquire(ConsoleLock);
+  inner();
+  release(ConsoleLock);
+}
