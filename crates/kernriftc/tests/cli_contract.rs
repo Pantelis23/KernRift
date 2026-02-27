@@ -550,6 +550,53 @@ fn contracts_v2_facts_include_transitive_effects() {
 }
 
 #[test]
+fn contracts_v2_facts_include_ctx_reachable_transitive_irq() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("irq_ctx_chain.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let out_path =
+        std::env::temp_dir().join(format!("kernrift-contracts-v2-ctx-reach-{}.json", ts));
+    fs::remove_file(&out_path).ok();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--contracts-schema")
+        .arg("v2")
+        .arg("--contracts-out")
+        .arg(out_path.as_os_str())
+        .arg(fixture.as_os_str());
+    cmd.assert().success();
+
+    let json: Value = serde_json::from_str(&fs::read_to_string(&out_path).expect("contracts text"))
+        .expect("contracts json");
+    validate_contracts_schema_v2(&json);
+    let symbols = json["facts"]["symbols"]
+        .as_array()
+        .expect("facts symbols array");
+    let helper = symbols
+        .iter()
+        .find(|sym| sym["name"] == "helper")
+        .expect("helper symbol");
+    assert!(
+        helper["ctx_reachable"]
+            .as_array()
+            .expect("ctx_reachable array")
+            .iter()
+            .any(|ctx| ctx == "irq"),
+        "expected helper ctx_reachable to include irq"
+    );
+
+    fs::remove_file(&out_path).ok();
+}
+
+#[test]
 fn contracts_v2_irq_functions_include_transitive_callees() {
     let root = repo_root();
     let fixture = root
