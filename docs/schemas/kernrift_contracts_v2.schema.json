@@ -258,6 +258,7 @@
         "name",
         "is_extern",
         "ctx_ok",
+        "ctx_reachable",
         "eff_used",
         "eff_transitive",
         "caps_req",
@@ -271,6 +272,13 @@
           "type": "boolean"
         },
         "ctx_ok": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/context"
+          },
+          "uniqueItems": true
+        },
+        "ctx_reachable": {
           "type": "array",
           "items": {
             "$ref": "#/$defs/context"

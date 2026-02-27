@@ -47,6 +47,7 @@ Compile-time enforcement in KR0.x:
 - lock edge ordering deny-lists
 - bounded vs unbounded no-yield spans
 - transitive effect checks from call graph (`alloc`, `block`, `yield`) in kernel policy rules
+- context reachability checks from call graph via `facts.symbols[*].ctx_reachable`
 - critical region analysis:
   - max region nesting depth
   - deterministic per-function violation facts (direct and transitive-through-call)

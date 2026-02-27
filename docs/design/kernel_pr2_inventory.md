@@ -12,6 +12,8 @@ Parsed in `crates/hir/src/lib.rs`:
 - `nmi`
 
 `@ctx(...)` is lowered through HIR into KRIR `ctx_ok` and emitted in contracts `facts.symbols[*].ctx_ok`.
+contracts v2 additionally emits `facts.symbols[*].ctx_reachable`, computed by call-graph
+reachability closure from declared context roots.
 
 ### Effect facts (`@eff(...)`)
 

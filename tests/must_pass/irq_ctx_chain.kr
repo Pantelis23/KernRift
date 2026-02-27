@@ -1,0 +1,8 @@
+@ctx(irq)
+fn isr() { mid(); }
+
+@ctx(irq)
+fn mid() { helper(); }
+
+@ctx(irq)
+fn helper() { mmio_read(); }

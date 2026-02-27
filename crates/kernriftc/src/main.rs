@@ -123,10 +123,16 @@ struct ContractsFactSymbol {
     name: String,
     eff_used: Vec<String>,
     #[serde(default)]
+    ctx_reachable: Vec<String>,
+    #[serde(default)]
     eff_transitive: Vec<String>,
 }
 
 impl ContractsFactSymbol {
+    fn has_ctx_reachable(&self, ctx: &str) -> bool {
+        self.ctx_reachable.iter().any(|c| c == ctx)
+    }
+
     fn has_eff(&self, eff: &str) -> bool {
         self.eff_used.iter().any(|e| e == eff)
     }
@@ -143,6 +149,8 @@ impl ContractsFactSymbol {
 struct ContractsReportContexts {
     #[serde(default)]
     irq_functions: Vec<String>,
+    #[serde(default)]
+    critical_functions: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -1772,6 +1780,10 @@ fn evaluate_policy(policy: &PolicyFile, contracts: &ContractsBundle) -> Vec<Poli
         contracts.report.effects.alloc_sites_count,
         contracts.report.effects.block_sites_count,
     );
+    let _context_counters = (
+        contracts.report.contexts.irq_functions.len(),
+        contracts.report.contexts.critical_functions.len(),
+    );
 
     if let Some(limit) = policy.limits.max_lock_depth
         && contracts.report.max_lock_depth > limit
@@ -1865,7 +1877,13 @@ fn evaluate_policy(policy: &PolicyFile, contracts: &ContractsBundle) -> Vec<Poli
         }
     }
 
-    let mut irq_functions = contracts.report.contexts.irq_functions.clone();
+    let mut irq_functions = contracts
+        .facts
+        .symbols
+        .iter()
+        .filter(|symbol| symbol.has_ctx_reachable("irq"))
+        .map(|symbol| symbol.name.clone())
+        .collect::<Vec<_>>();
     irq_functions.sort();
     irq_functions.dedup();
 

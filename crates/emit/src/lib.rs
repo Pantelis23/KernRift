@@ -169,6 +169,11 @@ fn contracts_value(
     } else {
         None
     };
+    let ctx_reachable = if schema == ContractsSchema::V2 {
+        Some(ctx_reachable_by_function(&canonical))
+    } else {
+        None
+    };
     let report_value = match schema {
         ContractsSchema::V1 => {
             let report_text = emit_report_json(
@@ -181,6 +186,9 @@ fn contracts_value(
         ContractsSchema::V2 => report_v2_value(
             &canonical,
             report,
+            ctx_reachable
+                .as_ref()
+                .expect("v2 context reachability must exist"),
             transitive_effects
                 .as_ref()
                 .expect("v2 transitive effects must exist"),
@@ -200,7 +208,12 @@ fn contracts_value(
     root.insert("capabilities".to_string(), caps_value);
     root.insert(
         "facts".to_string(),
-        facts_manifest_value(&canonical, schema, transitive_effects.as_ref()),
+        facts_manifest_value(
+            &canonical,
+            schema,
+            transitive_effects.as_ref(),
+            ctx_reachable.as_ref(),
+        ),
     );
     root.insert("lockgraph".to_string(), lockgraph_value);
     root.insert("report".to_string(), report_value);
@@ -212,6 +225,7 @@ fn facts_manifest_value(
     module: &KrirModule,
     schema: ContractsSchema,
     transitive_effects: Option<&BTreeMap<String, BTreeSet<Eff>>>,
+    ctx_reachable: Option<&BTreeMap<String, BTreeSet<Ctx>>>,
 ) -> Value {
     let symbols = module
         .functions
@@ -244,6 +258,21 @@ fn facts_manifest_value(
                         .collect(),
                 ),
             );
+            if let Some(ctx_map) = ctx_reachable {
+                let mut ctxs = ctx_map
+                    .get(&f.name)
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|ctx| ctx.as_str().to_string())
+                    .collect::<Vec<_>>();
+                ctxs.sort();
+                ctxs.dedup();
+                symbol.insert(
+                    "ctx_reachable".to_string(),
+                    Value::Array(ctxs.into_iter().map(Value::String).collect()),
+                );
+            }
             symbol.insert(
                 "eff_used".to_string(),
                 Value::Array(
@@ -297,43 +326,22 @@ fn no_yield_json(spans: &BTreeMap<String, NoYieldSpan>) -> Map<String, Value> {
 fn report_v2_value(
     module: &KrirModule,
     report: &AnalysisReport,
+    ctx_reachable: &BTreeMap<String, BTreeSet<Ctx>>,
     transitive_effects: &BTreeMap<String, BTreeSet<Eff>>,
 ) -> Value {
-    let non_extern_names = module
+    let irq_functions = module
         .functions
         .iter()
         .filter(|f| !f.is_extern)
+        .filter(|f| {
+            ctx_reachable
+                .get(&f.name)
+                .map(|ctxs| ctxs.contains(&Ctx::Irq))
+                .unwrap_or(false)
+        })
         .map(|f| f.name.clone())
         .collect::<BTreeSet<_>>();
-    let outgoing = module
-        .call_edges
-        .iter()
-        .filter(|edge| non_extern_names.contains(&edge.caller))
-        .filter(|edge| non_extern_names.contains(&edge.callee))
-        .fold(BTreeMap::<&str, Vec<&str>>::new(), |mut map, edge| {
-            map.entry(edge.caller.as_str())
-                .or_default()
-                .push(edge.callee.as_str());
-            map
-        });
-
-    let mut irq_reachable = module
-        .functions
-        .iter()
-        .filter(|f| !f.is_extern && f.ctx_ok.contains(&Ctx::Irq))
-        .map(|f| f.name.clone())
-        .collect::<BTreeSet<_>>();
-    let mut work = irq_reachable.iter().cloned().collect::<VecDeque<_>>();
-    while let Some(caller) = work.pop_front() {
-        if let Some(callees) = outgoing.get(caller.as_str()) {
-            for callee in callees {
-                if irq_reachable.insert((*callee).to_string()) {
-                    work.push_back((*callee).to_string());
-                }
-            }
-        }
-    }
-    let irq_functions = irq_reachable.into_iter().collect::<Vec<_>>();
+    let irq_functions = irq_functions.into_iter().collect::<Vec<_>>();
     let critical_functions = module
         .functions
         .iter()
@@ -640,6 +648,59 @@ fn transitive_effects_by_function(module: &KrirModule) -> BTreeMap<String, BTree
             &mut memo,
         );
         by_name.insert(name.clone(), effs);
+    }
+    by_name
+}
+
+fn ctx_reachable_by_function(module: &KrirModule) -> BTreeMap<String, BTreeSet<Ctx>> {
+    let names = module
+        .functions
+        .iter()
+        .map(|f| f.name.clone())
+        .collect::<Vec<_>>();
+    let index_by_name = names
+        .iter()
+        .enumerate()
+        .map(|(idx, name)| (name.clone(), idx))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut outgoing_sets = vec![BTreeSet::<usize>::new(); names.len()];
+    for edge in &module.call_edges {
+        let (Some(&caller), Some(&callee)) = (
+            index_by_name.get(&edge.caller),
+            index_by_name.get(&edge.callee),
+        ) else {
+            continue;
+        };
+        outgoing_sets[caller].insert(callee);
+    }
+    let outgoing = outgoing_sets
+        .into_iter()
+        .map(|set| set.into_iter().collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+
+    let mut ctx_sets = vec![BTreeSet::<Ctx>::new(); names.len()];
+    for function in &module.functions {
+        if let Some(&idx) = index_by_name.get(&function.name) {
+            ctx_sets[idx].extend(function.ctx_ok.iter().copied());
+        }
+    }
+
+    let mut work = (0..names.len()).collect::<VecDeque<_>>();
+    while let Some(caller_idx) = work.pop_front() {
+        let caller_ctx = ctx_sets[caller_idx].clone();
+        for &callee_idx in &outgoing[caller_idx] {
+            let before = ctx_sets[callee_idx].len();
+            ctx_sets[callee_idx].extend(caller_ctx.iter().copied());
+            if ctx_sets[callee_idx].len() != before {
+                work.push_back(callee_idx);
+            }
+        }
+    }
+
+    let mut by_name = BTreeMap::<String, BTreeSet<Ctx>>::new();
+    for (idx, name) in names.iter().enumerate() {
+        by_name.insert(name.clone(), ctx_sets[idx].clone());
     }
     by_name
 }
