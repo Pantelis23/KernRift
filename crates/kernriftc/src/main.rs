@@ -117,16 +117,11 @@ struct ContractsFacts {
 #[derive(Debug, Deserialize)]
 struct ContractsFactSymbol {
     name: String,
-    ctx_ok: Vec<String>,
     eff_used: Vec<String>,
     attrs: ContractsFactAttrs,
 }
 
 impl ContractsFactSymbol {
-    fn has_ctx(&self, ctx: &str) -> bool {
-        self.ctx_ok.iter().any(|c| c == ctx)
-    }
-
     fn has_eff(&self, eff: &str) -> bool {
         self.eff_used.iter().any(|e| e == eff)
     }
@@ -1832,15 +1827,6 @@ fn evaluate_policy(policy: &PolicyFile, contracts: &ContractsBundle) -> Vec<Poli
     }
 
     let mut irq_functions = contracts.report.contexts.irq_functions.clone();
-    if irq_functions.is_empty() {
-        irq_functions = contracts
-            .facts
-            .symbols
-            .iter()
-            .filter(|symbol| symbol.has_ctx("irq"))
-            .map(|symbol| symbol.name.clone())
-            .collect::<Vec<_>>();
-    }
     irq_functions.sort();
     irq_functions.dedup();
 
