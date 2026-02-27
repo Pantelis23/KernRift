@@ -1,4 +1,4 @@
-extern @ctx(thread) @eff(yield) fn maybe_yield();
+extern @ctx(thread) @eff(yield) @caps() fn maybe_yield();
 
 @ctx(thread)
 fn f() {

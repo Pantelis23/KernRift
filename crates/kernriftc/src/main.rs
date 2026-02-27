@@ -1996,10 +1996,16 @@ fn selftest_fixture_suites() -> Result<(), String> {
 }
 
 fn selftest_exact_diagnostics() -> Result<(), String> {
-    let exact_cases: [(&str, &[&str]); 4] = [
+    let exact_cases: [(&str, &[&str]); 5] = [
         (
             "tests/must_fail/extern_missing_eff.kr",
             &["extern 'sleep' must declare @eff(...) facts explicitly"],
+        ),
+        (
+            "tests/must_fail/extern_missing_caps.kr",
+            &[
+                "EXTERN_CAPS_CONTRACT_REQUIRED: extern 'sleep' must declare @caps(...) facts explicitly",
+            ],
         ),
         (
             "tests/must_fail/release_mismatch_nested.kr",

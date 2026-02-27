@@ -1,4 +1,4 @@
-extern @ctx(irq, thread, boot) @eff(alloc) fn kmalloc();
+extern @ctx(irq, thread, boot) @eff(alloc) @caps() fn kmalloc();
 
 @ctx(irq)
 fn isr() { kmalloc(); }
