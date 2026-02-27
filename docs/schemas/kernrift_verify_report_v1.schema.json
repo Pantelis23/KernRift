@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kernrift.dev/schemas/kernrift_verify_report_v1.schema.json",
+  "title": "KernRift Verify Report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "result",
+    "inputs",
+    "hash",
+    "contracts",
+    "signature",
+    "diagnostics"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "kernrift_verify_report_v1"
+    },
+    "result": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "deny",
+        "invalid_input"
+      ]
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contracts",
+        "hash"
+      ],
+      "properties": {
+        "contracts": {
+          "type": "string"
+        },
+        "hash": {
+          "type": "string"
+        },
+        "sig": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pubkey": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "hash": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "expected_sha256",
+        "computed_sha256",
+        "matched"
+      ],
+      "properties": {
+        "expected_sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "computed_sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "matched": {
+          "type": "boolean"
+        }
+      }
+    },
+    "contracts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "utf8_valid",
+        "schema_valid",
+        "schema_version"
+      ],
+      "properties": {
+        "utf8_valid": {
+          "type": "boolean"
+        },
+        "schema_valid": {
+          "type": "boolean"
+        },
+        "schema_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "checked",
+        "valid"
+      ],
+      "properties": {
+        "checked": {
+          "type": "boolean"
+        },
+        "valid": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

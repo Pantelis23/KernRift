@@ -18,6 +18,8 @@ use sha2::{Digest, Sha256};
 
 const CONTRACTS_SCHEMA_V1: &str =
     include_str!("../../../docs/schemas/kernrift_contracts_v1.schema.json");
+const VERIFY_REPORT_SCHEMA_V1: &str =
+    include_str!("../../../docs/schemas/kernrift_verify_report_v1.schema.json");
 const CONTRACTS_SCHEMA_VERSION: &str = "kernrift_contracts_v1";
 const VERIFY_REPORT_SCHEMA_VERSION: &str = "kernrift_verify_report_v1";
 const EXIT_POLICY_VIOLATION: u8 = 1;
@@ -726,6 +728,12 @@ fn emit_verify_report_json(report: &VerifyReport) -> Result<String, String> {
     let value = serde_json::to_value(report)
         .map_err(|e| format!("failed to serialize verify report JSON: {}", e))?;
     let canonical = canonicalize_json_value(&value);
+    validate_json_against_schema_text(
+        &canonical,
+        VERIFY_REPORT_SCHEMA_V1,
+        "embedded verify report schema",
+        "verify report",
+    )?;
     serde_json::to_string_pretty(&canonical)
         .map_err(|e| format!("failed to format verify report JSON: {}", e))
 }
