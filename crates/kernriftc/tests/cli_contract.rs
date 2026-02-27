@@ -451,6 +451,29 @@ fn contracts_v2_effect_counters_track_alloc_and_block_sites() {
     fs::remove_file(&block_out).ok();
 }
 
+#[test]
+fn contracts_v2_irq_functions_include_transitive_callees() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("irq_alloc_transitive.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--profile")
+        .arg("kernel")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.contains("policy: KERNEL_IRQ_ALLOC: function 'helper'"),
+        "expected transitive KERNEL_IRQ_ALLOC for helper, got:\n{}",
+        stderr
+    );
+}
+
 fn validate_contracts_schema(instance: &Value) {
     let schema_json: Value = serde_json::from_str(CONTRACTS_SCHEMA_V1).expect("schema json");
     let compiled = JSONSchema::compile(&schema_json).expect("compile schema");
