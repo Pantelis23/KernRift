@@ -1014,3 +1014,209 @@ fn verify_rejects_schema_invalid_even_with_matching_hash() {
     fs::remove_file(&contracts_path).ok();
     fs::remove_file(&hash_path).ok();
 }
+
+#[test]
+fn policy_rejects_unbounded_no_yield_spans() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("thread_no_yield_unbounded.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let policy_path = std::env::temp_dir().join(format!("kernrift-policy-no-yield-{}.toml", ts));
+    fs::write(
+        &policy_path,
+        r#"
+[limits]
+forbid_unbounded_no_yield = true
+"#,
+    )
+    .expect("write policy");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let lines = stderr
+        .lines()
+        .filter(|line| line.starts_with("policy: "))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lines,
+        vec![
+            "policy: NO_YIELD_UNBOUNDED: no_yield_spans 'helper' is unbounded",
+            "policy: NO_YIELD_UNBOUNDED: no_yield_spans 'worker' is unbounded",
+        ]
+    );
+
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn verify_report_success_is_deterministic_and_path_stripped() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("locks_ok.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path = std::env::temp_dir().join(format!("kernrift-vrf-report-{}.json", ts));
+    let hash_path = std::env::temp_dir().join(format!("kernrift-vrf-report-{}.sha256", ts));
+    let report_path = std::env::temp_dir().join(format!("kernrift-vrf-report-{}.report.json", ts));
+
+    let mut check_cmd: Command = cargo_bin_cmd!("kernriftc");
+    check_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg("--hash-out")
+        .arg(hash_path.as_os_str())
+        .arg(fixture.as_os_str());
+    check_cmd.assert().success();
+
+    let mut verify_cmd: Command = cargo_bin_cmd!("kernriftc");
+    verify_cmd
+        .current_dir(&root)
+        .arg("verify")
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str())
+        .arg("--hash")
+        .arg(hash_path.as_os_str())
+        .arg("--report")
+        .arg(report_path.as_os_str());
+    verify_cmd.assert().success();
+
+    let report_text = fs::read_to_string(&report_path).expect("read verify report");
+    let report_json: Value = serde_json::from_str(&report_text).expect("verify report json");
+    let keys = report_json
+        .as_object()
+        .expect("verify report object")
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        keys,
+        BTreeSet::from([
+            "contracts".to_string(),
+            "diagnostics".to_string(),
+            "hash".to_string(),
+            "inputs".to_string(),
+            "result".to_string(),
+            "schema_version".to_string(),
+            "signature".to_string(),
+        ])
+    );
+    assert_eq!(
+        report_json["schema_version"],
+        Value::String("kernrift_verify_report_v1".to_string())
+    );
+    assert_eq!(report_json["result"], Value::String("pass".to_string()));
+    assert_eq!(report_json["hash"]["matched"], Value::Bool(true));
+    assert_eq!(
+        report_json["diagnostics"],
+        Value::Array(vec![]),
+        "verify report diagnostics should be empty on success"
+    );
+
+    let contracts_name = contracts_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .expect("contracts basename");
+    let hash_name = hash_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .expect("hash basename");
+    let report_contracts_path = report_json["inputs"]["contracts"]
+        .as_str()
+        .expect("report contracts path");
+    let report_hash_path = report_json["inputs"]["hash"]
+        .as_str()
+        .expect("report hash path");
+    assert_eq!(report_contracts_path, contracts_name);
+    assert_eq!(report_hash_path, hash_name);
+    assert!(
+        !report_contracts_path.contains('/'),
+        "verify report should strip absolute paths"
+    );
+    assert!(
+        !report_hash_path.contains('/'),
+        "verify report should strip absolute paths"
+    );
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&hash_path).ok();
+    fs::remove_file(&report_path).ok();
+}
+
+#[test]
+fn verify_report_records_hash_mismatch_deterministically() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("callee_acquires_lock.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path = std::env::temp_dir().join(format!("kernrift-vrf-deny-{}.json", ts));
+    let hash_path = std::env::temp_dir().join(format!("kernrift-vrf-deny-{}.sha256", ts));
+    let report_path = std::env::temp_dir().join(format!("kernrift-vrf-deny-{}.report.json", ts));
+
+    let mut check_cmd: Command = cargo_bin_cmd!("kernriftc");
+    check_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg("--hash-out")
+        .arg(hash_path.as_os_str())
+        .arg(fixture.as_os_str());
+    check_cmd.assert().success();
+
+    fs::write(
+        &hash_path,
+        "0000000000000000000000000000000000000000000000000000000000000000\n",
+    )
+    .expect("tamper hash");
+
+    let mut verify_cmd: Command = cargo_bin_cmd!("kernriftc");
+    verify_cmd
+        .current_dir(&root)
+        .arg("verify")
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str())
+        .arg("--hash")
+        .arg(hash_path.as_os_str())
+        .arg("--report")
+        .arg(report_path.as_os_str());
+    verify_cmd.assert().failure().code(1);
+
+    let report_text = fs::read_to_string(&report_path).expect("read verify report");
+    let report_json: Value = serde_json::from_str(&report_text).expect("verify report json");
+    assert_eq!(report_json["result"], Value::String("deny".to_string()));
+    let diagnostics = report_json["diagnostics"]
+        .as_array()
+        .expect("diagnostics array")
+        .iter()
+        .map(|v| v.as_str().expect("diag string").to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(diagnostics.len(), 1);
+    assert!(
+        diagnostics[0].starts_with("verify: HASH_MISMATCH:"),
+        "unexpected diagnostics: {:?}",
+        diagnostics
+    );
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&hash_path).ok();
+    fs::remove_file(&report_path).ok();
+}

@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
@@ -12,13 +12,14 @@ use emit::{
 };
 use jsonschema::JSONSchema;
 use kernriftc::{analyze, check_file, check_module, compile_file};
-use serde::Deserialize;
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 const CONTRACTS_SCHEMA_V1: &str =
     include_str!("../../../docs/schemas/kernrift_contracts_v1.schema.json");
 const CONTRACTS_SCHEMA_VERSION: &str = "kernrift_contracts_v1";
+const VERIFY_REPORT_SCHEMA_VERSION: &str = "kernrift_verify_report_v1";
 const EXIT_POLICY_VIOLATION: u8 = 1;
 const EXIT_INVALID_INPUT: u8 = 2;
 
@@ -36,6 +37,10 @@ struct PolicyFile {
 struct PolicyLimits {
     #[serde(default)]
     max_lock_depth: Option<u64>,
+    #[serde(default)]
+    max_no_yield_span: Option<u64>,
+    #[serde(default)]
+    forbid_unbounded_no_yield: bool,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -77,6 +82,20 @@ struct ContractsLockEdge {
 #[derive(Debug, Deserialize)]
 struct ContractsReport {
     max_lock_depth: u64,
+    no_yield_spans: BTreeMap<String, ContractsNoYieldSpan>,
+}
+
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[serde(untagged)]
+enum ContractsNoYieldSpan {
+    Bounded(u64),
+    Unbounded(String),
+}
+
+impl ContractsNoYieldSpan {
+    fn is_unbounded(&self) -> bool {
+        matches!(self, Self::Unbounded(v) if v == "unbounded")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -101,6 +120,71 @@ struct VerifyArgs {
     hash_path: String,
     sig_path: Option<String>,
     pubkey_path: Option<String>,
+    report_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VerifyStatus {
+    Pass,
+    Deny,
+    InvalidInput,
+}
+
+impl VerifyStatus {
+    fn as_exit_code(self) -> u8 {
+        match self {
+            Self::Pass => 0,
+            Self::Deny => EXIT_POLICY_VIOLATION,
+            Self::InvalidInput => EXIT_INVALID_INPUT,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Pass => "pass",
+            Self::Deny => "deny",
+            Self::InvalidInput => "invalid_input",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct VerifyReport {
+    schema_version: &'static str,
+    result: &'static str,
+    inputs: VerifyReportInputs,
+    hash: VerifyReportHash,
+    contracts: VerifyReportContracts,
+    signature: VerifyReportSignature,
+    diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct VerifyReportInputs {
+    contracts: String,
+    hash: String,
+    sig: Option<String>,
+    pubkey: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct VerifyReportHash {
+    expected_sha256: Option<String>,
+    computed_sha256: Option<String>,
+    matched: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct VerifyReportContracts {
+    utf8_valid: bool,
+    schema_valid: bool,
+    schema_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct VerifyReportSignature {
+    checked: bool,
+    valid: Option<bool>,
 }
 
 fn main() -> ExitCode {
@@ -280,6 +364,7 @@ fn parse_verify_args(args: &[String]) -> Result<VerifyArgs, String> {
     let mut hash_path = None::<String>;
     let mut sig_path = None::<String>;
     let mut pubkey_path = None::<String>;
+    let mut report_path = None::<String>;
 
     let mut idx = 0usize;
     while idx < args.len() {
@@ -324,6 +409,16 @@ fn parse_verify_args(args: &[String]) -> Result<VerifyArgs, String> {
                 pubkey_path = Some(value.clone());
                 idx += 2;
             }
+            "--report" => {
+                if report_path.is_some() {
+                    return Err("invalid verify mode: duplicate --report".to_string());
+                }
+                let Some(value) = args.get(idx + 1) else {
+                    return Err("invalid verify mode: --report requires a file path".to_string());
+                };
+                report_path = Some(value.clone());
+                idx += 2;
+            }
             other => {
                 return Err(format!("invalid verify mode: unknown token '{}'", other));
             }
@@ -347,6 +442,7 @@ fn parse_verify_args(args: &[String]) -> Result<VerifyArgs, String> {
         hash_path,
         sig_path,
         pubkey_path,
+        report_path,
     })
 }
 
@@ -451,92 +547,218 @@ fn run_check(args: &CheckArgs) -> ExitCode {
 }
 
 fn run_verify(args: &VerifyArgs) -> ExitCode {
-    let contracts_bytes = match fs::read(Path::new(&args.contracts_path)) {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            eprintln!(
-                "failed to read contracts '{}': {}",
-                args.contracts_path, err
-            );
-            return ExitCode::from(EXIT_INVALID_INPUT);
-        }
-    };
-    let computed_hash = sha256_hex(&contracts_bytes);
+    let mut status = VerifyStatus::Pass;
+    let mut report = new_verify_report(args);
 
-    let hash_text = match fs::read_to_string(Path::new(&args.hash_path)) {
-        Ok(text) => text,
-        Err(err) => {
-            eprintln!("failed to read hash '{}': {}", args.hash_path, err);
-            return ExitCode::from(EXIT_INVALID_INPUT);
-        }
-    };
-    let expected_hash = match normalize_hex(&hash_text, 64, &args.hash_path) {
-        Ok(hex) => hex,
-        Err(err) => {
-            eprintln!("{}", err);
-            return ExitCode::from(EXIT_INVALID_INPUT);
-        }
-    };
-    if computed_hash != expected_hash {
-        eprintln!(
-            "verify: HASH_MISMATCH: expected {}, got {}",
-            expected_hash, computed_hash
-        );
-        return ExitCode::from(EXIT_POLICY_VIOLATION);
-    }
-
-    let contracts_text = match std::str::from_utf8(&contracts_bytes) {
-        Ok(text) => text,
-        Err(err) => {
-            eprintln!(
-                "failed to decode contracts '{}' as UTF-8: {}",
-                args.contracts_path, err
-            );
-            return ExitCode::from(EXIT_INVALID_INPUT);
-        }
-    };
-    if let Err(err) = decode_contracts_bundle(contracts_text, &args.contracts_path) {
-        eprintln!("{}", err);
-        return ExitCode::from(EXIT_INVALID_INPUT);
-    }
-
-    if let (Some(sig_path), Some(pubkey_path)) = (args.sig_path.as_ref(), args.pubkey_path.as_ref())
-    {
-        let sig_text = match fs::read_to_string(Path::new(sig_path)) {
-            Ok(text) => text,
-            Err(err) => {
-                eprintln!("failed to read signature '{}': {}", sig_path, err);
-                return ExitCode::from(EXIT_INVALID_INPUT);
-            }
-        };
-        let sig_bytes = match BASE64_STANDARD.decode(sig_text.trim()) {
+    'verify: {
+        let contracts_bytes = match fs::read(Path::new(&args.contracts_path)) {
             Ok(bytes) => bytes,
             Err(err) => {
-                eprintln!("invalid base64 signature '{}': {}", sig_path, err);
-                return ExitCode::from(EXIT_INVALID_INPUT);
+                report.diagnostics.push(format!(
+                    "failed to read contracts '{}': {}",
+                    args.contracts_path, err
+                ));
+                status = VerifyStatus::InvalidInput;
+                break 'verify;
             }
         };
-        let sig = match Signature::from_slice(&sig_bytes) {
-            Ok(sig) => sig,
+        let computed_hash = sha256_hex(&contracts_bytes);
+        report.hash.computed_sha256 = Some(computed_hash.clone());
+
+        let hash_text = match fs::read_to_string(Path::new(&args.hash_path)) {
+            Ok(text) => text,
             Err(err) => {
-                eprintln!("invalid signature bytes '{}': {}", sig_path, err);
-                return ExitCode::from(EXIT_INVALID_INPUT);
+                report
+                    .diagnostics
+                    .push(format!("failed to read hash '{}': {}", args.hash_path, err));
+                status = VerifyStatus::InvalidInput;
+                break 'verify;
             }
         };
-        let verifying_key = match load_verifying_key_hex(pubkey_path) {
-            Ok(key) => key,
+        let expected_hash = match normalize_hex(&hash_text, 64, &args.hash_path) {
+            Ok(hex) => hex,
+            Err(err) => {
+                report.diagnostics.push(err);
+                status = VerifyStatus::InvalidInput;
+                break 'verify;
+            }
+        };
+        report.hash.expected_sha256 = Some(expected_hash.clone());
+        if computed_hash != expected_hash {
+            report.diagnostics.push(format!(
+                "verify: HASH_MISMATCH: expected {}, got {}",
+                expected_hash, computed_hash
+            ));
+            status = VerifyStatus::Deny;
+            break 'verify;
+        }
+        report.hash.matched = true;
+
+        let contracts_text = match std::str::from_utf8(&contracts_bytes) {
+            Ok(text) => text,
+            Err(err) => {
+                report.diagnostics.push(format!(
+                    "failed to decode contracts '{}' as UTF-8: {}",
+                    args.contracts_path, err
+                ));
+                status = VerifyStatus::InvalidInput;
+                break 'verify;
+            }
+        };
+        report.contracts.utf8_valid = true;
+
+        let contracts_bundle = match decode_contracts_bundle(contracts_text, &args.contracts_path) {
+            Ok(bundle) => bundle,
+            Err(err) => {
+                report.diagnostics.push(err);
+                status = VerifyStatus::InvalidInput;
+                break 'verify;
+            }
+        };
+        report.contracts.schema_valid = true;
+        report.contracts.schema_version = Some(contracts_bundle.schema_version.clone());
+
+        if let (Some(sig_path), Some(pubkey_path)) =
+            (args.sig_path.as_ref(), args.pubkey_path.as_ref())
+        {
+            report.signature.checked = true;
+            let sig_text = match fs::read_to_string(Path::new(sig_path)) {
+                Ok(text) => text,
+                Err(err) => {
+                    report
+                        .diagnostics
+                        .push(format!("failed to read signature '{}': {}", sig_path, err));
+                    status = VerifyStatus::InvalidInput;
+                    break 'verify;
+                }
+            };
+            let sig_bytes = match BASE64_STANDARD.decode(sig_text.trim()) {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    report
+                        .diagnostics
+                        .push(format!("invalid base64 signature '{}': {}", sig_path, err));
+                    status = VerifyStatus::InvalidInput;
+                    break 'verify;
+                }
+            };
+            let sig = match Signature::from_slice(&sig_bytes) {
+                Ok(sig) => sig,
+                Err(err) => {
+                    report
+                        .diagnostics
+                        .push(format!("invalid signature bytes '{}': {}", sig_path, err));
+                    status = VerifyStatus::InvalidInput;
+                    break 'verify;
+                }
+            };
+            let verifying_key = match load_verifying_key_hex(pubkey_path) {
+                Ok(key) => key,
+                Err(err) => {
+                    report.diagnostics.push(err);
+                    status = VerifyStatus::InvalidInput;
+                    break 'verify;
+                }
+            };
+            if let Err(err) = verifying_key.verify(&contracts_bytes, &sig) {
+                report
+                    .diagnostics
+                    .push(format!("verify: SIG_MISMATCH: {}", err));
+                report.signature.valid = Some(false);
+                status = VerifyStatus::Deny;
+                break 'verify;
+            }
+            report.signature.valid = Some(true);
+        }
+    }
+
+    report.result = status.as_str();
+    report.diagnostics.sort();
+    report.diagnostics.dedup();
+    print_errors(&report.diagnostics);
+
+    if let Some(report_path) = args.report_path.as_ref() {
+        let report_json = match emit_verify_report_json(&report) {
+            Ok(text) => text,
             Err(err) => {
                 eprintln!("{}", err);
                 return ExitCode::from(EXIT_INVALID_INPUT);
             }
         };
-        if let Err(err) = verifying_key.verify(&contracts_bytes, &sig) {
-            eprintln!("verify: SIG_MISMATCH: {}", err);
-            return ExitCode::from(EXIT_POLICY_VIOLATION);
+        if let Err(err) = write_output_files(&[(report_path.clone(), report_json)]) {
+            eprintln!("{}", err);
+            return ExitCode::from(EXIT_INVALID_INPUT);
         }
     }
 
-    ExitCode::SUCCESS
+    ExitCode::from(status.as_exit_code())
+}
+
+fn new_verify_report(args: &VerifyArgs) -> VerifyReport {
+    VerifyReport {
+        schema_version: VERIFY_REPORT_SCHEMA_VERSION,
+        result: VerifyStatus::InvalidInput.as_str(),
+        inputs: VerifyReportInputs {
+            contracts: stable_display_path(&args.contracts_path),
+            hash: stable_display_path(&args.hash_path),
+            sig: args.sig_path.as_deref().map(stable_display_path),
+            pubkey: args.pubkey_path.as_deref().map(stable_display_path),
+        },
+        hash: VerifyReportHash {
+            expected_sha256: None,
+            computed_sha256: None,
+            matched: false,
+        },
+        contracts: VerifyReportContracts {
+            utf8_valid: false,
+            schema_valid: false,
+            schema_version: None,
+        },
+        signature: VerifyReportSignature {
+            checked: false,
+            valid: None,
+        },
+        diagnostics: Vec::new(),
+    }
+}
+
+fn emit_verify_report_json(report: &VerifyReport) -> Result<String, String> {
+    let value = serde_json::to_value(report)
+        .map_err(|e| format!("failed to serialize verify report JSON: {}", e))?;
+    let canonical = canonicalize_json_value(&value);
+    serde_json::to_string_pretty(&canonical)
+        .map_err(|e| format!("failed to format verify report JSON: {}", e))
+}
+
+fn canonicalize_json_value(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let sorted = map
+                .iter()
+                .map(|(k, v)| (k.clone(), canonicalize_json_value(v)))
+                .collect::<BTreeMap<_, _>>();
+            let mut out = Map::new();
+            for (k, v) in sorted {
+                out.insert(k, v);
+            }
+            Value::Object(out)
+        }
+        Value::Array(items) => Value::Array(items.iter().map(canonicalize_json_value).collect()),
+        _ => value.clone(),
+    }
+}
+
+fn stable_display_path(path: &str) -> String {
+    let normalized = path.replace('\\', "/");
+    let p = Path::new(path);
+    if p.is_absolute() {
+        p.file_name()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| normalized)
+    } else {
+        normalized
+    }
 }
 
 fn run_policy(policy_path: &str, contracts_path: &str) -> ExitCode {
@@ -963,6 +1185,28 @@ forbid_edges = [["ConsoleLock", "SchedLock"]]
         ));
     }
 
+    let no_yield_policy = parse_policy_text(
+        r#"
+[limits]
+forbid_unbounded_no_yield = true
+"#,
+        "selftest-no-yield-policy",
+    )?;
+    let no_yield_errs = evaluate_policy(&no_yield_policy, &contracts)
+        .iter()
+        .map(format_policy_violation)
+        .collect::<Vec<_>>();
+    let expected_no_yield = vec![
+        "policy: NO_YIELD_UNBOUNDED: no_yield_spans 'inner' is unbounded".to_string(),
+        "policy: NO_YIELD_UNBOUNDED: no_yield_spans 'outer' is unbounded".to_string(),
+    ];
+    if no_yield_errs != expected_no_yield {
+        return Err(format!(
+            "selftest policy no_yield mismatch: got {:?}, expected {:?}",
+            no_yield_errs, expected_no_yield
+        ));
+    }
+
     Ok(())
 }
 
@@ -1212,6 +1456,43 @@ fn evaluate_policy(policy: &PolicyFile, contracts: &ContractsBundle) -> Vec<Poli
         });
     }
 
+    if let Some(limit) = policy.limits.max_no_yield_span {
+        for (symbol, span) in &contracts.report.no_yield_spans {
+            match span {
+                ContractsNoYieldSpan::Bounded(v) if *v > limit => {
+                    violations.push(PolicyViolation {
+                        code: "NO_YIELD_SPAN_LIMIT",
+                        msg: format!(
+                            "no_yield_spans '{}' has span {} above limit {}",
+                            symbol, v, limit
+                        ),
+                    });
+                }
+                ContractsNoYieldSpan::Unbounded(v) if v == "unbounded" => {
+                    violations.push(PolicyViolation {
+                        code: "NO_YIELD_UNBOUNDED",
+                        msg: format!(
+                            "no_yield_spans '{}' is unbounded and violates max_no_yield_span {}",
+                            symbol, limit
+                        ),
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if policy.limits.forbid_unbounded_no_yield {
+        for (symbol, span) in &contracts.report.no_yield_spans {
+            if span.is_unbounded() {
+                violations.push(PolicyViolation {
+                    code: "NO_YIELD_UNBOUNDED",
+                    msg: format!("no_yield_spans '{}' is unbounded", symbol),
+                });
+            }
+        }
+    }
+
     let observed_edges = contracts
         .lockgraph
         .edges
@@ -1256,6 +1537,7 @@ fn evaluate_policy(policy: &PolicyFile, contracts: &ContractsBundle) -> Vec<Poli
     }
 
     violations.sort();
+    violations.dedup();
     violations
 }
 
@@ -1330,6 +1612,9 @@ fn print_usage() {
     eprintln!("  kernriftc verify --contracts <contracts.json> --hash <contracts.sha256>");
     eprintln!(
         "  kernriftc verify --contracts <contracts.json> --hash <contracts.sha256> --sig <contracts.sig> --pubkey <pubkey.hex>"
+    );
+    eprintln!(
+        "  kernriftc verify --contracts <contracts.json> --hash <contracts.sha256> --report <verify-report.json>"
     );
     eprintln!("  kernriftc --selftest");
     eprintln!("  kernriftc --emit krir <file.kr>");
