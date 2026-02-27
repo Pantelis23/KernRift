@@ -278,6 +278,20 @@ fn report_v2_value(module: &KrirModule, report: &AnalysisReport) -> Value {
         .flat_map(|f| f.ops.iter())
         .filter(|op| matches!(op, KrirOp::YieldPoint))
         .count() as u64;
+    let alloc_sites_count = module
+        .functions
+        .iter()
+        .filter(|f| !f.is_extern)
+        .flat_map(|f| f.ops.iter())
+        .filter(|op| matches!(op, KrirOp::AllocPoint))
+        .count() as u64;
+    let block_sites_count = module
+        .functions
+        .iter()
+        .filter(|f| !f.is_extern)
+        .flat_map(|f| f.ops.iter())
+        .filter(|op| matches!(op, KrirOp::BlockPoint))
+        .count() as u64;
 
     let mut contexts = Map::new();
     contexts.insert(
@@ -294,8 +308,14 @@ fn report_v2_value(module: &KrirModule, report: &AnalysisReport) -> Value {
         "yield_sites_count".to_string(),
         Value::Number(yield_sites_count.into()),
     );
-    effects.insert("alloc_sites_count".to_string(), Value::Number(0_u64.into()));
-    effects.insert("block_sites_count".to_string(), Value::Number(0_u64.into()));
+    effects.insert(
+        "alloc_sites_count".to_string(),
+        Value::Number(alloc_sites_count.into()),
+    );
+    effects.insert(
+        "block_sites_count".to_string(),
+        Value::Number(block_sites_count.into()),
+    );
 
     let mut report_obj = Map::new();
     report_obj.insert(

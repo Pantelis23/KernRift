@@ -302,19 +302,7 @@ fn contracts_v2_contains_contexts_and_effects_fields() {
         .arg("--contracts-out")
         .arg(out_path.as_os_str())
         .arg(fixture.as_os_str());
-    let assert = cmd.assert().success();
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
-    let lines = stderr
-        .lines()
-        .filter(|line| line.starts_with("analysis: KERNEL_FEATURE_UNIMPLEMENTED:"))
-        .collect::<Vec<_>>();
-    assert_eq!(
-        lines,
-        vec![
-            "analysis: KERNEL_FEATURE_UNIMPLEMENTED: alloc_sites_count",
-            "analysis: KERNEL_FEATURE_UNIMPLEMENTED: block_sites_count",
-        ]
-    );
+    cmd.assert().success();
 
     let text = fs::read_to_string(&out_path).expect("read contracts output");
     let json: Value = serde_json::from_str(&text).expect("contracts json");
@@ -348,16 +336,79 @@ fn contracts_v2_contains_contexts_and_effects_fields() {
             .expect("yield count")
             >= 1
     );
-    assert_eq!(
-        json["report"]["effects"]["alloc_sites_count"],
-        Value::Number(0_u64.into())
-    );
-    assert_eq!(
-        json["report"]["effects"]["block_sites_count"],
-        Value::Number(0_u64.into())
-    );
+    assert!(json["report"]["effects"]["alloc_sites_count"].is_u64());
+    assert!(json["report"]["effects"]["block_sites_count"].is_u64());
 
     fs::remove_file(&out_path).ok();
+}
+
+#[test]
+fn contracts_v2_effect_counters_track_alloc_and_block_sites() {
+    let root = repo_root();
+    let alloc_fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("irq_alloc_site.kr");
+    let block_fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("irq_block_site.kr");
+
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let alloc_out = std::env::temp_dir().join(format!("kernrift-contracts-v2-alloc-{}.json", ts));
+    let block_out = std::env::temp_dir().join(format!("kernrift-contracts-v2-block-{}.json", ts));
+    fs::remove_file(&alloc_out).ok();
+    fs::remove_file(&block_out).ok();
+
+    let mut alloc_cmd: Command = cargo_bin_cmd!("kernriftc");
+    alloc_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--contracts-schema")
+        .arg("v2")
+        .arg("--contracts-out")
+        .arg(alloc_out.as_os_str())
+        .arg(alloc_fixture.as_os_str());
+    alloc_cmd.assert().success();
+
+    let mut block_cmd: Command = cargo_bin_cmd!("kernriftc");
+    block_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--contracts-schema")
+        .arg("v2")
+        .arg("--contracts-out")
+        .arg(block_out.as_os_str())
+        .arg(block_fixture.as_os_str());
+    block_cmd.assert().success();
+
+    let alloc_json: Value =
+        serde_json::from_str(&fs::read_to_string(&alloc_out).expect("alloc contracts"))
+            .expect("alloc json");
+    let block_json: Value =
+        serde_json::from_str(&fs::read_to_string(&block_out).expect("block contracts"))
+            .expect("block json");
+    validate_contracts_schema_v2(&alloc_json);
+    validate_contracts_schema_v2(&block_json);
+
+    assert!(
+        alloc_json["report"]["effects"]["alloc_sites_count"]
+            .as_u64()
+            .expect("alloc count")
+            >= 1
+    );
+    assert!(
+        block_json["report"]["effects"]["block_sites_count"]
+            .as_u64()
+            .expect("block count")
+            >= 1
+    );
+
+    fs::remove_file(&alloc_out).ok();
+    fs::remove_file(&block_out).ok();
 }
 
 fn validate_contracts_schema(instance: &Value) {

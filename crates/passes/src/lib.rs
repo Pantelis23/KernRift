@@ -309,6 +309,7 @@ fn build_interproc_summaries(
                     }
                     summary.has_yield = true;
                 }
+                KrirOp::AllocPoint | KrirOp::BlockPoint => {}
                 KrirOp::Call { callee } => {
                     let Some(callee_fn) = fn_map.get(callee) else {
                         errs.push(CheckError {

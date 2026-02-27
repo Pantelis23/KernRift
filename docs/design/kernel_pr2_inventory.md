@@ -38,17 +38,16 @@ Also lowered into KRIR `eff_used` and emitted in contracts `facts.symbols[*].eff
 
 Current observability:
 
-- We can observe `alloc`/`block` at function-fact level via `eff_used`.
-- We do **not** currently have operation-level alloc/block site ops in KRIR.
+- We observe `alloc`/`block` at function-fact level via `eff_used`.
+- We now also have operation-level builtins in KRIR:
+  - `allocpoint()` -> `KrirOp::AllocPoint`
+  - `blockpoint()` -> `KrirOp::BlockPoint`
 
-PR2 mapping decision:
+Current mapping:
 
-- contracts v2 `report.effects.alloc_sites_count` and `block_sites_count` are set to `0`.
-- deterministic diagnostics are emitted in v2 mode:
-  - `analysis: KERNEL_FEATURE_UNIMPLEMENTED: alloc_sites_count`
-  - `analysis: KERNEL_FEATURE_UNIMPLEMENTED: block_sites_count`
-
-This keeps outputs truthful and deterministic until op-level alloc/block sites are modeled.
+- contracts v2 `report.effects.alloc_sites_count` is counted from `KrirOp::AllocPoint`.
+- contracts v2 `report.effects.block_sites_count` is counted from `KrirOp::BlockPoint`.
+- contracts v2 `report.effects.yield_sites_count` continues to count `KrirOp::YieldPoint`.
 
 ## Critical Context Marker
 

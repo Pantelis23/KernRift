@@ -71,6 +71,8 @@ pub struct FunctionAttrs {
 pub enum KrirOp {
     Call { callee: String },
     YieldPoint,
+    AllocPoint,
+    BlockPoint,
     Acquire { lock_class: String },
     Release { lock_class: String },
     MmioRead,

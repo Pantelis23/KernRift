@@ -168,6 +168,14 @@ fn lower_function(item: &FnAst) -> Result<Function, Vec<String>> {
                 ops.push(KrirOp::YieldPoint);
                 eff_used.insert(Eff::Yield);
             }
+            Stmt::AllocPoint => {
+                ops.push(KrirOp::AllocPoint);
+                eff_used.insert(Eff::Alloc);
+            }
+            Stmt::BlockPoint => {
+                ops.push(KrirOp::BlockPoint);
+                eff_used.insert(Eff::Block);
+            }
             Stmt::Acquire(lock_class) => ops.push(KrirOp::Acquire {
                 lock_class: lock_class.clone(),
             }),

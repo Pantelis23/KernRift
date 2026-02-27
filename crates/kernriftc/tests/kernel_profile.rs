@@ -20,6 +20,8 @@ fn default_profile_behavior_is_unchanged() {
         "deny_lock_depth_and_order.kr",
         "critical_yield.kr",
         "irq_alloc_effect.kr",
+        "irq_alloc_site.kr",
+        "irq_block_site.kr",
     ] {
         let path = root.join("tests").join("kernel_profile").join(fixture);
         let mut cmd: Command = cargo_bin_cmd!("kernriftc");
@@ -152,7 +154,7 @@ fn kernel_profile_denies_alloc_in_irq() {
     let fixture = root
         .join("tests")
         .join("kernel_profile")
-        .join("irq_alloc_effect.kr");
+        .join("irq_alloc_site.kr");
 
     let mut cmd: Command = cargo_bin_cmd!("kernriftc");
     cmd.current_dir(&root)
@@ -165,6 +167,29 @@ fn kernel_profile_denies_alloc_in_irq() {
     assert!(
         stderr.contains("policy: KERNEL_IRQ_ALLOC:"),
         "expected KERNEL_IRQ_ALLOC violation, got:\n{}",
+        stderr
+    );
+}
+
+#[test]
+fn kernel_profile_denies_block_in_irq() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("irq_block_site.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--profile")
+        .arg("kernel")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.contains("policy: KERNEL_IRQ_BLOCK:"),
+        "expected KERNEL_IRQ_BLOCK violation, got:\n{}",
         stderr
     );
 }

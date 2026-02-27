@@ -1,0 +1,4 @@
+@ctx(irq)
+fn isr_block() {
+  blockpoint();
+}
