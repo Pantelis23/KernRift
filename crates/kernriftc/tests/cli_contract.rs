@@ -28,6 +28,29 @@ fn repo_root() -> PathBuf {
         .expect("repo root")
 }
 
+fn write_v2_contracts_for_fixture(root: &Path, fixture: &Path, label: &str) -> PathBuf {
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path =
+        std::env::temp_dir().join(format!("kernrift-inspect-{}-{}.json", label, ts));
+    fs::remove_file(&contracts_path).ok();
+
+    let mut check_cmd: Command = cargo_bin_cmd!("kernriftc");
+    check_cmd
+        .current_dir(root)
+        .arg("check")
+        .arg("--contracts-schema")
+        .arg("v2")
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg(fixture.as_os_str());
+    check_cmd.assert().success();
+
+    contracts_path
+}
+
 #[test]
 fn report_unknown_metric_exits_nonzero() {
     let root = repo_root();
@@ -43,6 +66,99 @@ fn report_unknown_metric_exits_nonzero() {
     cmd.assert()
         .failure()
         .stderr(contains("unsupported report metric"));
+}
+
+#[test]
+fn inspect_rejects_malformed_contracts_deterministically() {
+    let root = repo_root();
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let bad_path = std::env::temp_dir().join(format!("kernrift-inspect-malformed-{}.json", ts));
+    fs::write(&bad_path, "{}").expect("write malformed contracts");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("inspect")
+        .arg("--contracts")
+        .arg(bad_path.as_os_str());
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec![format!(
+            "failed to decode contracts bundle '{}': missing string field 'schema_version'",
+            bad_path.display()
+        )]
+    );
+
+    fs::remove_file(&bad_path).ok();
+}
+
+#[test]
+fn inspect_contracts_v2_summary_is_stable_and_exact() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("policy_families_order.kr");
+    let contracts_path = write_v2_contracts_for_fixture(&root, &fixture, "summary");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("inspect")
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        vec![
+            "schema: kernrift_contracts_v2",
+            "symbols: total=1",
+            "contexts:",
+            "irq_reachable: 1 [entry]",
+            "critical_functions: 0 []",
+            "effects:",
+            "alloc: 1 [entry]",
+            "block: 0 []",
+            "yield: 0 []",
+            "capabilities:",
+            "symbols_with_caps: 1 [entry]",
+            "critical_report:",
+            "violations: 1",
+            "violation: function=entry effect=alloc direct=true via_callee=[] via_extern=[]",
+        ]
+    );
+
+    fs::remove_file(&contracts_path).ok();
+}
+
+#[test]
+fn inspect_contracts_output_is_repeatable() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("policy_families_order.kr");
+    let contracts_path = write_v2_contracts_for_fixture(&root, &fixture, "repeatable");
+
+    let run_inspect = || {
+        let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+        cmd.current_dir(&root)
+            .arg("inspect")
+            .arg("--contracts")
+            .arg(contracts_path.as_os_str());
+        let assert = cmd.assert().success();
+        String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8")
+    };
+
+    let first = run_inspect();
+    let second = run_inspect();
+    assert_eq!(first, second, "inspect output must be byte-stable");
+
+    fs::remove_file(&contracts_path).ok();
 }
 
 #[test]
