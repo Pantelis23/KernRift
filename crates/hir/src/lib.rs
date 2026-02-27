@@ -22,7 +22,6 @@ pub fn lower_to_krir(ast: &ModuleAst) -> Result<KrirModule, Vec<String>> {
     }
 
     let mut call_edges = Vec::new();
-    let fn_names: BTreeSet<_> = functions.iter().map(|f| f.name.clone()).collect();
 
     for function in &functions {
         if function.is_extern {
@@ -30,9 +29,9 @@ pub fn lower_to_krir(ast: &ModuleAst) -> Result<KrirModule, Vec<String>> {
         }
         for op in &function.ops {
             if let KrirOp::Call { callee } = op {
-                if !fn_names.contains(callee) {
+                if !names.contains(callee) {
                     errors.push(format!(
-                        "undefined symbol '{}': add extern declaration with facts (@ctx/@eff)",
+                        "undefined symbol '{}': add extern declaration with facts (@ctx/@eff/@caps)",
                         callee
                     ));
                     continue;
@@ -142,6 +141,12 @@ fn lower_function(item: &FnAst) -> Result<Function, Vec<String>> {
         if !saw_eff {
             errors.push(format!(
                 "extern '{}' must declare @eff(...) facts explicitly",
+                item.name
+            ));
+        }
+        if !saw_caps {
+            errors.push(format!(
+                "EXTERN_CAPS_CONTRACT_REQUIRED: extern '{}' must declare @caps(...) facts explicitly",
                 item.name
             ));
         }

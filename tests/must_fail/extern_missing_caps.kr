@@ -1,0 +1,3 @@
+extern @ctx(thread) @eff(block) fn sleep();
+
+fn worker() { sleep(); }

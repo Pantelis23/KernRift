@@ -525,6 +525,24 @@ fn extern_missing_eff_reports_hir_error() {
 }
 
 #[test]
+fn extern_missing_caps_reports_hir_error() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("extern_missing_caps.kr");
+    let errs = check_file(&fixture).expect_err("extern_missing_caps should fail");
+    assert_eq!(
+        errs,
+        vec![
+            "EXTERN_CAPS_CONTRACT_REQUIRED: extern 'sleep' must declare @caps(...) facts explicitly"
+                .to_string()
+        ],
+        "expected exact HIR extern missing @caps error"
+    );
+}
+
+#[test]
 fn release_mismatch_nested_reports_exact_lockgraph_message() {
     let root = repo_root();
     let fixture = root
