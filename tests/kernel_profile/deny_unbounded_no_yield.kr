@@ -1,0 +1,8 @@
+@ctx(thread)
+fn helper() {
+}
+
+@ctx(thread)
+fn worker() {
+  helper();
+}
