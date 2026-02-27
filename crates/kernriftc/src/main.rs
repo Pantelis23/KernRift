@@ -23,14 +23,15 @@ const CONTRACTS_SCHEMA_V2: &str =
     include_str!("../../../docs/schemas/kernrift_contracts_v2.schema.json");
 const VERIFY_REPORT_SCHEMA_V1: &str =
     include_str!("../../../docs/schemas/kernrift_verify_report_v1.schema.json");
-const KERNEL_POLICY_PROFILE: &str = include_str!("../../../policies/kernel.toml");
+#[cfg(test)]
+const KERNEL_POLICY_PROFILE_LEGACY: &str = include_str!("../../../policies/kernel.toml");
 const CONTRACTS_SCHEMA_VERSION: &str = "kernrift_contracts_v1";
 const CONTRACTS_SCHEMA_VERSION_V2: &str = "kernrift_contracts_v2";
 const VERIFY_REPORT_SCHEMA_VERSION: &str = "kernrift_verify_report_v1";
 const EXIT_POLICY_VIOLATION: u8 = 1;
 const EXIT_INVALID_INPUT: u8 = 2;
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, PartialEq, Eq)]
 struct PolicyFile {
     #[serde(default)]
     limits: PolicyLimits,
@@ -42,7 +43,7 @@ struct PolicyFile {
     kernel: PolicyKernel,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, PartialEq, Eq)]
 struct PolicyLimits {
     #[serde(default)]
     max_lock_depth: Option<u64>,
@@ -52,19 +53,19 @@ struct PolicyLimits {
     forbid_unbounded_no_yield: bool,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, PartialEq, Eq)]
 struct PolicyLocks {
     #[serde(default)]
     forbid_edges: Vec<[String; 2]>,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, PartialEq, Eq)]
 struct PolicyCaps {
     #[serde(default)]
     allow_module: Vec<String>,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, PartialEq, Eq)]
 struct PolicyKernel {
     #[serde(default)]
     forbid_alloc_in_irq: bool,
@@ -249,6 +250,9 @@ const RULE_LIMIT_MAX_LOCK_DEPTH: &str = "LIMIT_MAX_LOCK_DEPTH";
 const RULE_LOCK_FORBID_EDGE: &str = "LOCK_FORBID_EDGE";
 const RULE_NO_YIELD_SPAN_LIMIT: &str = "NO_YIELD_SPAN_LIMIT";
 const RULE_NO_YIELD_UNBOUNDED: &str = "NO_YIELD_UNBOUNDED";
+const KERNEL_PROFILE_DEFAULT_MAX_LOCK_DEPTH: u64 = 1;
+const KERNEL_PROFILE_DEFAULT_MAX_NO_YIELD_SPAN: u64 = 64;
+const KERNEL_PROFILE_DEFAULT_FORBID_EDGES: [(&str, &str); 1] = [("ConsoleLock", "SchedLock")];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PolicyRuleSpec {
@@ -1889,16 +1893,17 @@ fn load_policy_file(policy_path: &str) -> Result<PolicyFile, String> {
 
 fn load_profile_policy(profile: CheckProfile) -> Result<PolicyFile, String> {
     match profile {
-        CheckProfile::Kernel => {
-            parse_policy_text(KERNEL_POLICY_PROFILE, "<embedded-kernel-profile>")
-        }
+        CheckProfile::Kernel => materialize_kernel_profile_policy(),
     }
 }
 
 fn parse_policy_text(text: &str, source_name: &str) -> Result<PolicyFile, String> {
-    let mut policy: PolicyFile = toml::from_str(text)
+    let policy: PolicyFile = toml::from_str(text)
         .map_err(|e| format!("failed to parse policy '{}': {}", source_name, e))?;
+    normalize_policy(policy, source_name)
+}
 
+fn normalize_policy(mut policy: PolicyFile, source_name: &str) -> Result<PolicyFile, String> {
     for edge in &mut policy.locks.forbid_edges {
         edge[0] = edge[0].trim().to_string();
         edge[1] = edge[1].trim().to_string();
@@ -1967,6 +1972,118 @@ fn parse_policy_text(text: &str, source_name: &str) -> Result<PolicyFile, String
     policy.kernel.allow_caps_in_irq.dedup();
 
     Ok(policy)
+}
+
+fn kernel_profile_default_rules() -> Vec<PolicyRule> {
+    let mut rules = POLICY_RULE_CATALOG
+        .iter()
+        .filter(|spec| spec.default_enabled_in_profile_kernel)
+        .map(|spec| spec.rule)
+        .collect::<Vec<_>>();
+    rules.sort_by_key(|rule| policy_rule_spec(*rule).sort_rank);
+    rules.dedup();
+    rules
+}
+
+fn materialize_kernel_profile_policy() -> Result<PolicyFile, String> {
+    let mut policy = PolicyFile::default();
+    for rule in kernel_profile_default_rules() {
+        materialize_kernel_profile_rule(&mut policy, rule);
+    }
+    normalize_policy(policy, "<materialized-kernel-profile>")
+}
+
+fn materialize_kernel_profile_rule(policy: &mut PolicyFile, rule: PolicyRule) {
+    match rule {
+        PolicyRule::CapModuleAllowlist => {}
+        PolicyRule::KernelCriticalRegionAlloc => {
+            policy
+                .kernel
+                .forbid_effects_in_critical
+                .push("alloc".to_string());
+        }
+        PolicyRule::KernelCriticalRegionBlock => {
+            policy
+                .kernel
+                .forbid_effects_in_critical
+                .push("block".to_string());
+        }
+        PolicyRule::KernelCriticalRegionYield => {
+            policy
+                .kernel
+                .forbid_effects_in_critical
+                .push("yield".to_string());
+        }
+        PolicyRule::KernelIrqAlloc => policy.kernel.forbid_alloc_in_irq = true,
+        PolicyRule::KernelIrqBlock => policy.kernel.forbid_block_in_irq = true,
+        PolicyRule::KernelIrqCapForbid => {}
+        PolicyRule::KernelPolicyRequiresV2 => {}
+        PolicyRule::LimitMaxLockDepth => {
+            policy.limits.max_lock_depth = Some(KERNEL_PROFILE_DEFAULT_MAX_LOCK_DEPTH);
+        }
+        PolicyRule::LockForbidEdge => {
+            policy.locks.forbid_edges = KERNEL_PROFILE_DEFAULT_FORBID_EDGES
+                .iter()
+                .map(|(from, to)| [(*from).to_string(), (*to).to_string()])
+                .collect::<Vec<_>>();
+        }
+        PolicyRule::NoYieldSpanLimit => {
+            policy.limits.max_no_yield_span = Some(KERNEL_PROFILE_DEFAULT_MAX_NO_YIELD_SPAN);
+        }
+        PolicyRule::NoYieldUnbounded => {
+            policy.limits.forbid_unbounded_no_yield = true;
+        }
+    }
+}
+
+fn policy_rule_is_enabled(policy: &PolicyFile, rule: PolicyRule) -> bool {
+    match rule {
+        PolicyRule::CapModuleAllowlist => !policy.caps.allow_module.is_empty(),
+        PolicyRule::KernelCriticalRegionAlloc => policy
+            .kernel
+            .forbid_effects_in_critical
+            .iter()
+            .any(|effect| effect == "alloc"),
+        PolicyRule::KernelCriticalRegionBlock => policy
+            .kernel
+            .forbid_effects_in_critical
+            .iter()
+            .any(|effect| effect == "block"),
+        PolicyRule::KernelCriticalRegionYield => {
+            policy.kernel.forbid_yield_in_critical
+                || policy
+                    .kernel
+                    .forbid_effects_in_critical
+                    .iter()
+                    .any(|effect| effect == "yield")
+        }
+        PolicyRule::KernelIrqAlloc => policy.kernel.forbid_alloc_in_irq,
+        PolicyRule::KernelIrqBlock => policy.kernel.forbid_block_in_irq,
+        PolicyRule::KernelIrqCapForbid => {
+            !policy.kernel.forbid_caps_in_irq.is_empty()
+                || !policy.kernel.allow_caps_in_irq.is_empty()
+        }
+        PolicyRule::KernelPolicyRequiresV2 => kernel_rules_enabled(policy),
+        PolicyRule::LimitMaxLockDepth => policy.limits.max_lock_depth.is_some(),
+        PolicyRule::LockForbidEdge => !policy.locks.forbid_edges.is_empty(),
+        PolicyRule::NoYieldSpanLimit => policy.limits.max_no_yield_span.is_some(),
+        PolicyRule::NoYieldUnbounded => policy.limits.forbid_unbounded_no_yield,
+    }
+}
+
+#[cfg(test)]
+fn enabled_policy_rules(policy: &PolicyFile) -> BTreeSet<PolicyRule> {
+    POLICY_RULE_CATALOG
+        .iter()
+        .filter_map(|spec| policy_rule_is_enabled(policy, spec.rule).then_some(spec.rule))
+        .collect::<BTreeSet<_>>()
+}
+
+fn kernel_v2_rules_enabled(policy: &PolicyFile) -> bool {
+    POLICY_RULE_CATALOG
+        .iter()
+        .filter(|spec| spec.requires_v2)
+        .any(|spec| policy_rule_is_enabled(policy, spec.rule))
 }
 
 fn decode_contracts_bundle(
@@ -2072,12 +2189,7 @@ impl<'a> PolicyEvalView<'a> {
 }
 
 fn kernel_rules_enabled(policy: &PolicyFile) -> bool {
-    policy.kernel.forbid_alloc_in_irq
-        || policy.kernel.forbid_block_in_irq
-        || policy.kernel.forbid_yield_in_critical
-        || !policy.kernel.forbid_effects_in_critical.is_empty()
-        || !policy.kernel.forbid_caps_in_irq.is_empty()
-        || !policy.kernel.allow_caps_in_irq.is_empty()
+    kernel_v2_rules_enabled(policy)
 }
 
 fn evaluate_context_rules(
@@ -2683,6 +2795,53 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn kernel_profile_default_rules_are_definition_driven_and_unique() {
+        let defaults_from_catalog = POLICY_RULE_CATALOG
+            .iter()
+            .filter(|spec| spec.default_enabled_in_profile_kernel)
+            .map(|spec| spec.rule)
+            .collect::<Vec<_>>();
+        let materialized_default_rules = kernel_profile_default_rules();
+        assert_eq!(materialized_default_rules, defaults_from_catalog);
+        assert_eq!(
+            materialized_default_rules.len(),
+            materialized_default_rules
+                .iter()
+                .collect::<BTreeSet<_>>()
+                .len()
+        );
+    }
+
+    #[test]
+    fn materialized_kernel_profile_matches_legacy_embedded_profile() {
+        let legacy = parse_policy_text(KERNEL_POLICY_PROFILE_LEGACY, "<embedded-kernel-profile>")
+            .expect("legacy embedded kernel profile must parse");
+        let materialized = materialize_kernel_profile_policy()
+            .expect("materialized kernel profile must build and normalize");
+        assert_eq!(materialized, legacy);
+    }
+
+    #[test]
+    fn materialized_kernel_profile_enables_expected_rules_once() {
+        let materialized = materialize_kernel_profile_policy()
+            .expect("materialized kernel profile must build and normalize");
+        let enabled = enabled_policy_rules(&materialized);
+        let expected = BTreeSet::from([
+            PolicyRule::KernelCriticalRegionAlloc,
+            PolicyRule::KernelCriticalRegionBlock,
+            PolicyRule::KernelCriticalRegionYield,
+            PolicyRule::KernelIrqAlloc,
+            PolicyRule::KernelIrqBlock,
+            PolicyRule::KernelPolicyRequiresV2,
+            PolicyRule::LimitMaxLockDepth,
+            PolicyRule::LockForbidEdge,
+            PolicyRule::NoYieldSpanLimit,
+            PolicyRule::NoYieldUnbounded,
+        ]);
+        assert_eq!(enabled, expected);
     }
 
     #[test]
