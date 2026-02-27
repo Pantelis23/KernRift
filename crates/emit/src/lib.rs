@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use krir::{Ctx, KrirModule, KrirOp};
+use krir::{Ctx, Eff, KrirModule, KrirOp};
 use passes::{AnalysisReport, NoYieldSpan};
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -198,6 +198,11 @@ fn contracts_value(
 }
 
 fn facts_manifest_value(module: &KrirModule, schema: ContractsSchema) -> Value {
+    let transitive_effects = if schema == ContractsSchema::V2 {
+        Some(transitive_effects_by_function(module))
+    } else {
+        None
+    };
     let symbols = module
         .functions
         .iter()
@@ -238,6 +243,21 @@ fn facts_manifest_value(module: &KrirModule, schema: ContractsSchema) -> Value {
                         .collect(),
                 ),
             );
+            if let Some(eff_map) = transitive_effects.as_ref() {
+                let mut effs = eff_map
+                    .get(&f.name)
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|eff| eff.as_str().to_string())
+                    .collect::<Vec<_>>();
+                effs.sort();
+                effs.dedup();
+                symbol.insert(
+                    "eff_transitive".to_string(),
+                    Value::Array(effs.into_iter().map(Value::String).collect()),
+                );
+            }
             symbol.insert(
                 "caps_req".to_string(),
                 Value::Array(f.caps_req.iter().cloned().map(Value::String).collect()),
@@ -303,7 +323,7 @@ fn report_v2_value(module: &KrirModule, report: &AnalysisReport) -> Value {
     let critical_functions = module
         .functions
         .iter()
-        .filter(|f| !f.is_extern && f.attrs.noyield)
+        .filter(|f| !f.is_extern && f.attrs.critical)
         .map(|f| f.name.clone())
         .collect::<Vec<_>>();
     let yield_sites_count = module
@@ -364,6 +384,147 @@ fn report_v2_value(module: &KrirModule, report: &AnalysisReport) -> Value {
     report_obj.insert("contexts".to_string(), Value::Object(contexts));
     report_obj.insert("effects".to_string(), Value::Object(effects));
     Value::Object(report_obj)
+}
+
+fn transitive_effects_by_function(module: &KrirModule) -> BTreeMap<String, BTreeSet<Eff>> {
+    let names = module
+        .functions
+        .iter()
+        .map(|f| f.name.clone())
+        .collect::<Vec<_>>();
+    let index_by_name = names
+        .iter()
+        .enumerate()
+        .map(|(idx, name)| (name.clone(), idx))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut direct = vec![BTreeSet::<Eff>::new(); names.len()];
+    for function in &module.functions {
+        if let Some(&idx) = index_by_name.get(&function.name) {
+            direct[idx].extend(function.eff_used.iter().copied());
+        }
+    }
+
+    let mut outgoing_sets = vec![BTreeSet::<usize>::new(); names.len()];
+    let mut incoming_sets = vec![BTreeSet::<usize>::new(); names.len()];
+    for edge in &module.call_edges {
+        let (Some(&caller), Some(&callee)) = (
+            index_by_name.get(&edge.caller),
+            index_by_name.get(&edge.callee),
+        ) else {
+            continue;
+        };
+        outgoing_sets[caller].insert(callee);
+        incoming_sets[callee].insert(caller);
+    }
+    let outgoing = outgoing_sets
+        .into_iter()
+        .map(|set| set.into_iter().collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+    let incoming = incoming_sets
+        .into_iter()
+        .map(|set| set.into_iter().collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+
+    fn dfs_order(node: usize, edges: &[Vec<usize>], seen: &mut [bool], order: &mut Vec<usize>) {
+        if seen[node] {
+            return;
+        }
+        seen[node] = true;
+        for &next in &edges[node] {
+            dfs_order(next, edges, seen, order);
+        }
+        order.push(node);
+    }
+
+    fn dfs_component(
+        node: usize,
+        cid: usize,
+        rev_edges: &[Vec<usize>],
+        component: &mut [usize],
+        members: &mut Vec<usize>,
+    ) {
+        if component[node] != usize::MAX {
+            return;
+        }
+        component[node] = cid;
+        members.push(node);
+        for &next in &rev_edges[node] {
+            dfs_component(next, cid, rev_edges, component, members);
+        }
+    }
+
+    let mut seen = vec![false; names.len()];
+    let mut finish_order = Vec::<usize>::new();
+    for node in 0..names.len() {
+        dfs_order(node, &outgoing, &mut seen, &mut finish_order);
+    }
+
+    let mut component = vec![usize::MAX; names.len()];
+    let mut components = Vec::<Vec<usize>>::new();
+    for &node in finish_order.iter().rev() {
+        if component[node] != usize::MAX {
+            continue;
+        }
+        let cid = components.len();
+        let mut members = Vec::<usize>::new();
+        dfs_component(node, cid, &incoming, &mut component, &mut members);
+        members.sort();
+        components.push(members);
+    }
+
+    let mut component_direct = vec![BTreeSet::<Eff>::new(); components.len()];
+    for (cid, members) in components.iter().enumerate() {
+        for &member in members {
+            component_direct[cid].extend(direct[member].iter().copied());
+        }
+    }
+
+    let mut component_edges = vec![BTreeSet::<usize>::new(); components.len()];
+    for (from, nexts) in outgoing.iter().enumerate() {
+        let from_cid = component[from];
+        for &to in nexts {
+            let to_cid = component[to];
+            if from_cid != to_cid {
+                component_edges[from_cid].insert(to_cid);
+            }
+        }
+    }
+
+    fn component_closure(
+        cid: usize,
+        component_direct: &[BTreeSet<Eff>],
+        component_edges: &[BTreeSet<usize>],
+        memo: &mut [Option<BTreeSet<Eff>>],
+    ) -> BTreeSet<Eff> {
+        if let Some(cached) = memo[cid].as_ref() {
+            return cached.clone();
+        }
+        let mut out = component_direct[cid].clone();
+        for &next in &component_edges[cid] {
+            out.extend(component_closure(
+                next,
+                component_direct,
+                component_edges,
+                memo,
+            ));
+        }
+        memo[cid] = Some(out.clone());
+        out
+    }
+
+    let mut memo = vec![None::<BTreeSet<Eff>>; components.len()];
+    let mut by_name = BTreeMap::<String, BTreeSet<Eff>>::new();
+    for (idx, name) in names.iter().enumerate() {
+        let effs = component_closure(
+            component[idx],
+            &component_direct,
+            &component_edges,
+            &mut memo,
+        );
+        by_name.insert(name.clone(), effs);
+    }
+    by_name
 }
 
 #[cfg(test)]
@@ -725,5 +886,106 @@ mod tests {
             canonical_value, value,
             "canonical and pretty contracts payloads must be equivalent"
         );
+    }
+
+    #[test]
+    fn contracts_v2_facts_include_transitive_effects() {
+        let module = KrirModule {
+            module_caps: vec![],
+            functions: vec![
+                Function {
+                    name: "helper".to_string(),
+                    is_extern: false,
+                    ctx_ok: vec![Ctx::Thread, Ctx::Irq],
+                    eff_used: vec![Eff::Alloc],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![KrirOp::AllocPoint],
+                },
+                Function {
+                    name: "isr".to_string(),
+                    is_extern: false,
+                    ctx_ok: vec![Ctx::Irq],
+                    eff_used: vec![],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![KrirOp::Call {
+                        callee: "helper".to_string(),
+                    }],
+                },
+            ],
+            call_edges: vec![CallEdge {
+                caller: "isr".to_string(),
+                callee: "helper".to_string(),
+            }],
+        };
+        let report = AnalysisReport::default();
+
+        let json = emit_contracts_json_with_schema(&module, &report, ContractsSchema::V2)
+            .expect("emit contracts v2");
+        let value: Value = serde_json::from_str(&json).expect("parse contracts");
+        let symbols = value["facts"]["symbols"].as_array().expect("symbols array");
+        let helper = symbols
+            .iter()
+            .find(|sym| sym["name"] == "helper")
+            .expect("helper symbol");
+        let isr = symbols
+            .iter()
+            .find(|sym| sym["name"] == "isr")
+            .expect("isr symbol");
+        assert_eq!(
+            helper["eff_transitive"],
+            Value::Array(vec![Value::String("alloc".to_string())])
+        );
+        assert_eq!(
+            isr["eff_transitive"],
+            Value::Array(vec![Value::String("alloc".to_string())])
+        );
+    }
+
+    #[test]
+    fn transitive_effects_handle_recursive_scc() {
+        let module = KrirModule {
+            module_caps: vec![],
+            functions: vec![
+                Function {
+                    name: "a".to_string(),
+                    is_extern: false,
+                    ctx_ok: vec![Ctx::Thread],
+                    eff_used: vec![],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![KrirOp::Call {
+                        callee: "b".to_string(),
+                    }],
+                },
+                Function {
+                    name: "b".to_string(),
+                    is_extern: false,
+                    ctx_ok: vec![Ctx::Thread],
+                    eff_used: vec![Eff::Block],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![KrirOp::Call {
+                        callee: "a".to_string(),
+                    }],
+                },
+            ],
+            call_edges: vec![
+                CallEdge {
+                    caller: "a".to_string(),
+                    callee: "b".to_string(),
+                },
+                CallEdge {
+                    caller: "b".to_string(),
+                    callee: "a".to_string(),
+                },
+            ],
+        };
+
+        let transitive = transitive_effects_by_function(&module);
+        let expected = BTreeSet::from([Eff::Block]);
+        assert_eq!(transitive.get("a"), Some(&expected));
+        assert_eq!(transitive.get("b"), Some(&expected));
     }
 }

@@ -48,11 +48,14 @@ Current mapping:
 - contracts v2 `report.effects.alloc_sites_count` is counted from `KrirOp::AllocPoint`.
 - contracts v2 `report.effects.block_sites_count` is counted from `KrirOp::BlockPoint`.
 - contracts v2 `report.effects.yield_sites_count` continues to count `KrirOp::YieldPoint`.
+- contracts v2 `facts.symbols[*].eff_transitive` is derived by SCC-aware call-graph closure:
+  - `eff_transitive(fn) = eff_used(fn) ∪ union(eff_transitive(callee))`
+  - SCCs are collapsed first, then effects are propagated over the component DAG.
 
 ## Critical Context Marker
 
-For PR2, we reuse existing `@noyield` as the critical marker for kernel policy checks:
+Critical marker is first-class via `@critical`:
 
-- contracts v2 `report.contexts.critical_functions` is derived from `facts.symbols[*].attrs.noyield`.
-- kernel policy enforces `forbid_yield_in_critical` using transitive yield evidence from `report.no_yield_spans`.
-
+- contracts v2 `report.contexts.critical_functions` is derived from `facts.symbols[*].attrs.critical`.
+- kernel policy enforces `forbid_yield_in_critical` using transitive yield evidence from
+  `facts.symbols[*].eff_transitive`.

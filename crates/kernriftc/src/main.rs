@@ -118,6 +118,8 @@ struct ContractsFacts {
 struct ContractsFactSymbol {
     name: String,
     eff_used: Vec<String>,
+    #[serde(default)]
+    eff_transitive: Vec<String>,
     attrs: ContractsFactAttrs,
 }
 
@@ -125,11 +127,19 @@ impl ContractsFactSymbol {
     fn has_eff(&self, eff: &str) -> bool {
         self.eff_used.iter().any(|e| e == eff)
     }
+
+    fn has_eff_transitive(&self, eff: &str) -> bool {
+        if self.eff_transitive.is_empty() {
+            return self.has_eff(eff);
+        }
+        self.eff_transitive.iter().any(|e| e == eff)
+    }
 }
 
 #[derive(Debug, Deserialize)]
 struct ContractsFactAttrs {
-    noyield: bool,
+    #[serde(default)]
+    critical: bool,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -1833,7 +1843,7 @@ fn evaluate_policy(policy: &PolicyFile, contracts: &ContractsBundle) -> Vec<Poli
     if policy.kernel.forbid_alloc_in_irq {
         for symbol_name in &irq_functions {
             if let Some(symbol) = symbol_by_name.get(symbol_name.as_str())
-                && symbol.has_eff("alloc")
+                && symbol.has_eff_transitive("alloc")
             {
                 violations.push(PolicyViolation {
                     code: "KERNEL_IRQ_ALLOC",
@@ -1849,7 +1859,7 @@ fn evaluate_policy(policy: &PolicyFile, contracts: &ContractsBundle) -> Vec<Poli
     if policy.kernel.forbid_block_in_irq {
         for symbol_name in &irq_functions {
             if let Some(symbol) = symbol_by_name.get(symbol_name.as_str())
-                && symbol.has_eff("block")
+                && symbol.has_eff_transitive("block")
             {
                 violations.push(PolicyViolation {
                     code: "KERNEL_IRQ_BLOCK",
@@ -1869,21 +1879,21 @@ fn evaluate_policy(policy: &PolicyFile, contracts: &ContractsBundle) -> Vec<Poli
                 .facts
                 .symbols
                 .iter()
-                .filter(|symbol| symbol.attrs.noyield)
+                .filter(|symbol| symbol.attrs.critical)
                 .map(|symbol| symbol.name.clone())
                 .collect::<Vec<_>>();
         }
         critical.sort();
         critical.dedup();
         for symbol in critical {
-            if let Some(ContractsNoYieldSpan::Bounded(span)) =
-                contracts.report.no_yield_spans.get(&symbol)
+            if let Some(symbol_facts) = symbol_by_name.get(symbol.as_str())
+                && symbol_facts.has_eff_transitive("yield")
             {
                 violations.push(PolicyViolation {
                     code: "KERNEL_CRITICAL_YIELD",
                     msg: format!(
-                        "critical function '{}' may yield (max span {})",
-                        symbol, span
+                        "critical function '{}' may yield via transitive effect set",
+                        symbol
                     ),
                 });
             }

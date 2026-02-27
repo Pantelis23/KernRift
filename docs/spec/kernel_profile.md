@@ -6,7 +6,7 @@ This profile defines a stricter `kernriftc check` mode for kernel/OS builds:
 kernriftc check --profile kernel <file.kr>
 ```
 
-When kernel profile is enabled, contracts emission is upgraded to `kernrift_contracts_v2`
+When kernel profile is enabled, contracts emission uses `kernrift_contracts_v2`
 internally (or explicitly via `--contracts-schema v2`).
 
 The goal is to enforce kernel-facing invariants with existing analyzers while keeping default profile behavior unchanged.
@@ -21,7 +21,7 @@ Current `kernel` profile defaults (from `policies/kernel.toml`):
 - forbidden lock ordering edge (`ConsoleLock -> SchedLock`)
 - forbid `alloc` effects in IRQ-reachable functions
 - forbid `block` effects in IRQ-reachable functions
-- forbid yield in critical functions
+- forbid `yield` effects in critical functions
 
 Planned kernel subset rules (next phases):
 
@@ -37,7 +37,7 @@ Planned kernel subset rules (next phases):
 - `blocking`: operation that may sleep or block scheduler progress.
 - `allocation`: operation that requests dynamic memory.
 - `critical section`: region where preemption/yield must not occur.
-  - KR0.x marker: `@noyield` is used as the critical marker for kernel profile policy checks.
+  - KR0.x marker: `@critical` marks critical entry functions for kernel profile checks.
 
 ## Compile-Time vs Runtime
 
@@ -46,6 +46,7 @@ Compile-time enforcement in KR0.x:
 - lock depth limits
 - lock edge ordering deny-lists
 - bounded vs unbounded no-yield spans
+- transitive effect checks from call graph (`alloc`, `block`, `yield`) in kernel policy rules
 - deterministic diagnostics and artifacts
 
 Runtime responsibilities (outside KR0.x compiler checks):

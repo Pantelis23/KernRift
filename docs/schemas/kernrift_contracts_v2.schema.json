@@ -238,6 +238,7 @@
         "is_extern",
         "ctx_ok",
         "eff_used",
+        "eff_transitive",
         "caps_req",
         "attrs"
       ],
@@ -256,6 +257,13 @@
           "uniqueItems": true
         },
         "eff_used": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/effect"
+          },
+          "uniqueItems": true
+        },
+        "eff_transitive": {
           "type": "array",
           "items": {
             "$ref": "#/$defs/effect"
