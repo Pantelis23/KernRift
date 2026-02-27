@@ -268,7 +268,7 @@ fn report_v2_value(module: &KrirModule, report: &AnalysisReport) -> Value {
     let critical_functions = module
         .functions
         .iter()
-        .filter(|f| !f.is_extern && f.attrs.noyield)
+        .filter(|f| !f.is_extern && f.attrs.critical)
         .map(|f| f.name.clone())
         .collect::<Vec<_>>();
     let yield_sites_count = module
@@ -524,6 +524,7 @@ mod tests {
                     caps_req: vec!["PhysMap".to_string(), "PhysMap".to_string()],
                     attrs: FunctionAttrs {
                         noyield: false,
+                        critical: true,
                         leaf: false,
                         hotpath: true,
                         lock_budget: Some(2),

@@ -119,7 +119,6 @@ struct ContractsFactSymbol {
     name: String,
     ctx_ok: Vec<String>,
     eff_used: Vec<String>,
-    attrs: ContractsFactAttrs,
 }
 
 impl ContractsFactSymbol {
@@ -130,11 +129,6 @@ impl ContractsFactSymbol {
     fn has_eff(&self, eff: &str) -> bool {
         self.eff_used.iter().any(|e| e == eff)
     }
-}
-
-#[derive(Debug, Deserialize)]
-struct ContractsFactAttrs {
-    noyield: bool,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -1884,15 +1878,6 @@ fn evaluate_policy(policy: &PolicyFile, contracts: &ContractsBundle) -> Vec<Poli
 
     if policy.kernel.forbid_yield_in_critical {
         let mut critical = contracts.report.contexts.critical_functions.clone();
-        if critical.is_empty() {
-            critical = contracts
-                .facts
-                .symbols
-                .iter()
-                .filter(|symbol| symbol.attrs.noyield)
-                .map(|symbol| symbol.name.clone())
-                .collect::<Vec<_>>();
-        }
         critical.sort();
         critical.dedup();
         for symbol in critical {

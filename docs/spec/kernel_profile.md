@@ -37,7 +37,7 @@ Planned kernel subset rules (next phases):
 - `blocking`: operation that may sleep or block scheduler progress.
 - `allocation`: operation that requests dynamic memory.
 - `critical section`: region where preemption/yield must not occur.
-  - KR0.x marker: `@noyield` is used as the critical marker for kernel profile policy checks.
+  - KR0.x marker: `@critical` is used as the critical marker for kernel profile policy checks.
 
 ## Compile-Time vs Runtime
 

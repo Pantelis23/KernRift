@@ -2,7 +2,7 @@ fn helper() {
   yieldpoint();
 }
 
-@critical
-fn critical_entry() {
+@noyield
+fn entry() {
   helper();
 }

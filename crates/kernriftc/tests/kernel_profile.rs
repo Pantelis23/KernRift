@@ -20,6 +20,7 @@ fn default_profile_behavior_is_unchanged() {
         "deny_lock_depth_and_order.kr",
         "critical_yield.kr",
         "irq_alloc_effect.kr",
+        "noyield_not_critical.kr",
     ] {
         let path = root.join("tests").join("kernel_profile").join(fixture);
         let mut cmd: Command = cargo_bin_cmd!("kernriftc");
@@ -142,6 +143,29 @@ fn kernel_profile_denies_yield_in_critical() {
     assert!(
         stderr.contains("policy: KERNEL_CRITICAL_YIELD:"),
         "expected KERNEL_CRITICAL_YIELD violation, got:\n{}",
+        stderr
+    );
+}
+
+#[test]
+fn kernel_profile_noyield_marker_is_not_treated_as_critical() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("noyield_not_critical.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--profile")
+        .arg("kernel")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().success();
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        !stderr.contains("policy: KERNEL_CRITICAL_YIELD:"),
+        "did not expect KERNEL_CRITICAL_YIELD violation, got:\n{}",
         stderr
     );
 }

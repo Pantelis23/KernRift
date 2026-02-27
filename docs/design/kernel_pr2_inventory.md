@@ -52,8 +52,8 @@ This keeps outputs truthful and deterministic until op-level alloc/block sites a
 
 ## Critical Context Marker
 
-For PR2, we reuse existing `@noyield` as the critical marker for kernel policy checks:
+As of PR6, critical context is first-class via `@critical`:
 
-- contracts v2 `report.contexts.critical_functions` is derived from `facts.symbols[*].attrs.noyield`.
-- kernel policy enforces `forbid_yield_in_critical` using transitive yield evidence from `report.no_yield_spans`.
-
+- contracts v2 `report.contexts.critical_functions` is derived from KRIR `attrs.critical`.
+- kernel policy enforces `forbid_yield_in_critical` from `report.contexts.critical_functions` only.
+- `@noyield` is no longer treated as a critical marker.

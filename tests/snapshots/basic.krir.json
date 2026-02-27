@@ -14,6 +14,7 @@
       "caps_req": [],
       "attrs": {
         "noyield": false,
+        "critical": false,
         "leaf": false,
         "hotpath": false,
         "lock_budget": null
@@ -33,6 +34,7 @@
       ],
       "attrs": {
         "noyield": false,
+        "critical": false,
         "leaf": false,
         "hotpath": false,
         "lock_budget": null
