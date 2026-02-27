@@ -1,3 +1,6 @@
+# Reference profile policy document.
+# Non-authoritative: `kernriftc check --profile kernel` defaults are materialized
+# from canonical rule definitions in `crates/kernriftc/src/main.rs`.
 [limits]
 max_lock_depth = 1
 max_no_yield_span = 64

@@ -23,8 +23,6 @@ const CONTRACTS_SCHEMA_V2: &str =
     include_str!("../../../docs/schemas/kernrift_contracts_v2.schema.json");
 const VERIFY_REPORT_SCHEMA_V1: &str =
     include_str!("../../../docs/schemas/kernrift_verify_report_v1.schema.json");
-#[cfg(test)]
-const KERNEL_POLICY_PROFILE_LEGACY: &str = include_str!("../../../policies/kernel.toml");
 const CONTRACTS_SCHEMA_VERSION: &str = "kernrift_contracts_v1";
 const CONTRACTS_SCHEMA_VERSION_V2: &str = "kernrift_contracts_v2";
 const VERIFY_REPORT_SCHEMA_VERSION: &str = "kernrift_verify_report_v1";
@@ -2816,12 +2814,16 @@ mod tests {
     }
 
     #[test]
-    fn materialized_kernel_profile_matches_legacy_embedded_profile() {
-        let legacy = parse_policy_text(KERNEL_POLICY_PROFILE_LEGACY, "<embedded-kernel-profile>")
-            .expect("legacy embedded kernel profile must parse");
+    fn materialized_kernel_profile_enables_only_default_enabled_rules() {
         let materialized = materialize_kernel_profile_policy()
             .expect("materialized kernel profile must build and normalize");
-        assert_eq!(materialized, legacy);
+        let enabled = enabled_policy_rules(&materialized);
+        let defaults = POLICY_RULE_CATALOG
+            .iter()
+            .filter(|spec| spec.default_enabled_in_profile_kernel)
+            .map(|spec| spec.rule)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(enabled, defaults);
     }
 
     #[test]
@@ -2842,6 +2844,46 @@ mod tests {
             PolicyRule::NoYieldUnbounded,
         ]);
         assert_eq!(enabled, expected);
+    }
+
+    #[test]
+    fn materialized_kernel_profile_no_duplicate_side_effects() {
+        let mut duplicated = PolicyFile::default();
+        for rule in kernel_profile_default_rules() {
+            materialize_kernel_profile_rule(&mut duplicated, rule);
+            materialize_kernel_profile_rule(&mut duplicated, rule);
+        }
+        let duplicated = normalize_policy(duplicated, "<duplicated-materialization>")
+            .expect("duplicated materialized policy must normalize");
+        let single =
+            materialize_kernel_profile_policy().expect("single materialized policy must normalize");
+        assert_eq!(duplicated, single);
+    }
+
+    #[test]
+    fn each_enabled_default_rule_has_single_materialization_effect() {
+        let effect_counts = POLICY_RULE_CATALOG
+            .iter()
+            .filter(|spec| spec.default_enabled_in_profile_kernel)
+            .map(|spec| (spec.rule, materialization_effect_count(spec.rule)))
+            .collect::<BTreeMap<_, _>>();
+        for (rule, count) in effect_counts {
+            if rule == PolicyRule::KernelPolicyRequiresV2 {
+                assert_eq!(count, 0, "KERNEL_POLICY_REQUIRES_V2 is metadata-derived");
+            } else {
+                assert_eq!(count, 1, "rule {:?} must map to one policy effect", rule);
+            }
+        }
+    }
+
+    fn materialization_effect_count(rule: PolicyRule) -> usize {
+        let before = normalize_policy(PolicyFile::default(), "<before>")
+            .expect("default policy should normalize");
+        let mut after = PolicyFile::default();
+        materialize_kernel_profile_rule(&mut after, rule);
+        let after =
+            normalize_policy(after, "<after>").expect("materialized policy should normalize");
+        usize::from(before != after)
     }
 
     #[test]

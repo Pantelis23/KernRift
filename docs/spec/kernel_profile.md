@@ -13,7 +13,7 @@ The goal is to enforce kernel-facing invariants with existing analyzers while ke
 
 ## Kernel Subset Rules
 
-Current `kernel` profile defaults (from `policies/kernel.toml`):
+Current `kernel` profile defaults (materialized from canonical policy rule definitions):
 
 - no unbounded no-yield spans (`forbid_unbounded_no_yield = true`)
 - bounded no-yield spans (`max_no_yield_span = 64`)
