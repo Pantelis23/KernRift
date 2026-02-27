@@ -82,6 +82,7 @@ Policy family structure (kernel policy evaluation):
   - external line shape remains: `policy: <CODE>: <message>`
 - policy rule metadata is cataloged centrally (`code`, `family`, `sort_rank`, `requires_v2`)
   - definitions also carry `default_enabled_in_profile_kernel` and `diagnostic_template_id`
+- `--profile kernel` defaults are materialized from canonical rule definitions (not a separate static default list)
   - violation ordering is deterministic by `sort_rank`, then `code`, then message
 
 Policy consumes contracts artifacts directly (v2 facts/report) and does not reconstruct
