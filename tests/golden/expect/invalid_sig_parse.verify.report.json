@@ -1,0 +1,27 @@
+{
+  "contracts": {
+    "schema_valid": true,
+    "schema_version": "kernrift_contracts_v1",
+    "utf8_valid": true
+  },
+  "diagnostics": [
+    "invalid base64 signature 'contracts.sig': Invalid symbol 37, offset 0."
+  ],
+  "hash": {
+    "computed_sha256": "eb40fc536c5082eede06048ad6bebc3397748e064d046fbf5a7e50250edb3cbb",
+    "expected_sha256": "eb40fc536c5082eede06048ad6bebc3397748e064d046fbf5a7e50250edb3cbb",
+    "matched": true
+  },
+  "inputs": {
+    "contracts": "contracts.json",
+    "hash": "contracts.sha256",
+    "pubkey": "pubkey.hex",
+    "sig": "contracts.sig"
+  },
+  "result": "invalid_input",
+  "schema_version": "kernrift_verify_report_v1",
+  "signature": {
+    "checked": true,
+    "valid": null
+  }
+}

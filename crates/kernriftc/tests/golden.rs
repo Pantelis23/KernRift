@@ -3,6 +3,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use ed25519_dalek::{Signer, SigningKey};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
@@ -11,6 +14,11 @@ enum VerifyMutation {
     None,
     HashMismatch,
     SchemaInvalid,
+    InvalidUtf8,
+    SignatureMismatch,
+    InvalidSigParse,
+    InvalidPubkeyParse,
+    ReportOverwriteRefusal,
 }
 
 struct GoldenCase {
@@ -18,6 +26,7 @@ struct GoldenCase {
     policy_path: Option<&'static str>,
     verify_mutation: VerifyMutation,
     expected_verify_exit: i32,
+    expected_report_result: Option<&'static str>,
 }
 
 struct CmdOut {
@@ -47,24 +56,63 @@ fn golden_check_and_verify_contracts() {
             policy_path: None,
             verify_mutation: VerifyMutation::None,
             expected_verify_exit: 0,
+            expected_report_result: Some("pass"),
         },
         GoldenCase {
             name: "policy_pass",
             policy_path: Some("tests/golden/cases/policy_pass.toml"),
             verify_mutation: VerifyMutation::None,
             expected_verify_exit: 0,
+            expected_report_result: Some("pass"),
         },
         GoldenCase {
             name: "hash_mismatch",
             policy_path: None,
             verify_mutation: VerifyMutation::HashMismatch,
             expected_verify_exit: 1,
+            expected_report_result: Some("deny"),
         },
         GoldenCase {
             name: "schema_invalid",
             policy_path: None,
             verify_mutation: VerifyMutation::SchemaInvalid,
             expected_verify_exit: 2,
+            expected_report_result: Some("invalid_input"),
+        },
+        GoldenCase {
+            name: "invalid_utf8",
+            policy_path: None,
+            verify_mutation: VerifyMutation::InvalidUtf8,
+            expected_verify_exit: 2,
+            expected_report_result: Some("invalid_input"),
+        },
+        GoldenCase {
+            name: "signature_mismatch",
+            policy_path: None,
+            verify_mutation: VerifyMutation::SignatureMismatch,
+            expected_verify_exit: 1,
+            expected_report_result: Some("deny"),
+        },
+        GoldenCase {
+            name: "invalid_sig_parse",
+            policy_path: None,
+            verify_mutation: VerifyMutation::InvalidSigParse,
+            expected_verify_exit: 2,
+            expected_report_result: Some("invalid_input"),
+        },
+        GoldenCase {
+            name: "invalid_pubkey_parse",
+            policy_path: None,
+            verify_mutation: VerifyMutation::InvalidPubkeyParse,
+            expected_verify_exit: 2,
+            expected_report_result: Some("invalid_input"),
+        },
+        GoldenCase {
+            name: "report_overwrite_refusal",
+            policy_path: None,
+            verify_mutation: VerifyMutation::ReportOverwriteRefusal,
+            expected_verify_exit: 2,
+            expected_report_result: None,
         },
     ];
 
@@ -84,6 +132,8 @@ fn golden_check_and_verify_contracts() {
         let contracts_path = tmp_dir.join("contracts.json");
         let hash_path = tmp_dir.join("contracts.sha256");
         let verify_report_path = tmp_dir.join("verify.report.json");
+        let sig_path = tmp_dir.join("contracts.sig");
+        let pubkey_path = tmp_dir.join("pubkey.hex");
 
         let mut check_args = vec!["check".to_string()];
         if let Some(policy_rel) = case.policy_path {
@@ -111,6 +161,16 @@ fn golden_check_and_verify_contracts() {
         let contracts_expect = expect_dir.join(format!("{}.contracts.json", case.name));
         assert_snapshot(&contracts_expect, &contracts_canon, update);
 
+        let mut verify_args = vec![
+            "verify".to_string(),
+            "--contracts".to_string(),
+            contracts_path.display().to_string(),
+            "--hash".to_string(),
+            hash_path.display().to_string(),
+            "--report".to_string(),
+            verify_report_path.display().to_string(),
+        ];
+
         match case.verify_mutation {
             VerifyMutation::None => {}
             VerifyMutation::HashMismatch => {
@@ -127,17 +187,62 @@ fn golden_check_and_verify_contracts() {
                 let hash = sha256_hex(tampered.as_bytes());
                 fs::write(&hash_path, format!("{hash}\n")).expect("write tampered hash");
             }
+            VerifyMutation::InvalidUtf8 => {
+                let bytes = [0xff_u8, 0xfe_u8, 0xfd_u8];
+                fs::write(&contracts_path, bytes).expect("write invalid utf8 contracts");
+                let hash = sha256_hex(&bytes);
+                fs::write(&hash_path, format!("{hash}\n")).expect("write hash for invalid utf8");
+            }
+            VerifyMutation::SignatureMismatch => {
+                let signing_key = test_signing_key();
+                let sig = signing_key.sign(b"not-the-contract-bytes");
+                fs::write(
+                    &sig_path,
+                    format!("{}\n", BASE64_STANDARD.encode(sig.to_bytes())),
+                )
+                .expect("write mismatched sig");
+                fs::write(
+                    &pubkey_path,
+                    format!("{}\n", hex_encode(&signing_key.verifying_key().to_bytes())),
+                )
+                .expect("write pubkey");
+                verify_args.push("--sig".to_string());
+                verify_args.push(sig_path.display().to_string());
+                verify_args.push("--pubkey".to_string());
+                verify_args.push(pubkey_path.display().to_string());
+            }
+            VerifyMutation::InvalidSigParse => {
+                let signing_key = test_signing_key();
+                fs::write(&sig_path, "%%%not_base64%%%\n").expect("write invalid sig text");
+                fs::write(
+                    &pubkey_path,
+                    format!("{}\n", hex_encode(&signing_key.verifying_key().to_bytes())),
+                )
+                .expect("write pubkey");
+                verify_args.push("--sig".to_string());
+                verify_args.push(sig_path.display().to_string());
+                verify_args.push("--pubkey".to_string());
+                verify_args.push(pubkey_path.display().to_string());
+            }
+            VerifyMutation::InvalidPubkeyParse => {
+                let signing_key = test_signing_key();
+                let sig = signing_key.sign(b"not-the-contract-bytes");
+                fs::write(
+                    &sig_path,
+                    format!("{}\n", BASE64_STANDARD.encode(sig.to_bytes())),
+                )
+                .expect("write sig");
+                fs::write(&pubkey_path, "zz\n").expect("write invalid pubkey");
+                verify_args.push("--sig".to_string());
+                verify_args.push(sig_path.display().to_string());
+                verify_args.push("--pubkey".to_string());
+                verify_args.push(pubkey_path.display().to_string());
+            }
+            VerifyMutation::ReportOverwriteRefusal => {
+                fs::write(&verify_report_path, "sentinel\n").expect("write report sentinel");
+            }
         }
 
-        let verify_args = vec![
-            "verify".to_string(),
-            "--contracts".to_string(),
-            contracts_path.display().to_string(),
-            "--hash".to_string(),
-            hash_path.display().to_string(),
-            "--report".to_string(),
-            verify_report_path.display().to_string(),
-        ];
         let verify = run_cmd(bin, &root, &verify_args);
         let verify_snapshot = normalize_command_snapshot(&verify, &root, &tmp_dir);
         let verify_expect = expect_dir.join(format!("{}.verify.stdout", case.name));
@@ -148,16 +253,40 @@ fn golden_check_and_verify_contracts() {
             case.name, verify.stderr
         );
 
-        let verify_report_json =
-            fs::read_to_string(&verify_report_path).expect("read verify report snapshot");
-        let verify_report_canon =
-            canonical_json_text(&verify_report_json).expect("canonicalize verify report");
-        let verify_report_expect = expect_dir.join(format!("{}.verify.report.json", case.name));
-        assert_snapshot(&verify_report_expect, &verify_report_canon, update);
+        if case.expected_report_result.is_none() {
+            let sentinel =
+                fs::read_to_string(&verify_report_path).expect("read sentinel report file");
+            assert_eq!(
+                sentinel, "sentinel\n",
+                "report file should not be clobbered"
+            );
+            let sentinel_expect = expect_dir.join(format!("{}.report_file.txt", case.name));
+            assert_snapshot(&sentinel_expect, &sentinel, update);
+        } else {
+            let verify_report_json =
+                fs::read_to_string(&verify_report_path).expect("read verify report snapshot");
+            let verify_report_canon =
+                canonical_json_text(&verify_report_json).expect("canonicalize verify report");
+            let verify_report_expect = expect_dir.join(format!("{}.verify.report.json", case.name));
+            assert_snapshot(&verify_report_expect, &verify_report_canon, update);
+
+            let report_value: Value =
+                serde_json::from_str(&verify_report_json).expect("parse verify report json");
+            let got_result = report_value["result"].as_str().unwrap_or("<missing>");
+            assert_eq!(
+                Some(got_result),
+                case.expected_report_result,
+                "verify report result mismatch for '{}': {}",
+                case.name,
+                verify_report_json
+            );
+        }
 
         fs::remove_file(&contracts_path).ok();
         fs::remove_file(&hash_path).ok();
         fs::remove_file(&verify_report_path).ok();
+        fs::remove_file(&sig_path).ok();
+        fs::remove_file(&pubkey_path).ok();
         fs::remove_dir(&tmp_dir).ok();
     }
 }
@@ -237,6 +366,7 @@ fn normalize_diagnostics(stderr: &str) -> String {
                 || line.starts_with("failed to")
                 || line.starts_with("invalid ")
                 || line.starts_with("unsupported ")
+                || line.starts_with("refusing to overwrite existing output")
         });
 
     if sortable {
@@ -292,14 +422,23 @@ fn assert_snapshot(path: &Path, actual: &str, update: bool) {
     );
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    let mut out = String::with_capacity(64);
-    for b in digest {
+fn test_signing_key() -> SigningKey {
+    let seed = std::array::from_fn::<u8, 32, _>(|i| (i as u8).wrapping_add(1));
+    SigningKey::from_bytes(&seed)
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
         out.push(hex_nibble((b >> 4) & 0x0f));
         out.push(hex_nibble(b & 0x0f));
     }
     out
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    hex_encode(&digest)
 }
 
 fn hex_nibble(n: u8) -> char {
