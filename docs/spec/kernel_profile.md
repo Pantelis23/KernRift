@@ -78,6 +78,8 @@ Policy family structure (kernel policy evaluation):
 - effect rules
 - region rules
 - capability rules
+- each family emits structured violations rendered via a family-specific deterministic formatter
+  - external line shape remains: `policy: <CODE>: <message>`
 
 Policy consumes contracts artifacts directly (v2 facts/report) and does not reconstruct
 hidden call-graph semantics when those facts are already present in the artifact.
