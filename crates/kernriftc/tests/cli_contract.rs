@@ -316,6 +316,7 @@ fn contracts_v2_contains_contexts_and_effects_fields() {
     assert_eq!(
         report_keys,
         BTreeSet::from([
+            "critical".to_string(),
             "contexts".to_string(),
             "effects".to_string(),
             "max_lock_depth".to_string(),
@@ -338,6 +339,50 @@ fn contracts_v2_contains_contexts_and_effects_fields() {
     );
     assert!(json["report"]["effects"]["alloc_sites_count"].is_u64());
     assert!(json["report"]["effects"]["block_sites_count"].is_u64());
+    assert!(json["report"]["critical"]["depth_max"].is_u64());
+    assert!(json["report"]["critical"]["violations"].is_array());
+
+    fs::remove_file(&out_path).ok();
+}
+
+#[test]
+fn contracts_v2_critical_report_includes_transitive_violation_details() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("critical_region_yield.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let out_path =
+        std::env::temp_dir().join(format!("kernrift-contracts-v2-critical-report-{}.json", ts));
+    fs::remove_file(&out_path).ok();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--contracts-schema")
+        .arg("v2")
+        .arg("--contracts-out")
+        .arg(out_path.as_os_str())
+        .arg(fixture.as_os_str());
+    cmd.assert().success();
+
+    let json: Value = serde_json::from_str(&fs::read_to_string(&out_path).expect("contracts text"))
+        .expect("contracts json");
+    validate_contracts_schema_v2(&json);
+    let violations = json["report"]["critical"]["violations"]
+        .as_array()
+        .expect("critical violations");
+    assert!(
+        violations
+            .iter()
+            .any(|v| v["function"] == "entry" && v["effect"] == "yield" && v["via"] == "helper"),
+        "expected transitive critical-region yield violation in report, got {:?}",
+        violations
+    );
 
     fs::remove_file(&out_path).ok();
 }

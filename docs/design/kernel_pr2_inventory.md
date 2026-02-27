@@ -52,10 +52,13 @@ Current mapping:
   - `eff_transitive(fn) = eff_used(fn) ∪ union(eff_transitive(callee))`
   - SCCs are collapsed first, then effects are propagated over the component DAG.
 
-## Critical Context Marker
+## Critical Regions
 
-Critical marker is first-class via `@critical`:
+Critical sections are represented by statement blocks:
 
-- contracts v2 `report.contexts.critical_functions` is derived from `facts.symbols[*].attrs.critical`.
-- kernel policy enforces `forbid_yield_in_critical` using transitive yield evidence from
-  `facts.symbols[*].eff_transitive`.
+- Parser form: `critical { ... }`
+- HIR lowers each block to `KrirOp::CriticalEnter` / `KrirOp::CriticalExit`.
+- contracts v2 emits `report.critical`:
+  - `depth_max`
+  - `violations[]` with `{function,effect,via}`
+- kernel policy enforces `forbid_effects_in_critical` using those deterministic violation facts.

@@ -71,6 +71,8 @@ pub struct FunctionAttrs {
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum KrirOp {
     Call { callee: String },
+    CriticalEnter,
+    CriticalExit,
     YieldPoint,
     AllocPoint,
     BlockPoint,

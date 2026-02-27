@@ -1,0 +1,7 @@
+fn helper() { yieldpoint(); }
+
+fn entry() {
+  critical {
+    helper();
+  }
+}

@@ -21,7 +21,7 @@ Current `kernel` profile defaults (from `policies/kernel.toml`):
 - forbidden lock ordering edge (`ConsoleLock -> SchedLock`)
 - forbid `alloc` effects in IRQ-reachable functions
 - forbid `block` effects in IRQ-reachable functions
-- forbid `yield` effects in critical functions
+- forbid `yield`/`alloc`/`block` effects inside `critical { ... }` regions
 
 Planned kernel subset rules (next phases):
 
@@ -37,7 +37,7 @@ Planned kernel subset rules (next phases):
 - `blocking`: operation that may sleep or block scheduler progress.
 - `allocation`: operation that requests dynamic memory.
 - `critical section`: region where preemption/yield must not occur.
-  - KR0.x marker: `@critical` marks critical entry functions for kernel profile checks.
+  - KR0.x marker: `critical { ... }` statement form.
 
 ## Compile-Time vs Runtime
 
@@ -47,6 +47,9 @@ Compile-time enforcement in KR0.x:
 - lock edge ordering deny-lists
 - bounded vs unbounded no-yield spans
 - transitive effect checks from call graph (`alloc`, `block`, `yield`) in kernel policy rules
+- critical region analysis:
+  - max region nesting depth
+  - deterministic per-function violation facts (direct and transitive-through-call)
 - deterministic diagnostics and artifacts
 
 Runtime responsibilities (outside KR0.x compiler checks):
@@ -59,7 +62,7 @@ Runtime responsibilities (outside KR0.x compiler checks):
 
 - Can an `@irq` function allocate? (target answer: no)
 - Can an `@irq` function take locks? (policy-controlled; default no or allowlist only)
-- Can a `@critical` region contain yield? (target answer: no)
+- Can a `critical { ... }` region contain yield? (target answer: no)
 - Are lock acquisitions order-consistent across call graph? (target answer: yes)
 - Are no-yield spans bounded in kernel profile? (target answer: yes)
 

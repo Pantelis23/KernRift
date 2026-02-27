@@ -10,6 +10,7 @@ pub struct CheckError {
 
 const PASS_LOCK: &str = "lockgraph";
 const PASS_ANALYSIS: &str = "analysis";
+const PASS_CRITICAL_REGION: &str = "critical-region";
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct LockEdge {
@@ -61,6 +62,7 @@ pub fn analyze_module(module: &KrirModule) -> (AnalysisReport, Vec<CheckError>) 
     errs.extend(ctx_check(module));
     errs.extend(effect_check(module));
     errs.extend(cap_check(module));
+    errs.extend(critical_region_balance_check(module));
 
     let fn_map = fn_map(module);
     let (summaries, summary_errs) = build_interproc_summaries(module, &fn_map);
@@ -210,6 +212,44 @@ fn cap_check(module: &KrirModule) -> Vec<CheckError> {
     errs
 }
 
+fn critical_region_balance_check(module: &KrirModule) -> Vec<CheckError> {
+    let mut errs = Vec::new();
+
+    for function in module.functions.iter().filter(|f| !f.is_extern) {
+        let mut depth = 0_u64;
+        for op in &function.ops {
+            match op {
+                KrirOp::CriticalEnter => depth += 1,
+                KrirOp::CriticalExit => {
+                    if depth == 0 {
+                        errs.push(CheckError {
+                            pass: PASS_CRITICAL_REGION,
+                            message: format!(
+                                "CRITICAL_REGION_UNBALANCED: function '{}' exits critical region without matching enter",
+                                function.name
+                            ),
+                        });
+                    } else {
+                        depth -= 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if depth != 0 {
+            errs.push(CheckError {
+                pass: PASS_CRITICAL_REGION,
+                message: format!(
+                    "CRITICAL_REGION_UNBALANCED: function '{}' has {} unterminated critical region(s)",
+                    function.name, depth
+                ),
+            });
+        }
+    }
+
+    errs
+}
+
 fn build_interproc_summaries(
     module: &KrirModule,
     fn_map: &BTreeMap<String, &Function>,
@@ -309,6 +349,7 @@ fn build_interproc_summaries(
                     }
                     summary.has_yield = true;
                 }
+                KrirOp::CriticalEnter | KrirOp::CriticalExit => {}
                 KrirOp::AllocPoint | KrirOp::BlockPoint => {}
                 KrirOp::Call { callee } => {
                     let Some(callee_fn) = fn_map.get(callee) else {
@@ -684,6 +725,26 @@ mod tests {
                         == "function 'outer' calls unresolved symbol 'missing' during lock/yield analysis"
             }),
             "expected unresolved-callee analysis error, got {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn unbalanced_critical_region_reports_deterministic_error_code() {
+        let module = test_module(vec![test_function(
+            "entry",
+            false,
+            Vec::new(),
+            vec![KrirOp::CriticalExit],
+        )]);
+        let (_, errs) = analyze_module(&module);
+        assert!(
+            errs.iter().any(|e| {
+                e.pass == PASS_CRITICAL_REGION
+                    && e.message
+                        == "CRITICAL_REGION_UNBALANCED: function 'entry' exits critical region without matching enter"
+            }),
+            "expected CRITICAL_REGION_UNBALANCED error, got {:?}",
             errs
         );
     }

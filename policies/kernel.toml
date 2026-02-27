@@ -14,4 +14,5 @@ allow_module = []
 [kernel]
 forbid_alloc_in_irq = true
 forbid_block_in_irq = true
-forbid_yield_in_critical = true
+forbid_yield_in_critical = false
+forbid_effects_in_critical = ["yield", "alloc", "block"]

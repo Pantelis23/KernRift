@@ -80,7 +80,8 @@
         "max_lock_depth",
         "no_yield_spans",
         "contexts",
-        "effects"
+        "effects",
+        "critical"
       ],
       "properties": {
         "max_lock_depth": {
@@ -146,6 +147,26 @@
             "block_sites_count": {
               "type": "integer",
               "minimum": 0
+            }
+          }
+        },
+        "critical": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "depth_max",
+            "violations"
+          ],
+          "properties": {
+            "depth_max": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "violations": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/critical_violation"
+              }
             }
           }
         }
@@ -295,6 +316,37 @@
         },
         "to": {
           "type": "string"
+        }
+      }
+    },
+    "critical_violation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "function",
+        "effect",
+        "via"
+      ],
+      "properties": {
+        "function": {
+          "type": "string"
+        },
+        "effect": {
+          "enum": [
+            "alloc",
+            "block",
+            "yield"
+          ]
+        },
+        "via": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     }

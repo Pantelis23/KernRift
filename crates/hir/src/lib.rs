@@ -161,37 +161,7 @@ fn lower_function(item: &FnAst) -> Result<Function, Vec<String>> {
 
     let mut ops = Vec::new();
     for stmt in &item.body {
-        match stmt {
-            Stmt::Call(callee) => ops.push(KrirOp::Call {
-                callee: callee.clone(),
-            }),
-            Stmt::YieldPoint => {
-                ops.push(KrirOp::YieldPoint);
-                eff_used.insert(Eff::Yield);
-            }
-            Stmt::AllocPoint => {
-                ops.push(KrirOp::AllocPoint);
-                eff_used.insert(Eff::Alloc);
-            }
-            Stmt::BlockPoint => {
-                ops.push(KrirOp::BlockPoint);
-                eff_used.insert(Eff::Block);
-            }
-            Stmt::Acquire(lock_class) => ops.push(KrirOp::Acquire {
-                lock_class: lock_class.clone(),
-            }),
-            Stmt::Release(lock_class) => ops.push(KrirOp::Release {
-                lock_class: lock_class.clone(),
-            }),
-            Stmt::MmioRead => {
-                ops.push(KrirOp::MmioRead);
-                eff_used.insert(Eff::Mmio);
-            }
-            Stmt::MmioWrite => {
-                ops.push(KrirOp::MmioWrite);
-                eff_used.insert(Eff::Mmio);
-            }
-        }
+        lower_stmt(stmt, &mut ops, &mut eff_used);
     }
 
     if !errors.is_empty() {
@@ -207,6 +177,47 @@ fn lower_function(item: &FnAst) -> Result<Function, Vec<String>> {
         attrs,
         ops,
     })
+}
+
+fn lower_stmt(stmt: &Stmt, ops: &mut Vec<KrirOp>, eff_used: &mut BTreeSet<Eff>) {
+    match stmt {
+        Stmt::Call(callee) => ops.push(KrirOp::Call {
+            callee: callee.clone(),
+        }),
+        Stmt::Critical(inner) => {
+            ops.push(KrirOp::CriticalEnter);
+            for stmt in inner {
+                lower_stmt(stmt, ops, eff_used);
+            }
+            ops.push(KrirOp::CriticalExit);
+        }
+        Stmt::YieldPoint => {
+            ops.push(KrirOp::YieldPoint);
+            eff_used.insert(Eff::Yield);
+        }
+        Stmt::AllocPoint => {
+            ops.push(KrirOp::AllocPoint);
+            eff_used.insert(Eff::Alloc);
+        }
+        Stmt::BlockPoint => {
+            ops.push(KrirOp::BlockPoint);
+            eff_used.insert(Eff::Block);
+        }
+        Stmt::Acquire(lock_class) => ops.push(KrirOp::Acquire {
+            lock_class: lock_class.clone(),
+        }),
+        Stmt::Release(lock_class) => ops.push(KrirOp::Release {
+            lock_class: lock_class.clone(),
+        }),
+        Stmt::MmioRead => {
+            ops.push(KrirOp::MmioRead);
+            eff_used.insert(Eff::Mmio);
+        }
+        Stmt::MmioWrite => {
+            ops.push(KrirOp::MmioWrite);
+            eff_used.insert(Eff::Mmio);
+        }
+    }
 }
 
 fn parse_ctx_attr(attr: &RawAttr) -> Result<Vec<Ctx>, String> {

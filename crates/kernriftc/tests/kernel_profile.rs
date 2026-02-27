@@ -18,8 +18,10 @@ fn default_profile_behavior_is_unchanged() {
     for fixture in [
         "deny_unbounded_no_yield.kr",
         "deny_lock_depth_and_order.kr",
-        "critical_yield.kr",
-        "critical_yield_transitive.kr",
+        "critical_region_yield.kr",
+        "critical_region_alloc.kr",
+        "critical_region_block.kr",
+        "critical_region_balanced.kr",
         "irq_alloc_effect.kr",
         "irq_alloc_site.kr",
         "irq_block_site.kr",
@@ -139,7 +141,7 @@ fn kernel_profile_denies_yield_in_critical() {
     let fixture = root
         .join("tests")
         .join("kernel_profile")
-        .join("critical_yield.kr");
+        .join("critical_region_yield.kr");
 
     let mut cmd: Command = cargo_bin_cmd!("kernriftc");
     cmd.current_dir(&root)
@@ -150,19 +152,19 @@ fn kernel_profile_denies_yield_in_critical() {
     let assert = cmd.assert().failure().code(1);
     let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
     assert!(
-        stderr.contains("policy: KERNEL_CRITICAL_YIELD:"),
-        "expected KERNEL_CRITICAL_YIELD violation, got:\n{}",
+        stderr.contains("policy: KERNEL_CRITICAL_REGION_YIELD:"),
+        "expected KERNEL_CRITICAL_REGION_YIELD violation, got:\n{}",
         stderr
     );
 }
 
 #[test]
-fn kernel_profile_denies_yield_in_critical_transitive() {
+fn kernel_profile_denies_alloc_in_critical_region() {
     let root = repo_root();
     let fixture = root
         .join("tests")
         .join("kernel_profile")
-        .join("critical_yield_transitive.kr");
+        .join("critical_region_alloc.kr");
 
     let mut cmd: Command = cargo_bin_cmd!("kernriftc");
     cmd.current_dir(&root)
@@ -173,10 +175,50 @@ fn kernel_profile_denies_yield_in_critical_transitive() {
     let assert = cmd.assert().failure().code(1);
     let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
     assert!(
-        stderr.contains("policy: KERNEL_CRITICAL_YIELD:"),
-        "expected KERNEL_CRITICAL_YIELD violation, got:\n{}",
+        stderr.contains("policy: KERNEL_CRITICAL_REGION_ALLOC:"),
+        "expected KERNEL_CRITICAL_REGION_ALLOC violation, got:\n{}",
         stderr
     );
+}
+
+#[test]
+fn kernel_profile_denies_block_in_critical_region() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("critical_region_block.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--profile")
+        .arg("kernel")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.contains("policy: KERNEL_CRITICAL_REGION_BLOCK:"),
+        "expected KERNEL_CRITICAL_REGION_BLOCK violation, got:\n{}",
+        stderr
+    );
+}
+
+#[test]
+fn kernel_profile_allows_balanced_critical_region() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("critical_region_balanced.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--profile")
+        .arg("kernel")
+        .arg(fixture.as_os_str());
+    cmd.assert().success();
 }
 
 #[test]

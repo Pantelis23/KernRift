@@ -164,6 +164,11 @@ fn contracts_value(
         .map_err(|e| format!("failed to serialize caps manifest JSON: {}", e))?;
     let lockgraph_text = emit_lockgraph_json(report)
         .map_err(|e| format!("failed to serialize lockgraph JSON: {}", e))?;
+    let transitive_effects = if schema == ContractsSchema::V2 {
+        Some(transitive_effects_by_function(&canonical))
+    } else {
+        None
+    };
     let report_value = match schema {
         ContractsSchema::V1 => {
             let report_text = emit_report_json(
@@ -173,7 +178,13 @@ fn contracts_value(
             serde_json::from_str(&report_text)
                 .map_err(|e| format!("failed to parse generated report JSON: {}", e))?
         }
-        ContractsSchema::V2 => report_v2_value(&canonical, report),
+        ContractsSchema::V2 => report_v2_value(
+            &canonical,
+            report,
+            transitive_effects
+                .as_ref()
+                .expect("v2 transitive effects must exist"),
+        ),
     };
 
     let caps_value: Value = serde_json::from_str(&caps_text)
@@ -189,7 +200,7 @@ fn contracts_value(
     root.insert("capabilities".to_string(), caps_value);
     root.insert(
         "facts".to_string(),
-        facts_manifest_value(&canonical, schema),
+        facts_manifest_value(&canonical, schema, transitive_effects.as_ref()),
     );
     root.insert("lockgraph".to_string(), lockgraph_value);
     root.insert("report".to_string(), report_value);
@@ -197,12 +208,11 @@ fn contracts_value(
     Ok(Value::Object(root))
 }
 
-fn facts_manifest_value(module: &KrirModule, schema: ContractsSchema) -> Value {
-    let transitive_effects = if schema == ContractsSchema::V2 {
-        Some(transitive_effects_by_function(module))
-    } else {
-        None
-    };
+fn facts_manifest_value(
+    module: &KrirModule,
+    schema: ContractsSchema,
+    transitive_effects: Option<&BTreeMap<String, BTreeSet<Eff>>>,
+) -> Value {
     let symbols = module
         .functions
         .iter()
@@ -243,7 +253,7 @@ fn facts_manifest_value(module: &KrirModule, schema: ContractsSchema) -> Value {
                         .collect(),
                 ),
             );
-            if let Some(eff_map) = transitive_effects.as_ref() {
+            if let Some(eff_map) = transitive_effects {
                 let mut effs = eff_map
                     .get(&f.name)
                     .cloned()
@@ -284,7 +294,11 @@ fn no_yield_json(spans: &BTreeMap<String, NoYieldSpan>) -> Map<String, Value> {
     out
 }
 
-fn report_v2_value(module: &KrirModule, report: &AnalysisReport) -> Value {
+fn report_v2_value(
+    module: &KrirModule,
+    report: &AnalysisReport,
+    transitive_effects: &BTreeMap<String, BTreeSet<Eff>>,
+) -> Value {
     let non_extern_names = module
         .functions
         .iter()
@@ -372,6 +386,35 @@ fn report_v2_value(module: &KrirModule, report: &AnalysisReport) -> Value {
         Value::Number(block_sites_count.into()),
     );
 
+    let (critical_depth_max, critical_violations) =
+        critical_region_findings(module, transitive_effects);
+    let mut critical = Map::new();
+    critical.insert(
+        "depth_max".to_string(),
+        Value::Number(critical_depth_max.into()),
+    );
+    critical.insert(
+        "violations".to_string(),
+        Value::Array(
+            critical_violations
+                .into_iter()
+                .map(|v| {
+                    let mut obj = Map::new();
+                    obj.insert("function".to_string(), Value::String(v.function));
+                    obj.insert("effect".to_string(), Value::String(v.effect));
+                    obj.insert(
+                        "via".to_string(),
+                        match v.via {
+                            Some(via) => Value::String(via),
+                            None => Value::Null,
+                        },
+                    );
+                    Value::Object(obj)
+                })
+                .collect(),
+        ),
+    );
+
     let mut report_obj = Map::new();
     report_obj.insert(
         "max_lock_depth".to_string(),
@@ -383,7 +426,81 @@ fn report_v2_value(module: &KrirModule, report: &AnalysisReport) -> Value {
     );
     report_obj.insert("contexts".to_string(), Value::Object(contexts));
     report_obj.insert("effects".to_string(), Value::Object(effects));
+    report_obj.insert("critical".to_string(), Value::Object(critical));
     Value::Object(report_obj)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct CriticalViolation {
+    function: String,
+    effect: String,
+    via: Option<String>,
+}
+
+fn critical_region_findings(
+    module: &KrirModule,
+    transitive_effects: &BTreeMap<String, BTreeSet<Eff>>,
+) -> (u64, Vec<CriticalViolation>) {
+    let mut depth_max = 0_u64;
+    let mut violations = BTreeSet::<CriticalViolation>::new();
+
+    for function in module.functions.iter().filter(|f| !f.is_extern) {
+        let mut depth = 0_u64;
+        let mut fn_max = 0_u64;
+        for op in &function.ops {
+            match op {
+                KrirOp::CriticalEnter => {
+                    depth += 1;
+                    fn_max = fn_max.max(depth);
+                }
+                KrirOp::CriticalExit => {
+                    depth = depth.saturating_sub(1);
+                }
+                KrirOp::YieldPoint if depth > 0 => {
+                    violations.insert(CriticalViolation {
+                        function: function.name.clone(),
+                        effect: Eff::Yield.as_str().to_string(),
+                        via: None,
+                    });
+                }
+                KrirOp::AllocPoint if depth > 0 => {
+                    violations.insert(CriticalViolation {
+                        function: function.name.clone(),
+                        effect: Eff::Alloc.as_str().to_string(),
+                        via: None,
+                    });
+                }
+                KrirOp::BlockPoint if depth > 0 => {
+                    violations.insert(CriticalViolation {
+                        function: function.name.clone(),
+                        effect: Eff::Block.as_str().to_string(),
+                        via: None,
+                    });
+                }
+                KrirOp::Call { callee } if depth > 0 => {
+                    let effects = transitive_effects
+                        .get(callee)
+                        .cloned()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .collect::<Vec<_>>();
+                    for effect in effects {
+                        if matches!(effect, Eff::Yield | Eff::Alloc | Eff::Block) {
+                            violations.insert(CriticalViolation {
+                                function: function.name.clone(),
+                                effect: effect.as_str().to_string(),
+                                via: Some(callee.clone()),
+                            });
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        depth_max = depth_max.max(fn_max);
+    }
+
+    (depth_max, violations.into_iter().collect())
 }
 
 fn transitive_effects_by_function(module: &KrirModule) -> BTreeMap<String, BTreeSet<Eff>> {
@@ -987,5 +1104,58 @@ mod tests {
         let expected = BTreeSet::from([Eff::Block]);
         assert_eq!(transitive.get("a"), Some(&expected));
         assert_eq!(transitive.get("b"), Some(&expected));
+    }
+
+    #[test]
+    fn contracts_v2_report_includes_critical_region_findings() {
+        let module = KrirModule {
+            module_caps: vec![],
+            functions: vec![
+                Function {
+                    name: "helper".to_string(),
+                    is_extern: false,
+                    ctx_ok: vec![Ctx::Thread],
+                    eff_used: vec![Eff::Yield],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![KrirOp::YieldPoint],
+                },
+                Function {
+                    name: "entry".to_string(),
+                    is_extern: false,
+                    ctx_ok: vec![Ctx::Thread],
+                    eff_used: vec![],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![
+                        KrirOp::CriticalEnter,
+                        KrirOp::Call {
+                            callee: "helper".to_string(),
+                        },
+                        KrirOp::CriticalExit,
+                    ],
+                },
+            ],
+            call_edges: vec![CallEdge {
+                caller: "entry".to_string(),
+                callee: "helper".to_string(),
+            }],
+        };
+        let report = AnalysisReport::default();
+        let json = emit_contracts_json_with_schema(&module, &report, ContractsSchema::V2)
+            .expect("emit contracts v2");
+        let value: Value = serde_json::from_str(&json).expect("parse json");
+        assert_eq!(
+            value["report"]["critical"]["depth_max"],
+            Value::Number(1_u64.into())
+        );
+        let violations = value["report"]["critical"]["violations"]
+            .as_array()
+            .expect("critical violations");
+        assert!(
+            violations.iter().any(|v| v["function"] == "entry"
+                && v["effect"] == "yield"
+                && v["via"] == "helper")
+        );
     }
 }

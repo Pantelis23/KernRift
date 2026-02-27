@@ -72,6 +72,8 @@ struct PolicyKernel {
     forbid_block_in_irq: bool,
     #[serde(default)]
     forbid_yield_in_critical: bool,
+    #[serde(default)]
+    forbid_effects_in_critical: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -107,6 +109,8 @@ struct ContractsReport {
     contexts: ContractsReportContexts,
     #[serde(default)]
     effects: ContractsReportEffects,
+    #[serde(default)]
+    critical: ContractsReportCritical,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -120,7 +124,6 @@ struct ContractsFactSymbol {
     eff_used: Vec<String>,
     #[serde(default)]
     eff_transitive: Vec<String>,
-    attrs: ContractsFactAttrs,
 }
 
 impl ContractsFactSymbol {
@@ -136,18 +139,10 @@ impl ContractsFactSymbol {
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct ContractsFactAttrs {
-    #[serde(default)]
-    critical: bool,
-}
-
 #[derive(Debug, Deserialize, Default)]
 struct ContractsReportContexts {
     #[serde(default)]
     irq_functions: Vec<String>,
-    #[serde(default)]
-    critical_functions: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -158,6 +153,21 @@ struct ContractsReportEffects {
     alloc_sites_count: u64,
     #[serde(default)]
     block_sites_count: u64,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ContractsReportCritical {
+    #[serde(default)]
+    depth_max: u64,
+    #[serde(default)]
+    violations: Vec<ContractsCriticalViolation>,
+}
+
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ContractsCriticalViolation {
+    function: String,
+    effect: String,
+    via: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
@@ -1351,6 +1361,7 @@ fn selftest_json_schemas() -> Result<(), String> {
     }
     if object_keys(&contracts_v2_json["report"])?
         != BTreeSet::from([
+            "critical".to_string(),
             "contexts".to_string(),
             "effects".to_string(),
             "max_lock_depth".to_string(),
@@ -1679,6 +1690,24 @@ fn parse_policy_text(text: &str, source_name: &str) -> Result<PolicyFile, String
     policy.caps.allow_module.sort();
     policy.caps.allow_module.dedup();
 
+    for effect in &mut policy.kernel.forbid_effects_in_critical {
+        *effect = effect.trim().to_ascii_lowercase();
+        if effect.is_empty() {
+            return Err(format!(
+                "invalid policy '{}': forbid_effects_in_critical entries must be non-empty strings",
+                source_name
+            ));
+        }
+        if effect != "alloc" && effect != "block" && effect != "yield" {
+            return Err(format!(
+                "invalid policy '{}': unsupported forbid_effects_in_critical value '{}', expected alloc|block|yield",
+                source_name, effect
+            ));
+        }
+    }
+    policy.kernel.forbid_effects_in_critical.sort();
+    policy.kernel.forbid_effects_in_critical.dedup();
+
     Ok(policy)
 }
 
@@ -1872,31 +1901,39 @@ fn evaluate_policy(policy: &PolicyFile, contracts: &ContractsBundle) -> Vec<Poli
         }
     }
 
+    let mut forbidden_critical_effects = policy.kernel.forbid_effects_in_critical.clone();
     if policy.kernel.forbid_yield_in_critical {
-        let mut critical = contracts.report.contexts.critical_functions.clone();
-        if critical.is_empty() {
-            critical = contracts
-                .facts
-                .symbols
-                .iter()
-                .filter(|symbol| symbol.attrs.critical)
-                .map(|symbol| symbol.name.clone())
-                .collect::<Vec<_>>();
-        }
-        critical.sort();
-        critical.dedup();
-        for symbol in critical {
-            if let Some(symbol_facts) = symbol_by_name.get(symbol.as_str())
-                && symbol_facts.has_eff_transitive("yield")
-            {
-                violations.push(PolicyViolation {
-                    code: "KERNEL_CRITICAL_YIELD",
-                    msg: format!(
-                        "critical function '{}' may yield via transitive effect set",
-                        symbol
-                    ),
-                });
+        forbidden_critical_effects.push("yield".to_string());
+    }
+    forbidden_critical_effects.sort();
+    forbidden_critical_effects.dedup();
+    let forbidden_critical_effects = forbidden_critical_effects
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+
+    if !forbidden_critical_effects.is_empty() {
+        let _critical_depth_max = contracts.report.critical.depth_max;
+        for violation in &contracts.report.critical.violations {
+            if !forbidden_critical_effects.contains(violation.effect.as_str()) {
+                continue;
             }
+            let code = match violation.effect.as_str() {
+                "yield" => "KERNEL_CRITICAL_REGION_YIELD",
+                "alloc" => "KERNEL_CRITICAL_REGION_ALLOC",
+                "block" => "KERNEL_CRITICAL_REGION_BLOCK",
+                _ => continue,
+            };
+            let msg = match violation.via.as_deref() {
+                Some(via) => format!(
+                    "function '{}' uses {} effect in critical region via call to '{}'",
+                    violation.function, violation.effect, via
+                ),
+                None => format!(
+                    "function '{}' uses {} effect in critical region",
+                    violation.function, violation.effect
+                ),
+            };
+            violations.push(PolicyViolation { code, msg });
         }
     }
 

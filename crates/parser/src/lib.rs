@@ -7,6 +7,7 @@ pub struct RawAttr {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Stmt {
     Call(String),
+    Critical(Vec<Stmt>),
     YieldPoint,
     AllocPoint,
     BlockPoint,
@@ -193,6 +194,18 @@ impl<'a> Parser<'a> {
 
             if self.consume_char('}') {
                 break;
+            }
+
+            if self.consume_keyword("critical") {
+                self.skip_ws_comments();
+                if !self.consume_char('{') {
+                    self.error_here("expected '{' after 'critical'");
+                    self.recover_to_next_item();
+                    break;
+                }
+                let inner = self.parse_body();
+                body.push(Stmt::Critical(inner));
+                continue;
             }
 
             match self.read_statement_text() {
@@ -468,8 +481,35 @@ fn parse_invocation(stmt: &str) -> Result<(String, String), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_module;
+    use super::{Stmt, parse_module};
     use proptest::prelude::*;
+
+    #[test]
+    fn parse_critical_block_statement() {
+        let src = r#"
+        fn entry() {
+          critical {
+            helper();
+          }
+        }
+
+        fn helper() {}
+        "#;
+        let ast = parse_module(src).expect("parse");
+        let entry = ast
+            .items
+            .iter()
+            .find(|item| item.name == "entry")
+            .expect("entry function");
+        assert_eq!(entry.body.len(), 1);
+        match &entry.body[0] {
+            Stmt::Critical(inner) => {
+                assert_eq!(inner.len(), 1);
+                assert_eq!(inner[0], Stmt::Call("helper".to_string()));
+            }
+            other => panic!("expected critical statement, got {:?}", other),
+        }
+    }
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(128))]
