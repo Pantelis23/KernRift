@@ -1835,6 +1835,86 @@ allow_caps_in_irq = ["PhysMap"]
 }
 
 #[test]
+fn policy_catalog_rank_order_is_deterministic_across_families() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("policy_families_order.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path = std::env::temp_dir().join(format!("kernrift-policy-rank-{}.json", ts));
+    let policy_path = std::env::temp_dir().join(format!("kernrift-policy-rank-{}.toml", ts));
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+
+    let mut check_cmd: Command = cargo_bin_cmd!("kernriftc");
+    check_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--contracts-schema")
+        .arg("v2")
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg(fixture.as_os_str());
+    check_cmd.assert().success();
+
+    fs::write(
+        &policy_path,
+        r#"
+[limits]
+max_lock_depth = 1
+
+[locks]
+forbid_edges = [["ConsoleLock", "SchedLock"]]
+
+[caps]
+allow_module = ["IoPort"]
+
+[kernel]
+forbid_alloc_in_irq = true
+forbid_effects_in_critical = ["alloc"]
+forbid_caps_in_irq = ["PhysMap"]
+allow_caps_in_irq = []
+"#,
+    )
+    .expect("write policy");
+
+    let mut policy_cmd: Command = cargo_bin_cmd!("kernriftc");
+    policy_cmd
+        .current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    let assert = policy_cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let lines = stderr
+        .lines()
+        .filter(|line| line.starts_with("policy: "))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lines,
+        vec![
+            "policy: CAP_MODULE_ALLOWLIST: module capability 'PhysMap' is not in allow_module",
+            "policy: KERNEL_CRITICAL_REGION_ALLOC: function 'entry' uses alloc effect in critical region (direct=true, via_callee=[], via_extern=[])",
+            "policy: KERNEL_IRQ_ALLOC: function 'entry' is irq-reachable and uses alloc effect (direct=true, via_callee=[], via_extern=[])",
+            "policy: KERNEL_IRQ_CAP_FORBID: function 'entry' is irq-reachable and uses forbidden capability 'PhysMap' (direct=true, via_callee=[], via_extern=[])",
+            "policy: LIMIT_MAX_LOCK_DEPTH: max_lock_depth 2 exceeds limit 1",
+            "policy: LOCK_FORBID_EDGE: forbidden lock edge 'ConsoleLock -> SchedLock' is present",
+        ],
+        "catalog rank ordering must be deterministic, got:\n{}",
+        stderr
+    );
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
 fn policy_bad_parse_exits_with_invalid_input_code() {
     let root = repo_root();
     let fixture = root
