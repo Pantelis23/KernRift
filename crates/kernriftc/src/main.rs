@@ -305,6 +305,19 @@ enum PolicyConditionDescriptor {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum PolicyViolationBinderKind {
+    SchemaMismatch,
+    LockDepth,
+    ForbiddenLockEdge,
+    NoYieldLimit,
+    NoYieldUnbounded,
+    IrqEffect,
+    CriticalRegionViolation,
+    ModuleCapability,
+    IrqCapability,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum PolicyArtifactDependency {
     PolicySchemaVersion,
     CapabilitiesModuleCaps,
@@ -436,6 +449,7 @@ struct PolicyRuleSpec {
     trigger_kind: PolicyTriggerKind,
     artifact_dependencies: &'static [PolicyArtifactDependency],
     condition_descriptors: &'static [PolicyConditionDescriptor],
+    binder_kind: PolicyViolationBinderKind,
 }
 
 const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
@@ -452,6 +466,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         trigger_kind: PolicyTriggerKind::ModuleCapabilityDisallowed,
         artifact_dependencies: DEPENDS_ON_CAPABILITIES_MODULE_CAPS,
         condition_descriptors: CONDITIONS_MODULE_CAPABILITY_NOT_ALLOWED,
+        binder_kind: PolicyViolationBinderKind::ModuleCapability,
     },
     PolicyRuleSpec {
         rule: PolicyRule::KernelCriticalRegionAlloc,
@@ -466,6 +481,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         trigger_kind: PolicyTriggerKind::CriticalRegionEffectForbidden { effect: "alloc" },
         artifact_dependencies: DEPENDS_ON_CRITICAL_REGION_EFFECT,
         condition_descriptors: CONDITIONS_CRITICAL_REGION_ALLOC,
+        binder_kind: PolicyViolationBinderKind::CriticalRegionViolation,
     },
     PolicyRuleSpec {
         rule: PolicyRule::KernelCriticalRegionBlock,
@@ -480,6 +496,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         trigger_kind: PolicyTriggerKind::CriticalRegionEffectForbidden { effect: "block" },
         artifact_dependencies: DEPENDS_ON_CRITICAL_REGION_EFFECT,
         condition_descriptors: CONDITIONS_CRITICAL_REGION_BLOCK,
+        binder_kind: PolicyViolationBinderKind::CriticalRegionViolation,
     },
     PolicyRuleSpec {
         rule: PolicyRule::KernelCriticalRegionYield,
@@ -494,6 +511,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         trigger_kind: PolicyTriggerKind::CriticalRegionEffectForbidden { effect: "yield" },
         artifact_dependencies: DEPENDS_ON_CRITICAL_REGION_EFFECT,
         condition_descriptors: CONDITIONS_CRITICAL_REGION_YIELD,
+        binder_kind: PolicyViolationBinderKind::CriticalRegionViolation,
     },
     PolicyRuleSpec {
         rule: PolicyRule::KernelIrqAlloc,
@@ -508,6 +526,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         trigger_kind: PolicyTriggerKind::IrqEffectForbidden { effect: "alloc" },
         artifact_dependencies: DEPENDS_ON_IRQ_EFFECT_ALLOC,
         condition_descriptors: CONDITIONS_IRQ_EFFECT_ALLOC,
+        binder_kind: PolicyViolationBinderKind::IrqEffect,
     },
     PolicyRuleSpec {
         rule: PolicyRule::KernelIrqBlock,
@@ -522,6 +541,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         trigger_kind: PolicyTriggerKind::IrqEffectForbidden { effect: "block" },
         artifact_dependencies: DEPENDS_ON_IRQ_EFFECT_BLOCK,
         condition_descriptors: CONDITIONS_IRQ_EFFECT_BLOCK,
+        binder_kind: PolicyViolationBinderKind::IrqEffect,
     },
     PolicyRuleSpec {
         rule: PolicyRule::KernelIrqCapForbid,
@@ -536,6 +556,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         trigger_kind: PolicyTriggerKind::IrqCapabilityForbidden,
         artifact_dependencies: DEPENDS_ON_IRQ_CAPABILITY,
         condition_descriptors: CONDITIONS_IRQ_CAPABILITY,
+        binder_kind: PolicyViolationBinderKind::IrqCapability,
     },
     PolicyRuleSpec {
         rule: PolicyRule::KernelPolicyRequiresV2,
@@ -550,6 +571,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         trigger_kind: PolicyTriggerKind::SchemaCompatibility,
         artifact_dependencies: DEPENDS_ON_POLICY_SCHEMA_VERSION,
         condition_descriptors: CONDITIONS_SCHEMA_VERSION_REQUIRES_V2,
+        binder_kind: PolicyViolationBinderKind::SchemaMismatch,
     },
     PolicyRuleSpec {
         rule: PolicyRule::LimitMaxLockDepth,
@@ -564,6 +586,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         trigger_kind: PolicyTriggerKind::LockDepthExceeded,
         artifact_dependencies: DEPENDS_ON_REPORT_MAX_LOCK_DEPTH,
         condition_descriptors: CONDITIONS_LOCK_DEPTH_ABOVE_LIMIT,
+        binder_kind: PolicyViolationBinderKind::LockDepth,
     },
     PolicyRuleSpec {
         rule: PolicyRule::LockForbidEdge,
@@ -578,6 +601,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         trigger_kind: PolicyTriggerKind::ForbiddenLockEdgePresent,
         artifact_dependencies: DEPENDS_ON_LOCKGRAPH_EDGES,
         condition_descriptors: CONDITIONS_FORBIDDEN_LOCK_EDGE,
+        binder_kind: PolicyViolationBinderKind::ForbiddenLockEdge,
     },
     PolicyRuleSpec {
         rule: PolicyRule::NoYieldSpanLimit,
@@ -592,6 +616,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         trigger_kind: PolicyTriggerKind::NoYieldSpanExceeded,
         artifact_dependencies: DEPENDS_ON_REPORT_NO_YIELD_SPANS,
         condition_descriptors: CONDITIONS_NO_YIELD_SPAN_LIMIT,
+        binder_kind: PolicyViolationBinderKind::NoYieldLimit,
     },
     PolicyRuleSpec {
         rule: PolicyRule::NoYieldUnbounded,
@@ -606,6 +631,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         trigger_kind: PolicyTriggerKind::NoYieldUnbounded,
         artifact_dependencies: DEPENDS_ON_REPORT_NO_YIELD_SPANS,
         condition_descriptors: CONDITIONS_NO_YIELD_SPAN_UNBOUNDED,
+        binder_kind: PolicyViolationBinderKind::NoYieldUnbounded,
     },
 ];
 
@@ -2429,7 +2455,14 @@ fn evaluate_context_rules(
     if let Some(observation) =
         policy_rule_requires_v2_schema_mismatch(policy, contracts, requires_v2_rule.rule)
     {
-        violations.push(bind_schema_mismatch_observation(observation));
+        let binder_kind = policy_rule_binder_kind(requires_v2_rule.rule);
+        debug_assert_eq!(binder_kind, PolicyViolationBinderKind::SchemaMismatch);
+        violations.push(match binder_kind {
+            PolicyViolationBinderKind::SchemaMismatch => {
+                bind_schema_mismatch_observation(observation)
+            }
+            _ => unreachable!("unexpected binder kind for {:?}", requires_v2_rule.rule),
+        });
         return (violations, false);
     }
     (violations, true)
@@ -2457,7 +2490,14 @@ fn evaluate_lock_rules(policy: &PolicyFile, contracts: &ContractsBundle) -> Vec<
                     if let Some(observation) =
                         policy_rule_lock_depth_violation(policy, contracts, spec.rule)
                     {
-                        violations.push(bind_lock_depth_observation(observation));
+                        let binder_kind = policy_rule_binder_kind(spec.rule);
+                        debug_assert_eq!(binder_kind, PolicyViolationBinderKind::LockDepth);
+                        violations.push(match binder_kind {
+                            PolicyViolationBinderKind::LockDepth => {
+                                bind_lock_depth_observation(observation)
+                            }
+                            _ => unreachable!("unexpected binder kind for {:?}", spec.rule),
+                        });
                     }
                 }
                 PolicyConditionDescriptor::ForbiddenLockEdgeObserved => {
@@ -2467,7 +2507,14 @@ fn evaluate_lock_rules(policy: &PolicyFile, contracts: &ContractsBundle) -> Vec<
                         spec.rule,
                         &observed_edges,
                     ) {
-                        violations.push(bind_forbidden_lock_edge_observation(observation));
+                        let binder_kind = policy_rule_binder_kind(spec.rule);
+                        debug_assert_eq!(binder_kind, PolicyViolationBinderKind::ForbiddenLockEdge);
+                        violations.push(match binder_kind {
+                            PolicyViolationBinderKind::ForbiddenLockEdge => {
+                                bind_forbidden_lock_edge_observation(observation)
+                            }
+                            _ => unreachable!("unexpected binder kind for {:?}", spec.rule),
+                        });
                     }
                 }
                 _ => {}
@@ -2496,23 +2543,40 @@ fn evaluate_effect_rules(
                     for observation in
                         policy_rule_no_yield_limit_violations(policy, contracts, spec.rule)
                     {
-                        violations.push(bind_no_yield_limit_observation(observation));
+                        let binder_kind = policy_rule_binder_kind(spec.rule);
+                        debug_assert_eq!(binder_kind, PolicyViolationBinderKind::NoYieldLimit);
+                        violations.push(match binder_kind {
+                            PolicyViolationBinderKind::NoYieldLimit => {
+                                bind_no_yield_limit_observation(observation)
+                            }
+                            _ => unreachable!("unexpected binder kind for {:?}", spec.rule),
+                        });
                     }
                 }
                 PolicyConditionDescriptor::NoYieldSpanUnbounded => {
                     for observation in
                         policy_rule_no_yield_unbounded_violations(policy, contracts, spec.rule)
                     {
-                        violations.push(bind_no_yield_unbounded_observation(observation));
+                        let binder_kind = policy_rule_binder_kind(spec.rule);
+                        debug_assert_eq!(binder_kind, PolicyViolationBinderKind::NoYieldUnbounded);
+                        violations.push(match binder_kind {
+                            PolicyViolationBinderKind::NoYieldUnbounded => {
+                                bind_no_yield_unbounded_observation(observation)
+                            }
+                            _ => unreachable!("unexpected binder kind for {:?}", spec.rule),
+                        });
                     }
                 }
                 PolicyConditionDescriptor::IrqEffectObserved { effect } if kernel_v2_allowed => {
                     for observation in policy_rule_irq_effect_violations(view, spec.rule) {
-                        violations.push(bind_irq_effect_observation(
-                            spec.rule,
-                            effect,
-                            observation,
-                        ));
+                        let binder_kind = policy_rule_binder_kind(spec.rule);
+                        debug_assert_eq!(binder_kind, PolicyViolationBinderKind::IrqEffect);
+                        violations.push(match binder_kind {
+                            PolicyViolationBinderKind::IrqEffect => {
+                                bind_irq_effect_observation(spec.rule, effect, observation)
+                            }
+                            _ => unreachable!("unexpected binder kind for {:?}", spec.rule),
+                        });
                     }
                 }
                 _ => {}
@@ -2542,7 +2606,17 @@ fn evaluate_region_rules(
         if let Some(rule) = rules_by_effect.get(violation.effect.as_str())
             && policy_rule_is_enabled(policy, *rule)
         {
-            violations.push(bind_critical_region_violation(*rule, violation));
+            let binder_kind = policy_rule_binder_kind(*rule);
+            debug_assert_eq!(
+                binder_kind,
+                PolicyViolationBinderKind::CriticalRegionViolation
+            );
+            violations.push(match binder_kind {
+                PolicyViolationBinderKind::CriticalRegionViolation => {
+                    bind_critical_region_violation(*rule, violation)
+                }
+                _ => unreachable!("unexpected binder kind for {:?}", rule),
+            });
         }
     }
 
@@ -2563,7 +2637,14 @@ fn evaluate_capability_rules(
         PolicyRule::CapModuleAllowlist,
     ) {
         if policy_rule_is_enabled(policy, PolicyRule::CapModuleAllowlist) {
-            violations.push(bind_module_capability_observation(observation));
+            let binder_kind = policy_rule_binder_kind(PolicyRule::CapModuleAllowlist);
+            debug_assert_eq!(binder_kind, PolicyViolationBinderKind::ModuleCapability);
+            violations.push(match binder_kind {
+                PolicyViolationBinderKind::ModuleCapability => {
+                    bind_module_capability_observation(observation)
+                }
+                _ => unreachable!("unexpected binder kind for CAP_MODULE_ALLOWLIST"),
+            });
         }
     }
 
@@ -2571,7 +2652,14 @@ fn evaluate_capability_rules(
         for observation in
             policy_rule_irq_capability_violations(policy, view, PolicyRule::KernelIrqCapForbid)
         {
-            violations.push(bind_irq_capability_observation(observation));
+            let binder_kind = policy_rule_binder_kind(PolicyRule::KernelIrqCapForbid);
+            debug_assert_eq!(binder_kind, PolicyViolationBinderKind::IrqCapability);
+            violations.push(match binder_kind {
+                PolicyViolationBinderKind::IrqCapability => {
+                    bind_irq_capability_observation(observation)
+                }
+                _ => unreachable!("unexpected binder kind for KERNEL_IRQ_CAP_FORBID"),
+            });
         }
     }
 
@@ -2616,6 +2704,10 @@ fn policy_family_specs(family: PolicyFamily) -> impl Iterator<Item = PolicyRuleS
 
 fn policy_rule_conditions(rule: PolicyRule) -> &'static [PolicyConditionDescriptor] {
     policy_rule_spec(rule).condition_descriptors
+}
+
+fn policy_rule_binder_kind(rule: PolicyRule) -> PolicyViolationBinderKind {
+    policy_rule_spec(rule).binder_kind
 }
 
 fn policy_condition_effect(descriptor: PolicyConditionDescriptor) -> Option<&'static str> {
@@ -3053,20 +3145,6 @@ enum PolicyConditionObservationKind {
 }
 
 #[cfg(test)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum PolicyViolationBinderPath {
-    SchemaMismatch,
-    LockDepth,
-    ForbiddenLockEdge,
-    NoYieldLimit,
-    NoYieldUnbounded,
-    IrqEffect,
-    CriticalRegionViolation,
-    ModuleCapability,
-    IrqCapability,
-}
-
-#[cfg(test)]
 fn policy_condition_helper_path(
     descriptor: PolicyConditionDescriptor,
 ) -> PolicyConditionHelperPath {
@@ -3127,27 +3205,27 @@ fn policy_condition_observation_kind(
 }
 
 #[cfg(test)]
-fn policy_observation_binder_path(
+fn policy_observation_binder_kind(
     kind: PolicyConditionObservationKind,
-) -> PolicyViolationBinderPath {
+) -> PolicyViolationBinderKind {
     match kind {
-        PolicyConditionObservationKind::SchemaMismatch => PolicyViolationBinderPath::SchemaMismatch,
-        PolicyConditionObservationKind::LockDepth => PolicyViolationBinderPath::LockDepth,
+        PolicyConditionObservationKind::SchemaMismatch => PolicyViolationBinderKind::SchemaMismatch,
+        PolicyConditionObservationKind::LockDepth => PolicyViolationBinderKind::LockDepth,
         PolicyConditionObservationKind::ForbiddenLockEdge => {
-            PolicyViolationBinderPath::ForbiddenLockEdge
+            PolicyViolationBinderKind::ForbiddenLockEdge
         }
-        PolicyConditionObservationKind::NoYieldLimit => PolicyViolationBinderPath::NoYieldLimit,
+        PolicyConditionObservationKind::NoYieldLimit => PolicyViolationBinderKind::NoYieldLimit,
         PolicyConditionObservationKind::NoYieldUnbounded => {
-            PolicyViolationBinderPath::NoYieldUnbounded
+            PolicyViolationBinderKind::NoYieldUnbounded
         }
-        PolicyConditionObservationKind::IrqEffect => PolicyViolationBinderPath::IrqEffect,
+        PolicyConditionObservationKind::IrqEffect => PolicyViolationBinderKind::IrqEffect,
         PolicyConditionObservationKind::CriticalRegionRule => {
-            PolicyViolationBinderPath::CriticalRegionViolation
+            PolicyViolationBinderKind::CriticalRegionViolation
         }
         PolicyConditionObservationKind::ModuleCapability => {
-            PolicyViolationBinderPath::ModuleCapability
+            PolicyViolationBinderKind::ModuleCapability
         }
-        PolicyConditionObservationKind::IrqCapability => PolicyViolationBinderPath::IrqCapability,
+        PolicyConditionObservationKind::IrqCapability => PolicyViolationBinderKind::IrqCapability,
     }
 }
 
@@ -3474,6 +3552,7 @@ mod tests {
             assert_eq!(looked_up.trigger_kind, spec.trigger_kind);
             assert_eq!(looked_up.artifact_dependencies, spec.artifact_dependencies);
             assert_eq!(looked_up.condition_descriptors, spec.condition_descriptors);
+            assert_eq!(looked_up.binder_kind, spec.binder_kind);
         }
     }
 
@@ -3847,22 +3926,29 @@ mod tests {
     }
 
     #[test]
-    fn every_observation_kind_maps_to_binder_path() {
+    fn every_rule_declares_one_binder_kind() {
+        for spec in POLICY_RULE_CATALOG {
+            match spec.binder_kind {
+                PolicyViolationBinderKind::SchemaMismatch
+                | PolicyViolationBinderKind::LockDepth
+                | PolicyViolationBinderKind::ForbiddenLockEdge
+                | PolicyViolationBinderKind::NoYieldLimit
+                | PolicyViolationBinderKind::NoYieldUnbounded
+                | PolicyViolationBinderKind::IrqEffect
+                | PolicyViolationBinderKind::CriticalRegionViolation
+                | PolicyViolationBinderKind::ModuleCapability
+                | PolicyViolationBinderKind::IrqCapability => {}
+            }
+        }
+    }
+
+    #[test]
+    fn binder_kind_matches_condition_observation_kind() {
         for spec in POLICY_RULE_CATALOG {
             for descriptor in spec.condition_descriptors {
                 let kind = policy_condition_observation_kind(*descriptor);
-                let path = policy_observation_binder_path(kind);
-                match path {
-                    PolicyViolationBinderPath::SchemaMismatch
-                    | PolicyViolationBinderPath::LockDepth
-                    | PolicyViolationBinderPath::ForbiddenLockEdge
-                    | PolicyViolationBinderPath::NoYieldLimit
-                    | PolicyViolationBinderPath::NoYieldUnbounded
-                    | PolicyViolationBinderPath::IrqEffect
-                    | PolicyViolationBinderPath::CriticalRegionViolation
-                    | PolicyViolationBinderPath::ModuleCapability
-                    | PolicyViolationBinderPath::IrqCapability => {}
-                }
+                let binder_kind = policy_observation_binder_kind(kind);
+                assert_eq!(binder_kind, spec.binder_kind);
             }
         }
     }
@@ -3915,14 +4001,14 @@ mod tests {
         for spec in POLICY_RULE_CATALOG {
             for descriptor in spec.condition_descriptors {
                 if policy_condition_effect(*descriptor).is_some() {
-                    let path = policy_observation_binder_path(policy_condition_observation_kind(
+                    let path = policy_observation_binder_kind(policy_condition_observation_kind(
                         *descriptor,
                     ));
                     assert!(
                         matches!(
                             path,
-                            PolicyViolationBinderPath::IrqEffect
-                                | PolicyViolationBinderPath::CriticalRegionViolation
+                            PolicyViolationBinderKind::IrqEffect
+                                | PolicyViolationBinderKind::CriticalRegionViolation
                         ),
                         "effect descriptor {:?} for {:?} must use an effect-aware binder path",
                         descriptor,
@@ -3970,9 +4056,55 @@ mod tests {
             PolicyConditionObservationKind::SchemaMismatch
         );
         assert_eq!(
-            policy_observation_binder_path(PolicyConditionObservationKind::SchemaMismatch),
-            PolicyViolationBinderPath::SchemaMismatch
+            policy_observation_binder_kind(PolicyConditionObservationKind::SchemaMismatch),
+            PolicyViolationBinderKind::SchemaMismatch
         );
+        assert_eq!(spec.binder_kind, PolicyViolationBinderKind::SchemaMismatch);
+    }
+
+    #[test]
+    fn no_impossible_rule_binder_pairings_exist() {
+        for spec in POLICY_RULE_CATALOG {
+            match spec.rule {
+                PolicyRule::CapModuleAllowlist => {
+                    assert_eq!(
+                        spec.binder_kind,
+                        PolicyViolationBinderKind::ModuleCapability
+                    )
+                }
+                PolicyRule::KernelCriticalRegionAlloc
+                | PolicyRule::KernelCriticalRegionBlock
+                | PolicyRule::KernelCriticalRegionYield => assert_eq!(
+                    spec.binder_kind,
+                    PolicyViolationBinderKind::CriticalRegionViolation
+                ),
+                PolicyRule::KernelIrqAlloc | PolicyRule::KernelIrqBlock => {
+                    assert_eq!(spec.binder_kind, PolicyViolationBinderKind::IrqEffect)
+                }
+                PolicyRule::KernelIrqCapForbid => {
+                    assert_eq!(spec.binder_kind, PolicyViolationBinderKind::IrqCapability)
+                }
+                PolicyRule::KernelPolicyRequiresV2 => {
+                    assert_eq!(spec.binder_kind, PolicyViolationBinderKind::SchemaMismatch)
+                }
+                PolicyRule::LimitMaxLockDepth => {
+                    assert_eq!(spec.binder_kind, PolicyViolationBinderKind::LockDepth)
+                }
+                PolicyRule::LockForbidEdge => assert_eq!(
+                    spec.binder_kind,
+                    PolicyViolationBinderKind::ForbiddenLockEdge
+                ),
+                PolicyRule::NoYieldSpanLimit => {
+                    assert_eq!(spec.binder_kind, PolicyViolationBinderKind::NoYieldLimit)
+                }
+                PolicyRule::NoYieldUnbounded => {
+                    assert_eq!(
+                        spec.binder_kind,
+                        PolicyViolationBinderKind::NoYieldUnbounded
+                    )
+                }
+            }
+        }
     }
 
     #[test]
@@ -3980,43 +4112,43 @@ mod tests {
         for spec in POLICY_RULE_CATALOG {
             for descriptor in spec.condition_descriptors {
                 let kind = policy_condition_observation_kind(*descriptor);
-                let path = policy_observation_binder_path(kind);
-                match (kind, path) {
+                let binder_kind = policy_observation_binder_kind(kind);
+                match (kind, binder_kind) {
                     (
                         PolicyConditionObservationKind::SchemaMismatch,
-                        PolicyViolationBinderPath::SchemaMismatch,
+                        PolicyViolationBinderKind::SchemaMismatch,
                     )
                     | (
                         PolicyConditionObservationKind::LockDepth,
-                        PolicyViolationBinderPath::LockDepth,
+                        PolicyViolationBinderKind::LockDepth,
                     )
                     | (
                         PolicyConditionObservationKind::ForbiddenLockEdge,
-                        PolicyViolationBinderPath::ForbiddenLockEdge,
+                        PolicyViolationBinderKind::ForbiddenLockEdge,
                     )
                     | (
                         PolicyConditionObservationKind::NoYieldLimit,
-                        PolicyViolationBinderPath::NoYieldLimit,
+                        PolicyViolationBinderKind::NoYieldLimit,
                     )
                     | (
                         PolicyConditionObservationKind::NoYieldUnbounded,
-                        PolicyViolationBinderPath::NoYieldUnbounded,
+                        PolicyViolationBinderKind::NoYieldUnbounded,
                     )
                     | (
                         PolicyConditionObservationKind::IrqEffect,
-                        PolicyViolationBinderPath::IrqEffect,
+                        PolicyViolationBinderKind::IrqEffect,
                     )
                     | (
                         PolicyConditionObservationKind::CriticalRegionRule,
-                        PolicyViolationBinderPath::CriticalRegionViolation,
+                        PolicyViolationBinderKind::CriticalRegionViolation,
                     )
                     | (
                         PolicyConditionObservationKind::ModuleCapability,
-                        PolicyViolationBinderPath::ModuleCapability,
+                        PolicyViolationBinderKind::ModuleCapability,
                     )
                     | (
                         PolicyConditionObservationKind::IrqCapability,
-                        PolicyViolationBinderPath::IrqCapability,
+                        PolicyViolationBinderKind::IrqCapability,
                     ) => {}
                     other => panic!(
                         "impossible observation/binder pairing {:?} for {:?}",
