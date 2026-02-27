@@ -80,6 +80,8 @@ Policy family structure (kernel policy evaluation):
 - capability rules
 - each family emits structured violations rendered via a family-specific deterministic formatter
   - external line shape remains: `policy: <CODE>: <message>`
+- policy rule metadata is cataloged centrally (`code`, `family`, `sort_rank`, `requires_v2`)
+  - violation ordering is deterministic by `sort_rank`, then `code`, then message
 
 Policy consumes contracts artifacts directly (v2 facts/report) and does not reconstruct
 hidden call-graph semantics when those facts are already present in the artifact.

@@ -221,18 +221,117 @@ enum PolicyFamily {
     Limit,
 }
 
+const RULE_CAP_MODULE_ALLOWLIST: &str = "CAP_MODULE_ALLOWLIST";
+const RULE_KERNEL_CRITICAL_REGION_ALLOC: &str = "KERNEL_CRITICAL_REGION_ALLOC";
+const RULE_KERNEL_CRITICAL_REGION_BLOCK: &str = "KERNEL_CRITICAL_REGION_BLOCK";
+const RULE_KERNEL_CRITICAL_REGION_YIELD: &str = "KERNEL_CRITICAL_REGION_YIELD";
+const RULE_KERNEL_IRQ_ALLOC: &str = "KERNEL_IRQ_ALLOC";
+const RULE_KERNEL_IRQ_BLOCK: &str = "KERNEL_IRQ_BLOCK";
+const RULE_KERNEL_IRQ_CAP_FORBID: &str = "KERNEL_IRQ_CAP_FORBID";
+const RULE_KERNEL_POLICY_REQUIRES_V2: &str = "KERNEL_POLICY_REQUIRES_V2";
+const RULE_LIMIT_MAX_LOCK_DEPTH: &str = "LIMIT_MAX_LOCK_DEPTH";
+const RULE_LOCK_FORBID_EDGE: &str = "LOCK_FORBID_EDGE";
+const RULE_NO_YIELD_SPAN_LIMIT: &str = "NO_YIELD_SPAN_LIMIT";
+const RULE_NO_YIELD_UNBOUNDED: &str = "NO_YIELD_UNBOUNDED";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PolicyRuleSpec {
+    code: &'static str,
+    family: PolicyFamily,
+    sort_rank: u32,
+    requires_v2: bool,
+}
+
+const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
+    PolicyRuleSpec {
+        code: RULE_CAP_MODULE_ALLOWLIST,
+        family: PolicyFamily::Capability,
+        sort_rank: 100,
+        requires_v2: false,
+    },
+    PolicyRuleSpec {
+        code: RULE_KERNEL_CRITICAL_REGION_ALLOC,
+        family: PolicyFamily::Region,
+        sort_rank: 101,
+        requires_v2: true,
+    },
+    PolicyRuleSpec {
+        code: RULE_KERNEL_CRITICAL_REGION_BLOCK,
+        family: PolicyFamily::Region,
+        sort_rank: 102,
+        requires_v2: true,
+    },
+    PolicyRuleSpec {
+        code: RULE_KERNEL_CRITICAL_REGION_YIELD,
+        family: PolicyFamily::Region,
+        sort_rank: 103,
+        requires_v2: true,
+    },
+    PolicyRuleSpec {
+        code: RULE_KERNEL_IRQ_ALLOC,
+        family: PolicyFamily::Effect,
+        sort_rank: 104,
+        requires_v2: true,
+    },
+    PolicyRuleSpec {
+        code: RULE_KERNEL_IRQ_BLOCK,
+        family: PolicyFamily::Effect,
+        sort_rank: 105,
+        requires_v2: true,
+    },
+    PolicyRuleSpec {
+        code: RULE_KERNEL_IRQ_CAP_FORBID,
+        family: PolicyFamily::Capability,
+        sort_rank: 106,
+        requires_v2: true,
+    },
+    PolicyRuleSpec {
+        code: RULE_KERNEL_POLICY_REQUIRES_V2,
+        family: PolicyFamily::Context,
+        sort_rank: 107,
+        requires_v2: false,
+    },
+    PolicyRuleSpec {
+        code: RULE_LIMIT_MAX_LOCK_DEPTH,
+        family: PolicyFamily::Limit,
+        sort_rank: 108,
+        requires_v2: false,
+    },
+    PolicyRuleSpec {
+        code: RULE_LOCK_FORBID_EDGE,
+        family: PolicyFamily::Lock,
+        sort_rank: 109,
+        requires_v2: false,
+    },
+    PolicyRuleSpec {
+        code: RULE_NO_YIELD_SPAN_LIMIT,
+        family: PolicyFamily::Effect,
+        sort_rank: 110,
+        requires_v2: false,
+    },
+    PolicyRuleSpec {
+        code: RULE_NO_YIELD_UNBOUNDED,
+        family: PolicyFamily::Effect,
+        sort_rank: 111,
+        requires_v2: false,
+    },
+];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PolicyViolation {
     family: PolicyFamily,
+    sort_rank: u32,
+    requires_v2: bool,
     code: &'static str,
     msg: String,
 }
 
 impl Ord for PolicyViolation {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        (self.code, &self.msg)
-            .cmp(&(other.code, &other.msg))
+        (self.sort_rank, self.code, &self.msg)
+            .cmp(&(other.sort_rank, other.code, &other.msg))
             .then_with(|| self.family.cmp(&other.family))
+            .then_with(|| self.requires_v2.cmp(&other.requires_v2))
     }
 }
 
@@ -1977,7 +2076,7 @@ fn evaluate_effect_rules(
                     && symbol.has_eff_transitive("alloc")
                 {
                     violations.push(violation_kernel_irq_effect(
-                        "KERNEL_IRQ_ALLOC",
+                        RULE_KERNEL_IRQ_ALLOC,
                         symbol_name,
                         "alloc",
                         symbol.eff_provenance("alloc"),
@@ -1992,7 +2091,7 @@ fn evaluate_effect_rules(
                     && symbol.has_eff_transitive("block")
                 {
                     violations.push(violation_kernel_irq_effect(
-                        "KERNEL_IRQ_BLOCK",
+                        RULE_KERNEL_IRQ_BLOCK,
                         symbol_name,
                         "block",
                         symbol.eff_provenance("block"),
@@ -2034,9 +2133,9 @@ fn evaluate_region_rules(
             continue;
         }
         let code = match violation.effect.as_str() {
-            "yield" => "KERNEL_CRITICAL_REGION_YIELD",
-            "alloc" => "KERNEL_CRITICAL_REGION_ALLOC",
-            "block" => "KERNEL_CRITICAL_REGION_BLOCK",
+            "yield" => RULE_KERNEL_CRITICAL_REGION_YIELD,
+            "alloc" => RULE_KERNEL_CRITICAL_REGION_ALLOC,
+            "block" => RULE_KERNEL_CRITICAL_REGION_BLOCK,
             _ => continue,
         };
         violations.push(violation_kernel_critical_region_effect(
@@ -2133,25 +2232,20 @@ fn format_optional_provenance(provenance: Option<&ContractsProvenance>) -> Strin
         .unwrap_or_else(|| "direct=false, via_callee=[], via_extern=[]".to_string())
 }
 
-fn policy_rule_family(code: &'static str) -> PolicyFamily {
-    match code {
-        "KERNEL_POLICY_REQUIRES_V2" => PolicyFamily::Context,
-        "LOCK_FORBID_EDGE" => PolicyFamily::Lock,
-        "KERNEL_IRQ_ALLOC" | "KERNEL_IRQ_BLOCK" | "NO_YIELD_UNBOUNDED" | "NO_YIELD_SPAN_LIMIT" => {
-            PolicyFamily::Effect
-        }
-        "KERNEL_CRITICAL_REGION_YIELD"
-        | "KERNEL_CRITICAL_REGION_ALLOC"
-        | "KERNEL_CRITICAL_REGION_BLOCK" => PolicyFamily::Region,
-        "CAP_MODULE_ALLOWLIST" | "KERNEL_IRQ_CAP_FORBID" => PolicyFamily::Capability,
-        "LIMIT_MAX_LOCK_DEPTH" => PolicyFamily::Limit,
-        _ => PolicyFamily::Effect,
-    }
+fn policy_rule_spec(code: &'static str) -> PolicyRuleSpec {
+    POLICY_RULE_CATALOG
+        .iter()
+        .copied()
+        .find(|spec| spec.code == code)
+        .unwrap_or_else(|| panic!("unknown policy rule code '{}'", code))
 }
 
 fn policy_violation(code: &'static str, msg: String) -> PolicyViolation {
+    let spec = policy_rule_spec(code);
     PolicyViolation {
-        family: policy_rule_family(code),
+        family: spec.family,
+        sort_rank: spec.sort_rank,
+        requires_v2: spec.requires_v2,
         code,
         msg,
     }
@@ -2159,7 +2253,7 @@ fn policy_violation(code: &'static str, msg: String) -> PolicyViolation {
 
 fn violation_kernel_policy_requires_v2() -> PolicyViolation {
     policy_violation(
-        "KERNEL_POLICY_REQUIRES_V2",
+        RULE_KERNEL_POLICY_REQUIRES_V2,
         format!(
             "kernel policy rules require contracts schema '{}'",
             CONTRACTS_SCHEMA_VERSION_V2
@@ -2169,21 +2263,21 @@ fn violation_kernel_policy_requires_v2() -> PolicyViolation {
 
 fn violation_limit_max_lock_depth(observed: u64, limit: u64) -> PolicyViolation {
     policy_violation(
-        "LIMIT_MAX_LOCK_DEPTH",
+        RULE_LIMIT_MAX_LOCK_DEPTH,
         format!("max_lock_depth {} exceeds limit {}", observed, limit),
     )
 }
 
 fn violation_lock_forbid_edge(from: &str, to: &str) -> PolicyViolation {
     policy_violation(
-        "LOCK_FORBID_EDGE",
+        RULE_LOCK_FORBID_EDGE,
         format!("forbidden lock edge '{} -> {}' is present", from, to),
     )
 }
 
 fn violation_no_yield_span_limit(symbol: &str, span: u64, limit: u64) -> PolicyViolation {
     policy_violation(
-        "NO_YIELD_SPAN_LIMIT",
+        RULE_NO_YIELD_SPAN_LIMIT,
         format!(
             "no_yield_spans '{}' has span {} above limit {}",
             symbol, span, limit
@@ -2193,7 +2287,7 @@ fn violation_no_yield_span_limit(symbol: &str, span: u64, limit: u64) -> PolicyV
 
 fn violation_no_yield_unbounded_with_limit(symbol: &str, limit: u64) -> PolicyViolation {
     policy_violation(
-        "NO_YIELD_UNBOUNDED",
+        RULE_NO_YIELD_UNBOUNDED,
         format!(
             "no_yield_spans '{}' is unbounded and violates max_no_yield_span {}",
             symbol, limit
@@ -2203,7 +2297,7 @@ fn violation_no_yield_unbounded_with_limit(symbol: &str, limit: u64) -> PolicyVi
 
 fn violation_no_yield_unbounded(symbol: &str) -> PolicyViolation {
     policy_violation(
-        "NO_YIELD_UNBOUNDED",
+        RULE_NO_YIELD_UNBOUNDED,
         format!("no_yield_spans '{}' is unbounded", symbol),
     )
 }
@@ -2244,7 +2338,7 @@ fn violation_kernel_critical_region_effect(
 
 fn violation_cap_module_allowlist(capability: &str) -> PolicyViolation {
     policy_violation(
-        "CAP_MODULE_ALLOWLIST",
+        RULE_CAP_MODULE_ALLOWLIST,
         format!("module capability '{}' is not in allow_module", capability),
     )
 }
@@ -2255,7 +2349,7 @@ fn violation_kernel_irq_cap_forbid(
     provenance: Option<&ContractsProvenance>,
 ) -> PolicyViolation {
     policy_violation(
-        "KERNEL_IRQ_CAP_FORBID",
+        RULE_KERNEL_IRQ_CAP_FORBID,
         format!(
             "function '{}' is irq-reachable and uses forbidden capability '{}' ({})",
             symbol_name,
@@ -2381,4 +2475,83 @@ fn print_usage() {
     eprintln!("  kernriftc --emit contracts <file.kr>");
     eprintln!("  kernriftc --emit report --metrics max_lock_depth,no_yield_spans <file.kr>");
     eprintln!("  kernriftc --report max_lock_depth,no_yield_spans <file.kr>");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn policy_rule_catalog_is_complete_for_emitted_codes() {
+        let catalog_codes = POLICY_RULE_CATALOG
+            .iter()
+            .map(|spec| spec.code)
+            .collect::<BTreeSet<_>>();
+        let emitted_codes = BTreeSet::from([
+            RULE_CAP_MODULE_ALLOWLIST,
+            RULE_KERNEL_CRITICAL_REGION_ALLOC,
+            RULE_KERNEL_CRITICAL_REGION_BLOCK,
+            RULE_KERNEL_CRITICAL_REGION_YIELD,
+            RULE_KERNEL_IRQ_ALLOC,
+            RULE_KERNEL_IRQ_BLOCK,
+            RULE_KERNEL_IRQ_CAP_FORBID,
+            RULE_KERNEL_POLICY_REQUIRES_V2,
+            RULE_LIMIT_MAX_LOCK_DEPTH,
+            RULE_LOCK_FORBID_EDGE,
+            RULE_NO_YIELD_SPAN_LIMIT,
+            RULE_NO_YIELD_UNBOUNDED,
+        ]);
+        assert_eq!(
+            catalog_codes, emitted_codes,
+            "policy catalog must contain every emitted rule code"
+        );
+    }
+
+    #[test]
+    fn policy_rule_catalog_marks_v2_required_rules() {
+        let v2_required_codes = POLICY_RULE_CATALOG
+            .iter()
+            .filter(|spec| spec.requires_v2)
+            .map(|spec| spec.code)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            v2_required_codes,
+            BTreeSet::from([
+                RULE_KERNEL_CRITICAL_REGION_ALLOC,
+                RULE_KERNEL_CRITICAL_REGION_BLOCK,
+                RULE_KERNEL_CRITICAL_REGION_YIELD,
+                RULE_KERNEL_IRQ_ALLOC,
+                RULE_KERNEL_IRQ_BLOCK,
+                RULE_KERNEL_IRQ_CAP_FORBID,
+            ])
+        );
+    }
+
+    #[test]
+    fn policy_violations_sort_by_rank_then_code_then_message() {
+        let mut violations = [
+            policy_violation(RULE_LOCK_FORBID_EDGE, "z".to_string()),
+            policy_violation(RULE_KERNEL_IRQ_ALLOC, "b".to_string()),
+            policy_violation(RULE_KERNEL_IRQ_ALLOC, "a".to_string()),
+            policy_violation(RULE_CAP_MODULE_ALLOWLIST, "m".to_string()),
+            policy_violation(RULE_LIMIT_MAX_LOCK_DEPTH, "x".to_string()),
+        ];
+        violations.sort();
+
+        let ordered = violations
+            .iter()
+            .map(|v| (v.sort_rank, v.code, v.msg.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ordered,
+            vec![
+                (100, RULE_CAP_MODULE_ALLOWLIST, "m"),
+                (104, RULE_KERNEL_IRQ_ALLOC, "a"),
+                (104, RULE_KERNEL_IRQ_ALLOC, "b"),
+                (108, RULE_LIMIT_MAX_LOCK_DEPTH, "x"),
+                (109, RULE_LOCK_FORBID_EDGE, "z"),
+            ]
+        );
+    }
 }
