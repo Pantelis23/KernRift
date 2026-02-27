@@ -291,6 +291,19 @@ enum PolicyTriggerKind {
     NoYieldUnbounded,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PolicyConditionDescriptor {
+    ModuleCapabilityNotAllowed,
+    CriticalRegionEffectObserved { effect: &'static str },
+    IrqEffectObserved { effect: &'static str },
+    IrqCapabilityObserved,
+    SchemaVersionRequiresV2,
+    LockDepthAboveConfiguredLimit,
+    ForbiddenLockEdgeObserved,
+    NoYieldSpanAboveConfiguredLimit,
+    NoYieldSpanUnbounded,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum PolicyArtifactDependency {
     PolicySchemaVersion,
@@ -384,6 +397,30 @@ const DEPENDS_ON_LOCKGRAPH_EDGES: &[PolicyArtifactDependency] =
     &[PolicyArtifactDependency::LockgraphEdges];
 const DEPENDS_ON_REPORT_NO_YIELD_SPANS: &[PolicyArtifactDependency] =
     &[PolicyArtifactDependency::ReportNoYieldSpans];
+const CONDITIONS_MODULE_CAPABILITY_NOT_ALLOWED: &[PolicyConditionDescriptor] =
+    &[PolicyConditionDescriptor::ModuleCapabilityNotAllowed];
+const CONDITIONS_CRITICAL_REGION_ALLOC: &[PolicyConditionDescriptor] =
+    &[PolicyConditionDescriptor::CriticalRegionEffectObserved { effect: "alloc" }];
+const CONDITIONS_CRITICAL_REGION_BLOCK: &[PolicyConditionDescriptor] =
+    &[PolicyConditionDescriptor::CriticalRegionEffectObserved { effect: "block" }];
+const CONDITIONS_CRITICAL_REGION_YIELD: &[PolicyConditionDescriptor] =
+    &[PolicyConditionDescriptor::CriticalRegionEffectObserved { effect: "yield" }];
+const CONDITIONS_IRQ_EFFECT_ALLOC: &[PolicyConditionDescriptor] =
+    &[PolicyConditionDescriptor::IrqEffectObserved { effect: "alloc" }];
+const CONDITIONS_IRQ_EFFECT_BLOCK: &[PolicyConditionDescriptor] =
+    &[PolicyConditionDescriptor::IrqEffectObserved { effect: "block" }];
+const CONDITIONS_IRQ_CAPABILITY: &[PolicyConditionDescriptor] =
+    &[PolicyConditionDescriptor::IrqCapabilityObserved];
+const CONDITIONS_SCHEMA_VERSION_REQUIRES_V2: &[PolicyConditionDescriptor] =
+    &[PolicyConditionDescriptor::SchemaVersionRequiresV2];
+const CONDITIONS_LOCK_DEPTH_ABOVE_LIMIT: &[PolicyConditionDescriptor] =
+    &[PolicyConditionDescriptor::LockDepthAboveConfiguredLimit];
+const CONDITIONS_FORBIDDEN_LOCK_EDGE: &[PolicyConditionDescriptor] =
+    &[PolicyConditionDescriptor::ForbiddenLockEdgeObserved];
+const CONDITIONS_NO_YIELD_SPAN_LIMIT: &[PolicyConditionDescriptor] =
+    &[PolicyConditionDescriptor::NoYieldSpanAboveConfiguredLimit];
+const CONDITIONS_NO_YIELD_SPAN_UNBOUNDED: &[PolicyConditionDescriptor] =
+    &[PolicyConditionDescriptor::NoYieldSpanUnbounded];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PolicyRuleSpec {
@@ -398,6 +435,7 @@ struct PolicyRuleSpec {
     enablement_probes: &'static [PolicyEnablementProbe],
     trigger_kind: PolicyTriggerKind,
     artifact_dependencies: &'static [PolicyArtifactDependency],
+    condition_descriptors: &'static [PolicyConditionDescriptor],
 }
 
 const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
@@ -413,6 +451,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         enablement_probes: ENABLE_IF_CAPS_ALLOW_MODULE_NON_EMPTY,
         trigger_kind: PolicyTriggerKind::ModuleCapabilityDisallowed,
         artifact_dependencies: DEPENDS_ON_CAPABILITIES_MODULE_CAPS,
+        condition_descriptors: CONDITIONS_MODULE_CAPABILITY_NOT_ALLOWED,
     },
     PolicyRuleSpec {
         rule: PolicyRule::KernelCriticalRegionAlloc,
@@ -426,6 +465,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         enablement_probes: ENABLE_IF_KERNEL_CRITICAL_EFFECT_ALLOC,
         trigger_kind: PolicyTriggerKind::CriticalRegionEffectForbidden { effect: "alloc" },
         artifact_dependencies: DEPENDS_ON_CRITICAL_REGION_EFFECT,
+        condition_descriptors: CONDITIONS_CRITICAL_REGION_ALLOC,
     },
     PolicyRuleSpec {
         rule: PolicyRule::KernelCriticalRegionBlock,
@@ -439,6 +479,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         enablement_probes: ENABLE_IF_KERNEL_CRITICAL_EFFECT_BLOCK,
         trigger_kind: PolicyTriggerKind::CriticalRegionEffectForbidden { effect: "block" },
         artifact_dependencies: DEPENDS_ON_CRITICAL_REGION_EFFECT,
+        condition_descriptors: CONDITIONS_CRITICAL_REGION_BLOCK,
     },
     PolicyRuleSpec {
         rule: PolicyRule::KernelCriticalRegionYield,
@@ -452,6 +493,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         enablement_probes: ENABLE_IF_KERNEL_CRITICAL_YIELD,
         trigger_kind: PolicyTriggerKind::CriticalRegionEffectForbidden { effect: "yield" },
         artifact_dependencies: DEPENDS_ON_CRITICAL_REGION_EFFECT,
+        condition_descriptors: CONDITIONS_CRITICAL_REGION_YIELD,
     },
     PolicyRuleSpec {
         rule: PolicyRule::KernelIrqAlloc,
@@ -465,6 +507,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         enablement_probes: ENABLE_IF_KERNEL_FORBID_ALLOC_IN_IRQ,
         trigger_kind: PolicyTriggerKind::IrqEffectForbidden { effect: "alloc" },
         artifact_dependencies: DEPENDS_ON_IRQ_EFFECT_ALLOC,
+        condition_descriptors: CONDITIONS_IRQ_EFFECT_ALLOC,
     },
     PolicyRuleSpec {
         rule: PolicyRule::KernelIrqBlock,
@@ -478,6 +521,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         enablement_probes: ENABLE_IF_KERNEL_FORBID_BLOCK_IN_IRQ,
         trigger_kind: PolicyTriggerKind::IrqEffectForbidden { effect: "block" },
         artifact_dependencies: DEPENDS_ON_IRQ_EFFECT_BLOCK,
+        condition_descriptors: CONDITIONS_IRQ_EFFECT_BLOCK,
     },
     PolicyRuleSpec {
         rule: PolicyRule::KernelIrqCapForbid,
@@ -491,6 +535,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         enablement_probes: ENABLE_IF_KERNEL_IRQ_CAPS_CONFIGURED,
         trigger_kind: PolicyTriggerKind::IrqCapabilityForbidden,
         artifact_dependencies: DEPENDS_ON_IRQ_CAPABILITY,
+        condition_descriptors: CONDITIONS_IRQ_CAPABILITY,
     },
     PolicyRuleSpec {
         rule: PolicyRule::KernelPolicyRequiresV2,
@@ -504,6 +549,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         enablement_probes: ENABLE_IF_KERNEL_V2_RULES_ENABLED,
         trigger_kind: PolicyTriggerKind::SchemaCompatibility,
         artifact_dependencies: DEPENDS_ON_POLICY_SCHEMA_VERSION,
+        condition_descriptors: CONDITIONS_SCHEMA_VERSION_REQUIRES_V2,
     },
     PolicyRuleSpec {
         rule: PolicyRule::LimitMaxLockDepth,
@@ -517,6 +563,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         enablement_probes: ENABLE_IF_LIMIT_MAX_LOCK_DEPTH_SET,
         trigger_kind: PolicyTriggerKind::LockDepthExceeded,
         artifact_dependencies: DEPENDS_ON_REPORT_MAX_LOCK_DEPTH,
+        condition_descriptors: CONDITIONS_LOCK_DEPTH_ABOVE_LIMIT,
     },
     PolicyRuleSpec {
         rule: PolicyRule::LockForbidEdge,
@@ -530,6 +577,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         enablement_probes: ENABLE_IF_LOCK_FORBID_EDGES_CONFIGURED,
         trigger_kind: PolicyTriggerKind::ForbiddenLockEdgePresent,
         artifact_dependencies: DEPENDS_ON_LOCKGRAPH_EDGES,
+        condition_descriptors: CONDITIONS_FORBIDDEN_LOCK_EDGE,
     },
     PolicyRuleSpec {
         rule: PolicyRule::NoYieldSpanLimit,
@@ -543,6 +591,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         enablement_probes: ENABLE_IF_LIMIT_MAX_NO_YIELD_SPAN_SET,
         trigger_kind: PolicyTriggerKind::NoYieldSpanExceeded,
         artifact_dependencies: DEPENDS_ON_REPORT_NO_YIELD_SPANS,
+        condition_descriptors: CONDITIONS_NO_YIELD_SPAN_LIMIT,
     },
     PolicyRuleSpec {
         rule: PolicyRule::NoYieldUnbounded,
@@ -556,6 +605,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         enablement_probes: ENABLE_IF_LIMIT_FORBID_UNBOUNDED_NO_YIELD,
         trigger_kind: PolicyTriggerKind::NoYieldUnbounded,
         artifact_dependencies: DEPENDS_ON_REPORT_NO_YIELD_SPANS,
+        condition_descriptors: CONDITIONS_NO_YIELD_SPAN_UNBOUNDED,
     },
 ];
 
@@ -2375,7 +2425,18 @@ fn evaluate_context_rules(
     contracts: &ContractsBundle,
 ) -> (Vec<PolicyViolation>, bool) {
     let mut violations = Vec::<PolicyViolation>::new();
-    if kernel_rules_enabled(policy) && contracts.schema_version != CONTRACTS_SCHEMA_VERSION_V2 {
+    let requires_v2_rule = policy_rule_spec(PolicyRule::KernelPolicyRequiresV2);
+    if policy_rule_is_enabled(policy, requires_v2_rule.rule)
+        && policy_rule_conditions(requires_v2_rule.rule)
+            .iter()
+            .any(|descriptor| {
+                matches!(
+                    descriptor,
+                    PolicyConditionDescriptor::SchemaVersionRequiresV2
+                )
+            })
+        && contracts.schema_version != CONTRACTS_SCHEMA_VERSION_V2
+    {
         violations.push(violation_kernel_policy_requires_v2());
         return (violations, false);
     }
@@ -2398,28 +2459,32 @@ fn evaluate_lock_rules(policy: &PolicyFile, contracts: &ContractsBundle) -> Vec<
         if !policy_rule_is_enabled(policy, spec.rule) {
             continue;
         }
-        match spec.trigger_kind {
-            PolicyTriggerKind::LockDepthExceeded => {
-                if let Some(limit) = policy.limits.max_lock_depth
-                    && contracts.report.max_lock_depth > limit
-                {
-                    violations.push(violation_limit_max_lock_depth(
-                        contracts.report.max_lock_depth,
-                        limit,
-                    ));
-                }
-            }
-            PolicyTriggerKind::ForbiddenLockEdgePresent => {
-                for edge in &policy.locks.forbid_edges {
-                    if observed_edges.contains(&(edge[0].as_str(), edge[1].as_str())) {
-                        violations.push(violation_lock_forbid_edge(
-                            edge[0].as_str(),
-                            edge[1].as_str(),
+        for descriptor in spec.condition_descriptors {
+            match descriptor {
+                PolicyConditionDescriptor::LockDepthAboveConfiguredLimit => {
+                    if let Some(limit) = policy_rule_max_lock_depth(policy, spec.rule)
+                        && contracts.report.max_lock_depth > limit
+                    {
+                        violations.push(violation_limit_max_lock_depth(
+                            contracts.report.max_lock_depth,
+                            limit,
                         ));
                     }
                 }
+                PolicyConditionDescriptor::ForbiddenLockEdgeObserved => {
+                    if let Some(edges) = policy_rule_forbidden_lock_edges(policy, spec.rule) {
+                        for edge in edges {
+                            if observed_edges.contains(&(edge[0].as_str(), edge[1].as_str())) {
+                                violations.push(violation_lock_forbid_edge(
+                                    edge[0].as_str(),
+                                    edge[1].as_str(),
+                                ));
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
-            _ => {}
         }
     }
 
@@ -2438,47 +2503,52 @@ fn evaluate_effect_rules(
         if !policy_rule_is_enabled(policy, spec.rule) {
             continue;
         }
-        match spec.trigger_kind {
-            PolicyTriggerKind::NoYieldSpanExceeded => {
-                if let Some(limit) = policy.limits.max_no_yield_span {
-                    for (symbol, span) in &contracts.report.no_yield_spans {
-                        match span {
-                            ContractsNoYieldSpan::Bounded(v) if *v > limit => {
-                                violations.push(violation_no_yield_span_limit(symbol, *v, limit));
+        for descriptor in spec.condition_descriptors {
+            match descriptor {
+                PolicyConditionDescriptor::NoYieldSpanAboveConfiguredLimit => {
+                    if let Some(limit) = policy_rule_max_no_yield_span(policy, spec.rule) {
+                        for (symbol, span) in &contracts.report.no_yield_spans {
+                            match span {
+                                ContractsNoYieldSpan::Bounded(v) if *v > limit => {
+                                    violations
+                                        .push(violation_no_yield_span_limit(symbol, *v, limit));
+                                }
+                                ContractsNoYieldSpan::Unbounded(v) if v == "unbounded" => {
+                                    violations.push(violation_no_yield_unbounded_with_limit(
+                                        symbol, limit,
+                                    ));
+                                }
+                                _ => {}
                             }
-                            ContractsNoYieldSpan::Unbounded(v) if v == "unbounded" => {
-                                violations
-                                    .push(violation_no_yield_unbounded_with_limit(symbol, limit));
-                            }
-                            _ => {}
                         }
                     }
                 }
-            }
-            PolicyTriggerKind::NoYieldUnbounded => {
-                for (symbol, span) in &contracts.report.no_yield_spans {
-                    if span.is_unbounded() {
-                        violations.push(violation_no_yield_unbounded(symbol));
+                PolicyConditionDescriptor::NoYieldSpanUnbounded => {
+                    for (symbol, span) in &contracts.report.no_yield_spans {
+                        if span.is_unbounded() {
+                            violations.push(violation_no_yield_unbounded(symbol));
+                        }
                     }
                 }
-            }
-            PolicyTriggerKind::IrqEffectForbidden { .. } if kernel_v2_allowed => {
-                let effect = policy_rule_effect(spec.rule)
-                    .expect("irq effect rule must declare an effect trigger");
-                for symbol_name in &view.irq_symbol_names {
-                    if let Some(symbol) = view.symbol_by_name.get(*symbol_name)
-                        && symbol.has_eff_transitive(effect)
-                    {
-                        violations.push(violation_kernel_irq_effect(
-                            spec.rule,
-                            symbol_name,
-                            effect,
-                            symbol.eff_provenance(effect),
-                        ));
+                PolicyConditionDescriptor::IrqEffectObserved { effect } if kernel_v2_allowed => {
+                    let canonical_effect = policy_rule_effect_condition(spec.rule)
+                        .expect("irq effect rule must declare an effect condition");
+                    debug_assert_eq!(canonical_effect, *effect);
+                    for symbol_name in &view.irq_symbol_names {
+                        if let Some(symbol) = view.symbol_by_name.get(*symbol_name)
+                            && symbol.has_eff_transitive(effect)
+                        {
+                            violations.push(violation_kernel_irq_effect(
+                                spec.rule,
+                                symbol_name,
+                                effect,
+                                symbol.eff_provenance(effect),
+                            ));
+                        }
                     }
                 }
+                _ => {}
             }
-            _ => {}
         }
     }
 
@@ -2497,13 +2567,13 @@ fn evaluate_region_rules(
 
     let rules_by_effect = policy_family_specs(PolicyFamily::Region)
         .filter_map(|spec| {
-            policy_rule_effect(spec.rule)
-                .map(|effect| (effect, spec.rule))
-                .filter(|_| {
-                    matches!(
-                        spec.trigger_kind,
-                        PolicyTriggerKind::CriticalRegionEffectForbidden { .. }
-                    )
+            policy_rule_conditions(spec.rule)
+                .iter()
+                .find_map(|descriptor| match descriptor {
+                    PolicyConditionDescriptor::CriticalRegionEffectObserved { effect } => {
+                        Some((*effect, spec.rule))
+                    }
+                    _ => None,
                 })
         })
         .collect::<BTreeMap<_, _>>();
@@ -2532,13 +2602,10 @@ fn evaluate_capability_rules(
 ) -> Vec<PolicyViolation> {
     let mut violations = Vec::<PolicyViolation>::new();
 
-    if policy_rule_is_enabled(policy, PolicyRule::CapModuleAllowlist) {
-        let allowed_caps = policy
-            .caps
-            .allow_module
-            .iter()
-            .map(|c| c.as_str())
-            .collect::<BTreeSet<_>>();
+    if let Some(allowed) = policy_rule_module_cap_allowlist(policy, PolicyRule::CapModuleAllowlist)
+        && policy_rule_is_enabled(policy, PolicyRule::CapModuleAllowlist)
+    {
+        let allowed_caps = allowed.iter().map(|c| c.as_str()).collect::<BTreeSet<_>>();
         let mut disallowed = contracts
             .capabilities
             .module_caps
@@ -2554,16 +2621,11 @@ fn evaluate_capability_rules(
         }
     }
 
-    if kernel_v2_allowed && policy_rule_is_enabled(policy, PolicyRule::KernelIrqCapForbid) {
-        let allowed_caps = policy
-            .kernel
-            .allow_caps_in_irq
-            .iter()
-            .cloned()
-            .collect::<BTreeSet<_>>();
-        let mut forbidden_caps = policy.kernel.forbid_caps_in_irq.clone();
-        forbidden_caps.sort();
-        forbidden_caps.dedup();
+    if kernel_v2_allowed
+        && policy_rule_is_enabled(policy, PolicyRule::KernelIrqCapForbid)
+        && let Some((allowed_caps, forbidden_caps)) =
+            policy_rule_irq_capability_lists(policy, PolicyRule::KernelIrqCapForbid)
+    {
         for cap in forbidden_caps {
             // Explicit precedence: allowlist wins over forbidlist.
             if allowed_caps.contains(&cap) {
@@ -2622,12 +2684,96 @@ fn policy_family_specs(family: PolicyFamily) -> impl Iterator<Item = PolicyRuleS
         .filter(move |spec| spec.family == family)
 }
 
-fn policy_rule_effect(rule: PolicyRule) -> Option<&'static str> {
-    match policy_rule_spec(rule).trigger_kind {
-        PolicyTriggerKind::CriticalRegionEffectForbidden { effect }
-        | PolicyTriggerKind::IrqEffectForbidden { effect } => Some(effect),
+fn policy_rule_conditions(rule: PolicyRule) -> &'static [PolicyConditionDescriptor] {
+    policy_rule_spec(rule).condition_descriptors
+}
+
+fn policy_condition_effect(descriptor: PolicyConditionDescriptor) -> Option<&'static str> {
+    match descriptor {
+        PolicyConditionDescriptor::CriticalRegionEffectObserved { effect }
+        | PolicyConditionDescriptor::IrqEffectObserved { effect } => Some(effect),
         _ => None,
     }
+}
+
+fn policy_rule_effect_condition(rule: PolicyRule) -> Option<&'static str> {
+    policy_rule_conditions(rule)
+        .iter()
+        .find_map(|descriptor| policy_condition_effect(*descriptor))
+}
+
+fn policy_rule_max_lock_depth(policy: &PolicyFile, rule: PolicyRule) -> Option<u64> {
+    policy_rule_conditions(rule)
+        .iter()
+        .any(|descriptor| {
+            matches!(
+                descriptor,
+                PolicyConditionDescriptor::LockDepthAboveConfiguredLimit
+            )
+        })
+        .then_some(policy.limits.max_lock_depth)
+        .flatten()
+}
+
+fn policy_rule_forbidden_lock_edges(
+    policy: &PolicyFile,
+    rule: PolicyRule,
+) -> Option<&[[String; 2]]> {
+    policy_rule_conditions(rule)
+        .iter()
+        .any(|descriptor| {
+            matches!(
+                descriptor,
+                PolicyConditionDescriptor::ForbiddenLockEdgeObserved
+            )
+        })
+        .then_some(policy.locks.forbid_edges.as_slice())
+}
+
+fn policy_rule_max_no_yield_span(policy: &PolicyFile, rule: PolicyRule) -> Option<u64> {
+    policy_rule_conditions(rule)
+        .iter()
+        .any(|descriptor| {
+            matches!(
+                descriptor,
+                PolicyConditionDescriptor::NoYieldSpanAboveConfiguredLimit
+            )
+        })
+        .then_some(policy.limits.max_no_yield_span)
+        .flatten()
+}
+
+fn policy_rule_module_cap_allowlist(policy: &PolicyFile, rule: PolicyRule) -> Option<&[String]> {
+    policy_rule_conditions(rule)
+        .iter()
+        .any(|descriptor| {
+            matches!(
+                descriptor,
+                PolicyConditionDescriptor::ModuleCapabilityNotAllowed
+            )
+        })
+        .then_some(policy.caps.allow_module.as_slice())
+}
+
+fn policy_rule_irq_capability_lists(
+    policy: &PolicyFile,
+    rule: PolicyRule,
+) -> Option<(BTreeSet<String>, Vec<String>)> {
+    policy_rule_conditions(rule)
+        .iter()
+        .any(|descriptor| matches!(descriptor, PolicyConditionDescriptor::IrqCapabilityObserved))
+        .then(|| {
+            let allowed = policy
+                .kernel
+                .allow_caps_in_irq
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            let mut forbidden = policy.kernel.forbid_caps_in_irq.clone();
+            forbidden.sort();
+            forbidden.dedup();
+            (allowed, forbidden)
+        })
 }
 
 #[cfg(test)]
@@ -2952,6 +3098,7 @@ mod tests {
             assert_eq!(looked_up.enablement_probes, spec.enablement_probes);
             assert_eq!(looked_up.trigger_kind, spec.trigger_kind);
             assert_eq!(looked_up.artifact_dependencies, spec.artifact_dependencies);
+            assert_eq!(looked_up.condition_descriptors, spec.condition_descriptors);
         }
     }
 
@@ -3206,6 +3353,85 @@ mod tests {
     }
 
     #[test]
+    fn every_rule_declares_at_least_one_condition_descriptor() {
+        for spec in POLICY_RULE_CATALOG {
+            assert!(
+                !spec.condition_descriptors.is_empty(),
+                "rule {:?} must declare condition descriptors",
+                spec.rule
+            );
+        }
+    }
+
+    #[test]
+    fn effect_condition_descriptors_match_trigger_metadata() {
+        for spec in POLICY_RULE_CATALOG {
+            let trigger_effect = match spec.trigger_kind {
+                PolicyTriggerKind::CriticalRegionEffectForbidden { effect }
+                | PolicyTriggerKind::IrqEffectForbidden { effect } => Some(effect),
+                _ => None,
+            };
+            let condition_effects = spec
+                .condition_descriptors
+                .iter()
+                .filter_map(|descriptor| policy_condition_effect(*descriptor))
+                .collect::<Vec<_>>();
+            if let Some(effect) = trigger_effect {
+                assert_eq!(
+                    condition_effects,
+                    vec![effect],
+                    "effect-bearing rule {:?} must declare exactly one matching effect condition",
+                    spec.rule
+                );
+            } else {
+                assert!(
+                    condition_effects.is_empty(),
+                    "non-effect rule {:?} must not declare effect conditions",
+                    spec.rule
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn no_impossible_descriptor_family_pairings_exist() {
+        for spec in POLICY_RULE_CATALOG {
+            for descriptor in spec.condition_descriptors {
+                match descriptor {
+                    PolicyConditionDescriptor::ModuleCapabilityNotAllowed => {
+                        assert_eq!(spec.family, PolicyFamily::Capability);
+                    }
+                    PolicyConditionDescriptor::CriticalRegionEffectObserved { .. } => {
+                        assert_eq!(spec.family, PolicyFamily::Region);
+                    }
+                    PolicyConditionDescriptor::IrqEffectObserved { .. } => {
+                        assert_eq!(spec.family, PolicyFamily::Effect);
+                    }
+                    PolicyConditionDescriptor::IrqCapabilityObserved => {
+                        assert_eq!(spec.family, PolicyFamily::Capability);
+                    }
+                    PolicyConditionDescriptor::SchemaVersionRequiresV2 => {
+                        assert_eq!(spec.rule, PolicyRule::KernelPolicyRequiresV2);
+                        assert_eq!(spec.family, PolicyFamily::Context);
+                    }
+                    PolicyConditionDescriptor::LockDepthAboveConfiguredLimit => {
+                        assert_eq!(spec.rule, PolicyRule::LimitMaxLockDepth);
+                    }
+                    PolicyConditionDescriptor::ForbiddenLockEdgeObserved => {
+                        assert_eq!(spec.rule, PolicyRule::LockForbidEdge);
+                    }
+                    PolicyConditionDescriptor::NoYieldSpanAboveConfiguredLimit => {
+                        assert_eq!(spec.rule, PolicyRule::NoYieldSpanLimit);
+                    }
+                    PolicyConditionDescriptor::NoYieldSpanUnbounded => {
+                        assert_eq!(spec.rule, PolicyRule::NoYieldUnbounded);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn requires_v2_rules_depend_on_v2_only_artifacts() {
         for spec in POLICY_RULE_CATALOG.iter().filter(|spec| spec.requires_v2) {
             assert!(
@@ -3260,6 +3486,15 @@ mod tests {
         assert!(
             !policy_rule_is_enabled(&via_non_v2_rule, PolicyRule::KernelPolicyRequiresV2),
             "non-v2-only rules should not enable KERNEL_POLICY_REQUIRES_V2"
+        );
+    }
+
+    #[test]
+    fn kernel_policy_requires_v2_remains_metadata_derived_condition() {
+        assert_eq!(
+            policy_rule_conditions(PolicyRule::KernelPolicyRequiresV2),
+            CONDITIONS_SCHEMA_VERSION_REQUIRES_V2,
+            "KERNEL_POLICY_REQUIRES_V2 must remain schema-compatibility metadata"
         );
     }
 
