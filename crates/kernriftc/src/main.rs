@@ -211,10 +211,35 @@ impl ContractsNoYieldSpan {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum PolicyFamily {
+    Context,
+    Lock,
+    Effect,
+    Region,
+    Capability,
+    Limit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct PolicyViolation {
+    family: PolicyFamily,
     code: &'static str,
     msg: String,
+}
+
+impl Ord for PolicyViolation {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (self.code, &self.msg)
+            .cmp(&(other.code, &other.msg))
+            .then_with(|| self.family.cmp(&other.family))
+    }
+}
+
+impl PartialOrd for PolicyViolation {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 #[derive(Debug)]
@@ -1879,13 +1904,7 @@ fn evaluate_context_rules(
 ) -> (Vec<PolicyViolation>, bool) {
     let mut violations = Vec::<PolicyViolation>::new();
     if kernel_rules_enabled(policy) && contracts.schema_version != CONTRACTS_SCHEMA_VERSION_V2 {
-        violations.push(PolicyViolation {
-            code: "KERNEL_POLICY_REQUIRES_V2",
-            msg: format!(
-                "kernel policy rules require contracts schema '{}'",
-                CONTRACTS_SCHEMA_VERSION_V2
-            ),
-        });
+        violations.push(violation_kernel_policy_requires_v2());
         return (violations, false);
     }
     (violations, true)
@@ -1897,13 +1916,10 @@ fn evaluate_lock_rules(policy: &PolicyFile, contracts: &ContractsBundle) -> Vec<
     if let Some(limit) = policy.limits.max_lock_depth
         && contracts.report.max_lock_depth > limit
     {
-        violations.push(PolicyViolation {
-            code: "LIMIT_MAX_LOCK_DEPTH",
-            msg: format!(
-                "max_lock_depth {} exceeds limit {}",
-                contracts.report.max_lock_depth, limit
-            ),
-        });
+        violations.push(violation_limit_max_lock_depth(
+            contracts.report.max_lock_depth,
+            limit,
+        ));
     }
 
     let observed_edges = contracts
@@ -1914,13 +1930,10 @@ fn evaluate_lock_rules(policy: &PolicyFile, contracts: &ContractsBundle) -> Vec<
         .collect::<BTreeSet<_>>();
     for edge in &policy.locks.forbid_edges {
         if observed_edges.contains(&(edge[0].as_str(), edge[1].as_str())) {
-            violations.push(PolicyViolation {
-                code: "LOCK_FORBID_EDGE",
-                msg: format!(
-                    "forbidden lock edge '{} -> {}' is present",
-                    edge[0], edge[1]
-                ),
-            });
+            violations.push(violation_lock_forbid_edge(
+                edge[0].as_str(),
+                edge[1].as_str(),
+            ));
         }
     }
 
@@ -1939,22 +1952,10 @@ fn evaluate_effect_rules(
         for (symbol, span) in &contracts.report.no_yield_spans {
             match span {
                 ContractsNoYieldSpan::Bounded(v) if *v > limit => {
-                    violations.push(PolicyViolation {
-                        code: "NO_YIELD_SPAN_LIMIT",
-                        msg: format!(
-                            "no_yield_spans '{}' has span {} above limit {}",
-                            symbol, v, limit
-                        ),
-                    });
+                    violations.push(violation_no_yield_span_limit(symbol, *v, limit));
                 }
                 ContractsNoYieldSpan::Unbounded(v) if v == "unbounded" => {
-                    violations.push(PolicyViolation {
-                        code: "NO_YIELD_UNBOUNDED",
-                        msg: format!(
-                            "no_yield_spans '{}' is unbounded and violates max_no_yield_span {}",
-                            symbol, limit
-                        ),
-                    });
+                    violations.push(violation_no_yield_unbounded_with_limit(symbol, limit));
                 }
                 _ => {}
             }
@@ -1964,10 +1965,7 @@ fn evaluate_effect_rules(
     if policy.limits.forbid_unbounded_no_yield {
         for (symbol, span) in &contracts.report.no_yield_spans {
             if span.is_unbounded() {
-                violations.push(PolicyViolation {
-                    code: "NO_YIELD_UNBOUNDED",
-                    msg: format!("no_yield_spans '{}' is unbounded", symbol),
-                });
+                violations.push(violation_no_yield_unbounded(symbol));
             }
         }
     }
@@ -1978,19 +1976,12 @@ fn evaluate_effect_rules(
                 if let Some(symbol) = view.symbol_by_name.get(*symbol_name)
                     && symbol.has_eff_transitive("alloc")
                 {
-                    violations.push(PolicyViolation {
-                        code: "KERNEL_IRQ_ALLOC",
-                        msg: format!(
-                            "function '{}' is irq-reachable and uses alloc effect ({})",
-                            symbol_name,
-                            symbol
-                                .eff_provenance("alloc")
-                                .map(format_provenance)
-                                .unwrap_or_else(
-                                    || "direct=false, via_callee=[], via_extern=[]".to_string()
-                                )
-                        ),
-                    });
+                    violations.push(violation_kernel_irq_effect(
+                        "KERNEL_IRQ_ALLOC",
+                        symbol_name,
+                        "alloc",
+                        symbol.eff_provenance("alloc"),
+                    ));
                 }
             }
         }
@@ -2000,19 +1991,12 @@ fn evaluate_effect_rules(
                 if let Some(symbol) = view.symbol_by_name.get(*symbol_name)
                     && symbol.has_eff_transitive("block")
                 {
-                    violations.push(PolicyViolation {
-                        code: "KERNEL_IRQ_BLOCK",
-                        msg: format!(
-                            "function '{}' is irq-reachable and uses block effect ({})",
-                            symbol_name,
-                            symbol
-                                .eff_provenance("block")
-                                .map(format_provenance)
-                                .unwrap_or_else(
-                                    || "direct=false, via_callee=[], via_extern=[]".to_string()
-                                )
-                        ),
-                    });
+                    violations.push(violation_kernel_irq_effect(
+                        "KERNEL_IRQ_BLOCK",
+                        symbol_name,
+                        "block",
+                        symbol.eff_provenance("block"),
+                    ));
                 }
             }
         }
@@ -2055,15 +2039,12 @@ fn evaluate_region_rules(
             "block" => "KERNEL_CRITICAL_REGION_BLOCK",
             _ => continue,
         };
-        violations.push(PolicyViolation {
+        violations.push(violation_kernel_critical_region_effect(
             code,
-            msg: format!(
-                "function '{}' uses {} effect in critical region ({})",
-                violation.function,
-                violation.effect,
-                format_provenance(&violation.provenance)
-            ),
-        });
+            violation.function.as_str(),
+            violation.effect.as_str(),
+            &violation.provenance,
+        ));
     }
 
     violations
@@ -2095,10 +2076,7 @@ fn evaluate_capability_rules(
         disallowed.dedup();
 
         for cap in disallowed {
-            violations.push(PolicyViolation {
-                code: "CAP_MODULE_ALLOWLIST",
-                msg: format!("module capability '{}' is not in allow_module", cap),
-            });
+            violations.push(violation_cap_module_allowlist(cap.as_str()));
         }
     }
 
@@ -2121,18 +2099,11 @@ fn evaluate_capability_rules(
                 if let Some(symbol) = view.symbol_by_name.get(*symbol_name)
                     && symbol.has_cap_transitive(&cap)
                 {
-                    violations.push(PolicyViolation {
-                        code: "KERNEL_IRQ_CAP_FORBID",
-                        msg: format!(
-                            "function '{}' is irq-reachable and uses forbidden capability '{}' ({})",
-                            symbol_name,
-                            cap,
-                            symbol
-                                .cap_provenance(&cap)
-                                .map(format_provenance)
-                                .unwrap_or_else(|| "direct=false, via_callee=[], via_extern=[]".to_string())
-                        ),
-                    });
+                    violations.push(violation_kernel_irq_cap_forbid(
+                        symbol_name,
+                        cap.as_str(),
+                        symbol.cap_provenance(&cap),
+                    ));
                 }
             }
         }
@@ -2156,8 +2127,177 @@ fn format_provenance(provenance: &ContractsProvenance) -> String {
     )
 }
 
-fn format_policy_violation(violation: &PolicyViolation) -> String {
+fn format_optional_provenance(provenance: Option<&ContractsProvenance>) -> String {
+    provenance
+        .map(format_provenance)
+        .unwrap_or_else(|| "direct=false, via_callee=[], via_extern=[]".to_string())
+}
+
+fn policy_rule_family(code: &'static str) -> PolicyFamily {
+    match code {
+        "KERNEL_POLICY_REQUIRES_V2" => PolicyFamily::Context,
+        "LOCK_FORBID_EDGE" => PolicyFamily::Lock,
+        "KERNEL_IRQ_ALLOC" | "KERNEL_IRQ_BLOCK" | "NO_YIELD_UNBOUNDED" | "NO_YIELD_SPAN_LIMIT" => {
+            PolicyFamily::Effect
+        }
+        "KERNEL_CRITICAL_REGION_YIELD"
+        | "KERNEL_CRITICAL_REGION_ALLOC"
+        | "KERNEL_CRITICAL_REGION_BLOCK" => PolicyFamily::Region,
+        "CAP_MODULE_ALLOWLIST" | "KERNEL_IRQ_CAP_FORBID" => PolicyFamily::Capability,
+        "LIMIT_MAX_LOCK_DEPTH" => PolicyFamily::Limit,
+        _ => PolicyFamily::Effect,
+    }
+}
+
+fn policy_violation(code: &'static str, msg: String) -> PolicyViolation {
+    PolicyViolation {
+        family: policy_rule_family(code),
+        code,
+        msg,
+    }
+}
+
+fn violation_kernel_policy_requires_v2() -> PolicyViolation {
+    policy_violation(
+        "KERNEL_POLICY_REQUIRES_V2",
+        format!(
+            "kernel policy rules require contracts schema '{}'",
+            CONTRACTS_SCHEMA_VERSION_V2
+        ),
+    )
+}
+
+fn violation_limit_max_lock_depth(observed: u64, limit: u64) -> PolicyViolation {
+    policy_violation(
+        "LIMIT_MAX_LOCK_DEPTH",
+        format!("max_lock_depth {} exceeds limit {}", observed, limit),
+    )
+}
+
+fn violation_lock_forbid_edge(from: &str, to: &str) -> PolicyViolation {
+    policy_violation(
+        "LOCK_FORBID_EDGE",
+        format!("forbidden lock edge '{} -> {}' is present", from, to),
+    )
+}
+
+fn violation_no_yield_span_limit(symbol: &str, span: u64, limit: u64) -> PolicyViolation {
+    policy_violation(
+        "NO_YIELD_SPAN_LIMIT",
+        format!(
+            "no_yield_spans '{}' has span {} above limit {}",
+            symbol, span, limit
+        ),
+    )
+}
+
+fn violation_no_yield_unbounded_with_limit(symbol: &str, limit: u64) -> PolicyViolation {
+    policy_violation(
+        "NO_YIELD_UNBOUNDED",
+        format!(
+            "no_yield_spans '{}' is unbounded and violates max_no_yield_span {}",
+            symbol, limit
+        ),
+    )
+}
+
+fn violation_no_yield_unbounded(symbol: &str) -> PolicyViolation {
+    policy_violation(
+        "NO_YIELD_UNBOUNDED",
+        format!("no_yield_spans '{}' is unbounded", symbol),
+    )
+}
+
+fn violation_kernel_irq_effect(
+    code: &'static str,
+    symbol_name: &str,
+    effect: &str,
+    provenance: Option<&ContractsProvenance>,
+) -> PolicyViolation {
+    policy_violation(
+        code,
+        format!(
+            "function '{}' is irq-reachable and uses {} effect ({})",
+            symbol_name,
+            effect,
+            format_optional_provenance(provenance)
+        ),
+    )
+}
+
+fn violation_kernel_critical_region_effect(
+    code: &'static str,
+    function: &str,
+    effect: &str,
+    provenance: &ContractsProvenance,
+) -> PolicyViolation {
+    policy_violation(
+        code,
+        format!(
+            "function '{}' uses {} effect in critical region ({})",
+            function,
+            effect,
+            format_provenance(provenance)
+        ),
+    )
+}
+
+fn violation_cap_module_allowlist(capability: &str) -> PolicyViolation {
+    policy_violation(
+        "CAP_MODULE_ALLOWLIST",
+        format!("module capability '{}' is not in allow_module", capability),
+    )
+}
+
+fn violation_kernel_irq_cap_forbid(
+    symbol_name: &str,
+    capability: &str,
+    provenance: Option<&ContractsProvenance>,
+) -> PolicyViolation {
+    policy_violation(
+        "KERNEL_IRQ_CAP_FORBID",
+        format!(
+            "function '{}' is irq-reachable and uses forbidden capability '{}' ({})",
+            symbol_name,
+            capability,
+            format_optional_provenance(provenance)
+        ),
+    )
+}
+
+fn format_context_violation(violation: &PolicyViolation) -> String {
     format!("policy: {}: {}", violation.code, violation.msg)
+}
+
+fn format_lock_violation(violation: &PolicyViolation) -> String {
+    format!("policy: {}: {}", violation.code, violation.msg)
+}
+
+fn format_effect_violation(violation: &PolicyViolation) -> String {
+    format!("policy: {}: {}", violation.code, violation.msg)
+}
+
+fn format_region_violation(violation: &PolicyViolation) -> String {
+    format!("policy: {}: {}", violation.code, violation.msg)
+}
+
+fn format_capability_violation(violation: &PolicyViolation) -> String {
+    format!("policy: {}: {}", violation.code, violation.msg)
+}
+
+fn format_limit_violation(violation: &PolicyViolation) -> String {
+    format!("policy: {}: {}", violation.code, violation.msg)
+}
+
+fn format_policy_violation(violation: &PolicyViolation) -> String {
+    match violation.family {
+        PolicyFamily::Context => format_context_violation(violation),
+        PolicyFamily::Lock => format_lock_violation(violation),
+        PolicyFamily::Effect => format_effect_violation(violation),
+        PolicyFamily::Region => format_region_violation(violation),
+        PolicyFamily::Capability => format_capability_violation(violation),
+        PolicyFamily::Limit => format_limit_violation(violation),
+    }
 }
 
 fn print_policy_violations(violations: &[PolicyViolation]) {
