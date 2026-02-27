@@ -221,6 +221,22 @@ enum PolicyFamily {
     Limit,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum PolicyRule {
+    CapModuleAllowlist,
+    KernelCriticalRegionAlloc,
+    KernelCriticalRegionBlock,
+    KernelCriticalRegionYield,
+    KernelIrqAlloc,
+    KernelIrqBlock,
+    KernelIrqCapForbid,
+    KernelPolicyRequiresV2,
+    LimitMaxLockDepth,
+    LockForbidEdge,
+    NoYieldSpanLimit,
+    NoYieldUnbounded,
+}
+
 const RULE_CAP_MODULE_ALLOWLIST: &str = "CAP_MODULE_ALLOWLIST";
 const RULE_KERNEL_CRITICAL_REGION_ALLOC: &str = "KERNEL_CRITICAL_REGION_ALLOC";
 const RULE_KERNEL_CRITICAL_REGION_BLOCK: &str = "KERNEL_CRITICAL_REGION_BLOCK";
@@ -236,92 +252,150 @@ const RULE_NO_YIELD_UNBOUNDED: &str = "NO_YIELD_UNBOUNDED";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PolicyRuleSpec {
+    rule: PolicyRule,
     code: &'static str,
     family: PolicyFamily,
     sort_rank: u32,
     requires_v2: bool,
+    default_enabled_in_profile_kernel: bool,
+    diagnostic_template_id: &'static str,
 }
 
 const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
     PolicyRuleSpec {
+        rule: PolicyRule::CapModuleAllowlist,
         code: RULE_CAP_MODULE_ALLOWLIST,
         family: PolicyFamily::Capability,
         sort_rank: 100,
         requires_v2: false,
+        default_enabled_in_profile_kernel: false,
+        diagnostic_template_id: "cap.module_allowlist",
     },
     PolicyRuleSpec {
+        rule: PolicyRule::KernelCriticalRegionAlloc,
         code: RULE_KERNEL_CRITICAL_REGION_ALLOC,
         family: PolicyFamily::Region,
         sort_rank: 101,
         requires_v2: true,
+        default_enabled_in_profile_kernel: true,
+        diagnostic_template_id: "kernel.critical_region.alloc",
     },
     PolicyRuleSpec {
+        rule: PolicyRule::KernelCriticalRegionBlock,
         code: RULE_KERNEL_CRITICAL_REGION_BLOCK,
         family: PolicyFamily::Region,
         sort_rank: 102,
         requires_v2: true,
+        default_enabled_in_profile_kernel: true,
+        diagnostic_template_id: "kernel.critical_region.block",
     },
     PolicyRuleSpec {
+        rule: PolicyRule::KernelCriticalRegionYield,
         code: RULE_KERNEL_CRITICAL_REGION_YIELD,
         family: PolicyFamily::Region,
         sort_rank: 103,
         requires_v2: true,
+        default_enabled_in_profile_kernel: true,
+        diagnostic_template_id: "kernel.critical_region.yield",
     },
     PolicyRuleSpec {
+        rule: PolicyRule::KernelIrqAlloc,
         code: RULE_KERNEL_IRQ_ALLOC,
         family: PolicyFamily::Effect,
         sort_rank: 104,
         requires_v2: true,
+        default_enabled_in_profile_kernel: true,
+        diagnostic_template_id: "kernel.irq.alloc",
     },
     PolicyRuleSpec {
+        rule: PolicyRule::KernelIrqBlock,
         code: RULE_KERNEL_IRQ_BLOCK,
         family: PolicyFamily::Effect,
         sort_rank: 105,
         requires_v2: true,
+        default_enabled_in_profile_kernel: true,
+        diagnostic_template_id: "kernel.irq.block",
     },
     PolicyRuleSpec {
+        rule: PolicyRule::KernelIrqCapForbid,
         code: RULE_KERNEL_IRQ_CAP_FORBID,
         family: PolicyFamily::Capability,
         sort_rank: 106,
         requires_v2: true,
+        default_enabled_in_profile_kernel: false,
+        diagnostic_template_id: "kernel.irq.cap_forbid",
     },
     PolicyRuleSpec {
+        rule: PolicyRule::KernelPolicyRequiresV2,
         code: RULE_KERNEL_POLICY_REQUIRES_V2,
         family: PolicyFamily::Context,
         sort_rank: 107,
         requires_v2: false,
+        default_enabled_in_profile_kernel: true,
+        diagnostic_template_id: "kernel.requires_v2",
     },
     PolicyRuleSpec {
+        rule: PolicyRule::LimitMaxLockDepth,
         code: RULE_LIMIT_MAX_LOCK_DEPTH,
         family: PolicyFamily::Limit,
         sort_rank: 108,
         requires_v2: false,
+        default_enabled_in_profile_kernel: true,
+        diagnostic_template_id: "limit.max_lock_depth",
     },
     PolicyRuleSpec {
+        rule: PolicyRule::LockForbidEdge,
         code: RULE_LOCK_FORBID_EDGE,
         family: PolicyFamily::Lock,
         sort_rank: 109,
         requires_v2: false,
+        default_enabled_in_profile_kernel: true,
+        diagnostic_template_id: "lock.forbid_edge",
     },
     PolicyRuleSpec {
+        rule: PolicyRule::NoYieldSpanLimit,
         code: RULE_NO_YIELD_SPAN_LIMIT,
         family: PolicyFamily::Effect,
         sort_rank: 110,
         requires_v2: false,
+        default_enabled_in_profile_kernel: true,
+        diagnostic_template_id: "no_yield.span_limit",
     },
     PolicyRuleSpec {
+        rule: PolicyRule::NoYieldUnbounded,
         code: RULE_NO_YIELD_UNBOUNDED,
         family: PolicyFamily::Effect,
         sort_rank: 111,
         requires_v2: false,
+        default_enabled_in_profile_kernel: true,
+        diagnostic_template_id: "no_yield.unbounded",
     },
+];
+
+#[cfg(test)]
+const EMITTED_POLICY_RULES: [PolicyRule; 12] = [
+    PolicyRule::CapModuleAllowlist,
+    PolicyRule::KernelCriticalRegionAlloc,
+    PolicyRule::KernelCriticalRegionBlock,
+    PolicyRule::KernelCriticalRegionYield,
+    PolicyRule::KernelIrqAlloc,
+    PolicyRule::KernelIrqBlock,
+    PolicyRule::KernelIrqCapForbid,
+    PolicyRule::KernelPolicyRequiresV2,
+    PolicyRule::LimitMaxLockDepth,
+    PolicyRule::LockForbidEdge,
+    PolicyRule::NoYieldSpanLimit,
+    PolicyRule::NoYieldUnbounded,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PolicyViolation {
+    rule: PolicyRule,
     family: PolicyFamily,
     sort_rank: u32,
     requires_v2: bool,
+    default_enabled_in_profile_kernel: bool,
+    diagnostic_template_id: &'static str,
     code: &'static str,
     msg: String,
 }
@@ -332,6 +406,15 @@ impl Ord for PolicyViolation {
             .cmp(&(other.sort_rank, other.code, &other.msg))
             .then_with(|| self.family.cmp(&other.family))
             .then_with(|| self.requires_v2.cmp(&other.requires_v2))
+            .then_with(|| {
+                self.default_enabled_in_profile_kernel
+                    .cmp(&other.default_enabled_in_profile_kernel)
+            })
+            .then_with(|| {
+                self.diagnostic_template_id
+                    .cmp(other.diagnostic_template_id)
+            })
+            .then_with(|| self.rule.cmp(&other.rule))
     }
 }
 
@@ -2076,7 +2159,7 @@ fn evaluate_effect_rules(
                     && symbol.has_eff_transitive("alloc")
                 {
                     violations.push(violation_kernel_irq_effect(
-                        RULE_KERNEL_IRQ_ALLOC,
+                        PolicyRule::KernelIrqAlloc,
                         symbol_name,
                         "alloc",
                         symbol.eff_provenance("alloc"),
@@ -2091,7 +2174,7 @@ fn evaluate_effect_rules(
                     && symbol.has_eff_transitive("block")
                 {
                     violations.push(violation_kernel_irq_effect(
-                        RULE_KERNEL_IRQ_BLOCK,
+                        PolicyRule::KernelIrqBlock,
                         symbol_name,
                         "block",
                         symbol.eff_provenance("block"),
@@ -2132,14 +2215,14 @@ fn evaluate_region_rules(
         if !forbidden_critical_effects.contains(violation.effect.as_str()) {
             continue;
         }
-        let code = match violation.effect.as_str() {
-            "yield" => RULE_KERNEL_CRITICAL_REGION_YIELD,
-            "alloc" => RULE_KERNEL_CRITICAL_REGION_ALLOC,
-            "block" => RULE_KERNEL_CRITICAL_REGION_BLOCK,
+        let rule = match violation.effect.as_str() {
+            "yield" => PolicyRule::KernelCriticalRegionYield,
+            "alloc" => PolicyRule::KernelCriticalRegionAlloc,
+            "block" => PolicyRule::KernelCriticalRegionBlock,
             _ => continue,
         };
         violations.push(violation_kernel_critical_region_effect(
-            code,
+            rule,
             violation.function.as_str(),
             violation.effect.as_str(),
             &violation.provenance,
@@ -2232,28 +2315,31 @@ fn format_optional_provenance(provenance: Option<&ContractsProvenance>) -> Strin
         .unwrap_or_else(|| "direct=false, via_callee=[], via_extern=[]".to_string())
 }
 
-fn policy_rule_spec(code: &'static str) -> PolicyRuleSpec {
+fn policy_rule_spec(rule: PolicyRule) -> PolicyRuleSpec {
     POLICY_RULE_CATALOG
         .iter()
         .copied()
-        .find(|spec| spec.code == code)
-        .unwrap_or_else(|| panic!("unknown policy rule code '{}'", code))
+        .find(|spec| spec.rule == rule)
+        .unwrap_or_else(|| panic!("unknown policy rule '{:?}'", rule))
 }
 
-fn policy_violation(code: &'static str, msg: String) -> PolicyViolation {
-    let spec = policy_rule_spec(code);
+fn policy_violation(rule: PolicyRule, msg: String) -> PolicyViolation {
+    let spec = policy_rule_spec(rule);
     PolicyViolation {
+        rule: spec.rule,
         family: spec.family,
         sort_rank: spec.sort_rank,
         requires_v2: spec.requires_v2,
-        code,
+        default_enabled_in_profile_kernel: spec.default_enabled_in_profile_kernel,
+        diagnostic_template_id: spec.diagnostic_template_id,
+        code: spec.code,
         msg,
     }
 }
 
 fn violation_kernel_policy_requires_v2() -> PolicyViolation {
     policy_violation(
-        RULE_KERNEL_POLICY_REQUIRES_V2,
+        PolicyRule::KernelPolicyRequiresV2,
         format!(
             "kernel policy rules require contracts schema '{}'",
             CONTRACTS_SCHEMA_VERSION_V2
@@ -2263,21 +2349,21 @@ fn violation_kernel_policy_requires_v2() -> PolicyViolation {
 
 fn violation_limit_max_lock_depth(observed: u64, limit: u64) -> PolicyViolation {
     policy_violation(
-        RULE_LIMIT_MAX_LOCK_DEPTH,
+        PolicyRule::LimitMaxLockDepth,
         format!("max_lock_depth {} exceeds limit {}", observed, limit),
     )
 }
 
 fn violation_lock_forbid_edge(from: &str, to: &str) -> PolicyViolation {
     policy_violation(
-        RULE_LOCK_FORBID_EDGE,
+        PolicyRule::LockForbidEdge,
         format!("forbidden lock edge '{} -> {}' is present", from, to),
     )
 }
 
 fn violation_no_yield_span_limit(symbol: &str, span: u64, limit: u64) -> PolicyViolation {
     policy_violation(
-        RULE_NO_YIELD_SPAN_LIMIT,
+        PolicyRule::NoYieldSpanLimit,
         format!(
             "no_yield_spans '{}' has span {} above limit {}",
             symbol, span, limit
@@ -2287,7 +2373,7 @@ fn violation_no_yield_span_limit(symbol: &str, span: u64, limit: u64) -> PolicyV
 
 fn violation_no_yield_unbounded_with_limit(symbol: &str, limit: u64) -> PolicyViolation {
     policy_violation(
-        RULE_NO_YIELD_UNBOUNDED,
+        PolicyRule::NoYieldUnbounded,
         format!(
             "no_yield_spans '{}' is unbounded and violates max_no_yield_span {}",
             symbol, limit
@@ -2297,19 +2383,19 @@ fn violation_no_yield_unbounded_with_limit(symbol: &str, limit: u64) -> PolicyVi
 
 fn violation_no_yield_unbounded(symbol: &str) -> PolicyViolation {
     policy_violation(
-        RULE_NO_YIELD_UNBOUNDED,
+        PolicyRule::NoYieldUnbounded,
         format!("no_yield_spans '{}' is unbounded", symbol),
     )
 }
 
 fn violation_kernel_irq_effect(
-    code: &'static str,
+    rule: PolicyRule,
     symbol_name: &str,
     effect: &str,
     provenance: Option<&ContractsProvenance>,
 ) -> PolicyViolation {
     policy_violation(
-        code,
+        rule,
         format!(
             "function '{}' is irq-reachable and uses {} effect ({})",
             symbol_name,
@@ -2320,13 +2406,13 @@ fn violation_kernel_irq_effect(
 }
 
 fn violation_kernel_critical_region_effect(
-    code: &'static str,
+    rule: PolicyRule,
     function: &str,
     effect: &str,
     provenance: &ContractsProvenance,
 ) -> PolicyViolation {
     policy_violation(
-        code,
+        rule,
         format!(
             "function '{}' uses {} effect in critical region ({})",
             function,
@@ -2338,7 +2424,7 @@ fn violation_kernel_critical_region_effect(
 
 fn violation_cap_module_allowlist(capability: &str) -> PolicyViolation {
     policy_violation(
-        RULE_CAP_MODULE_ALLOWLIST,
+        PolicyRule::CapModuleAllowlist,
         format!("module capability '{}' is not in allow_module", capability),
     )
 }
@@ -2349,7 +2435,7 @@ fn violation_kernel_irq_cap_forbid(
     provenance: Option<&ContractsProvenance>,
 ) -> PolicyViolation {
     policy_violation(
-        RULE_KERNEL_IRQ_CAP_FORBID,
+        PolicyRule::KernelIrqCapForbid,
         format!(
             "function '{}' is irq-reachable and uses forbidden capability '{}' ({})",
             symbol_name,
@@ -2480,62 +2566,133 @@ fn print_usage() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    #[test]
+    fn policy_rule_catalog_has_unique_codes_and_ranks() {
+        let codes = POLICY_RULE_CATALOG
+            .iter()
+            .map(|spec| spec.code)
+            .collect::<Vec<_>>();
+        let ranks = POLICY_RULE_CATALOG
+            .iter()
+            .map(|spec| spec.sort_rank)
+            .collect::<Vec<_>>();
+        assert_eq!(codes.len(), codes.iter().collect::<BTreeSet<_>>().len());
+        assert_eq!(ranks.len(), ranks.iter().collect::<BTreeSet<_>>().len());
+    }
 
     #[test]
     fn policy_rule_catalog_is_complete_for_emitted_codes() {
-        let catalog_codes = POLICY_RULE_CATALOG
+        let catalog_rules = POLICY_RULE_CATALOG
             .iter()
-            .map(|spec| spec.code)
+            .map(|spec| spec.rule)
             .collect::<BTreeSet<_>>();
-        let emitted_codes = BTreeSet::from([
-            RULE_CAP_MODULE_ALLOWLIST,
-            RULE_KERNEL_CRITICAL_REGION_ALLOC,
-            RULE_KERNEL_CRITICAL_REGION_BLOCK,
-            RULE_KERNEL_CRITICAL_REGION_YIELD,
-            RULE_KERNEL_IRQ_ALLOC,
-            RULE_KERNEL_IRQ_BLOCK,
-            RULE_KERNEL_IRQ_CAP_FORBID,
-            RULE_KERNEL_POLICY_REQUIRES_V2,
-            RULE_LIMIT_MAX_LOCK_DEPTH,
-            RULE_LOCK_FORBID_EDGE,
-            RULE_NO_YIELD_SPAN_LIMIT,
-            RULE_NO_YIELD_UNBOUNDED,
-        ]);
+        let emitted_rules = EMITTED_POLICY_RULES
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
         assert_eq!(
-            catalog_codes, emitted_codes,
-            "policy catalog must contain every emitted rule code"
+            catalog_rules, emitted_rules,
+            "policy catalog must contain every emitted rule"
         );
     }
 
     #[test]
+    fn every_emitted_rule_resolves_to_exactly_one_definition() {
+        for rule in EMITTED_POLICY_RULES {
+            let count = POLICY_RULE_CATALOG
+                .iter()
+                .filter(|spec| spec.rule == rule)
+                .count();
+            assert_eq!(count, 1, "rule {:?} must map to one definition", rule);
+        }
+    }
+
+    #[test]
+    fn policy_rule_catalog_entries_match_lookup_function() {
+        for spec in POLICY_RULE_CATALOG {
+            let looked_up = policy_rule_spec(spec.rule);
+            assert_eq!(looked_up.code, spec.code);
+            assert_eq!(looked_up.family, spec.family);
+            assert_eq!(looked_up.sort_rank, spec.sort_rank);
+            assert_eq!(looked_up.requires_v2, spec.requires_v2);
+            assert_eq!(
+                looked_up.default_enabled_in_profile_kernel,
+                spec.default_enabled_in_profile_kernel
+            );
+            assert_eq!(
+                looked_up.diagnostic_template_id,
+                spec.diagnostic_template_id
+            );
+        }
+    }
+
+    #[test]
     fn policy_rule_catalog_marks_v2_required_rules() {
-        let v2_required_codes = POLICY_RULE_CATALOG
+        let v2_required_rules = POLICY_RULE_CATALOG
             .iter()
             .filter(|spec| spec.requires_v2)
-            .map(|spec| spec.code)
+            .map(|spec| spec.rule)
             .collect::<BTreeSet<_>>();
         assert_eq!(
-            v2_required_codes,
+            v2_required_rules,
             BTreeSet::from([
-                RULE_KERNEL_CRITICAL_REGION_ALLOC,
-                RULE_KERNEL_CRITICAL_REGION_BLOCK,
-                RULE_KERNEL_CRITICAL_REGION_YIELD,
-                RULE_KERNEL_IRQ_ALLOC,
-                RULE_KERNEL_IRQ_BLOCK,
-                RULE_KERNEL_IRQ_CAP_FORBID,
+                PolicyRule::KernelCriticalRegionAlloc,
+                PolicyRule::KernelCriticalRegionBlock,
+                PolicyRule::KernelCriticalRegionYield,
+                PolicyRule::KernelIrqAlloc,
+                PolicyRule::KernelIrqBlock,
+                PolicyRule::KernelIrqCapForbid,
             ])
         );
     }
 
     #[test]
+    fn policy_rule_catalog_kernel_profile_defaults_are_expected() {
+        let defaults = POLICY_RULE_CATALOG
+            .iter()
+            .filter(|spec| spec.default_enabled_in_profile_kernel)
+            .map(|spec| spec.rule)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            defaults,
+            BTreeSet::from([
+                PolicyRule::KernelCriticalRegionAlloc,
+                PolicyRule::KernelCriticalRegionBlock,
+                PolicyRule::KernelCriticalRegionYield,
+                PolicyRule::KernelIrqAlloc,
+                PolicyRule::KernelIrqBlock,
+                PolicyRule::KernelPolicyRequiresV2,
+                PolicyRule::LimitMaxLockDepth,
+                PolicyRule::LockForbidEdge,
+                PolicyRule::NoYieldSpanLimit,
+                PolicyRule::NoYieldUnbounded,
+            ])
+        );
+    }
+
+    #[test]
+    fn policy_rule_catalog_has_unique_diagnostic_template_ids() {
+        let mut seen = BTreeMap::<&'static str, &'static str>::new();
+        for spec in POLICY_RULE_CATALOG {
+            if let Some(existing_code) = seen.insert(spec.diagnostic_template_id, spec.code) {
+                panic!(
+                    "duplicate diagnostic_template_id '{}' for '{}' and '{}'",
+                    spec.diagnostic_template_id, existing_code, spec.code
+                );
+            }
+        }
+    }
+
+    #[test]
     fn policy_violations_sort_by_rank_then_code_then_message() {
         let mut violations = [
-            policy_violation(RULE_LOCK_FORBID_EDGE, "z".to_string()),
-            policy_violation(RULE_KERNEL_IRQ_ALLOC, "b".to_string()),
-            policy_violation(RULE_KERNEL_IRQ_ALLOC, "a".to_string()),
-            policy_violation(RULE_CAP_MODULE_ALLOWLIST, "m".to_string()),
-            policy_violation(RULE_LIMIT_MAX_LOCK_DEPTH, "x".to_string()),
+            policy_violation(PolicyRule::LockForbidEdge, "z".to_string()),
+            policy_violation(PolicyRule::KernelIrqAlloc, "b".to_string()),
+            policy_violation(PolicyRule::KernelIrqAlloc, "a".to_string()),
+            policy_violation(PolicyRule::CapModuleAllowlist, "m".to_string()),
+            policy_violation(PolicyRule::LimitMaxLockDepth, "x".to_string()),
         ];
         violations.sort();
 
