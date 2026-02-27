@@ -22,6 +22,8 @@ Current `kernel` profile defaults (from `policies/kernel.toml`):
 - forbid `alloc` effects in IRQ-reachable functions
 - forbid `block` effects in IRQ-reachable functions
 - forbid `yield`/`alloc`/`block` effects inside `critical { ... }` regions
+- optional capability deny in IRQ context via policy:
+  - `[kernel] forbid_caps_in_irq = ["CapA", ...]`
 
 Planned kernel subset rules (next phases):
 
@@ -59,6 +61,24 @@ Compile-time enforcement in KR0.x:
 Contracts v2 semantic split:
 - `facts.symbols[*]`: symbol semantics (`ctx_ok`, `ctx_reachable`, `eff_used`, `eff_transitive`, `eff_provenance`, caps, attrs)
 - `report.*`: aggregate/violation summaries (`max_lock_depth`, `no_yield_spans`, effect site counts, critical findings)
+
+Capability semantics in contracts v2:
+- `caps_req`: direct declared capability requirements
+- `caps_transitive`: call-graph propagated capability requirements
+- `caps_provenance`: deterministic provenance per capability:
+  - `direct`
+  - `via_callee[]`
+  - `via_extern[]`
+
+Policy family structure (kernel policy evaluation):
+- context rules
+- lock rules
+- effect rules
+- region rules
+- capability rules
+
+Policy consumes contracts artifacts directly (v2 facts/report) and does not reconstruct
+hidden call-graph semantics when those facts are already present in the artifact.
 
 Runtime responsibilities (outside KR0.x compiler checks):
 

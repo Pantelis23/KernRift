@@ -238,6 +238,8 @@
         "eff_transitive",
         "eff_provenance",
         "caps_req",
+        "caps_transitive",
+        "caps_provenance",
         "attrs"
       ],
       "properties": {
@@ -288,6 +290,19 @@
           },
           "uniqueItems": true
         },
+        "caps_transitive": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "caps_provenance": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/capability_provenance"
+          }
+        },
         "attrs": {
           "$ref": "#/$defs/attrs"
         }
@@ -303,6 +318,22 @@
       "properties": {
         "effect": {
           "$ref": "#/$defs/effect"
+        },
+        "provenance": {
+          "$ref": "#/$defs/provenance"
+        }
+      }
+    },
+    "capability_provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "capability",
+        "provenance"
+      ],
+      "properties": {
+        "capability": {
+          "type": "string"
         },
         "provenance": {
           "$ref": "#/$defs/provenance"

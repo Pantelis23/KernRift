@@ -62,6 +62,10 @@ Current mapping:
   - `direct` (function-local fact/site),
   - `via_callee[]` (non-extern propagation),
   - `via_extern[]` (extern contract propagation).
+- contracts v2 `facts.symbols[*].caps_transitive` and `caps_provenance[]` follow the same model:
+  - direct source from `caps_req`
+  - propagation over call graph (including extern contracts)
+  - deterministic provenance with `direct` / `via_callee[]` / `via_extern[]`
 
 ## Critical Regions
 
@@ -71,5 +75,5 @@ Critical sections are represented by statement blocks:
 - HIR lowers each block to `KrirOp::CriticalEnter` / `KrirOp::CriticalExit`.
 - contracts v2 emits `report.critical`:
   - `depth_max`
-  - `violations[]` with `{function,effect,via}`
+  - `violations[]` with `{function,effect,provenance}`
 - kernel policy enforces `forbid_effects_in_critical` using those deterministic violation facts.

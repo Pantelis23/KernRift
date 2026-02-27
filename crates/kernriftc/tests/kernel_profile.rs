@@ -1,4 +1,6 @@
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin_cmd;
@@ -22,9 +24,11 @@ fn default_profile_behavior_is_unchanged() {
         "critical_region_alloc.kr",
         "critical_region_block.kr",
         "critical_region_balanced.kr",
+        "policy_families_order.kr",
         "irq_alloc_effect.kr",
         "irq_alloc_site.kr",
         "irq_block_site.kr",
+        "irq_caps_transitive.kr",
     ] {
         let path = root.join("tests").join("kernel_profile").join(fixture);
         let mut cmd: Command = cargo_bin_cmd!("kernriftc");
@@ -316,6 +320,46 @@ fn kernel_profile_denies_block_in_irq_transitive() {
         "expected KERNEL_IRQ_BLOCK violation, got:\n{}",
         stderr
     );
+}
+
+#[test]
+fn kernel_profile_custom_policy_denies_caps_in_irq() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("irq_caps_transitive.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let policy_path = std::env::temp_dir().join(format!("kernrift-kernel-cap-policy-{}.toml", ts));
+    fs::write(
+        &policy_path,
+        r#"
+[kernel]
+forbid_caps_in_irq = ["PhysMap"]
+"#,
+    )
+    .expect("write policy");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--profile")
+        .arg("kernel")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.contains("policy: KERNEL_IRQ_CAP_FORBID:"),
+        "expected KERNEL_IRQ_CAP_FORBID violation, got:\n{}",
+        stderr
+    );
+
+    fs::remove_file(&policy_path).ok();
 }
 
 #[test]
