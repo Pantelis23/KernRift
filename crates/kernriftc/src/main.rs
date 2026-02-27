@@ -263,6 +263,21 @@ enum PolicyMaterializationAction {
     SetForbidUnboundedNoYield,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PolicyEnablementProbe {
+    CapsAllowModuleNonEmpty,
+    KernelCriticalEffectPresent(&'static str),
+    KernelForbidYieldInCriticalFlag,
+    KernelForbidAllocInIrq,
+    KernelForbidBlockInIrq,
+    KernelIrqCapsConfigured,
+    LimitMaxLockDepthSet,
+    LockForbidEdgesConfigured,
+    LimitMaxNoYieldSpanSet,
+    LimitForbidUnboundedNoYield,
+    KernelV2RulesEnabled,
+}
+
 const MATERIALIZE_NONE: &[PolicyMaterializationAction] = &[];
 const MATERIALIZE_KERNEL_CRITICAL_REGION_ALLOC: &[PolicyMaterializationAction] =
     &[PolicyMaterializationAction::AppendCriticalEffect("alloc")];
@@ -288,6 +303,32 @@ const MATERIALIZE_NO_YIELD_SPAN_LIMIT: &[PolicyMaterializationAction] =
     )];
 const MATERIALIZE_NO_YIELD_UNBOUNDED: &[PolicyMaterializationAction] =
     &[PolicyMaterializationAction::SetForbidUnboundedNoYield];
+const ENABLE_IF_CAPS_ALLOW_MODULE_NON_EMPTY: &[PolicyEnablementProbe] =
+    &[PolicyEnablementProbe::CapsAllowModuleNonEmpty];
+const ENABLE_IF_KERNEL_CRITICAL_EFFECT_ALLOC: &[PolicyEnablementProbe] =
+    &[PolicyEnablementProbe::KernelCriticalEffectPresent("alloc")];
+const ENABLE_IF_KERNEL_CRITICAL_EFFECT_BLOCK: &[PolicyEnablementProbe] =
+    &[PolicyEnablementProbe::KernelCriticalEffectPresent("block")];
+const ENABLE_IF_KERNEL_CRITICAL_YIELD: &[PolicyEnablementProbe] = &[
+    PolicyEnablementProbe::KernelForbidYieldInCriticalFlag,
+    PolicyEnablementProbe::KernelCriticalEffectPresent("yield"),
+];
+const ENABLE_IF_KERNEL_FORBID_ALLOC_IN_IRQ: &[PolicyEnablementProbe] =
+    &[PolicyEnablementProbe::KernelForbidAllocInIrq];
+const ENABLE_IF_KERNEL_FORBID_BLOCK_IN_IRQ: &[PolicyEnablementProbe] =
+    &[PolicyEnablementProbe::KernelForbidBlockInIrq];
+const ENABLE_IF_KERNEL_IRQ_CAPS_CONFIGURED: &[PolicyEnablementProbe] =
+    &[PolicyEnablementProbe::KernelIrqCapsConfigured];
+const ENABLE_IF_KERNEL_V2_RULES_ENABLED: &[PolicyEnablementProbe] =
+    &[PolicyEnablementProbe::KernelV2RulesEnabled];
+const ENABLE_IF_LIMIT_MAX_LOCK_DEPTH_SET: &[PolicyEnablementProbe] =
+    &[PolicyEnablementProbe::LimitMaxLockDepthSet];
+const ENABLE_IF_LOCK_FORBID_EDGES_CONFIGURED: &[PolicyEnablementProbe] =
+    &[PolicyEnablementProbe::LockForbidEdgesConfigured];
+const ENABLE_IF_LIMIT_MAX_NO_YIELD_SPAN_SET: &[PolicyEnablementProbe] =
+    &[PolicyEnablementProbe::LimitMaxNoYieldSpanSet];
+const ENABLE_IF_LIMIT_FORBID_UNBOUNDED_NO_YIELD: &[PolicyEnablementProbe] =
+    &[PolicyEnablementProbe::LimitForbidUnboundedNoYield];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PolicyRuleSpec {
@@ -299,6 +340,7 @@ struct PolicyRuleSpec {
     default_enabled_in_profile_kernel: bool,
     diagnostic_template_id: &'static str,
     materialization_actions: &'static [PolicyMaterializationAction],
+    enablement_probes: &'static [PolicyEnablementProbe],
 }
 
 const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
@@ -311,6 +353,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         default_enabled_in_profile_kernel: false,
         diagnostic_template_id: "cap.module_allowlist",
         materialization_actions: MATERIALIZE_NONE,
+        enablement_probes: ENABLE_IF_CAPS_ALLOW_MODULE_NON_EMPTY,
     },
     PolicyRuleSpec {
         rule: PolicyRule::KernelCriticalRegionAlloc,
@@ -321,6 +364,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         default_enabled_in_profile_kernel: true,
         diagnostic_template_id: "kernel.critical_region.alloc",
         materialization_actions: MATERIALIZE_KERNEL_CRITICAL_REGION_ALLOC,
+        enablement_probes: ENABLE_IF_KERNEL_CRITICAL_EFFECT_ALLOC,
     },
     PolicyRuleSpec {
         rule: PolicyRule::KernelCriticalRegionBlock,
@@ -331,6 +375,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         default_enabled_in_profile_kernel: true,
         diagnostic_template_id: "kernel.critical_region.block",
         materialization_actions: MATERIALIZE_KERNEL_CRITICAL_REGION_BLOCK,
+        enablement_probes: ENABLE_IF_KERNEL_CRITICAL_EFFECT_BLOCK,
     },
     PolicyRuleSpec {
         rule: PolicyRule::KernelCriticalRegionYield,
@@ -341,6 +386,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         default_enabled_in_profile_kernel: true,
         diagnostic_template_id: "kernel.critical_region.yield",
         materialization_actions: MATERIALIZE_KERNEL_CRITICAL_REGION_YIELD,
+        enablement_probes: ENABLE_IF_KERNEL_CRITICAL_YIELD,
     },
     PolicyRuleSpec {
         rule: PolicyRule::KernelIrqAlloc,
@@ -351,6 +397,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         default_enabled_in_profile_kernel: true,
         diagnostic_template_id: "kernel.irq.alloc",
         materialization_actions: MATERIALIZE_KERNEL_IRQ_ALLOC,
+        enablement_probes: ENABLE_IF_KERNEL_FORBID_ALLOC_IN_IRQ,
     },
     PolicyRuleSpec {
         rule: PolicyRule::KernelIrqBlock,
@@ -361,6 +408,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         default_enabled_in_profile_kernel: true,
         diagnostic_template_id: "kernel.irq.block",
         materialization_actions: MATERIALIZE_KERNEL_IRQ_BLOCK,
+        enablement_probes: ENABLE_IF_KERNEL_FORBID_BLOCK_IN_IRQ,
     },
     PolicyRuleSpec {
         rule: PolicyRule::KernelIrqCapForbid,
@@ -371,6 +419,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         default_enabled_in_profile_kernel: false,
         diagnostic_template_id: "kernel.irq.cap_forbid",
         materialization_actions: MATERIALIZE_NONE,
+        enablement_probes: ENABLE_IF_KERNEL_IRQ_CAPS_CONFIGURED,
     },
     PolicyRuleSpec {
         rule: PolicyRule::KernelPolicyRequiresV2,
@@ -381,6 +430,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         default_enabled_in_profile_kernel: true,
         diagnostic_template_id: "kernel.requires_v2",
         materialization_actions: MATERIALIZE_NONE,
+        enablement_probes: ENABLE_IF_KERNEL_V2_RULES_ENABLED,
     },
     PolicyRuleSpec {
         rule: PolicyRule::LimitMaxLockDepth,
@@ -391,6 +441,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         default_enabled_in_profile_kernel: true,
         diagnostic_template_id: "limit.max_lock_depth",
         materialization_actions: MATERIALIZE_LIMIT_MAX_LOCK_DEPTH,
+        enablement_probes: ENABLE_IF_LIMIT_MAX_LOCK_DEPTH_SET,
     },
     PolicyRuleSpec {
         rule: PolicyRule::LockForbidEdge,
@@ -401,6 +452,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         default_enabled_in_profile_kernel: true,
         diagnostic_template_id: "lock.forbid_edge",
         materialization_actions: MATERIALIZE_LOCK_FORBID_EDGE,
+        enablement_probes: ENABLE_IF_LOCK_FORBID_EDGES_CONFIGURED,
     },
     PolicyRuleSpec {
         rule: PolicyRule::NoYieldSpanLimit,
@@ -411,6 +463,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         default_enabled_in_profile_kernel: true,
         diagnostic_template_id: "no_yield.span_limit",
         materialization_actions: MATERIALIZE_NO_YIELD_SPAN_LIMIT,
+        enablement_probes: ENABLE_IF_LIMIT_MAX_NO_YIELD_SPAN_SET,
     },
     PolicyRuleSpec {
         rule: PolicyRule::NoYieldUnbounded,
@@ -421,6 +474,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         default_enabled_in_profile_kernel: true,
         diagnostic_template_id: "no_yield.unbounded",
         materialization_actions: MATERIALIZE_NO_YIELD_UNBOUNDED,
+        enablement_probes: ENABLE_IF_LIMIT_FORBID_UNBOUNDED_NO_YIELD,
     },
 ];
 
@@ -2081,37 +2135,36 @@ fn apply_policy_materialization_action(
 }
 
 fn policy_rule_is_enabled(policy: &PolicyFile, rule: PolicyRule) -> bool {
-    match rule {
-        PolicyRule::CapModuleAllowlist => !policy.caps.allow_module.is_empty(),
-        PolicyRule::KernelCriticalRegionAlloc => policy
+    let spec = policy_rule_spec(rule);
+    spec.enablement_probes
+        .iter()
+        .any(|probe| policy_enablement_probe_enabled(policy, *probe))
+}
+
+fn policy_enablement_probe_enabled(policy: &PolicyFile, probe: PolicyEnablementProbe) -> bool {
+    match probe {
+        PolicyEnablementProbe::CapsAllowModuleNonEmpty => !policy.caps.allow_module.is_empty(),
+        PolicyEnablementProbe::KernelCriticalEffectPresent(effect) => policy
             .kernel
             .forbid_effects_in_critical
             .iter()
-            .any(|effect| effect == "alloc"),
-        PolicyRule::KernelCriticalRegionBlock => policy
-            .kernel
-            .forbid_effects_in_critical
-            .iter()
-            .any(|effect| effect == "block"),
-        PolicyRule::KernelCriticalRegionYield => {
+            .any(|configured| configured == effect),
+        PolicyEnablementProbe::KernelForbidYieldInCriticalFlag => {
             policy.kernel.forbid_yield_in_critical
-                || policy
-                    .kernel
-                    .forbid_effects_in_critical
-                    .iter()
-                    .any(|effect| effect == "yield")
         }
-        PolicyRule::KernelIrqAlloc => policy.kernel.forbid_alloc_in_irq,
-        PolicyRule::KernelIrqBlock => policy.kernel.forbid_block_in_irq,
-        PolicyRule::KernelIrqCapForbid => {
+        PolicyEnablementProbe::KernelForbidAllocInIrq => policy.kernel.forbid_alloc_in_irq,
+        PolicyEnablementProbe::KernelForbidBlockInIrq => policy.kernel.forbid_block_in_irq,
+        PolicyEnablementProbe::KernelIrqCapsConfigured => {
             !policy.kernel.forbid_caps_in_irq.is_empty()
                 || !policy.kernel.allow_caps_in_irq.is_empty()
         }
-        PolicyRule::KernelPolicyRequiresV2 => kernel_rules_enabled(policy),
-        PolicyRule::LimitMaxLockDepth => policy.limits.max_lock_depth.is_some(),
-        PolicyRule::LockForbidEdge => !policy.locks.forbid_edges.is_empty(),
-        PolicyRule::NoYieldSpanLimit => policy.limits.max_no_yield_span.is_some(),
-        PolicyRule::NoYieldUnbounded => policy.limits.forbid_unbounded_no_yield,
+        PolicyEnablementProbe::LimitMaxLockDepthSet => policy.limits.max_lock_depth.is_some(),
+        PolicyEnablementProbe::LockForbidEdgesConfigured => !policy.locks.forbid_edges.is_empty(),
+        PolicyEnablementProbe::LimitMaxNoYieldSpanSet => policy.limits.max_no_yield_span.is_some(),
+        PolicyEnablementProbe::LimitForbidUnboundedNoYield => {
+            policy.limits.forbid_unbounded_no_yield
+        }
+        PolicyEnablementProbe::KernelV2RulesEnabled => kernel_rules_enabled(policy),
     }
 }
 
@@ -2785,6 +2838,7 @@ mod tests {
                 looked_up.materialization_actions,
                 spec.materialization_actions
             );
+            assert_eq!(looked_up.enablement_probes, spec.enablement_probes);
         }
     }
 
@@ -2967,6 +3021,62 @@ mod tests {
         assert_eq!(from_actions, from_rules);
     }
 
+    #[test]
+    fn every_rule_declares_at_least_one_enablement_probe() {
+        for spec in POLICY_RULE_CATALOG {
+            assert!(
+                !spec.enablement_probes.is_empty(),
+                "rule {:?} must declare enablement probes",
+                spec.rule
+            );
+        }
+    }
+
+    #[test]
+    fn policy_enablement_probes_activate_rule_enablement() {
+        for spec in POLICY_RULE_CATALOG {
+            let mut policy = PolicyFile::default();
+            for probe in spec.enablement_probes {
+                satisfy_enablement_probe_for_test(&mut policy, *probe);
+            }
+            let policy = normalize_policy(policy, "<enablement-probe>")
+                .expect("probe policy should normalize");
+            assert!(
+                policy_rule_is_enabled(&policy, spec.rule),
+                "rule {:?} must enable with its declared probes",
+                spec.rule
+            );
+        }
+    }
+
+    #[test]
+    fn kernel_policy_requires_v2_remains_metadata_derived_enablement() {
+        let empty = normalize_policy(PolicyFile::default(), "<empty>")
+            .expect("default policy should normalize");
+        assert!(
+            !policy_rule_is_enabled(&empty, PolicyRule::KernelPolicyRequiresV2),
+            "default policy should not enable KERNEL_POLICY_REQUIRES_V2"
+        );
+
+        let mut via_v2_rule = PolicyFile::default();
+        via_v2_rule.kernel.forbid_alloc_in_irq = true;
+        let via_v2_rule = normalize_policy(via_v2_rule, "<via-v2-rule>")
+            .expect("kernel rule policy should normalize");
+        assert!(
+            policy_rule_is_enabled(&via_v2_rule, PolicyRule::KernelPolicyRequiresV2),
+            "v2 kernel rule enablement should enable KERNEL_POLICY_REQUIRES_V2"
+        );
+
+        let mut via_non_v2_rule = PolicyFile::default();
+        via_non_v2_rule.limits.max_lock_depth = Some(1);
+        let via_non_v2_rule = normalize_policy(via_non_v2_rule, "<via-non-v2-rule>")
+            .expect("non-v2 rule policy should normalize");
+        assert!(
+            !policy_rule_is_enabled(&via_non_v2_rule, PolicyRule::KernelPolicyRequiresV2),
+            "non-v2-only rules should not enable KERNEL_POLICY_REQUIRES_V2"
+        );
+    }
+
     fn materialization_effect_count(rule: PolicyRule) -> usize {
         let before = normalize_policy(PolicyFile::default(), "<before>")
             .expect("default policy should normalize");
@@ -2975,6 +3085,48 @@ mod tests {
         let after =
             normalize_policy(after, "<after>").expect("materialized policy should normalize");
         usize::from(before != after)
+    }
+
+    fn satisfy_enablement_probe_for_test(policy: &mut PolicyFile, probe: PolicyEnablementProbe) {
+        match probe {
+            PolicyEnablementProbe::CapsAllowModuleNonEmpty => {
+                policy.caps.allow_module.push("PhysMap".to_string());
+            }
+            PolicyEnablementProbe::KernelCriticalEffectPresent(effect) => policy
+                .kernel
+                .forbid_effects_in_critical
+                .push(effect.to_string()),
+            PolicyEnablementProbe::KernelForbidYieldInCriticalFlag => {
+                policy.kernel.forbid_yield_in_critical = true;
+            }
+            PolicyEnablementProbe::KernelForbidAllocInIrq => {
+                policy.kernel.forbid_alloc_in_irq = true;
+            }
+            PolicyEnablementProbe::KernelForbidBlockInIrq => {
+                policy.kernel.forbid_block_in_irq = true;
+            }
+            PolicyEnablementProbe::KernelIrqCapsConfigured => {
+                policy.kernel.forbid_caps_in_irq.push("PhysMap".to_string());
+            }
+            PolicyEnablementProbe::LimitMaxLockDepthSet => {
+                policy.limits.max_lock_depth = Some(1);
+            }
+            PolicyEnablementProbe::LockForbidEdgesConfigured => {
+                policy
+                    .locks
+                    .forbid_edges
+                    .push(["ConsoleLock".to_string(), "SchedLock".to_string()]);
+            }
+            PolicyEnablementProbe::LimitMaxNoYieldSpanSet => {
+                policy.limits.max_no_yield_span = Some(1);
+            }
+            PolicyEnablementProbe::LimitForbidUnboundedNoYield => {
+                policy.limits.forbid_unbounded_no_yield = true;
+            }
+            PolicyEnablementProbe::KernelV2RulesEnabled => {
+                policy.kernel.forbid_alloc_in_irq = true;
+            }
+        }
     }
 
     #[test]
