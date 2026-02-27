@@ -1,0 +1,8 @@
+@module_caps(PhysMap);
+
+@ctx(thread)
+@caps(PhysMap)
+fn worker() {
+  acquire(ConsoleLock);
+  release(ConsoleLock);
+}

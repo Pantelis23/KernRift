@@ -1,0 +1,6 @@
+// KR edge: comments + whitespace only body
+
+@ctx(thread)
+fn noop() {
+  // intentionally empty
+}

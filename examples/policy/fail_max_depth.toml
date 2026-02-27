@@ -1,0 +1,2 @@
+[limits]
+max_lock_depth = 1

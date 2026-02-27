@@ -1,0 +1,4 @@
+fn broken() {
+  acquire(SchedLock)
+  release(SchedLock);
+}

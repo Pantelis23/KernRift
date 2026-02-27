@@ -1,0 +1,5 @@
+fn deny_me() {
+  acquire(SchedLock);
+  yieldpoint();
+  release(SchedLock);
+}

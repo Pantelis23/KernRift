@@ -1,0 +1,3 @@
+fn caller() {
+  no_such_symbol();
+}

@@ -1,0 +1,6 @@
+fn nested() {
+  acquire(ConsoleLock);
+  acquire(SchedLock);
+  release(SchedLock);
+  release(ConsoleLock);
+}
