@@ -21,6 +21,8 @@ Current `kernel` profile defaults (materialized from canonical policy rule defin
 - forbidden lock ordering edge (`ConsoleLock -> SchedLock`)
 - forbid `alloc` effects in IRQ-reachable functions
 - forbid `block` effects in IRQ-reachable functions
+- optional forbid `yield` effects in IRQ-reachable functions via policy:
+  - `[kernel] forbid_yield_in_irq = true`
 - forbid `yield`/`alloc`/`block` effects inside `critical { ... }` regions
 - optional capability deny in IRQ context via policy:
   - `[kernel] forbid_caps_in_irq = ["CapA", ...]`

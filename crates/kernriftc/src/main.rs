@@ -70,6 +70,8 @@ struct PolicyKernel {
     #[serde(default)]
     forbid_block_in_irq: bool,
     #[serde(default)]
+    forbid_yield_in_irq: bool,
+    #[serde(default)]
     forbid_yield_in_critical: bool,
     #[serde(default)]
     forbid_effects_in_critical: Vec<String>,
@@ -228,6 +230,7 @@ enum PolicyRule {
     KernelCriticalRegionYield,
     KernelIrqAlloc,
     KernelIrqBlock,
+    KernelIrqYield,
     KernelIrqCapForbid,
     KernelPolicyRequiresV2,
     LimitMaxLockDepth,
@@ -242,6 +245,7 @@ const RULE_KERNEL_CRITICAL_REGION_BLOCK: &str = "KERNEL_CRITICAL_REGION_BLOCK";
 const RULE_KERNEL_CRITICAL_REGION_YIELD: &str = "KERNEL_CRITICAL_REGION_YIELD";
 const RULE_KERNEL_IRQ_ALLOC: &str = "KERNEL_IRQ_ALLOC";
 const RULE_KERNEL_IRQ_BLOCK: &str = "KERNEL_IRQ_BLOCK";
+const RULE_KERNEL_IRQ_YIELD: &str = "KERNEL_IRQ_YIELD";
 const RULE_KERNEL_IRQ_CAP_FORBID: &str = "KERNEL_IRQ_CAP_FORBID";
 const RULE_KERNEL_POLICY_REQUIRES_V2: &str = "KERNEL_POLICY_REQUIRES_V2";
 const RULE_LIMIT_MAX_LOCK_DEPTH: &str = "LIMIT_MAX_LOCK_DEPTH";
@@ -270,6 +274,7 @@ enum PolicyEnablementProbe {
     KernelForbidYieldInCriticalFlag,
     KernelForbidAllocInIrq,
     KernelForbidBlockInIrq,
+    KernelForbidYieldInIrq,
     KernelIrqCapsConfigured,
     LimitMaxLockDepthSet,
     LockForbidEdgesConfigured,
@@ -371,6 +376,8 @@ const ENABLE_IF_KERNEL_FORBID_ALLOC_IN_IRQ: &[PolicyEnablementProbe] =
     &[PolicyEnablementProbe::KernelForbidAllocInIrq];
 const ENABLE_IF_KERNEL_FORBID_BLOCK_IN_IRQ: &[PolicyEnablementProbe] =
     &[PolicyEnablementProbe::KernelForbidBlockInIrq];
+const ENABLE_IF_KERNEL_FORBID_YIELD_IN_IRQ: &[PolicyEnablementProbe] =
+    &[PolicyEnablementProbe::KernelForbidYieldInIrq];
 const ENABLE_IF_KERNEL_IRQ_CAPS_CONFIGURED: &[PolicyEnablementProbe] =
     &[PolicyEnablementProbe::KernelIrqCapsConfigured];
 const ENABLE_IF_KERNEL_V2_RULES_ENABLED: &[PolicyEnablementProbe] =
@@ -422,6 +429,8 @@ const CONDITIONS_IRQ_EFFECT_ALLOC: &[PolicyConditionDescriptor] =
     &[PolicyConditionDescriptor::IrqEffectObserved { effect: "alloc" }];
 const CONDITIONS_IRQ_EFFECT_BLOCK: &[PolicyConditionDescriptor] =
     &[PolicyConditionDescriptor::IrqEffectObserved { effect: "block" }];
+const CONDITIONS_IRQ_EFFECT_YIELD: &[PolicyConditionDescriptor] =
+    &[PolicyConditionDescriptor::IrqEffectObserved { effect: "yield" }];
 const CONDITIONS_IRQ_CAPABILITY: &[PolicyConditionDescriptor] =
     &[PolicyConditionDescriptor::IrqCapabilityObserved];
 const CONDITIONS_SCHEMA_VERSION_REQUIRES_V2: &[PolicyConditionDescriptor] =
@@ -452,7 +461,7 @@ struct PolicyRuleSpec {
     binder_kind: PolicyViolationBinderKind,
 }
 
-const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
+const POLICY_RULE_CATALOG: [PolicyRuleSpec; 13] = [
     PolicyRuleSpec {
         rule: PolicyRule::CapModuleAllowlist,
         code: RULE_CAP_MODULE_ALLOWLIST,
@@ -544,10 +553,25 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         binder_kind: PolicyViolationBinderKind::IrqEffect,
     },
     PolicyRuleSpec {
+        rule: PolicyRule::KernelIrqYield,
+        code: RULE_KERNEL_IRQ_YIELD,
+        family: PolicyFamily::Effect,
+        sort_rank: 106,
+        requires_v2: true,
+        default_enabled_in_profile_kernel: false,
+        diagnostic_template_id: "kernel.irq.yield",
+        materialization_actions: MATERIALIZE_NONE,
+        enablement_probes: ENABLE_IF_KERNEL_FORBID_YIELD_IN_IRQ,
+        trigger_kind: PolicyTriggerKind::IrqEffectForbidden { effect: "yield" },
+        artifact_dependencies: DEPENDS_ON_IRQ_EFFECT_ALLOC,
+        condition_descriptors: CONDITIONS_IRQ_EFFECT_YIELD,
+        binder_kind: PolicyViolationBinderKind::IrqEffect,
+    },
+    PolicyRuleSpec {
         rule: PolicyRule::KernelIrqCapForbid,
         code: RULE_KERNEL_IRQ_CAP_FORBID,
         family: PolicyFamily::Capability,
-        sort_rank: 106,
+        sort_rank: 107,
         requires_v2: true,
         default_enabled_in_profile_kernel: false,
         diagnostic_template_id: "kernel.irq.cap_forbid",
@@ -562,7 +586,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         rule: PolicyRule::KernelPolicyRequiresV2,
         code: RULE_KERNEL_POLICY_REQUIRES_V2,
         family: PolicyFamily::Context,
-        sort_rank: 107,
+        sort_rank: 108,
         requires_v2: false,
         default_enabled_in_profile_kernel: true,
         diagnostic_template_id: "kernel.requires_v2",
@@ -577,7 +601,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         rule: PolicyRule::LimitMaxLockDepth,
         code: RULE_LIMIT_MAX_LOCK_DEPTH,
         family: PolicyFamily::Limit,
-        sort_rank: 108,
+        sort_rank: 109,
         requires_v2: false,
         default_enabled_in_profile_kernel: true,
         diagnostic_template_id: "limit.max_lock_depth",
@@ -592,7 +616,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         rule: PolicyRule::LockForbidEdge,
         code: RULE_LOCK_FORBID_EDGE,
         family: PolicyFamily::Lock,
-        sort_rank: 109,
+        sort_rank: 110,
         requires_v2: false,
         default_enabled_in_profile_kernel: true,
         diagnostic_template_id: "lock.forbid_edge",
@@ -607,7 +631,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         rule: PolicyRule::NoYieldSpanLimit,
         code: RULE_NO_YIELD_SPAN_LIMIT,
         family: PolicyFamily::Effect,
-        sort_rank: 110,
+        sort_rank: 111,
         requires_v2: false,
         default_enabled_in_profile_kernel: true,
         diagnostic_template_id: "no_yield.span_limit",
@@ -622,7 +646,7 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
         rule: PolicyRule::NoYieldUnbounded,
         code: RULE_NO_YIELD_UNBOUNDED,
         family: PolicyFamily::Effect,
-        sort_rank: 111,
+        sort_rank: 112,
         requires_v2: false,
         default_enabled_in_profile_kernel: true,
         diagnostic_template_id: "no_yield.unbounded",
@@ -636,13 +660,14 @@ const POLICY_RULE_CATALOG: [PolicyRuleSpec; 12] = [
 ];
 
 #[cfg(test)]
-const EMITTED_POLICY_RULES: [PolicyRule; 12] = [
+const EMITTED_POLICY_RULES: [PolicyRule; 13] = [
     PolicyRule::CapModuleAllowlist,
     PolicyRule::KernelCriticalRegionAlloc,
     PolicyRule::KernelCriticalRegionBlock,
     PolicyRule::KernelCriticalRegionYield,
     PolicyRule::KernelIrqAlloc,
     PolicyRule::KernelIrqBlock,
+    PolicyRule::KernelIrqYield,
     PolicyRule::KernelIrqCapForbid,
     PolicyRule::KernelPolicyRequiresV2,
     PolicyRule::LimitMaxLockDepth,
@@ -2311,6 +2336,7 @@ fn policy_enablement_probe_enabled(policy: &PolicyFile, probe: PolicyEnablementP
         }
         PolicyEnablementProbe::KernelForbidAllocInIrq => policy.kernel.forbid_alloc_in_irq,
         PolicyEnablementProbe::KernelForbidBlockInIrq => policy.kernel.forbid_block_in_irq,
+        PolicyEnablementProbe::KernelForbidYieldInIrq => policy.kernel.forbid_yield_in_irq,
         PolicyEnablementProbe::KernelIrqCapsConfigured => {
             !policy.kernel.forbid_caps_in_irq.is_empty()
                 || !policy.kernel.allow_caps_in_irq.is_empty()
@@ -3694,6 +3720,7 @@ mod tests {
                 PolicyRule::KernelCriticalRegionYield,
                 PolicyRule::KernelIrqAlloc,
                 PolicyRule::KernelIrqBlock,
+                PolicyRule::KernelIrqYield,
                 PolicyRule::KernelIrqCapForbid,
             ])
         );
@@ -4201,7 +4228,9 @@ mod tests {
                     spec.binder_kind,
                     PolicyViolationBinderKind::CriticalRegionViolation
                 ),
-                PolicyRule::KernelIrqAlloc | PolicyRule::KernelIrqBlock => {
+                PolicyRule::KernelIrqAlloc
+                | PolicyRule::KernelIrqBlock
+                | PolicyRule::KernelIrqYield => {
                     assert_eq!(spec.binder_kind, PolicyViolationBinderKind::IrqEffect)
                 }
                 PolicyRule::KernelIrqCapForbid => {
@@ -4434,6 +4463,9 @@ mod tests {
             PolicyEnablementProbe::KernelForbidBlockInIrq => {
                 policy.kernel.forbid_block_in_irq = true;
             }
+            PolicyEnablementProbe::KernelForbidYieldInIrq => {
+                policy.kernel.forbid_yield_in_irq = true;
+            }
             PolicyEnablementProbe::KernelIrqCapsConfigured => {
                 policy.kernel.forbid_caps_in_irq.push("PhysMap".to_string());
             }
@@ -4479,8 +4511,8 @@ mod tests {
                 (100, RULE_CAP_MODULE_ALLOWLIST, "m"),
                 (104, RULE_KERNEL_IRQ_ALLOC, "a"),
                 (104, RULE_KERNEL_IRQ_ALLOC, "b"),
-                (108, RULE_LIMIT_MAX_LOCK_DEPTH, "x"),
-                (109, RULE_LOCK_FORBID_EDGE, "z"),
+                (109, RULE_LIMIT_MAX_LOCK_DEPTH, "x"),
+                (110, RULE_LOCK_FORBID_EDGE, "z"),
             ]
         );
     }

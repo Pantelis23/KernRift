@@ -325,6 +325,70 @@ fn kernel_profile_denies_block_in_irq_transitive() {
 }
 
 #[test]
+fn kernel_profile_does_not_emit_irq_yield_without_policy() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("irq_yield_transitive.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--profile")
+        .arg("kernel")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        !stderr.contains("policy: KERNEL_IRQ_YIELD:"),
+        "did not expect KERNEL_IRQ_YIELD without explicit policy knob, got:\n{}",
+        stderr
+    );
+}
+
+#[test]
+fn kernel_profile_custom_policy_denies_yield_in_irq() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("irq_yield_transitive.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let policy_path =
+        std::env::temp_dir().join(format!("kernrift-kernel-yield-irq-policy-{}.toml", ts));
+    fs::write(
+        &policy_path,
+        r#"
+[kernel]
+forbid_yield_in_irq = true
+"#,
+    )
+    .expect("write policy");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--profile")
+        .arg("kernel")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.contains("policy: KERNEL_IRQ_YIELD:"),
+        "expected KERNEL_IRQ_YIELD violation, got:\n{}",
+        stderr
+    );
+
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
 fn kernel_profile_custom_policy_denies_caps_in_irq() {
     let root = repo_root();
     let fixture = root

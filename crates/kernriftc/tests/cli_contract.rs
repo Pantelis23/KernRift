@@ -1126,6 +1126,143 @@ fn contracts_v2_ctx_reachable_transitive_irq_drives_policy() {
 }
 
 #[test]
+fn policy_kernel_forbid_yield_in_irq_is_artifact_driven_and_deterministic() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path =
+        std::env::temp_dir().join(format!("kernrift-policy-yield-irq-src-{}.json", ts));
+    let policy_path = std::env::temp_dir().join(format!("kernrift-policy-yield-irq-{}.toml", ts));
+    let mutated_path =
+        std::env::temp_dir().join(format!("kernrift-policy-yield-irq-mut-{}.json", ts));
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+    fs::remove_file(&mutated_path).ok();
+
+    let mut check_cmd: Command = cargo_bin_cmd!("kernriftc");
+    check_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--contracts-schema")
+        .arg("v2")
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg(fixture.as_os_str());
+    check_cmd.assert().success();
+
+    fs::write(
+        &policy_path,
+        r#"
+[kernel]
+forbid_yield_in_irq = true
+"#,
+    )
+    .expect("write policy");
+
+    let mut pass_cmd: Command = cargo_bin_cmd!("kernriftc");
+    pass_cmd
+        .current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    pass_cmd.assert().success();
+
+    let mut contracts_json: Value =
+        serde_json::from_str(&fs::read_to_string(&contracts_path).expect("contracts text"))
+            .expect("contracts json");
+    let symbols = contracts_json["facts"]["symbols"]
+        .as_array_mut()
+        .expect("facts symbols array");
+    assert!(
+        symbols.len() >= 2,
+        "expected at least two symbols in contracts"
+    );
+    symbols[0]["name"] = json!("helper");
+    symbols[0]["ctx_reachable"] = json!(["irq"]);
+    symbols[0]["eff_transitive"] = json!(["yield"]);
+    symbols[0]["eff_provenance"] = json!([{
+        "effect": "yield",
+        "provenance": {
+            "direct": true,
+            "via_callee": [],
+            "via_extern": []
+        }
+    }]);
+    symbols[1]["name"] = json!("isr");
+    symbols[1]["ctx_reachable"] = json!(["irq"]);
+    symbols[1]["eff_transitive"] = json!(["yield"]);
+    symbols[1]["eff_provenance"] = json!([{
+        "effect": "yield",
+        "provenance": {
+            "direct": false,
+            "via_callee": ["helper"],
+            "via_extern": []
+        }
+    }]);
+    fs::write(
+        &mutated_path,
+        serde_json::to_string(&contracts_json).expect("contracts json text"),
+    )
+    .expect("write mutated contracts");
+
+    let mut fail_cmd: Command = cargo_bin_cmd!("kernriftc");
+    fail_cmd
+        .current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(mutated_path.as_os_str());
+    let fail_assert = fail_cmd.assert().failure().code(1);
+    let fail_stderr = String::from_utf8(fail_assert.get_output().stderr.clone()).expect("stderr");
+    let lines = fail_stderr
+        .lines()
+        .filter(|line| line.starts_with("policy: "))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lines,
+        vec![
+            "policy: KERNEL_IRQ_YIELD: function 'helper' is irq-reachable and uses yield effect (direct=true, via_callee=[], via_extern=[])",
+            "policy: KERNEL_IRQ_YIELD: function 'isr' is irq-reachable and uses yield effect (direct=false, via_callee=[helper], via_extern=[])",
+        ],
+        "expected deterministic irq yield violations, got:\n{}",
+        fail_stderr
+    );
+
+    for symbol in contracts_json["facts"]["symbols"]
+        .as_array_mut()
+        .expect("facts symbols array")
+    {
+        symbol["eff_transitive"] = json!([]);
+        symbol["eff_provenance"] = json!([]);
+    }
+    fs::write(
+        &mutated_path,
+        serde_json::to_string(&contracts_json).expect("contracts json text"),
+    )
+    .expect("write mutated contracts");
+
+    let mut clear_pass_cmd: Command = cargo_bin_cmd!("kernriftc");
+    clear_pass_cmd
+        .current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(mutated_path.as_os_str());
+    clear_pass_cmd.assert().success();
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+    fs::remove_file(&mutated_path).ok();
+}
+
+#[test]
 fn contracts_v2_semantic_fields_coexist_and_validate_schema() {
     let root = repo_root();
     let fixture = root
@@ -1730,6 +1867,64 @@ fn policy_kernel_capability_rule_requires_contracts_v2() {
 [kernel]
 forbid_caps_in_irq = ["PhysMap"]
 allow_caps_in_irq = ["IoPort"]
+"#,
+    )
+    .expect("write policy");
+
+    let mut policy_cmd: Command = cargo_bin_cmd!("kernriftc");
+    policy_cmd
+        .current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    let assert = policy_cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let lines = stderr
+        .lines()
+        .filter(|line| line.starts_with("policy: "))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lines,
+        vec![
+            "policy: KERNEL_POLICY_REQUIRES_V2: kernel policy rules require contracts schema 'kernrift_contracts_v2'"
+        ]
+    );
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn policy_kernel_irq_yield_rule_requires_contracts_v2() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path =
+        std::env::temp_dir().join(format!("kernrift-policy-v1-irq-yield-{}.json", ts));
+    let policy_path =
+        std::env::temp_dir().join(format!("kernrift-policy-v1-irq-yield-{}.toml", ts));
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+
+    let mut check_cmd: Command = cargo_bin_cmd!("kernriftc");
+    check_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg(fixture.as_os_str());
+    check_cmd.assert().success();
+
+    fs::write(
+        &policy_path,
+        r#"
+[kernel]
+forbid_yield_in_irq = true
 "#,
     )
     .expect("write policy");
