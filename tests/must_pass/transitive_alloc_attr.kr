@@ -1,0 +1,4 @@
+fn entry() { helper(); }
+
+@eff(alloc)
+fn helper() {}

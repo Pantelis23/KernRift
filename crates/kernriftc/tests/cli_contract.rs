@@ -550,6 +550,125 @@ fn contracts_v2_facts_include_transitive_effects() {
 }
 
 #[test]
+fn contracts_v2_transitive_effects_include_eff_attr_annotations() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("transitive_alloc_attr.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let out_path = std::env::temp_dir().join(format!(
+        "kernrift-contracts-v2-eff-attr-transitive-{}.json",
+        ts
+    ));
+    fs::remove_file(&out_path).ok();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--contracts-schema")
+        .arg("v2")
+        .arg("--contracts-out")
+        .arg(out_path.as_os_str())
+        .arg(fixture.as_os_str());
+    cmd.assert().success();
+
+    let json: Value = serde_json::from_str(&fs::read_to_string(&out_path).expect("contracts text"))
+        .expect("contracts json");
+    validate_contracts_schema_v2(&json);
+
+    let symbols = json["facts"]["symbols"]
+        .as_array()
+        .expect("facts symbols array");
+    let helper = symbols
+        .iter()
+        .find(|sym| sym["name"] == "helper")
+        .expect("helper symbol");
+    let entry = symbols
+        .iter()
+        .find(|sym| sym["name"] == "entry")
+        .expect("entry symbol");
+
+    assert_eq!(
+        helper["eff_used"],
+        Value::Array(vec![Value::String("alloc".to_string())])
+    );
+    assert_eq!(
+        helper["eff_transitive"],
+        Value::Array(vec![Value::String("alloc".to_string())])
+    );
+    assert_eq!(
+        entry["eff_transitive"],
+        Value::Array(vec![Value::String("alloc".to_string())])
+    );
+
+    fs::remove_file(&out_path).ok();
+}
+
+#[test]
+fn contracts_v2_transitive_effects_include_extern_eff_stubs() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("transitive_alloc_extern.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let out_path = std::env::temp_dir().join(format!(
+        "kernrift-contracts-v2-eff-extern-transitive-{}.json",
+        ts
+    ));
+    fs::remove_file(&out_path).ok();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--contracts-schema")
+        .arg("v2")
+        .arg("--contracts-out")
+        .arg(out_path.as_os_str())
+        .arg(fixture.as_os_str());
+    cmd.assert().success();
+
+    let json: Value = serde_json::from_str(&fs::read_to_string(&out_path).expect("contracts text"))
+        .expect("contracts json");
+    validate_contracts_schema_v2(&json);
+
+    let symbols = json["facts"]["symbols"]
+        .as_array()
+        .expect("facts symbols array");
+    let kmalloc = symbols
+        .iter()
+        .find(|sym| sym["name"] == "kmalloc")
+        .expect("kmalloc symbol");
+    let entry = symbols
+        .iter()
+        .find(|sym| sym["name"] == "entry")
+        .expect("entry symbol");
+
+    assert_eq!(kmalloc["is_extern"], Value::Bool(true));
+    assert_eq!(
+        kmalloc["eff_used"],
+        Value::Array(vec![Value::String("alloc".to_string())])
+    );
+    assert_eq!(
+        kmalloc["eff_transitive"],
+        Value::Array(vec![Value::String("alloc".to_string())])
+    );
+    assert_eq!(
+        entry["eff_transitive"],
+        Value::Array(vec![Value::String("alloc".to_string())])
+    );
+
+    fs::remove_file(&out_path).ok();
+}
+
+#[test]
 fn contracts_v2_facts_include_ctx_reachable_transitive_irq() {
     let root = repo_root();
     let fixture = root

@@ -28,6 +28,7 @@ Parsed in `crates/hir/src/lib.rs`:
 - `yield`
 
 Also lowered into KRIR `eff_used` and emitted in contracts `facts.symbols[*].eff_used`.
+For `extern fn`, `@eff(...)` is mandatory and seeds `eff_used` directly from declared facts.
 
 ## Yieldpoint Representation
 
@@ -53,6 +54,7 @@ Current mapping:
 - contracts v2 `facts.symbols[*].eff_transitive` is derived by SCC-aware call-graph closure:
   - `eff_transitive(fn) = eff_used(fn) ∪ union(eff_transitive(callee))`
   - SCCs are collapsed first, then effects are propagated over the component DAG.
+  - this includes extern stubs, so caller transitive effects include effects declared on external APIs.
 
 ## Critical Regions
 
