@@ -10,11 +10,13 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use ed25519_dalek::SigningKey;
 use jsonschema::JSONSchema;
 use predicates::str::contains;
-use serde_json::Value;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 const CONTRACTS_SCHEMA_V1: &str =
     include_str!("../../../docs/schemas/kernrift_contracts_v1.schema.json");
+const VERIFY_REPORT_SCHEMA_V1: &str =
+    include_str!("../../../docs/schemas/kernrift_verify_report_v1.schema.json");
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -286,6 +288,23 @@ fn validate_contracts_schema(instance: &Value) {
             details.join(" | ")
         );
     }
+}
+
+fn compile_verify_report_schema() -> JSONSchema {
+    let schema_json: Value = serde_json::from_str(VERIFY_REPORT_SCHEMA_V1).expect("schema json");
+    JSONSchema::compile(&schema_json).expect("compile schema")
+}
+
+fn assert_schema_rejects(compiled: &JSONSchema, instance: &Value, needle: &str) {
+    let errors = compiled
+        .validate(instance)
+        .expect_err("instance should fail verify report schema");
+    let details = errors.map(|e| e.to_string()).collect::<Vec<_>>();
+    assert!(
+        details.iter().any(|line| line.contains(needle)),
+        "expected schema error containing '{needle}', got: {}",
+        details.join(" | ")
+    );
 }
 
 fn write_test_keypair(secret_path: &Path, pubkey_path: &Path) {
@@ -1013,6 +1032,144 @@ fn verify_rejects_schema_invalid_even_with_matching_hash() {
 
     fs::remove_file(&contracts_path).ok();
     fs::remove_file(&hash_path).ok();
+}
+
+#[test]
+fn verify_rejects_contracts_with_unknown_top_level_key() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("locks_ok.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path =
+        std::env::temp_dir().join(format!("kernrift-p84-unknown-contract-key-{}.json", ts));
+    let hash_path =
+        std::env::temp_dir().join(format!("kernrift-p84-unknown-contract-key-{}.sha256", ts));
+
+    let mut check_cmd: Command = cargo_bin_cmd!("kernriftc");
+    check_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg("--hash-out")
+        .arg(hash_path.as_os_str())
+        .arg(fixture.as_os_str());
+    check_cmd.assert().success();
+
+    let mut contracts: Value =
+        serde_json::from_str(&fs::read_to_string(&contracts_path).expect("read contracts"))
+            .expect("contracts json");
+    contracts
+        .as_object_mut()
+        .expect("contracts object")
+        .insert("unexpected".to_string(), Value::Bool(true));
+    let tampered = serde_json::to_string(&contracts).expect("serialize tampered contracts");
+    fs::write(&contracts_path, tampered.as_bytes()).expect("write tampered contracts");
+    fs::write(&hash_path, format!("{}\n", sha256_hex(tampered.as_bytes())))
+        .expect("write matching tampered hash");
+
+    let mut verify_cmd: Command = cargo_bin_cmd!("kernriftc");
+    verify_cmd
+        .current_dir(&root)
+        .arg("verify")
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str())
+        .arg("--hash")
+        .arg(hash_path.as_os_str());
+    verify_cmd
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(contains("contracts schema validation failed"));
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&hash_path).ok();
+}
+
+#[test]
+fn verify_report_schema_rejects_unknown_keys_and_invalid_result() {
+    let compiled = compile_verify_report_schema();
+    let mut valid = json!({
+        "schema_version": "kernrift_verify_report_v1",
+        "result": "pass",
+        "inputs": {
+            "contracts": "contracts.json",
+            "hash": "contracts.sha256",
+            "sig": null,
+            "pubkey": null
+        },
+        "hash": {
+            "expected_sha256": "0".repeat(64),
+            "computed_sha256": "0".repeat(64),
+            "matched": true
+        },
+        "contracts": {
+            "utf8_valid": true,
+            "schema_valid": true,
+            "schema_version": "kernrift_contracts_v1"
+        },
+        "signature": {
+            "checked": false,
+            "valid": null
+        },
+        "diagnostics": []
+    });
+    if let Err(errors) = compiled.validate(&valid) {
+        let details = errors.map(|e| e.to_string()).collect::<Vec<_>>();
+        panic!(
+            "expected valid verify report schema instance, got: {}",
+            details.join(" | ")
+        );
+    }
+
+    valid
+        .as_object_mut()
+        .expect("report object")
+        .insert("unexpected".to_string(), Value::Bool(true));
+    assert_schema_rejects(&compiled, &valid, "Additional properties are not allowed");
+
+    let mut invalid_nested = json!({
+        "schema_version": "kernrift_verify_report_v1",
+        "result": "pass",
+        "inputs": {
+            "contracts": "contracts.json",
+            "hash": "contracts.sha256",
+            "sig": null,
+            "pubkey": null,
+            "extra": "nope"
+        },
+        "hash": {
+            "expected_sha256": "0".repeat(64),
+            "computed_sha256": "0".repeat(64),
+            "matched": true
+        },
+        "contracts": {
+            "utf8_valid": true,
+            "schema_valid": true,
+            "schema_version": "kernrift_contracts_v1"
+        },
+        "signature": {
+            "checked": false,
+            "valid": null
+        },
+        "diagnostics": []
+    });
+    assert_schema_rejects(
+        &compiled,
+        &invalid_nested,
+        "Additional properties are not allowed",
+    );
+
+    invalid_nested["inputs"] = json!({
+        "contracts": "contracts.json",
+        "hash": "contracts.sha256",
+        "sig": null,
+        "pubkey": null
+    });
+    invalid_nested["result"] = Value::String("maybe".to_string());
+    assert_schema_rejects(&compiled, &invalid_nested, "\"maybe\" is not one of");
 }
 
 #[test]

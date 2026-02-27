@@ -141,6 +141,32 @@ Schema file: `docs/schemas/kernrift_verify_report_v1.schema.json`
 - `signature`: whether signature checking was requested and whether it validated
 - `diagnostics`: stable sorted diagnostic strings
 
+Field contract (v1):
+
+| Field | Type | Notes |
+|---|---|---|
+| `schema_version` | const string | must equal `kernrift_verify_report_v1` |
+| `result` | enum string | one of `pass`, `deny`, `invalid_input` |
+| `inputs.contracts` | string | basename when absolute path was passed |
+| `inputs.hash` | string | basename when absolute path was passed |
+| `inputs.sig` | string or null | present when `--sig` is provided |
+| `inputs.pubkey` | string or null | present when `--pubkey` is provided |
+| `hash.expected_sha256` | string or null | null when hash input was not parseable/readable |
+| `hash.computed_sha256` | string or null | null when contracts bytes could not be read |
+| `hash.matched` | bool | true only when expected==computed |
+| `contracts.utf8_valid` | bool | contracts file decoded as UTF-8 |
+| `contracts.schema_valid` | bool | contracts JSON validated against contracts schema |
+| `contracts.schema_version` | string or null | observed contracts schema version |
+| `signature.checked` | bool | true when signature verification was requested |
+| `signature.valid` | bool or null | null when signature verification was not requested |
+| `diagnostics[]` | string array | sorted + deduped diagnostics |
+
+Strictness policy:
+
+- JSON objects are closed (`additionalProperties: false`) at all levels.
+- Unknown keys are rejected by schema validation.
+- Unknown `result` enum values are rejected by schema validation.
+
 Output write safety matches other guarded outputs:
 
 - refuses overwrite when destination exists,
