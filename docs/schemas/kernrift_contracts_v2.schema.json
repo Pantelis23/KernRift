@@ -1,0 +1,290 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kernrift.dev/schemas/kernrift_contracts_v2.schema.json",
+  "title": "KernRift Contracts v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "capabilities",
+    "facts",
+    "lockgraph",
+    "report"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "kernrift_contracts_v2"
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "module_caps",
+        "symbols"
+      ],
+      "properties": {
+        "module_caps": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "symbols": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/capability_symbol"
+          }
+        }
+      }
+    },
+    "facts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "symbols"
+      ],
+      "properties": {
+        "symbols": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/fact_symbol"
+          }
+        }
+      }
+    },
+    "lockgraph": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "edges",
+        "max_lock_depth"
+      ],
+      "properties": {
+        "edges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/lock_edge"
+          }
+        },
+        "max_lock_depth": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_lock_depth",
+        "no_yield_spans",
+        "contexts",
+        "effects"
+      ],
+      "properties": {
+        "max_lock_depth": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "no_yield_spans": {
+          "type": "object",
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "string",
+                "const": "unbounded"
+              }
+            ]
+          }
+        },
+        "contexts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "irq_functions",
+            "critical_functions"
+          ],
+          "properties": {
+            "irq_functions": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            },
+            "critical_functions": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            }
+          }
+        },
+        "effects": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "yield_sites_count",
+            "alloc_sites_count",
+            "block_sites_count"
+          ],
+          "properties": {
+            "yield_sites_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "alloc_sites_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "block_sites_count": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "context": {
+      "type": "string",
+      "enum": [
+        "boot",
+        "irq",
+        "nmi",
+        "thread"
+      ]
+    },
+    "effect": {
+      "type": "string",
+      "enum": [
+        "alloc",
+        "block",
+        "dma_map",
+        "ioport",
+        "mmio",
+        "preempt_off",
+        "yield"
+      ]
+    },
+    "attrs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "noyield",
+        "leaf",
+        "hotpath",
+        "lock_budget"
+      ],
+      "properties": {
+        "noyield": {
+          "type": "boolean"
+        },
+        "leaf": {
+          "type": "boolean"
+        },
+        "hotpath": {
+          "type": "boolean"
+        },
+        "lock_budget": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "capability_symbol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "caps_req"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "caps_req": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "fact_symbol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "is_extern",
+        "ctx_ok",
+        "eff_used",
+        "caps_req",
+        "attrs"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "is_extern": {
+          "type": "boolean"
+        },
+        "ctx_ok": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/context"
+          },
+          "uniqueItems": true
+        },
+        "eff_used": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/effect"
+          },
+          "uniqueItems": true
+        },
+        "caps_req": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "attrs": {
+          "$ref": "#/$defs/attrs"
+        }
+      }
+    },
+    "lock_edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "to"
+      ],
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

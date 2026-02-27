@@ -7,8 +7,9 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use emit::{
-    emit_caps_manifest_json, emit_contracts_json, emit_contracts_json_canonical, emit_krir_json,
-    emit_lockgraph_json, emit_report_json,
+    ContractsSchema as EmitContractsSchema, emit_caps_manifest_json, emit_contracts_json,
+    emit_contracts_json_canonical, emit_contracts_json_canonical_with_schema,
+    emit_contracts_json_with_schema, emit_krir_json, emit_lockgraph_json, emit_report_json,
 };
 use jsonschema::JSONSchema;
 use kernriftc::{analyze, check_file, check_module, compile_file};
@@ -18,10 +19,13 @@ use sha2::{Digest, Sha256};
 
 const CONTRACTS_SCHEMA_V1: &str =
     include_str!("../../../docs/schemas/kernrift_contracts_v1.schema.json");
+const CONTRACTS_SCHEMA_V2: &str =
+    include_str!("../../../docs/schemas/kernrift_contracts_v2.schema.json");
 const VERIFY_REPORT_SCHEMA_V1: &str =
     include_str!("../../../docs/schemas/kernrift_verify_report_v1.schema.json");
 const KERNEL_POLICY_PROFILE: &str = include_str!("../../../policies/kernel.toml");
 const CONTRACTS_SCHEMA_VERSION: &str = "kernrift_contracts_v1";
+const CONTRACTS_SCHEMA_VERSION_V2: &str = "kernrift_contracts_v2";
 const VERIFY_REPORT_SCHEMA_VERSION: &str = "kernrift_verify_report_v1";
 const EXIT_POLICY_VIOLATION: u8 = 1;
 const EXIT_INVALID_INPUT: u8 = 2;
@@ -34,6 +38,8 @@ struct PolicyFile {
     locks: PolicyLocks,
     #[serde(default)]
     caps: PolicyCaps,
+    #[serde(default)]
+    kernel: PolicyKernel,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -58,10 +64,21 @@ struct PolicyCaps {
     allow_module: Vec<String>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct PolicyKernel {
+    #[serde(default)]
+    forbid_alloc_in_irq: bool,
+    #[serde(default)]
+    forbid_block_in_irq: bool,
+    #[serde(default)]
+    forbid_yield_in_critical: bool,
+}
+
 #[derive(Debug, Deserialize)]
 struct ContractsBundle {
     schema_version: String,
     capabilities: ContractsCapabilities,
+    facts: ContractsFacts,
     lockgraph: ContractsLockgraph,
     report: ContractsReport,
 }
@@ -86,6 +103,56 @@ struct ContractsLockEdge {
 struct ContractsReport {
     max_lock_depth: u64,
     no_yield_spans: BTreeMap<String, ContractsNoYieldSpan>,
+    #[serde(default)]
+    contexts: ContractsReportContexts,
+    #[serde(default)]
+    effects: ContractsReportEffects,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ContractsFacts {
+    symbols: Vec<ContractsFactSymbol>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ContractsFactSymbol {
+    name: String,
+    ctx_ok: Vec<String>,
+    eff_used: Vec<String>,
+    attrs: ContractsFactAttrs,
+}
+
+impl ContractsFactSymbol {
+    fn has_ctx(&self, ctx: &str) -> bool {
+        self.ctx_ok.iter().any(|c| c == ctx)
+    }
+
+    fn has_eff(&self, eff: &str) -> bool {
+        self.eff_used.iter().any(|e| e == eff)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ContractsFactAttrs {
+    noyield: bool,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ContractsReportContexts {
+    #[serde(default)]
+    irq_functions: Vec<String>,
+    #[serde(default)]
+    critical_functions: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ContractsReportEffects {
+    #[serde(default)]
+    yield_sites_count: u64,
+    #[serde(default)]
+    alloc_sites_count: u64,
+    #[serde(default)]
+    block_sites_count: u64,
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
@@ -111,6 +178,7 @@ struct PolicyViolation {
 struct CheckArgs {
     path: String,
     profile: Option<CheckProfile>,
+    contracts_schema: Option<ContractsSchemaArg>,
     contracts_out: Option<String>,
     policy_path: Option<String>,
     hash_out: Option<String>,
@@ -131,6 +199,32 @@ impl CheckProfile {
                 "invalid check mode: unknown profile '{}', expected 'kernel'",
                 other
             )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContractsSchemaArg {
+    V1,
+    V2,
+}
+
+impl ContractsSchemaArg {
+    fn parse(raw: &str) -> Result<Self, String> {
+        match raw.to_ascii_lowercase().as_str() {
+            "v1" => Ok(Self::V1),
+            "v2" => Ok(Self::V2),
+            other => Err(format!(
+                "invalid check mode: unknown contracts schema '{}', expected 'v1' or 'v2'",
+                other
+            )),
+        }
+    }
+
+    fn to_emit_schema(self) -> EmitContractsSchema {
+        match self {
+            Self::V1 => EmitContractsSchema::V1,
+            Self::V2 => EmitContractsSchema::V2,
         }
     }
 }
@@ -286,6 +380,7 @@ fn main() -> ExitCode {
 
 fn parse_check_args(args: &[String]) -> Result<CheckArgs, String> {
     let mut profile = None::<CheckProfile>;
+    let mut contracts_schema = None::<ContractsSchemaArg>;
     let mut contracts_out = None::<String>;
     let mut policy_path = None::<String>;
     let mut hash_out = None::<String>;
@@ -304,6 +399,18 @@ fn parse_check_args(args: &[String]) -> Result<CheckArgs, String> {
                     return Err("invalid check mode: --profile requires a value".to_string());
                 };
                 profile = Some(CheckProfile::parse(value)?);
+                idx += 2;
+            }
+            "--contracts-schema" => {
+                if contracts_schema.is_some() {
+                    return Err("invalid check mode: duplicate --contracts-schema".to_string());
+                }
+                let Some(value) = args.get(idx + 1) else {
+                    return Err(
+                        "invalid check mode: --contracts-schema requires a value".to_string()
+                    );
+                };
+                contracts_schema = Some(ContractsSchemaArg::parse(value)?);
                 idx += 2;
             }
             "--contracts-out" => {
@@ -384,6 +491,7 @@ fn parse_check_args(args: &[String]) -> Result<CheckArgs, String> {
     Ok(CheckArgs {
         path: positionals.remove(0),
         profile,
+        contracts_schema,
         contracts_out,
         policy_path,
         hash_out,
@@ -481,6 +589,7 @@ fn parse_verify_args(args: &[String]) -> Result<VerifyArgs, String> {
 
 fn run_check(args: &CheckArgs) -> ExitCode {
     if args.profile.is_none()
+        && args.contracts_schema.is_none()
         && args.contracts_out.is_none()
         && args.policy_path.is_none()
         && args.hash_out.is_none()
@@ -513,13 +622,22 @@ fn run_check(args: &CheckArgs) -> ExitCode {
         return ExitCode::from(EXIT_POLICY_VIOLATION);
     }
 
-    let contracts = match emit_contracts_json_canonical(&module, &report) {
-        Ok(text) => text,
+    let contracts_schema = match resolve_contracts_schema(args.profile, args.contracts_schema) {
+        Ok(schema) => schema,
         Err(err) => {
             eprintln!("{}", err);
             return ExitCode::from(EXIT_INVALID_INPUT);
         }
     };
+
+    let contracts =
+        match emit_contracts_json_canonical_with_schema(&module, &report, contracts_schema) {
+            Ok(text) => text,
+            Err(err) => {
+                eprintln!("{}", err);
+                return ExitCode::from(EXIT_INVALID_INPUT);
+            }
+        };
     let contracts_bundle = match decode_contracts_bundle(&contracts, "<generated>") {
         Ok(bundle) => bundle,
         Err(err) => {
@@ -527,6 +645,9 @@ fn run_check(args: &CheckArgs) -> ExitCode {
             return ExitCode::from(EXIT_INVALID_INPUT);
         }
     };
+    if contracts_schema == EmitContractsSchema::V2 {
+        print_errors(&kernel_feature_unimplemented_diagnostics());
+    }
 
     let mut policy_violations = Vec::<PolicyViolation>::new();
 
@@ -752,6 +873,30 @@ fn run_verify(args: &VerifyArgs) -> ExitCode {
     print_errors(&stderr_diagnostics);
 
     ExitCode::from(status.as_exit_code())
+}
+
+fn resolve_contracts_schema(
+    profile: Option<CheckProfile>,
+    requested: Option<ContractsSchemaArg>,
+) -> Result<EmitContractsSchema, String> {
+    if profile == Some(CheckProfile::Kernel) {
+        if requested == Some(ContractsSchemaArg::V1) {
+            return Err(
+                "invalid check mode: --profile kernel requires contracts schema v2 (omit --contracts-schema or use --contracts-schema v2)"
+                    .to_string(),
+            );
+        }
+        return Ok(EmitContractsSchema::V2);
+    }
+
+    Ok(requested.unwrap_or(ContractsSchemaArg::V1).to_emit_schema())
+}
+
+fn kernel_feature_unimplemented_diagnostics() -> Vec<String> {
+    vec![
+        "analysis: KERNEL_FEATURE_UNIMPLEMENTED: alloc_sites_count".to_string(),
+        "analysis: KERNEL_FEATURE_UNIMPLEMENTED: block_sites_count".to_string(),
+    ]
 }
 
 fn new_verify_report(args: &VerifyArgs) -> VerifyReport {
@@ -1197,6 +1342,31 @@ fn selftest_json_schemas() -> Result<(), String> {
         "contracts",
     )?;
 
+    let contracts_v2_text =
+        emit_contracts_json_with_schema(&locks_module, &locks_report, EmitContractsSchema::V2)
+            .map_err(|e| e.to_string())?;
+    let contracts_v2_json: Value =
+        serde_json::from_str(&contracts_v2_text).map_err(|e| e.to_string())?;
+    if contracts_v2_json["schema_version"].as_str() != Some(CONTRACTS_SCHEMA_VERSION_V2) {
+        return Err("selftest contracts v2 schema_version mismatch".to_string());
+    }
+    if object_keys(&contracts_v2_json["report"])?
+        != BTreeSet::from([
+            "contexts".to_string(),
+            "effects".to_string(),
+            "max_lock_depth".to_string(),
+            "no_yield_spans".to_string(),
+        ])
+    {
+        return Err("selftest contracts v2 report keys mismatch".to_string());
+    }
+    validate_json_against_schema_text(
+        &contracts_v2_json,
+        CONTRACTS_SCHEMA_V2,
+        "embedded contracts schema v2",
+        "contracts",
+    )?;
+
     let krir_text = emit_krir_json(&basic_module).map_err(|e| e.to_string())?;
     let krir_json: Value = serde_json::from_str(&krir_text).map_err(|e| e.to_string())?;
     if object_keys(&krir_json)?
@@ -1519,12 +1689,26 @@ fn decode_contracts_bundle(
 ) -> Result<ContractsBundle, String> {
     let contracts_json: Value = serde_json::from_str(contracts_text)
         .map_err(|e| format!("failed to parse contracts JSON '{}': {}", source_name, e))?;
-    validate_json_against_schema_text(
-        &contracts_json,
-        CONTRACTS_SCHEMA_V1,
-        "embedded contracts schema",
-        "contracts",
-    )?;
+    let schema_version = contracts_json
+        .get("schema_version")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            format!(
+                "failed to decode contracts bundle '{}': missing string field 'schema_version'",
+                source_name
+            )
+        })?;
+    let (schema_text, schema_name) = match schema_version {
+        CONTRACTS_SCHEMA_VERSION => (CONTRACTS_SCHEMA_V1, "embedded contracts schema v1"),
+        CONTRACTS_SCHEMA_VERSION_V2 => (CONTRACTS_SCHEMA_V2, "embedded contracts schema v2"),
+        other => {
+            return Err(format!(
+                "unsupported contracts schema_version '{}', expected '{}' or '{}'",
+                other, CONTRACTS_SCHEMA_VERSION, CONTRACTS_SCHEMA_VERSION_V2
+            ));
+        }
+    };
+    validate_json_against_schema_text(&contracts_json, schema_text, schema_name, "contracts")?;
 
     let contracts: ContractsBundle = serde_json::from_value(contracts_json).map_err(|e| {
         format!(
@@ -1532,10 +1716,12 @@ fn decode_contracts_bundle(
             source_name, e
         )
     })?;
-    if contracts.schema_version != CONTRACTS_SCHEMA_VERSION {
+    if contracts.schema_version != CONTRACTS_SCHEMA_VERSION
+        && contracts.schema_version != CONTRACTS_SCHEMA_VERSION_V2
+    {
         return Err(format!(
-            "unsupported contracts schema_version '{}', expected '{}'",
-            contracts.schema_version, CONTRACTS_SCHEMA_VERSION
+            "unsupported contracts schema_version '{}', expected '{}' or '{}'",
+            contracts.schema_version, CONTRACTS_SCHEMA_VERSION, CONTRACTS_SCHEMA_VERSION_V2
         ));
     }
 
@@ -1544,6 +1730,20 @@ fn decode_contracts_bundle(
 
 fn evaluate_policy(policy: &PolicyFile, contracts: &ContractsBundle) -> Vec<PolicyViolation> {
     let mut violations = Vec::<PolicyViolation>::new();
+    let symbol_by_name = contracts
+        .facts
+        .symbols
+        .iter()
+        .map(|symbol| (symbol.name.as_str(), symbol))
+        .collect::<BTreeMap<_, _>>();
+
+    // Parsed for deterministic v2 policy/report compatibility even when
+    // current rule-set only consumes a subset of effect counters.
+    let _effect_counters = (
+        contracts.report.effects.yield_sites_count,
+        contracts.report.effects.alloc_sites_count,
+        contracts.report.effects.block_sites_count,
+    );
 
     if let Some(limit) = policy.limits.max_lock_depth
         && contracts.report.max_lock_depth > limit
@@ -1637,6 +1837,79 @@ fn evaluate_policy(policy: &PolicyFile, contracts: &ContractsBundle) -> Vec<Poli
         }
     }
 
+    let mut irq_functions = contracts.report.contexts.irq_functions.clone();
+    if irq_functions.is_empty() {
+        irq_functions = contracts
+            .facts
+            .symbols
+            .iter()
+            .filter(|symbol| symbol.has_ctx("irq"))
+            .map(|symbol| symbol.name.clone())
+            .collect::<Vec<_>>();
+    }
+    irq_functions.sort();
+    irq_functions.dedup();
+
+    if policy.kernel.forbid_alloc_in_irq {
+        for symbol_name in &irq_functions {
+            if let Some(symbol) = symbol_by_name.get(symbol_name.as_str())
+                && symbol.has_eff("alloc")
+            {
+                violations.push(PolicyViolation {
+                    code: "KERNEL_IRQ_ALLOC",
+                    msg: format!(
+                        "function '{}' is irq-reachable and uses alloc effect",
+                        symbol_name
+                    ),
+                });
+            }
+        }
+    }
+
+    if policy.kernel.forbid_block_in_irq {
+        for symbol_name in &irq_functions {
+            if let Some(symbol) = symbol_by_name.get(symbol_name.as_str())
+                && symbol.has_eff("block")
+            {
+                violations.push(PolicyViolation {
+                    code: "KERNEL_IRQ_BLOCK",
+                    msg: format!(
+                        "function '{}' is irq-reachable and uses block effect",
+                        symbol_name
+                    ),
+                });
+            }
+        }
+    }
+
+    if policy.kernel.forbid_yield_in_critical {
+        let mut critical = contracts.report.contexts.critical_functions.clone();
+        if critical.is_empty() {
+            critical = contracts
+                .facts
+                .symbols
+                .iter()
+                .filter(|symbol| symbol.attrs.noyield)
+                .map(|symbol| symbol.name.clone())
+                .collect::<Vec<_>>();
+        }
+        critical.sort();
+        critical.dedup();
+        for symbol in critical {
+            if let Some(ContractsNoYieldSpan::Bounded(span)) =
+                contracts.report.no_yield_spans.get(&symbol)
+            {
+                violations.push(PolicyViolation {
+                    code: "KERNEL_CRITICAL_YIELD",
+                    msg: format!(
+                        "critical function '{}' may yield (max span {})",
+                        symbol, span
+                    ),
+                });
+            }
+        }
+    }
+
     violations.sort();
     violations.dedup();
     violations
@@ -1699,6 +1972,8 @@ fn print_usage() {
     eprintln!("  kernriftc --version");
     eprintln!("  kernriftc check <file.kr>");
     eprintln!("  kernriftc check --profile kernel <file.kr>");
+    eprintln!("  kernriftc check --contracts-schema v2 <file.kr>");
+    eprintln!("  kernriftc check --profile kernel --contracts-schema v2 <file.kr>");
     eprintln!("  kernriftc check --policy <policy.toml> <file.kr>");
     eprintln!("  kernriftc check --contracts-out <contracts.json> <file.kr>");
     eprintln!(

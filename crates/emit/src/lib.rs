@@ -1,11 +1,27 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use krir::KrirModule;
+use krir::{Ctx, KrirModule, KrirOp};
 use passes::{AnalysisReport, NoYieldSpan};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-const CONTRACTS_SCHEMA_VERSION: &str = "kernrift_contracts_v1";
+const CONTRACTS_SCHEMA_VERSION_V1: &str = "kernrift_contracts_v1";
+const CONTRACTS_SCHEMA_VERSION_V2: &str = "kernrift_contracts_v2";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContractsSchema {
+    V1,
+    V2,
+}
+
+impl ContractsSchema {
+    fn version_str(self) -> &'static str {
+        match self {
+            Self::V1 => CONTRACTS_SCHEMA_VERSION_V1,
+            Self::V2 => CONTRACTS_SCHEMA_VERSION_V2,
+        }
+    }
+}
 
 pub fn emit_krir_json(module: &KrirModule) -> Result<String, serde_json::Error> {
     let mut canonical = module.clone();
@@ -107,7 +123,15 @@ pub fn emit_report_json(report: &AnalysisReport, metrics: &[String]) -> Result<S
 }
 
 pub fn emit_contracts_json(module: &KrirModule, report: &AnalysisReport) -> Result<String, String> {
-    let value = contracts_value(module, report)?;
+    emit_contracts_json_with_schema(module, report, ContractsSchema::V1)
+}
+
+pub fn emit_contracts_json_with_schema(
+    module: &KrirModule,
+    report: &AnalysisReport,
+    schema: ContractsSchema,
+) -> Result<String, String> {
+    let value = contracts_value(module, report, schema)?;
     serde_json::to_string_pretty(&value)
         .map_err(|e| format!("failed to serialize contracts JSON: {}", e))
 }
@@ -116,11 +140,23 @@ pub fn emit_contracts_json_canonical(
     module: &KrirModule,
     report: &AnalysisReport,
 ) -> Result<String, String> {
-    let value = contracts_value(module, report)?;
+    emit_contracts_json_canonical_with_schema(module, report, ContractsSchema::V1)
+}
+
+pub fn emit_contracts_json_canonical_with_schema(
+    module: &KrirModule,
+    report: &AnalysisReport,
+    schema: ContractsSchema,
+) -> Result<String, String> {
+    let value = contracts_value(module, report, schema)?;
     serde_json::to_string(&value).map_err(|e| format!("failed to serialize contracts JSON: {}", e))
 }
 
-fn contracts_value(module: &KrirModule, report: &AnalysisReport) -> Result<Value, String> {
+fn contracts_value(
+    module: &KrirModule,
+    report: &AnalysisReport,
+    schema: ContractsSchema,
+) -> Result<Value, String> {
     let mut canonical = module.clone();
     canonical.canonicalize();
 
@@ -128,22 +164,27 @@ fn contracts_value(module: &KrirModule, report: &AnalysisReport) -> Result<Value
         .map_err(|e| format!("failed to serialize caps manifest JSON: {}", e))?;
     let lockgraph_text = emit_lockgraph_json(report)
         .map_err(|e| format!("failed to serialize lockgraph JSON: {}", e))?;
-    let report_text = emit_report_json(
-        report,
-        &["max_lock_depth".to_string(), "no_yield_spans".to_string()],
-    )?;
+    let report_value = match schema {
+        ContractsSchema::V1 => {
+            let report_text = emit_report_json(
+                report,
+                &["max_lock_depth".to_string(), "no_yield_spans".to_string()],
+            )?;
+            serde_json::from_str(&report_text)
+                .map_err(|e| format!("failed to parse generated report JSON: {}", e))?
+        }
+        ContractsSchema::V2 => report_v2_value(&canonical, report),
+    };
 
     let caps_value: Value = serde_json::from_str(&caps_text)
         .map_err(|e| format!("failed to parse generated caps manifest JSON: {}", e))?;
     let lockgraph_value: Value = serde_json::from_str(&lockgraph_text)
         .map_err(|e| format!("failed to parse generated lockgraph JSON: {}", e))?;
-    let report_value: Value = serde_json::from_str(&report_text)
-        .map_err(|e| format!("failed to parse generated report JSON: {}", e))?;
 
     let mut root = Map::new();
     root.insert(
         "schema_version".to_string(),
-        Value::String(CONTRACTS_SCHEMA_VERSION.to_string()),
+        Value::String(schema.version_str().to_string()),
     );
     root.insert("capabilities".to_string(), caps_value);
     root.insert("facts".to_string(), facts_manifest_value(&canonical));
@@ -215,6 +256,59 @@ fn no_yield_json(spans: &BTreeMap<String, NoYieldSpan>) -> Map<String, Value> {
         out.insert(name.clone(), value);
     }
     out
+}
+
+fn report_v2_value(module: &KrirModule, report: &AnalysisReport) -> Value {
+    let irq_functions = module
+        .functions
+        .iter()
+        .filter(|f| !f.is_extern && f.ctx_ok.contains(&Ctx::Irq))
+        .map(|f| f.name.clone())
+        .collect::<Vec<_>>();
+    let critical_functions = module
+        .functions
+        .iter()
+        .filter(|f| !f.is_extern && f.attrs.noyield)
+        .map(|f| f.name.clone())
+        .collect::<Vec<_>>();
+    let yield_sites_count = module
+        .functions
+        .iter()
+        .filter(|f| !f.is_extern)
+        .flat_map(|f| f.ops.iter())
+        .filter(|op| matches!(op, KrirOp::YieldPoint))
+        .count() as u64;
+
+    let mut contexts = Map::new();
+    contexts.insert(
+        "irq_functions".to_string(),
+        Value::Array(irq_functions.into_iter().map(Value::String).collect()),
+    );
+    contexts.insert(
+        "critical_functions".to_string(),
+        Value::Array(critical_functions.into_iter().map(Value::String).collect()),
+    );
+
+    let mut effects = Map::new();
+    effects.insert(
+        "yield_sites_count".to_string(),
+        Value::Number(yield_sites_count.into()),
+    );
+    effects.insert("alloc_sites_count".to_string(), Value::Number(0_u64.into()));
+    effects.insert("block_sites_count".to_string(), Value::Number(0_u64.into()));
+
+    let mut report_obj = Map::new();
+    report_obj.insert(
+        "max_lock_depth".to_string(),
+        Value::Number(report.max_lock_depth.into()),
+    );
+    report_obj.insert(
+        "no_yield_spans".to_string(),
+        Value::Object(no_yield_json(&report.no_yield_spans)),
+    );
+    report_obj.insert("contexts".to_string(), Value::Object(contexts));
+    report_obj.insert("effects".to_string(), Value::Object(effects));
+    Value::Object(report_obj)
 }
 
 #[cfg(test)]
@@ -461,7 +555,7 @@ mod tests {
         let value: Value = serde_json::from_str(&json).expect("parse contracts");
         assert_eq!(
             value["schema_version"],
-            Value::String(CONTRACTS_SCHEMA_VERSION.to_string())
+            Value::String(CONTRACTS_SCHEMA_VERSION_V1.to_string())
         );
         let top_keys = value
             .as_object()
