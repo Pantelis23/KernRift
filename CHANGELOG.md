@@ -2,6 +2,18 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## v0.2.10 - 2026-02-27
+
+### Changed
+- KRIR v0.1 acceptance script added: `tools/acceptance/krir_v0_1.sh`.
+- Verify-report schema documentation tightened and strictness negative tests added for unknown keys/invalid enum values.
+- KRIR spec updated with explicit verify-report ABI strictness table.
+
+### Notes
+- Product-only release.
+- No infra/release workflow changes.
+- `v0.2.9` remains frozen.
+
 ## v0.2.9 - 2026-02-27
 
 ### Changed
