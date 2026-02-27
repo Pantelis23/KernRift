@@ -1840,6 +1840,345 @@ forbid_caps_in_irq = ["PhysMap"]
 }
 
 #[test]
+fn policy_without_evidence_keeps_output_exactly_unchanged() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("policy_families_order.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path =
+        std::env::temp_dir().join(format!("kernrift-policy-no-evidence-{}.json", ts));
+    let policy_path = std::env::temp_dir().join(format!("kernrift-policy-no-evidence-{}.toml", ts));
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+
+    let mut check_cmd: Command = cargo_bin_cmd!("kernriftc");
+    check_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--contracts-schema")
+        .arg("v2")
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg(fixture.as_os_str());
+    check_cmd.assert().success();
+
+    fs::write(
+        &policy_path,
+        r#"
+[kernel]
+forbid_alloc_in_irq = true
+"#,
+    )
+    .expect("write policy");
+
+    let mut policy_cmd: Command = cargo_bin_cmd!("kernriftc");
+    policy_cmd
+        .current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    let assert = policy_cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec![
+            "policy: KERNEL_IRQ_ALLOC: function 'entry' is irq-reachable and uses alloc effect (direct=true, via_callee=[], via_extern=[])"
+        ]
+    );
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn policy_evidence_irq_effect_is_deterministic() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("policy_families_order.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path =
+        std::env::temp_dir().join(format!("kernrift-policy-evidence-irq-effect-{}.json", ts));
+    let policy_path =
+        std::env::temp_dir().join(format!("kernrift-policy-evidence-irq-effect-{}.toml", ts));
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+
+    let mut check_cmd: Command = cargo_bin_cmd!("kernriftc");
+    check_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--contracts-schema")
+        .arg("v2")
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg(fixture.as_os_str());
+    check_cmd.assert().success();
+
+    fs::write(
+        &policy_path,
+        r#"
+[kernel]
+forbid_alloc_in_irq = true
+"#,
+    )
+    .expect("write policy");
+
+    let mut policy_cmd: Command = cargo_bin_cmd!("kernriftc");
+    policy_cmd
+        .current_dir(&root)
+        .arg("policy")
+        .arg("--evidence")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    let assert = policy_cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec![
+            "policy: KERNEL_IRQ_ALLOC: function 'entry' is irq-reachable and uses alloc effect (direct=true, via_callee=[], via_extern=[])",
+            "evidence: symbol=entry",
+            "evidence: effect=alloc",
+            "evidence: direct=true",
+            "evidence: via_callee=[]",
+            "evidence: via_extern=[]",
+        ]
+    );
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn policy_evidence_irq_capability_is_deterministic() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("irq_caps_transitive.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path =
+        std::env::temp_dir().join(format!("kernrift-policy-evidence-irq-cap-{}.json", ts));
+    let policy_path =
+        std::env::temp_dir().join(format!("kernrift-policy-evidence-irq-cap-{}.toml", ts));
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+
+    let mut check_cmd: Command = cargo_bin_cmd!("kernriftc");
+    check_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--contracts-schema")
+        .arg("v2")
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg(fixture.as_os_str());
+    check_cmd.assert().success();
+
+    fs::write(
+        &policy_path,
+        r#"
+[kernel]
+forbid_caps_in_irq = ["PhysMap"]
+"#,
+    )
+    .expect("write policy");
+
+    let mut policy_cmd: Command = cargo_bin_cmd!("kernriftc");
+    policy_cmd
+        .current_dir(&root)
+        .arg("policy")
+        .arg("--evidence")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    let assert = policy_cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec![
+            "policy: KERNEL_IRQ_CAP_FORBID: function 'helper' is irq-reachable and uses forbidden capability 'PhysMap' (direct=true, via_callee=[], via_extern=[])",
+            "evidence: symbol=helper",
+            "evidence: capability=PhysMap",
+            "evidence: direct=true",
+            "evidence: via_callee=[]",
+            "evidence: via_extern=[]",
+            "policy: KERNEL_IRQ_CAP_FORBID: function 'isr' is irq-reachable and uses forbidden capability 'PhysMap' (direct=false, via_callee=[helper], via_extern=[])",
+            "evidence: symbol=isr",
+            "evidence: capability=PhysMap",
+            "evidence: direct=false",
+            "evidence: via_callee=[helper]",
+            "evidence: via_extern=[]",
+        ]
+    );
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn policy_evidence_critical_region_is_deterministic() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("critical_region_alloc.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path =
+        std::env::temp_dir().join(format!("kernrift-policy-evidence-critical-{}.json", ts));
+    let policy_path =
+        std::env::temp_dir().join(format!("kernrift-policy-evidence-critical-{}.toml", ts));
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+
+    let mut check_cmd: Command = cargo_bin_cmd!("kernriftc");
+    check_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--contracts-schema")
+        .arg("v2")
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg(fixture.as_os_str());
+    check_cmd.assert().success();
+
+    fs::write(
+        &policy_path,
+        r#"
+[kernel]
+forbid_effects_in_critical = ["alloc"]
+"#,
+    )
+    .expect("write policy");
+
+    let mut policy_cmd: Command = cargo_bin_cmd!("kernriftc");
+    policy_cmd
+        .current_dir(&root)
+        .arg("policy")
+        .arg("--evidence")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    let assert = policy_cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec![
+            "policy: KERNEL_CRITICAL_REGION_ALLOC: function 'entry' uses alloc effect in critical region (direct=true, via_callee=[], via_extern=[])",
+            "evidence: function=entry",
+            "evidence: effect=alloc",
+            "evidence: direct=true",
+            "evidence: via_callee=[]",
+            "evidence: via_extern=[]",
+        ]
+    );
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn policy_evidence_blocks_follow_deterministic_violation_order() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("policy_families_order.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path =
+        std::env::temp_dir().join(format!("kernrift-policy-evidence-order-{}.json", ts));
+    let policy_path =
+        std::env::temp_dir().join(format!("kernrift-policy-evidence-order-{}.toml", ts));
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+
+    let mut check_cmd: Command = cargo_bin_cmd!("kernriftc");
+    check_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--contracts-schema")
+        .arg("v2")
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg(fixture.as_os_str());
+    check_cmd.assert().success();
+
+    fs::write(
+        &policy_path,
+        r#"
+[limits]
+max_lock_depth = 1
+
+[locks]
+forbid_edges = [["ConsoleLock", "SchedLock"]]
+
+[kernel]
+forbid_alloc_in_irq = true
+forbid_effects_in_critical = ["alloc"]
+"#,
+    )
+    .expect("write policy");
+
+    let mut policy_cmd: Command = cargo_bin_cmd!("kernriftc");
+    policy_cmd
+        .current_dir(&root)
+        .arg("policy")
+        .arg("--evidence")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    let assert = policy_cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec![
+            "policy: KERNEL_CRITICAL_REGION_ALLOC: function 'entry' uses alloc effect in critical region (direct=true, via_callee=[], via_extern=[])",
+            "evidence: function=entry",
+            "evidence: effect=alloc",
+            "evidence: direct=true",
+            "evidence: via_callee=[]",
+            "evidence: via_extern=[]",
+            "policy: KERNEL_IRQ_ALLOC: function 'entry' is irq-reachable and uses alloc effect (direct=true, via_callee=[], via_extern=[])",
+            "evidence: symbol=entry",
+            "evidence: effect=alloc",
+            "evidence: direct=true",
+            "evidence: via_callee=[]",
+            "evidence: via_extern=[]",
+            "policy: LIMIT_MAX_LOCK_DEPTH: max_lock_depth 2 exceeds limit 1",
+            "policy: LOCK_FORBID_EDGE: forbidden lock edge 'ConsoleLock -> SchedLock' is present",
+        ]
+    );
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
 fn policy_kernel_capability_rule_requires_contracts_v2() {
     let root = repo_root();
     let fixture = root.join("tests").join("must_pass").join("basic.kr");

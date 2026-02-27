@@ -686,6 +686,7 @@ struct PolicyViolation {
     diagnostic_template_id: &'static str,
     code: &'static str,
     msg: String,
+    evidence: Vec<String>,
 }
 
 impl Ord for PolicyViolation {
@@ -702,8 +703,15 @@ impl Ord for PolicyViolation {
                 self.diagnostic_template_id
                     .cmp(other.diagnostic_template_id)
             })
+            .then_with(|| self.evidence.cmp(&other.evidence))
             .then_with(|| self.rule.cmp(&other.rule))
     }
+}
+
+struct PolicyArgs {
+    policy_path: String,
+    contracts_path: String,
+    evidence: bool,
 }
 
 impl PartialOrd for PolicyViolation {
@@ -868,15 +876,14 @@ fn main() -> ExitCode {
                 ExitCode::from(EXIT_INVALID_INPUT)
             }
         },
-        "policy" => {
-            if args.len() == 6 && args[2] == "--policy" && args[4] == "--contracts" {
-                run_policy(&args[3], &args[5])
-            } else {
-                eprintln!("invalid policy mode");
+        "policy" => match parse_policy_args(&args[2..]) {
+            Ok(parsed) => run_policy(&parsed.policy_path, &parsed.contracts_path, parsed.evidence),
+            Err(err) => {
+                eprintln!("{}", err);
                 print_usage();
                 ExitCode::from(EXIT_INVALID_INPUT)
             }
-        }
+        },
         "--selftest" => {
             if args.len() != 2 {
                 print_usage();
@@ -1035,6 +1042,64 @@ fn parse_check_args(args: &[String]) -> Result<CheckArgs, String> {
         hash_out,
         sign_key_path,
         sig_out,
+    })
+}
+
+fn parse_policy_args(args: &[String]) -> Result<PolicyArgs, String> {
+    let mut policy_path = None::<String>;
+    let mut contracts_path = None::<String>;
+    let mut evidence = false;
+
+    let mut idx = 0usize;
+    while idx < args.len() {
+        match args[idx].as_str() {
+            "--policy" => {
+                if policy_path.is_some() {
+                    return Err("invalid policy mode: duplicate --policy".to_string());
+                }
+                idx += 1;
+                if idx >= args.len() {
+                    return Err("invalid policy mode: --policy requires a file path".to_string());
+                }
+                policy_path = Some(args[idx].clone());
+            }
+            "--contracts" => {
+                if contracts_path.is_some() {
+                    return Err("invalid policy mode: duplicate --contracts".to_string());
+                }
+                idx += 1;
+                if idx >= args.len() {
+                    return Err("invalid policy mode: --contracts requires a file path".to_string());
+                }
+                contracts_path = Some(args[idx].clone());
+            }
+            "--evidence" => {
+                if evidence {
+                    return Err("invalid policy mode: duplicate --evidence".to_string());
+                }
+                evidence = true;
+            }
+            _ => {
+                return Err(format!(
+                    "invalid policy mode: unexpected argument '{}'",
+                    args[idx]
+                ));
+            }
+        }
+        idx += 1;
+    }
+
+    let Some(policy_path) = policy_path else {
+        return Err("invalid policy mode: missing --policy".to_string());
+    };
+    let Some(contracts_path) = contracts_path else {
+        return Err("invalid policy mode: missing --contracts".to_string());
+    };
+
+    Ok(PolicyArgs {
+        policy_path,
+        contracts_path,
+        evidence,
     })
 }
 
@@ -1213,7 +1278,7 @@ fn run_check(args: &CheckArgs) -> ExitCode {
     if !policy_violations.is_empty() {
         policy_violations.sort();
         policy_violations.dedup();
-        print_policy_violations(&policy_violations);
+        print_policy_violations(&policy_violations, false);
     }
     if !semantic_errs.is_empty() || !policy_violations.is_empty() {
         return ExitCode::from(EXIT_POLICY_VIOLATION);
@@ -1531,7 +1596,7 @@ fn normalize_verify_diagnostic_for_report(diag: &str, args: &VerifyArgs) -> Stri
     out
 }
 
-fn run_policy(policy_path: &str, contracts_path: &str) -> ExitCode {
+fn run_policy(policy_path: &str, contracts_path: &str, evidence: bool) -> ExitCode {
     let policy = match load_policy_file(policy_path) {
         Ok(policy) => policy,
         Err(err) => {
@@ -1559,7 +1624,7 @@ fn run_policy(policy_path: &str, contracts_path: &str) -> ExitCode {
     if violations.is_empty() {
         ExitCode::SUCCESS
     } else {
-        print_policy_violations(&violations);
+        print_policy_violations(&violations, evidence);
         ExitCode::from(EXIT_POLICY_VIOLATION)
     }
 }
@@ -2674,6 +2739,73 @@ fn format_optional_provenance(provenance: Option<&ContractsProvenance>) -> Strin
         .unwrap_or_else(|| "direct=false, via_callee=[], via_extern=[]".to_string())
 }
 
+fn canonicalize_provenance_fields(
+    provenance: Option<&ContractsProvenance>,
+) -> (bool, Vec<String>, Vec<String>) {
+    let mut via_callee = provenance.map(|p| p.via_callee.clone()).unwrap_or_default();
+    via_callee.sort();
+    via_callee.dedup();
+
+    let mut via_extern = provenance.map(|p| p.via_extern.clone()).unwrap_or_default();
+    via_extern.sort();
+    via_extern.dedup();
+
+    (
+        provenance.map(|p| p.direct).unwrap_or(false),
+        via_callee,
+        via_extern,
+    )
+}
+
+fn evidence_line(key: &str, value: String) -> String {
+    format!("evidence: {}={}", key, value)
+}
+
+fn evidence_lines_irq_effect(
+    symbol_name: &str,
+    effect: &str,
+    provenance: Option<&ContractsProvenance>,
+) -> Vec<String> {
+    let (direct, via_callee, via_extern) = canonicalize_provenance_fields(provenance);
+    vec![
+        evidence_line("symbol", symbol_name.to_string()),
+        evidence_line("effect", effect.to_string()),
+        evidence_line("direct", direct.to_string()),
+        evidence_line("via_callee", format!("[{}]", via_callee.join(","))),
+        evidence_line("via_extern", format!("[{}]", via_extern.join(","))),
+    ]
+}
+
+fn evidence_lines_irq_capability(
+    symbol_name: &str,
+    capability: &str,
+    provenance: Option<&ContractsProvenance>,
+) -> Vec<String> {
+    let (direct, via_callee, via_extern) = canonicalize_provenance_fields(provenance);
+    vec![
+        evidence_line("symbol", symbol_name.to_string()),
+        evidence_line("capability", capability.to_string()),
+        evidence_line("direct", direct.to_string()),
+        evidence_line("via_callee", format!("[{}]", via_callee.join(","))),
+        evidence_line("via_extern", format!("[{}]", via_extern.join(","))),
+    ]
+}
+
+fn evidence_lines_critical_region(
+    function: &str,
+    effect: &str,
+    provenance: &ContractsProvenance,
+) -> Vec<String> {
+    let (direct, via_callee, via_extern) = canonicalize_provenance_fields(Some(provenance));
+    vec![
+        evidence_line("function", function.to_string()),
+        evidence_line("effect", effect.to_string()),
+        evidence_line("direct", direct.to_string()),
+        evidence_line("via_callee", format!("[{}]", via_callee.join(","))),
+        evidence_line("via_extern", format!("[{}]", via_extern.join(","))),
+    ]
+}
+
 fn policy_rule_spec(rule: PolicyRule) -> PolicyRuleSpec {
     POLICY_RULE_CATALOG
         .iter()
@@ -3392,6 +3524,14 @@ fn policy_artifact_dependency_is_v2_only(dependency: PolicyArtifactDependency) -
 }
 
 fn policy_violation(rule: PolicyRule, msg: String) -> PolicyViolation {
+    policy_violation_with_evidence(rule, msg, Vec::new())
+}
+
+fn policy_violation_with_evidence(
+    rule: PolicyRule,
+    msg: String,
+    evidence: Vec<String>,
+) -> PolicyViolation {
     let spec = policy_rule_spec(rule);
     PolicyViolation {
         rule: spec.rule,
@@ -3402,6 +3542,7 @@ fn policy_violation(rule: PolicyRule, msg: String) -> PolicyViolation {
         diagnostic_template_id: spec.diagnostic_template_id,
         code: spec.code,
         msg,
+        evidence,
     }
 }
 
@@ -3462,7 +3603,7 @@ fn violation_kernel_irq_effect(
     effect: &str,
     provenance: Option<&ContractsProvenance>,
 ) -> PolicyViolation {
-    policy_violation(
+    policy_violation_with_evidence(
         rule,
         format!(
             "function '{}' is irq-reachable and uses {} effect ({})",
@@ -3470,6 +3611,7 @@ fn violation_kernel_irq_effect(
             effect,
             format_optional_provenance(provenance)
         ),
+        evidence_lines_irq_effect(symbol_name, effect, provenance),
     )
 }
 
@@ -3479,7 +3621,7 @@ fn violation_kernel_critical_region_effect(
     effect: &str,
     provenance: &ContractsProvenance,
 ) -> PolicyViolation {
-    policy_violation(
+    policy_violation_with_evidence(
         rule,
         format!(
             "function '{}' uses {} effect in critical region ({})",
@@ -3487,6 +3629,7 @@ fn violation_kernel_critical_region_effect(
             effect,
             format_provenance(provenance)
         ),
+        evidence_lines_critical_region(function, effect, provenance),
     )
 }
 
@@ -3502,7 +3645,7 @@ fn violation_kernel_irq_cap_forbid(
     capability: &str,
     provenance: Option<&ContractsProvenance>,
 ) -> PolicyViolation {
-    policy_violation(
+    policy_violation_with_evidence(
         PolicyRule::KernelIrqCapForbid,
         format!(
             "function '{}' is irq-reachable and uses forbidden capability '{}' ({})",
@@ -3510,6 +3653,7 @@ fn violation_kernel_irq_cap_forbid(
             capability,
             format_optional_provenance(provenance)
         ),
+        evidence_lines_irq_capability(symbol_name, capability, provenance),
     )
 }
 
@@ -3548,9 +3692,14 @@ fn format_policy_violation(violation: &PolicyViolation) -> String {
     }
 }
 
-fn print_policy_violations(violations: &[PolicyViolation]) {
+fn print_policy_violations(violations: &[PolicyViolation], evidence: bool) {
     for violation in violations {
         eprintln!("{}", format_policy_violation(violation));
+        if evidence {
+            for line in &violation.evidence {
+                eprintln!("{}", line);
+            }
+        }
     }
 }
 
@@ -3615,6 +3764,7 @@ fn print_usage() {
         "  kernriftc check --policy <policy.toml> --contracts-out <contracts.json> --hash-out <contracts.sha256> --sign-ed25519 <secret.hex> --sig-out <contracts.sig> <file.kr>"
     );
     eprintln!("  kernriftc policy --policy <policy.toml> --contracts <contracts.json>");
+    eprintln!("  kernriftc policy --evidence --policy <policy.toml> --contracts <contracts.json>");
     eprintln!("  kernriftc verify --contracts <contracts.json> --hash <contracts.sha256>");
     eprintln!(
         "  kernriftc verify --contracts <contracts.json> --hash <contracts.sha256> --sig <contracts.sig> --pubkey <pubkey.hex>"
