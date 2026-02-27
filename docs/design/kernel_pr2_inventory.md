@@ -14,6 +14,7 @@ Parsed in `crates/hir/src/lib.rs`:
 `@ctx(...)` is lowered through HIR into KRIR `ctx_ok` and emitted in contracts `facts.symbols[*].ctx_ok`.
 contracts v2 additionally emits `facts.symbols[*].ctx_reachable`, computed by call-graph
 reachability closure from declared context roots.
+report-level context lists were removed; policy consumes `facts.symbols[*].ctx_reachable` directly.
 
 ### Effect facts (`@eff(...)`)
 
@@ -51,10 +52,16 @@ Current mapping:
 - contracts v2 `report.effects.alloc_sites_count` is counted from `KrirOp::AllocPoint`.
 - contracts v2 `report.effects.block_sites_count` is counted from `KrirOp::BlockPoint`.
 - contracts v2 `report.effects.yield_sites_count` continues to count `KrirOp::YieldPoint`.
+- report remains aggregate-only; symbol-level semantics stay in `facts.symbols[*]`.
 - contracts v2 `facts.symbols[*].eff_transitive` is derived by SCC-aware call-graph closure:
   - `eff_transitive(fn) = eff_used(fn) ∪ union(eff_transitive(callee))`
   - SCCs are collapsed first, then effects are propagated over the component DAG.
   - this includes extern stubs, so caller transitive effects include effects declared on external APIs.
+- contracts v2 `facts.symbols[*].eff_provenance[]` records deterministic origin for each transitive
+  effect:
+  - `direct` (function-local fact/site),
+  - `via_callee[]` (non-extern propagation),
+  - `via_extern[]` (extern contract propagation).
 
 ## Critical Regions
 

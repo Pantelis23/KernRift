@@ -164,8 +164,8 @@ fn contracts_value(
         .map_err(|e| format!("failed to serialize caps manifest JSON: {}", e))?;
     let lockgraph_text = emit_lockgraph_json(report)
         .map_err(|e| format!("failed to serialize lockgraph JSON: {}", e))?;
-    let transitive_effects = if schema == ContractsSchema::V2 {
-        Some(transitive_effects_by_function(&canonical))
+    let effect_semantics = if schema == ContractsSchema::V2 {
+        Some(effect_semantics_by_function(&canonical))
     } else {
         None
     };
@@ -189,9 +189,9 @@ fn contracts_value(
             ctx_reachable
                 .as_ref()
                 .expect("v2 context reachability must exist"),
-            transitive_effects
+            effect_semantics
                 .as_ref()
-                .expect("v2 transitive effects must exist"),
+                .expect("v2 effect semantics must exist"),
         ),
     };
 
@@ -211,7 +211,7 @@ fn contracts_value(
         facts_manifest_value(
             &canonical,
             schema,
-            transitive_effects.as_ref(),
+            effect_semantics.as_ref(),
             ctx_reachable.as_ref(),
         ),
     );
@@ -224,7 +224,7 @@ fn contracts_value(
 fn facts_manifest_value(
     module: &KrirModule,
     schema: ContractsSchema,
-    transitive_effects: Option<&BTreeMap<String, BTreeSet<Eff>>>,
+    effect_semantics: Option<&BTreeMap<String, FunctionEffectSemantics>>,
     ctx_reachable: Option<&BTreeMap<String, BTreeSet<Ctx>>>,
 ) -> Value {
     let symbols = module
@@ -282,12 +282,11 @@ fn facts_manifest_value(
                         .collect(),
                 ),
             );
-            if let Some(eff_map) = transitive_effects {
-                let mut effs = eff_map
-                    .get(&f.name)
-                    .cloned()
-                    .unwrap_or_default()
-                    .into_iter()
+            if let Some(eff_map) = effect_semantics {
+                let semantics = eff_map.get(&f.name).cloned().unwrap_or_default();
+                let mut effs = semantics
+                    .transitive
+                    .iter()
                     .map(|eff| eff.as_str().to_string())
                     .collect::<Vec<_>>();
                 effs.sort();
@@ -296,6 +295,23 @@ fn facts_manifest_value(
                     "eff_transitive".to_string(),
                     Value::Array(effs.into_iter().map(Value::String).collect()),
                 );
+                let entries = semantics
+                    .provenance
+                    .iter()
+                    .map(|(effect, provenance)| {
+                        let mut entry = Map::new();
+                        entry.insert(
+                            "effect".to_string(),
+                            Value::String(effect.as_str().to_string()),
+                        );
+                        entry.insert(
+                            "provenance".to_string(),
+                            effect_provenance_value(provenance),
+                        );
+                        Value::Object(entry)
+                    })
+                    .collect::<Vec<_>>();
+                symbol.insert("eff_provenance".to_string(), Value::Array(entries));
             }
             symbol.insert(
                 "caps_req".to_string(),
@@ -327,9 +343,9 @@ fn report_v2_value(
     module: &KrirModule,
     report: &AnalysisReport,
     ctx_reachable: &BTreeMap<String, BTreeSet<Ctx>>,
-    transitive_effects: &BTreeMap<String, BTreeSet<Eff>>,
+    effect_semantics: &BTreeMap<String, FunctionEffectSemantics>,
 ) -> Value {
-    let irq_functions = module
+    let _irq_reachable_count = module
         .functions
         .iter()
         .filter(|f| !f.is_extern)
@@ -339,15 +355,7 @@ fn report_v2_value(
                 .map(|ctxs| ctxs.contains(&Ctx::Irq))
                 .unwrap_or(false)
         })
-        .map(|f| f.name.clone())
-        .collect::<BTreeSet<_>>();
-    let irq_functions = irq_functions.into_iter().collect::<Vec<_>>();
-    let critical_functions = module
-        .functions
-        .iter()
-        .filter(|f| !f.is_extern && f.attrs.critical)
-        .map(|f| f.name.clone())
-        .collect::<Vec<_>>();
+        .count();
     let yield_sites_count = module
         .functions
         .iter()
@@ -370,16 +378,6 @@ fn report_v2_value(
         .filter(|op| matches!(op, KrirOp::BlockPoint))
         .count() as u64;
 
-    let mut contexts = Map::new();
-    contexts.insert(
-        "irq_functions".to_string(),
-        Value::Array(irq_functions.into_iter().map(Value::String).collect()),
-    );
-    contexts.insert(
-        "critical_functions".to_string(),
-        Value::Array(critical_functions.into_iter().map(Value::String).collect()),
-    );
-
     let mut effects = Map::new();
     effects.insert(
         "yield_sites_count".to_string(),
@@ -395,7 +393,7 @@ fn report_v2_value(
     );
 
     let (critical_depth_max, critical_violations) =
-        critical_region_findings(module, transitive_effects);
+        critical_region_findings(module, effect_semantics);
     let mut critical = Map::new();
     critical.insert(
         "depth_max".to_string(),
@@ -411,11 +409,8 @@ fn report_v2_value(
                     obj.insert("function".to_string(), Value::String(v.function));
                     obj.insert("effect".to_string(), Value::String(v.effect));
                     obj.insert(
-                        "via".to_string(),
-                        match v.via {
-                            Some(via) => Value::String(via),
-                            None => Value::Null,
-                        },
+                        "provenance".to_string(),
+                        effect_provenance_value(&v.provenance),
                     );
                     Value::Object(obj)
                 })
@@ -432,22 +427,62 @@ fn report_v2_value(
         "no_yield_spans".to_string(),
         Value::Object(no_yield_json(&report.no_yield_spans)),
     );
-    report_obj.insert("contexts".to_string(), Value::Object(contexts));
     report_obj.insert("effects".to_string(), Value::Object(effects));
     report_obj.insert("critical".to_string(), Value::Object(critical));
     Value::Object(report_obj)
+}
+
+fn effect_provenance_value(provenance: &EffectProvenance) -> Value {
+    let mut value = Map::new();
+    value.insert("direct".to_string(), Value::Bool(provenance.direct));
+    value.insert(
+        "via_callee".to_string(),
+        Value::Array(
+            provenance
+                .via_callee
+                .iter()
+                .cloned()
+                .map(Value::String)
+                .collect(),
+        ),
+    );
+    value.insert(
+        "via_extern".to_string(),
+        Value::Array(
+            provenance
+                .via_extern
+                .iter()
+                .cloned()
+                .map(Value::String)
+                .collect(),
+        ),
+    );
+    Value::Object(value)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct CriticalViolation {
     function: String,
     effect: String,
-    via: Option<String>,
+    provenance: EffectProvenance,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
+struct EffectProvenance {
+    direct: bool,
+    via_callee: BTreeSet<String>,
+    via_extern: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct FunctionEffectSemantics {
+    transitive: BTreeSet<Eff>,
+    provenance: BTreeMap<Eff, EffectProvenance>,
 }
 
 fn critical_region_findings(
     module: &KrirModule,
-    transitive_effects: &BTreeMap<String, BTreeSet<Eff>>,
+    effect_semantics: &BTreeMap<String, FunctionEffectSemantics>,
 ) -> (u64, Vec<CriticalViolation>) {
     let mut depth_max = 0_u64;
     let mut violations = BTreeSet::<CriticalViolation>::new();
@@ -468,36 +503,60 @@ fn critical_region_findings(
                     violations.insert(CriticalViolation {
                         function: function.name.clone(),
                         effect: Eff::Yield.as_str().to_string(),
-                        via: None,
+                        provenance: EffectProvenance {
+                            direct: true,
+                            ..EffectProvenance::default()
+                        },
                     });
                 }
                 KrirOp::AllocPoint if depth > 0 => {
                     violations.insert(CriticalViolation {
                         function: function.name.clone(),
                         effect: Eff::Alloc.as_str().to_string(),
-                        via: None,
+                        provenance: EffectProvenance {
+                            direct: true,
+                            ..EffectProvenance::default()
+                        },
                     });
                 }
                 KrirOp::BlockPoint if depth > 0 => {
                     violations.insert(CriticalViolation {
                         function: function.name.clone(),
                         effect: Eff::Block.as_str().to_string(),
-                        via: None,
+                        provenance: EffectProvenance {
+                            direct: true,
+                            ..EffectProvenance::default()
+                        },
                     });
                 }
                 KrirOp::Call { callee } if depth > 0 => {
-                    let effects = transitive_effects
-                        .get(callee)
-                        .cloned()
-                        .unwrap_or_default()
-                        .into_iter()
-                        .collect::<Vec<_>>();
-                    for effect in effects {
+                    let callee_semantics =
+                        effect_semantics.get(callee).cloned().unwrap_or_default();
+                    let is_callee_extern = module
+                        .functions
+                        .iter()
+                        .find(|f| f.name == *callee)
+                        .map(|f| f.is_extern)
+                        .unwrap_or(false);
+                    for effect in callee_semantics.transitive {
                         if matches!(effect, Eff::Yield | Eff::Alloc | Eff::Block) {
+                            let inherited = callee_semantics
+                                .provenance
+                                .get(&effect)
+                                .cloned()
+                                .unwrap_or_default();
+                            let mut provenance = EffectProvenance::default();
+                            if is_callee_extern {
+                                provenance.via_extern.insert(callee.clone());
+                            } else {
+                                provenance.via_callee.insert(callee.clone());
+                            }
+                            provenance.via_callee.extend(inherited.via_callee);
+                            provenance.via_extern.extend(inherited.via_extern);
                             violations.insert(CriticalViolation {
                                 function: function.name.clone(),
                                 effect: effect.as_str().to_string(),
-                                via: Some(callee.clone()),
+                                provenance,
                             });
                         }
                     }
@@ -511,7 +570,15 @@ fn critical_region_findings(
     (depth_max, violations.into_iter().collect())
 }
 
+#[cfg(test)]
 fn transitive_effects_by_function(module: &KrirModule) -> BTreeMap<String, BTreeSet<Eff>> {
+    effect_semantics_by_function(module)
+        .into_iter()
+        .map(|(name, semantics)| (name, semantics.transitive))
+        .collect()
+}
+
+fn effect_semantics_by_function(module: &KrirModule) -> BTreeMap<String, FunctionEffectSemantics> {
     let names = module
         .functions
         .iter()
@@ -524,14 +591,15 @@ fn transitive_effects_by_function(module: &KrirModule) -> BTreeMap<String, BTree
         .collect::<BTreeMap<_, _>>();
 
     let mut direct = vec![BTreeSet::<Eff>::new(); names.len()];
+    let mut is_extern = vec![false; names.len()];
     for function in &module.functions {
         if let Some(&idx) = index_by_name.get(&function.name) {
             direct[idx].extend(function.eff_used.iter().copied());
+            is_extern[idx] = function.is_extern;
         }
     }
 
     let mut outgoing_sets = vec![BTreeSet::<usize>::new(); names.len()];
-    let mut incoming_sets = vec![BTreeSet::<usize>::new(); names.len()];
     for edge in &module.call_edges {
         let (Some(&caller), Some(&callee)) = (
             index_by_name.get(&edge.caller),
@@ -540,114 +608,79 @@ fn transitive_effects_by_function(module: &KrirModule) -> BTreeMap<String, BTree
             continue;
         };
         outgoing_sets[caller].insert(callee);
-        incoming_sets[callee].insert(caller);
     }
     let outgoing = outgoing_sets
         .into_iter()
         .map(|set| set.into_iter().collect::<Vec<_>>())
         .collect::<Vec<_>>();
-    let incoming = incoming_sets
-        .into_iter()
-        .map(|set| set.into_iter().collect::<Vec<_>>())
-        .collect::<Vec<_>>();
-
-    fn dfs_order(node: usize, edges: &[Vec<usize>], seen: &mut [bool], order: &mut Vec<usize>) {
-        if seen[node] {
-            return;
-        }
-        seen[node] = true;
-        for &next in &edges[node] {
-            dfs_order(next, edges, seen, order);
-        }
-        order.push(node);
-    }
-
-    fn dfs_component(
-        node: usize,
-        cid: usize,
-        rev_edges: &[Vec<usize>],
-        component: &mut [usize],
-        members: &mut Vec<usize>,
-    ) {
-        if component[node] != usize::MAX {
-            return;
-        }
-        component[node] = cid;
-        members.push(node);
-        for &next in &rev_edges[node] {
-            dfs_component(next, cid, rev_edges, component, members);
+    let mut transitive = direct.clone();
+    let mut provenance = vec![BTreeMap::<Eff, EffectProvenance>::new(); names.len()];
+    for (idx, direct_effects) in direct.iter().enumerate() {
+        for effect in direct_effects {
+            provenance
+                .get_mut(idx)
+                .expect("provenance index")
+                .entry(*effect)
+                .or_default()
+                .direct = true;
         }
     }
 
-    let mut seen = vec![false; names.len()];
-    let mut finish_order = Vec::<usize>::new();
-    for node in 0..names.len() {
-        dfs_order(node, &outgoing, &mut seen, &mut finish_order);
-    }
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for caller_idx in 0..names.len() {
+            for &callee_idx in &outgoing[caller_idx] {
+                let callee_effects = transitive[callee_idx].iter().copied().collect::<Vec<_>>();
+                for effect in callee_effects {
+                    if transitive[caller_idx].insert(effect) {
+                        changed = true;
+                    }
 
-    let mut component = vec![usize::MAX; names.len()];
-    let mut components = Vec::<Vec<usize>>::new();
-    for &node in finish_order.iter().rev() {
-        if component[node] != usize::MAX {
-            continue;
-        }
-        let cid = components.len();
-        let mut members = Vec::<usize>::new();
-        dfs_component(node, cid, &incoming, &mut component, &mut members);
-        members.sort();
-        components.push(members);
-    }
+                    let callee_provenance = provenance[callee_idx]
+                        .get(&effect)
+                        .cloned()
+                        .unwrap_or_default();
+                    let entry = provenance[caller_idx].entry(effect).or_default();
+                    if is_extern[callee_idx] {
+                        if entry.via_extern.insert(names[callee_idx].clone()) {
+                            changed = true;
+                        }
+                    } else if entry.via_callee.insert(names[callee_idx].clone()) {
+                        changed = true;
+                    }
 
-    let mut component_direct = vec![BTreeSet::<Eff>::new(); components.len()];
-    for (cid, members) in components.iter().enumerate() {
-        for &member in members {
-            component_direct[cid].extend(direct[member].iter().copied());
-        }
-    }
-
-    let mut component_edges = vec![BTreeSet::<usize>::new(); components.len()];
-    for (from, nexts) in outgoing.iter().enumerate() {
-        let from_cid = component[from];
-        for &to in nexts {
-            let to_cid = component[to];
-            if from_cid != to_cid {
-                component_edges[from_cid].insert(to_cid);
+                    let before_callee = entry.via_callee.len();
+                    entry.via_callee.extend(callee_provenance.via_callee);
+                    if entry.via_callee.len() != before_callee {
+                        changed = true;
+                    }
+                    let before_extern = entry.via_extern.len();
+                    entry.via_extern.extend(callee_provenance.via_extern);
+                    if entry.via_extern.len() != before_extern {
+                        changed = true;
+                    }
+                }
             }
         }
     }
 
-    fn component_closure(
-        cid: usize,
-        component_direct: &[BTreeSet<Eff>],
-        component_edges: &[BTreeSet<usize>],
-        memo: &mut [Option<BTreeSet<Eff>>],
-    ) -> BTreeSet<Eff> {
-        if let Some(cached) = memo[cid].as_ref() {
-            return cached.clone();
-        }
-        let mut out = component_direct[cid].clone();
-        for &next in &component_edges[cid] {
-            out.extend(component_closure(
-                next,
-                component_direct,
-                component_edges,
-                memo,
-            ));
-        }
-        memo[cid] = Some(out.clone());
-        out
-    }
-
-    let mut memo = vec![None::<BTreeSet<Eff>>; components.len()];
-    let mut by_name = BTreeMap::<String, BTreeSet<Eff>>::new();
+    let mut by_name = BTreeMap::<String, FunctionEffectSemantics>::new();
     for (idx, name) in names.iter().enumerate() {
-        let effs = component_closure(
-            component[idx],
-            &component_direct,
-            &component_edges,
-            &mut memo,
+        let mut effect_map = BTreeMap::<Eff, EffectProvenance>::new();
+        for effect in &transitive[idx] {
+            let mut entry = provenance[idx].get(effect).cloned().unwrap_or_default();
+            entry.via_callee.remove(name);
+            entry.via_extern.remove(name);
+            effect_map.insert(*effect, entry);
+        }
+        by_name.insert(
+            name.clone(),
+            FunctionEffectSemantics {
+                transitive: transitive[idx].clone(),
+                provenance: effect_map,
+            },
         );
-        by_name.insert(name.clone(), effs);
     }
     by_name
 }
@@ -1119,6 +1152,78 @@ mod tests {
             isr["eff_transitive"],
             Value::Array(vec![Value::String("alloc".to_string())])
         );
+        let isr_provenance = isr["eff_provenance"]
+            .as_array()
+            .expect("isr eff_provenance array");
+        assert_eq!(isr_provenance.len(), 1);
+        assert_eq!(
+            isr_provenance[0]["effect"],
+            Value::String("alloc".to_string())
+        );
+        assert_eq!(
+            isr_provenance[0]["provenance"],
+            serde_json::json!({
+                "direct": false,
+                "via_callee": ["helper"],
+                "via_extern": [],
+            })
+        );
+    }
+
+    #[test]
+    fn contracts_v2_effect_provenance_tracks_extern_sources() {
+        let module = KrirModule {
+            module_caps: vec![],
+            functions: vec![
+                Function {
+                    name: "kmalloc".to_string(),
+                    is_extern: true,
+                    ctx_ok: vec![Ctx::Boot, Ctx::Thread],
+                    eff_used: vec![Eff::Alloc],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                    ops: Vec::new(),
+                },
+                Function {
+                    name: "entry".to_string(),
+                    is_extern: false,
+                    ctx_ok: vec![Ctx::Thread],
+                    eff_used: vec![],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![KrirOp::Call {
+                        callee: "kmalloc".to_string(),
+                    }],
+                },
+            ],
+            call_edges: vec![CallEdge {
+                caller: "entry".to_string(),
+                callee: "kmalloc".to_string(),
+            }],
+        };
+        let report = AnalysisReport::default();
+
+        let json = emit_contracts_json_with_schema(&module, &report, ContractsSchema::V2)
+            .expect("emit contracts v2");
+        let value: Value = serde_json::from_str(&json).expect("parse contracts");
+        let symbols = value["facts"]["symbols"].as_array().expect("symbols array");
+        let entry = symbols
+            .iter()
+            .find(|sym| sym["name"] == "entry")
+            .expect("entry symbol");
+        let provenance = entry["eff_provenance"]
+            .as_array()
+            .expect("entry eff_provenance array");
+        assert_eq!(provenance.len(), 1);
+        assert_eq!(provenance[0]["effect"], Value::String("alloc".to_string()));
+        assert_eq!(
+            provenance[0]["provenance"],
+            serde_json::json!({
+                "direct": false,
+                "via_callee": [],
+                "via_extern": ["kmalloc"],
+            })
+        );
     }
 
     #[test]
@@ -1168,6 +1273,278 @@ mod tests {
     }
 
     #[test]
+    fn effect_provenance_direct_only() {
+        let module = KrirModule {
+            module_caps: vec![],
+            functions: vec![Function {
+                name: "f".to_string(),
+                is_extern: false,
+                ctx_ok: vec![Ctx::Thread],
+                eff_used: vec![Eff::Alloc],
+                caps_req: vec![],
+                attrs: FunctionAttrs::default(),
+                ops: vec![KrirOp::AllocPoint],
+            }],
+            call_edges: vec![],
+        };
+        let semantics = effect_semantics_by_function(&module);
+        let provenance = semantics["f"]
+            .provenance
+            .get(&Eff::Alloc)
+            .expect("alloc provenance");
+        assert!(provenance.direct);
+        assert!(provenance.via_callee.is_empty());
+        assert!(provenance.via_extern.is_empty());
+    }
+
+    #[test]
+    fn effect_provenance_via_callee_only() {
+        let module = KrirModule {
+            module_caps: vec![],
+            functions: vec![
+                Function {
+                    name: "helper".to_string(),
+                    is_extern: false,
+                    ctx_ok: vec![Ctx::Thread],
+                    eff_used: vec![Eff::Alloc],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![KrirOp::AllocPoint],
+                },
+                Function {
+                    name: "entry".to_string(),
+                    is_extern: false,
+                    ctx_ok: vec![Ctx::Thread],
+                    eff_used: vec![],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![KrirOp::Call {
+                        callee: "helper".to_string(),
+                    }],
+                },
+            ],
+            call_edges: vec![CallEdge {
+                caller: "entry".to_string(),
+                callee: "helper".to_string(),
+            }],
+        };
+        let semantics = effect_semantics_by_function(&module);
+        let provenance = semantics["entry"]
+            .provenance
+            .get(&Eff::Alloc)
+            .expect("alloc provenance");
+        assert!(!provenance.direct);
+        assert_eq!(
+            provenance.via_callee,
+            BTreeSet::from(["helper".to_string()])
+        );
+        assert!(provenance.via_extern.is_empty());
+    }
+
+    #[test]
+    fn effect_provenance_via_extern_only() {
+        let module = KrirModule {
+            module_caps: vec![],
+            functions: vec![
+                Function {
+                    name: "kmalloc".to_string(),
+                    is_extern: true,
+                    ctx_ok: vec![Ctx::Thread, Ctx::Boot],
+                    eff_used: vec![Eff::Alloc],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![],
+                },
+                Function {
+                    name: "entry".to_string(),
+                    is_extern: false,
+                    ctx_ok: vec![Ctx::Thread],
+                    eff_used: vec![],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![KrirOp::Call {
+                        callee: "kmalloc".to_string(),
+                    }],
+                },
+            ],
+            call_edges: vec![CallEdge {
+                caller: "entry".to_string(),
+                callee: "kmalloc".to_string(),
+            }],
+        };
+        let semantics = effect_semantics_by_function(&module);
+        let provenance = semantics["entry"]
+            .provenance
+            .get(&Eff::Alloc)
+            .expect("alloc provenance");
+        assert!(!provenance.direct);
+        assert!(provenance.via_callee.is_empty());
+        assert_eq!(
+            provenance.via_extern,
+            BTreeSet::from(["kmalloc".to_string()])
+        );
+    }
+
+    #[test]
+    fn effect_provenance_mixed_direct_via_callee_and_via_extern() {
+        let module = KrirModule {
+            module_caps: vec![],
+            functions: vec![
+                Function {
+                    name: "kmalloc".to_string(),
+                    is_extern: true,
+                    ctx_ok: vec![Ctx::Thread, Ctx::Boot],
+                    eff_used: vec![Eff::Alloc],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![],
+                },
+                Function {
+                    name: "helper".to_string(),
+                    is_extern: false,
+                    ctx_ok: vec![Ctx::Thread],
+                    eff_used: vec![Eff::Alloc],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![KrirOp::Call {
+                        callee: "kmalloc".to_string(),
+                    }],
+                },
+                Function {
+                    name: "entry".to_string(),
+                    is_extern: false,
+                    ctx_ok: vec![Ctx::Thread],
+                    eff_used: vec![],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![KrirOp::Call {
+                        callee: "helper".to_string(),
+                    }],
+                },
+            ],
+            call_edges: vec![
+                CallEdge {
+                    caller: "helper".to_string(),
+                    callee: "kmalloc".to_string(),
+                },
+                CallEdge {
+                    caller: "entry".to_string(),
+                    callee: "helper".to_string(),
+                },
+            ],
+        };
+        let semantics = effect_semantics_by_function(&module);
+        let helper = semantics["helper"]
+            .provenance
+            .get(&Eff::Alloc)
+            .expect("helper alloc provenance");
+        assert!(helper.direct);
+        assert!(helper.via_callee.is_empty());
+        assert_eq!(helper.via_extern, BTreeSet::from(["kmalloc".to_string()]));
+
+        let entry = semantics["entry"]
+            .provenance
+            .get(&Eff::Alloc)
+            .expect("entry alloc provenance");
+        assert!(!entry.direct);
+        assert_eq!(entry.via_callee, BTreeSet::from(["helper".to_string()]));
+        assert_eq!(entry.via_extern, BTreeSet::from(["kmalloc".to_string()]));
+    }
+
+    #[test]
+    fn effect_provenance_recursive_and_cyclic_is_deterministic() {
+        let module = KrirModule {
+            module_caps: vec![],
+            functions: vec![
+                Function {
+                    name: "kmalloc".to_string(),
+                    is_extern: true,
+                    ctx_ok: vec![Ctx::Thread, Ctx::Boot],
+                    eff_used: vec![Eff::Alloc],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![],
+                },
+                Function {
+                    name: "a".to_string(),
+                    is_extern: false,
+                    ctx_ok: vec![Ctx::Thread],
+                    eff_used: vec![Eff::Alloc],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![KrirOp::Call {
+                        callee: "b".to_string(),
+                    }],
+                },
+                Function {
+                    name: "b".to_string(),
+                    is_extern: false,
+                    ctx_ok: vec![Ctx::Thread],
+                    eff_used: vec![],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![
+                        KrirOp::Call {
+                            callee: "a".to_string(),
+                        },
+                        KrirOp::Call {
+                            callee: "kmalloc".to_string(),
+                        },
+                    ],
+                },
+                Function {
+                    name: "self_fn".to_string(),
+                    is_extern: false,
+                    ctx_ok: vec![Ctx::Thread],
+                    eff_used: vec![Eff::Block],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![KrirOp::Call {
+                        callee: "self_fn".to_string(),
+                    }],
+                },
+            ],
+            call_edges: vec![
+                CallEdge {
+                    caller: "a".to_string(),
+                    callee: "b".to_string(),
+                },
+                CallEdge {
+                    caller: "b".to_string(),
+                    callee: "a".to_string(),
+                },
+                CallEdge {
+                    caller: "b".to_string(),
+                    callee: "kmalloc".to_string(),
+                },
+                CallEdge {
+                    caller: "self_fn".to_string(),
+                    callee: "self_fn".to_string(),
+                },
+            ],
+        };
+        let semantics = effect_semantics_by_function(&module);
+
+        let a = semantics["a"].provenance.get(&Eff::Alloc).expect("a alloc");
+        assert!(a.direct);
+        assert_eq!(a.via_callee, BTreeSet::from(["b".to_string()]));
+        assert_eq!(a.via_extern, BTreeSet::from(["kmalloc".to_string()]));
+
+        let b = semantics["b"].provenance.get(&Eff::Alloc).expect("b alloc");
+        assert!(!b.direct);
+        assert_eq!(b.via_callee, BTreeSet::from(["a".to_string()]));
+        assert_eq!(b.via_extern, BTreeSet::from(["kmalloc".to_string()]));
+
+        let self_fn = semantics["self_fn"]
+            .provenance
+            .get(&Eff::Block)
+            .expect("self_fn block");
+        assert!(self_fn.direct);
+        assert!(self_fn.via_callee.is_empty());
+        assert!(self_fn.via_extern.is_empty());
+    }
+
+    #[test]
     fn contracts_v2_report_includes_critical_region_findings() {
         let module = KrirModule {
             module_caps: vec![],
@@ -1213,10 +1590,10 @@ mod tests {
         let violations = value["report"]["critical"]["violations"]
             .as_array()
             .expect("critical violations");
-        assert!(
-            violations.iter().any(|v| v["function"] == "entry"
-                && v["effect"] == "yield"
-                && v["via"] == "helper")
-        );
+        assert!(violations.iter().any(|v| v["function"] == "entry"
+            && v["effect"] == "yield"
+            && v["provenance"]["direct"] == false
+            && v["provenance"]["via_callee"] == serde_json::json!(["helper"])
+            && v["provenance"]["via_extern"] == serde_json::json!([])));
     }
 }
