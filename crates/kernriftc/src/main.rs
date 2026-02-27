@@ -106,8 +106,6 @@ struct ContractsReport {
     max_lock_depth: u64,
     no_yield_spans: BTreeMap<String, ContractsNoYieldSpan>,
     #[serde(default)]
-    contexts: ContractsReportContexts,
-    #[serde(default)]
     effects: ContractsReportEffects,
     #[serde(default)]
     critical: ContractsReportCritical,
@@ -126,6 +124,8 @@ struct ContractsFactSymbol {
     ctx_reachable: Vec<String>,
     #[serde(default)]
     eff_transitive: Vec<String>,
+    #[serde(default)]
+    eff_provenance: Vec<ContractsEffectProvenance>,
 }
 
 impl ContractsFactSymbol {
@@ -133,24 +133,9 @@ impl ContractsFactSymbol {
         self.ctx_reachable.iter().any(|c| c == ctx)
     }
 
-    fn has_eff(&self, eff: &str) -> bool {
-        self.eff_used.iter().any(|e| e == eff)
-    }
-
     fn has_eff_transitive(&self, eff: &str) -> bool {
-        if self.eff_transitive.is_empty() {
-            return self.has_eff(eff);
-        }
         self.eff_transitive.iter().any(|e| e == eff)
     }
-}
-
-#[derive(Debug, Deserialize, Default)]
-struct ContractsReportContexts {
-    #[serde(default)]
-    irq_functions: Vec<String>,
-    #[serde(default)]
-    critical_functions: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -175,7 +160,23 @@ struct ContractsReportCritical {
 struct ContractsCriticalViolation {
     function: String,
     effect: String,
-    via: Option<String>,
+    provenance: ContractsProvenance,
+}
+
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq, PartialOrd, Ord, Default)]
+struct ContractsProvenance {
+    #[serde(default)]
+    direct: bool,
+    #[serde(default)]
+    via_callee: Vec<String>,
+    #[serde(default)]
+    via_extern: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ContractsEffectProvenance {
+    effect: String,
+    provenance: ContractsProvenance,
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
@@ -1370,7 +1371,6 @@ fn selftest_json_schemas() -> Result<(), String> {
     if object_keys(&contracts_v2_json["report"])?
         != BTreeSet::from([
             "critical".to_string(),
-            "contexts".to_string(),
             "effects".to_string(),
             "max_lock_depth".to_string(),
             "no_yield_spans".to_string(),
@@ -1780,10 +1780,29 @@ fn evaluate_policy(policy: &PolicyFile, contracts: &ContractsBundle) -> Vec<Poli
         contracts.report.effects.alloc_sites_count,
         contracts.report.effects.block_sites_count,
     );
-    let _context_counters = (
-        contracts.report.contexts.irq_functions.len(),
-        contracts.report.contexts.critical_functions.len(),
-    );
+    let _provenance_counters = contracts
+        .facts
+        .symbols
+        .iter()
+        .map(|symbol| symbol.eff_provenance.len() + symbol.eff_used.len())
+        .sum::<usize>();
+
+    let kernel_rules_enabled = policy.kernel.forbid_alloc_in_irq
+        || policy.kernel.forbid_block_in_irq
+        || policy.kernel.forbid_yield_in_critical
+        || !policy.kernel.forbid_effects_in_critical.is_empty();
+    if kernel_rules_enabled && contracts.schema_version != CONTRACTS_SCHEMA_VERSION_V2 {
+        violations.push(PolicyViolation {
+            code: "KERNEL_POLICY_REQUIRES_V2",
+            msg: format!(
+                "kernel policy rules require contracts schema '{}'",
+                CONTRACTS_SCHEMA_VERSION_V2
+            ),
+        });
+        violations.sort();
+        violations.dedup();
+        return violations;
+    }
 
     if let Some(limit) = policy.limits.max_lock_depth
         && contracts.report.max_lock_depth > limit
@@ -1882,14 +1901,14 @@ fn evaluate_policy(policy: &PolicyFile, contracts: &ContractsBundle) -> Vec<Poli
         .symbols
         .iter()
         .filter(|symbol| symbol.has_ctx_reachable("irq"))
-        .map(|symbol| symbol.name.clone())
+        .map(|symbol| symbol.name.as_str())
         .collect::<Vec<_>>();
     irq_functions.sort();
     irq_functions.dedup();
 
     if policy.kernel.forbid_alloc_in_irq {
         for symbol_name in &irq_functions {
-            if let Some(symbol) = symbol_by_name.get(symbol_name.as_str())
+            if let Some(symbol) = symbol_by_name.get(*symbol_name)
                 && symbol.has_eff_transitive("alloc")
             {
                 violations.push(PolicyViolation {
@@ -1905,7 +1924,7 @@ fn evaluate_policy(policy: &PolicyFile, contracts: &ContractsBundle) -> Vec<Poli
 
     if policy.kernel.forbid_block_in_irq {
         for symbol_name in &irq_functions {
-            if let Some(symbol) = symbol_by_name.get(symbol_name.as_str())
+            if let Some(symbol) = symbol_by_name.get(*symbol_name)
                 && symbol.has_eff_transitive("block")
             {
                 violations.push(PolicyViolation {
@@ -1941,16 +1960,20 @@ fn evaluate_policy(policy: &PolicyFile, contracts: &ContractsBundle) -> Vec<Poli
                 "block" => "KERNEL_CRITICAL_REGION_BLOCK",
                 _ => continue,
             };
-            let msg = match violation.via.as_deref() {
-                Some(via) => format!(
-                    "function '{}' uses {} effect in critical region via call to '{}'",
-                    violation.function, violation.effect, via
-                ),
-                None => format!(
-                    "function '{}' uses {} effect in critical region",
-                    violation.function, violation.effect
-                ),
-            };
+            let mut via_callee = violation.provenance.via_callee.clone();
+            via_callee.sort();
+            via_callee.dedup();
+            let mut via_extern = violation.provenance.via_extern.clone();
+            via_extern.sort();
+            via_extern.dedup();
+            let msg = format!(
+                "function '{}' uses {} effect in critical region (direct={}, via_callee=[{}], via_extern=[{}])",
+                violation.function,
+                violation.effect,
+                violation.provenance.direct,
+                via_callee.join(","),
+                via_extern.join(",")
+            );
             violations.push(PolicyViolation { code, msg });
         }
     }

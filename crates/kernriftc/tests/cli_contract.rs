@@ -281,7 +281,7 @@ fn check_with_contracts_out_must_fail_does_not_write_file() {
 }
 
 #[test]
-fn contracts_v2_contains_contexts_and_effects_fields() {
+fn contracts_v2_contains_effect_and_critical_report_fields() {
     let root = repo_root();
     let fixture = root
         .join("tests")
@@ -317,20 +317,19 @@ fn contracts_v2_contains_contexts_and_effects_fields() {
         report_keys,
         BTreeSet::from([
             "critical".to_string(),
-            "contexts".to_string(),
             "effects".to_string(),
             "max_lock_depth".to_string(),
             "no_yield_spans".to_string(),
         ])
     );
-    assert!(
-        json["report"]["contexts"]["critical_functions"]
-            .as_array()
-            .expect("critical functions")
-            .iter()
-            .any(|v| v == "critical_entry"),
-        "critical_functions should include critical marker function"
-    );
+    let symbols = json["facts"]["symbols"]
+        .as_array()
+        .expect("facts symbols array");
+    let critical_symbol = symbols
+        .iter()
+        .find(|sym| sym["name"] == "critical_entry")
+        .expect("critical_entry symbol");
+    assert_eq!(critical_symbol["attrs"]["critical"], Value::Bool(true));
     assert!(
         json["report"]["effects"]["yield_sites_count"]
             .as_u64()
@@ -343,6 +342,188 @@ fn contracts_v2_contains_contexts_and_effects_fields() {
     assert!(json["report"]["critical"]["violations"].is_array());
 
     fs::remove_file(&out_path).ok();
+}
+
+#[test]
+fn policy_uses_ctx_reachable_from_contract_facts() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("irq_ctx_chain.kr");
+    let policy_path = root.join("policies").join("kernel.toml");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path =
+        std::env::temp_dir().join(format!("kernrift-policy-ctx-src-{}.contracts.json", ts));
+    let mutated_fail_path = std::env::temp_dir().join(format!(
+        "kernrift-policy-ctx-mut-fail-{}.contracts.json",
+        ts
+    ));
+    let mutated_pass_path = std::env::temp_dir().join(format!(
+        "kernrift-policy-ctx-mut-pass-{}.contracts.json",
+        ts
+    ));
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&mutated_fail_path).ok();
+    fs::remove_file(&mutated_pass_path).ok();
+
+    let mut check_cmd: Command = cargo_bin_cmd!("kernriftc");
+    check_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--contracts-schema")
+        .arg("v2")
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg(fixture.as_os_str());
+    check_cmd.assert().success();
+
+    let mut contracts_json: Value =
+        serde_json::from_str(&fs::read_to_string(&contracts_path).expect("contracts text"))
+            .expect("contracts json");
+    let symbols = contracts_json["facts"]["symbols"]
+        .as_array_mut()
+        .expect("facts symbols array");
+    let helper = symbols
+        .iter_mut()
+        .find(|sym| sym["name"] == "helper")
+        .expect("helper symbol");
+    helper["eff_transitive"] = json!(["alloc"]);
+    helper["eff_provenance"] = json!([{
+        "effect":"alloc",
+        "provenance":{
+            "direct": false,
+            "via_callee": [],
+            "via_extern": []
+        }
+    }]);
+    fs::write(
+        &mutated_fail_path,
+        serde_json::to_string(&contracts_json).expect("contracts json text"),
+    )
+    .expect("write mutated fail contracts");
+
+    let mut policy_fail_cmd: Command = cargo_bin_cmd!("kernriftc");
+    policy_fail_cmd
+        .current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(mutated_fail_path.as_os_str());
+    let fail_assert = policy_fail_cmd.assert().failure().code(1);
+    let fail_stderr = String::from_utf8(fail_assert.get_output().stderr.clone()).expect("stderr");
+    assert!(
+        fail_stderr.contains("policy: KERNEL_IRQ_ALLOC: function 'helper'"),
+        "expected helper to fail when ctx_reachable includes irq, got:\n{}",
+        fail_stderr
+    );
+
+    let mut contracts_json_pass = contracts_json.clone();
+    let symbols_pass = contracts_json_pass["facts"]["symbols"]
+        .as_array_mut()
+        .expect("facts symbols array");
+    let helper_pass = symbols_pass
+        .iter_mut()
+        .find(|sym| sym["name"] == "helper")
+        .expect("helper symbol");
+    helper_pass["ctx_reachable"] = json!([]);
+    fs::write(
+        &mutated_pass_path,
+        serde_json::to_string(&contracts_json_pass).expect("contracts json text"),
+    )
+    .expect("write mutated pass contracts");
+
+    let mut policy_pass_cmd: Command = cargo_bin_cmd!("kernriftc");
+    policy_pass_cmd
+        .current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(mutated_pass_path.as_os_str());
+    policy_pass_cmd.assert().success();
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&mutated_fail_path).ok();
+    fs::remove_file(&mutated_pass_path).ok();
+}
+
+#[test]
+fn policy_uses_critical_report_violations_without_reconstruction() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("critical_region_yield.kr");
+    let policy_path = root.join("policies").join("kernel.toml");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path = std::env::temp_dir().join(format!(
+        "kernrift-policy-critical-src-{}.contracts.json",
+        ts
+    ));
+    let mutated_path = std::env::temp_dir().join(format!(
+        "kernrift-policy-critical-mut-{}.contracts.json",
+        ts
+    ));
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&mutated_path).ok();
+
+    let mut check_cmd: Command = cargo_bin_cmd!("kernriftc");
+    check_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--contracts-schema")
+        .arg("v2")
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg(fixture.as_os_str());
+    check_cmd.assert().success();
+
+    let mut policy_fail_cmd: Command = cargo_bin_cmd!("kernriftc");
+    policy_fail_cmd
+        .current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    let fail_assert = policy_fail_cmd.assert().failure().code(1);
+    let fail_stderr = String::from_utf8(fail_assert.get_output().stderr.clone()).expect("stderr");
+    assert!(
+        fail_stderr.contains("policy: KERNEL_CRITICAL_REGION_YIELD:"),
+        "expected critical region deny from emitted report facts, got:\n{}",
+        fail_stderr
+    );
+
+    let mut contracts_json: Value =
+        serde_json::from_str(&fs::read_to_string(&contracts_path).expect("contracts text"))
+            .expect("contracts json");
+    contracts_json["report"]["critical"]["violations"] = json!([]);
+    fs::write(
+        &mutated_path,
+        serde_json::to_string(&contracts_json).expect("contracts json text"),
+    )
+    .expect("write mutated critical contracts");
+
+    let mut policy_pass_cmd: Command = cargo_bin_cmd!("kernriftc");
+    policy_pass_cmd
+        .current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(mutated_path.as_os_str());
+    policy_pass_cmd.assert().success();
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&mutated_path).ok();
 }
 
 #[test]
@@ -377,9 +558,11 @@ fn contracts_v2_critical_report_includes_transitive_violation_details() {
         .as_array()
         .expect("critical violations");
     assert!(
-        violations
-            .iter()
-            .any(|v| v["function"] == "entry" && v["effect"] == "yield" && v["via"] == "helper"),
+        violations.iter().any(|v| v["function"] == "entry"
+            && v["effect"] == "yield"
+            && v["provenance"]["direct"] == Value::Bool(false)
+            && v["provenance"]["via_callee"] == json!(["helper"])
+            && v["provenance"]["via_extern"] == json!([])),
         "expected transitive critical-region yield violation in report, got {:?}",
         violations
     );
@@ -542,8 +725,30 @@ fn contracts_v2_facts_include_transitive_effects() {
         Value::Array(vec![Value::String("alloc".to_string())])
     );
     assert_eq!(
+        helper["eff_provenance"],
+        json!([{
+            "effect": "alloc",
+            "provenance": {
+                "direct": true,
+                "via_callee": [],
+                "via_extern": []
+            }
+        }])
+    );
+    assert_eq!(
         entry["eff_transitive"],
         Value::Array(vec![Value::String("alloc".to_string())])
+    );
+    assert_eq!(
+        entry["eff_provenance"],
+        json!([{
+            "effect": "alloc",
+            "provenance": {
+                "direct": false,
+                "via_callee": ["helper"],
+                "via_extern": []
+            }
+        }])
     );
 
     fs::remove_file(&out_path).ok();
@@ -661,8 +866,30 @@ fn contracts_v2_transitive_effects_include_extern_eff_stubs() {
         Value::Array(vec![Value::String("alloc".to_string())])
     );
     assert_eq!(
+        kmalloc["eff_provenance"],
+        json!([{
+            "effect": "alloc",
+            "provenance": {
+                "direct": true,
+                "via_callee": [],
+                "via_extern": []
+            }
+        }])
+    );
+    assert_eq!(
         entry["eff_transitive"],
         Value::Array(vec![Value::String("alloc".to_string())])
+    );
+    assert_eq!(
+        entry["eff_provenance"],
+        json!([{
+            "effect": "alloc",
+            "provenance": {
+                "direct": false,
+                "via_callee": [],
+                "via_extern": ["kmalloc"]
+            }
+        }])
     );
 
     fs::remove_file(&out_path).ok();

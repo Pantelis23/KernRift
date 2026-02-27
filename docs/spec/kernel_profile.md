@@ -49,11 +49,16 @@ Compile-time enforcement in KR0.x:
 - transitive effect checks from call graph (`alloc`, `block`, `yield`) in kernel policy rules
   - direct effects come from both operation sites (`*point()` builtins) and function facts (`@eff(...)`)
   - extern stubs (`extern fn`) contribute effects via declared `@eff(...)` and are included in transitive closure
+  - contracts v2 expose deterministic `eff_provenance` per symbol/effect (`direct`, `via_callee[]`, `via_extern[]`)
 - context reachability checks from call graph via `facts.symbols[*].ctx_reachable`
 - critical region analysis:
   - max region nesting depth
-  - deterministic per-function violation facts (direct and transitive-through-call)
+  - deterministic per-function violation facts with normalized provenance (`direct`, `via_callee[]`, `via_extern[]`)
 - deterministic diagnostics and artifacts
+
+Contracts v2 semantic split:
+- `facts.symbols[*]`: symbol semantics (`ctx_ok`, `ctx_reachable`, `eff_used`, `eff_transitive`, `eff_provenance`, caps, attrs)
+- `report.*`: aggregate/violation summaries (`max_lock_depth`, `no_yield_spans`, effect site counts, critical findings)
 
 Runtime responsibilities (outside KR0.x compiler checks):
 

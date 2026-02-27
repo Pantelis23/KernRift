@@ -79,7 +79,6 @@
       "required": [
         "max_lock_depth",
         "no_yield_spans",
-        "contexts",
         "effects",
         "critical"
       ],
@@ -101,30 +100,6 @@
                 "const": "unbounded"
               }
             ]
-          }
-        },
-        "contexts": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "irq_functions",
-            "critical_functions"
-          ],
-          "properties": {
-            "irq_functions": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "uniqueItems": true
-            },
-            "critical_functions": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "uniqueItems": true
-            }
           }
         },
         "effects": {
@@ -261,6 +236,7 @@
         "ctx_reachable",
         "eff_used",
         "eff_transitive",
+        "eff_provenance",
         "caps_req",
         "attrs"
       ],
@@ -299,6 +275,12 @@
           },
           "uniqueItems": true
         },
+        "eff_provenance": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/effect_provenance"
+          }
+        },
         "caps_req": {
           "type": "array",
           "items": {
@@ -308,6 +290,50 @@
         },
         "attrs": {
           "$ref": "#/$defs/attrs"
+        }
+      }
+    },
+    "effect_provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "effect",
+        "provenance"
+      ],
+      "properties": {
+        "effect": {
+          "$ref": "#/$defs/effect"
+        },
+        "provenance": {
+          "$ref": "#/$defs/provenance"
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "direct",
+        "via_callee",
+        "via_extern"
+      ],
+      "properties": {
+        "direct": {
+          "type": "boolean"
+        },
+        "via_callee": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "via_extern": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
         }
       }
     },
@@ -333,7 +359,7 @@
       "required": [
         "function",
         "effect",
-        "via"
+        "provenance"
       ],
       "properties": {
         "function": {
@@ -346,15 +372,8 @@
             "yield"
           ]
         },
-        "via": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ]
+        "provenance": {
+          "$ref": "#/$defs/provenance"
         }
       }
     }
