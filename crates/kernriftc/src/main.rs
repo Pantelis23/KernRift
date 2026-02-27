@@ -76,6 +76,8 @@ struct PolicyKernel {
     forbid_effects_in_critical: Vec<String>,
     #[serde(default)]
     forbid_caps_in_irq: Vec<String>,
+    #[serde(default)]
+    allow_caps_in_irq: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1745,6 +1747,18 @@ fn parse_policy_text(text: &str, source_name: &str) -> Result<PolicyFile, String
     policy.kernel.forbid_caps_in_irq.sort();
     policy.kernel.forbid_caps_in_irq.dedup();
 
+    for cap in &mut policy.kernel.allow_caps_in_irq {
+        *cap = cap.trim().to_string();
+        if cap.is_empty() {
+            return Err(format!(
+                "invalid policy '{}': allow_caps_in_irq entries must be non-empty strings",
+                source_name
+            ));
+        }
+    }
+    policy.kernel.allow_caps_in_irq.sort();
+    policy.kernel.allow_caps_in_irq.dedup();
+
     Ok(policy)
 }
 
@@ -1856,6 +1870,7 @@ fn kernel_rules_enabled(policy: &PolicyFile) -> bool {
         || policy.kernel.forbid_yield_in_critical
         || !policy.kernel.forbid_effects_in_critical.is_empty()
         || !policy.kernel.forbid_caps_in_irq.is_empty()
+        || !policy.kernel.allow_caps_in_irq.is_empty()
 }
 
 fn evaluate_context_rules(
@@ -2088,10 +2103,20 @@ fn evaluate_capability_rules(
     }
 
     if kernel_v2_allowed {
+        let allowed_caps = policy
+            .kernel
+            .allow_caps_in_irq
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
         let mut forbidden_caps = policy.kernel.forbid_caps_in_irq.clone();
         forbidden_caps.sort();
         forbidden_caps.dedup();
         for cap in forbidden_caps {
+            // Explicit precedence: allowlist wins over forbidlist.
+            if allowed_caps.contains(&cap) {
+                continue;
+            }
             for symbol_name in &view.irq_symbol_names {
                 if let Some(symbol) = view.symbol_by_name.get(*symbol_name)
                     && symbol.has_cap_transitive(&cap)

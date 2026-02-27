@@ -17,3 +17,4 @@ forbid_block_in_irq = true
 forbid_yield_in_critical = false
 forbid_effects_in_critical = ["yield", "alloc", "block"]
 forbid_caps_in_irq = []
+allow_caps_in_irq = []

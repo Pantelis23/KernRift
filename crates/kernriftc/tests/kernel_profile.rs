@@ -29,6 +29,8 @@ fn default_profile_behavior_is_unchanged() {
         "irq_alloc_site.kr",
         "irq_block_site.kr",
         "irq_caps_transitive.kr",
+        "irq_caps_unlisted.kr",
+        "irq_caps_extern.kr",
     ] {
         let path = root.join("tests").join("kernel_profile").join(fixture);
         let mut cmd: Command = cargo_bin_cmd!("kernriftc");
@@ -356,6 +358,118 @@ forbid_caps_in_irq = ["PhysMap"]
     assert!(
         stderr.contains("policy: KERNEL_IRQ_CAP_FORBID:"),
         "expected KERNEL_IRQ_CAP_FORBID violation, got:\n{}",
+        stderr
+    );
+
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn kernel_profile_custom_policy_allow_caps_in_irq_overrides_forbid() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("irq_caps_transitive.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let policy_path =
+        std::env::temp_dir().join(format!("kernrift-kernel-cap-allow-overrides-{}.toml", ts));
+    fs::write(
+        &policy_path,
+        r#"
+[kernel]
+forbid_caps_in_irq = ["PhysMap"]
+allow_caps_in_irq = ["PhysMap"]
+"#,
+    )
+    .expect("write policy");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--profile")
+        .arg("kernel")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg(fixture.as_os_str());
+    cmd.assert().success();
+
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn kernel_profile_custom_policy_non_listed_capability_is_allowed() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("irq_caps_unlisted.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let policy_path =
+        std::env::temp_dir().join(format!("kernrift-kernel-cap-non-listed-{}.toml", ts));
+    fs::write(
+        &policy_path,
+        r#"
+[kernel]
+forbid_caps_in_irq = ["PhysMap"]
+allow_caps_in_irq = []
+"#,
+    )
+    .expect("write policy");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--profile")
+        .arg("kernel")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg(fixture.as_os_str());
+    cmd.assert().success();
+
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn kernel_profile_custom_policy_denies_caps_in_irq_via_extern() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("irq_caps_extern.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let policy_path = std::env::temp_dir().join(format!("kernrift-kernel-cap-extern-{}.toml", ts));
+    fs::write(
+        &policy_path,
+        r#"
+[kernel]
+forbid_caps_in_irq = ["PhysMap"]
+"#,
+    )
+    .expect("write policy");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--profile")
+        .arg("kernel")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.contains("policy: KERNEL_IRQ_CAP_FORBID:"),
+        "expected KERNEL_IRQ_CAP_FORBID violation via extern capability propagation, got:\n{}",
         stderr
     );
 
