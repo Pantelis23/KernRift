@@ -645,10 +645,6 @@ fn run_check(args: &CheckArgs) -> ExitCode {
             return ExitCode::from(EXIT_INVALID_INPUT);
         }
     };
-    if contracts_schema == EmitContractsSchema::V2 {
-        print_errors(&kernel_feature_unimplemented_diagnostics());
-    }
-
     let mut policy_violations = Vec::<PolicyViolation>::new();
 
     if let Some(profile) = args.profile {
@@ -890,13 +886,6 @@ fn resolve_contracts_schema(
     }
 
     Ok(requested.unwrap_or(ContractsSchemaArg::V1).to_emit_schema())
-}
-
-fn kernel_feature_unimplemented_diagnostics() -> Vec<String> {
-    vec![
-        "analysis: KERNEL_FEATURE_UNIMPLEMENTED: alloc_sites_count".to_string(),
-        "analysis: KERNEL_FEATURE_UNIMPLEMENTED: block_sites_count".to_string(),
-    ]
 }
 
 fn new_verify_report(args: &VerifyArgs) -> VerifyReport {

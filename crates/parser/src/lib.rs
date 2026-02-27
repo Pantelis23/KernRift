@@ -8,6 +8,8 @@ pub struct RawAttr {
 pub enum Stmt {
     Call(String),
     YieldPoint,
+    AllocPoint,
+    BlockPoint,
     Acquire(String),
     Release(String),
     MmioRead,
@@ -395,6 +397,20 @@ fn parse_stmt(stmt: &str) -> Result<Option<Stmt>, String> {
             return Err("yieldpoint() must have no arguments".to_string());
         }
         return Ok(Some(Stmt::YieldPoint));
+    }
+
+    if lowered == "allocpoint" {
+        if !args.trim().is_empty() {
+            return Err("allocpoint() must have no arguments".to_string());
+        }
+        return Ok(Some(Stmt::AllocPoint));
+    }
+
+    if lowered == "blockpoint" {
+        if !args.trim().is_empty() {
+            return Err("blockpoint() must have no arguments".to_string());
+        }
+        return Ok(Some(Stmt::BlockPoint));
     }
 
     if lowered == "acquire" {
