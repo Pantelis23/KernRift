@@ -19,6 +19,7 @@ fn default_profile_behavior_is_unchanged() {
         "deny_unbounded_no_yield.kr",
         "deny_lock_depth_and_order.kr",
         "critical_yield.kr",
+        "critical_yield_transitive.kr",
         "irq_alloc_effect.kr",
         "irq_alloc_site.kr",
         "irq_block_site.kr",
@@ -139,6 +140,29 @@ fn kernel_profile_denies_yield_in_critical() {
         .join("tests")
         .join("kernel_profile")
         .join("critical_yield.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--profile")
+        .arg("kernel")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.contains("policy: KERNEL_CRITICAL_YIELD:"),
+        "expected KERNEL_CRITICAL_YIELD violation, got:\n{}",
+        stderr
+    );
+}
+
+#[test]
+fn kernel_profile_denies_yield_in_critical_transitive() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("kernel_profile")
+        .join("critical_yield_transitive.kr");
 
     let mut cmd: Command = cargo_bin_cmd!("kernriftc");
     cmd.current_dir(&root)
