@@ -51,6 +51,22 @@ fn write_v2_contracts_for_fixture(root: &Path, fixture: &Path, label: &str) -> P
     contracts_path
 }
 
+fn write_verify_report_fixture(label: &str, report_json: &Value) -> PathBuf {
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let report_path =
+        std::env::temp_dir().join(format!("kernrift-inspect-report-{}-{}.json", label, ts));
+    fs::remove_file(&report_path).ok();
+    fs::write(
+        &report_path,
+        serde_json::to_string_pretty(report_json).expect("report json"),
+    )
+    .expect("write report fixture");
+    report_path
+}
+
 #[test]
 fn report_unknown_metric_exits_nonzero() {
     let root = repo_root();
@@ -159,6 +175,148 @@ fn inspect_contracts_output_is_repeatable() {
     assert_eq!(first, second, "inspect output must be byte-stable");
 
     fs::remove_file(&contracts_path).ok();
+}
+
+#[test]
+fn inspect_report_rejects_malformed_report_deterministically() {
+    let root = repo_root();
+    let report_path = write_verify_report_fixture("malformed", &json!({}));
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("inspect-report")
+        .arg("--report")
+        .arg(report_path.as_os_str());
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec![format!(
+            "failed to decode verify report '{}': missing string field 'schema_version'",
+            report_path.display()
+        )]
+    );
+
+    fs::remove_file(&report_path).ok();
+}
+
+#[test]
+fn inspect_report_summary_is_stable_and_exact() {
+    let root = repo_root();
+    let report_path = write_verify_report_fixture(
+        "summary",
+        &json!({
+            "schema_version": "kernrift_verify_report_v1",
+            "result": "deny",
+            "inputs": {
+                "contracts": "contracts.json",
+                "hash": "contracts.sha256",
+                "sig": Value::Null,
+                "pubkey": Value::Null
+            },
+            "hash": {
+                "expected_sha256": "0000",
+                "computed_sha256": "1111",
+                "matched": false
+            },
+            "contracts": {
+                "utf8_valid": true,
+                "schema_valid": true,
+                "schema_version": "kernrift_contracts_v2"
+            },
+            "signature": {
+                "checked": false,
+                "valid": Value::Null
+            },
+            "diagnostics": [
+                "verify: HASH_MISMATCH: expected 0000, got 1111"
+            ]
+        }),
+    );
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("inspect-report")
+        .arg("--report")
+        .arg(report_path.as_os_str());
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        vec![
+            "schema: kernrift_verify_report_v1",
+            "result: deny",
+            "inputs:",
+            "contracts: contracts.json",
+            "hash: contracts.sha256",
+            "sig: <none>",
+            "pubkey: <none>",
+            "hash_status:",
+            "matched: false",
+            "expected_sha256: 0000",
+            "computed_sha256: 1111",
+            "contracts_status:",
+            "utf8_valid: true",
+            "schema_valid: true",
+            "schema_version: kernrift_contracts_v2",
+            "signature_status:",
+            "checked: false",
+            "valid: <none>",
+            "diagnostics: 1",
+            "diagnostic: verify: HASH_MISMATCH: expected 0000, got 1111",
+        ]
+    );
+
+    fs::remove_file(&report_path).ok();
+}
+
+#[test]
+fn inspect_report_output_is_repeatable() {
+    let root = repo_root();
+    let report_path = write_verify_report_fixture(
+        "repeatable",
+        &json!({
+            "schema_version": "kernrift_verify_report_v1",
+            "result": "pass",
+            "inputs": {
+                "contracts": "contracts.json",
+                "hash": "contracts.sha256",
+                "sig": Value::Null,
+                "pubkey": Value::Null
+            },
+            "hash": {
+                "expected_sha256": Value::Null,
+                "computed_sha256": "abcd",
+                "matched": true
+            },
+            "contracts": {
+                "utf8_valid": true,
+                "schema_valid": true,
+                "schema_version": "kernrift_contracts_v1"
+            },
+            "signature": {
+                "checked": false,
+                "valid": Value::Null
+            },
+            "diagnostics": []
+        }),
+    );
+
+    let run_inspect = || {
+        let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+        cmd.current_dir(&root)
+            .arg("inspect-report")
+            .arg("--report")
+            .arg(report_path.as_os_str());
+        let assert = cmd.assert().success();
+        String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8")
+    };
+
+    let first = run_inspect();
+    let second = run_inspect();
+    assert_eq!(first, second, "inspect-report output must be byte-stable");
+
+    fs::remove_file(&report_path).ok();
 }
 
 #[test]
