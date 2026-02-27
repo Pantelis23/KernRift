@@ -1,0 +1,25 @@
+{
+  "contracts": {
+    "schema_valid": true,
+    "schema_version": "kernrift_contracts_v1",
+    "utf8_valid": true
+  },
+  "diagnostics": [],
+  "hash": {
+    "computed_sha256": "865e0269d01290d57e9aa04a802aa6932e68992a1069fdcb4d21f80feeb71a90",
+    "expected_sha256": "865e0269d01290d57e9aa04a802aa6932e68992a1069fdcb4d21f80feeb71a90",
+    "matched": true
+  },
+  "inputs": {
+    "contracts": "contracts.json",
+    "hash": "contracts.sha256",
+    "pubkey": null,
+    "sig": null
+  },
+  "result": "pass",
+  "schema_version": "kernrift_verify_report_v1",
+  "signature": {
+    "checked": false,
+    "valid": null
+  }
+}

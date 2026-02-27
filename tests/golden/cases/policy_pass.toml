@@ -1,0 +1,5 @@
+[limits]
+max_lock_depth = 1
+
+[caps]
+allow_module = ["PhysMap"]

@@ -1,0 +1,27 @@
+{
+  "contracts": {
+    "schema_valid": false,
+    "schema_version": null,
+    "utf8_valid": false
+  },
+  "diagnostics": [
+    "verify: HASH_MISMATCH: expected 0000000000000000000000000000000000000000000000000000000000000000, got 71e90aa9df401385400e803b264d720a6160aa149acb73b64bb47cf7235accfa"
+  ],
+  "hash": {
+    "computed_sha256": "71e90aa9df401385400e803b264d720a6160aa149acb73b64bb47cf7235accfa",
+    "expected_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "matched": false
+  },
+  "inputs": {
+    "contracts": "contracts.json",
+    "hash": "contracts.sha256",
+    "pubkey": null,
+    "sig": null
+  },
+  "result": "deny",
+  "schema_version": "kernrift_verify_report_v1",
+  "signature": {
+    "checked": false,
+    "valid": null
+  }
+}

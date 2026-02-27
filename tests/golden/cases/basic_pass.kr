@@ -1,0 +1,11 @@
+@module_caps(PhysMap);
+
+@ctx(thread, boot)
+fn helper() {
+}
+
+@ctx(thread)
+@caps(PhysMap)
+fn worker() {
+  helper();
+}

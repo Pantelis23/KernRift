@@ -1,0 +1,27 @@
+{
+  "contracts": {
+    "schema_valid": false,
+    "schema_version": null,
+    "utf8_valid": true
+  },
+  "diagnostics": [
+    "contracts schema validation failed: \"kernrift_contracts_v1\" was expected"
+  ],
+  "hash": {
+    "computed_sha256": "ceb286bc4567d16222f22fe7a46345ab560d8ad9d7e39295b768c529d77b1a5e",
+    "expected_sha256": "ceb286bc4567d16222f22fe7a46345ab560d8ad9d7e39295b768c529d77b1a5e",
+    "matched": true
+  },
+  "inputs": {
+    "contracts": "contracts.json",
+    "hash": "contracts.sha256",
+    "pubkey": null,
+    "sig": null
+  },
+  "result": "invalid_input",
+  "schema_version": "kernrift_verify_report_v1",
+  "signature": {
+    "checked": false,
+    "valid": null
+  }
+}
