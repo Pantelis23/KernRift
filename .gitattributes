@@ -1,0 +1,3 @@
+tests/golden/expect/* text eol=lf
+tests/golden/cases/*  text eol=lf
+docs/spec/*           text eol=lf
