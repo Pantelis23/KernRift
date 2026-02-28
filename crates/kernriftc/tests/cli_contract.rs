@@ -51,6 +51,25 @@ fn write_v2_contracts_for_fixture(root: &Path, fixture: &Path, label: &str) -> P
     contracts_path
 }
 
+fn inject_single_critical_violation(
+    contracts_json: &mut Value,
+    function: &str,
+    effect: &str,
+    direct: bool,
+    via_callee: &[&str],
+    via_extern: &[&str],
+) {
+    contracts_json["report"]["critical"]["violations"] = json!([{
+        "function": function,
+        "effect": effect,
+        "provenance": {
+            "direct": direct,
+            "via_callee": via_callee,
+            "via_extern": via_extern
+        }
+    }]);
+}
+
 fn write_verify_report_fixture(label: &str, report_json: &Value) -> PathBuf {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -118,7 +137,7 @@ fn inspect_contracts_v2_summary_is_stable_and_exact() {
     let fixture = root
         .join("tests")
         .join("kernel_profile")
-        .join("policy_families_order.kr");
+        .join("policy_families_order_no_critical_alloc.kr");
     let contracts_path = write_v2_contracts_for_fixture(&root, &fixture, "summary");
 
     let mut cmd: Command = cargo_bin_cmd!("kernriftc");
@@ -143,8 +162,7 @@ fn inspect_contracts_v2_summary_is_stable_and_exact() {
             "capabilities:",
             "symbols_with_caps: 1 [entry]",
             "critical_report:",
-            "violations: 1",
-            "violation: function=entry effect=alloc direct=true via_callee=[] via_extern=[]",
+            "violations: 0",
         ]
     );
 
@@ -157,7 +175,7 @@ fn inspect_contracts_output_is_repeatable() {
     let fixture = root
         .join("tests")
         .join("kernel_profile")
-        .join("policy_families_order.kr");
+        .join("policy_families_order_no_critical_alloc.kr");
     let contracts_path = write_v2_contracts_for_fixture(&root, &fixture, "repeatable");
 
     let run_inspect = || {
@@ -397,6 +415,59 @@ fn check_rejects_irq_block_effect_boundary_transitive() {
             "ctx-check: CTX_IRQ_BLOCK_BOUNDARY: function 'isr' is @ctx(irq) and uses block effect (direct=false, via_callee=[helper], via_extern=[])"
         ]
     );
+}
+
+#[test]
+fn check_rejects_critical_alloc_boundary_direct() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("critical_alloc_direct.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec![
+            "critical-region: CRITICAL_ALLOC_BOUNDARY: function 'entry' uses alloc effect in critical region (direct=true, via_callee=[], via_extern=[])"
+        ]
+    );
+}
+
+#[test]
+fn check_rejects_critical_alloc_boundary_transitive() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("critical_alloc_transitive.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec![
+            "critical-region: CRITICAL_ALLOC_BOUNDARY: function 'entry' uses alloc effect in critical region (direct=false, via_callee=[helper], via_extern=[])"
+        ]
+    );
+}
+
+#[test]
+fn check_allows_alloc_outside_critical() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("alloc_outside_critical.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    cmd.assert().success();
 }
 
 #[test]
@@ -1611,7 +1682,7 @@ fn contracts_v2_semantic_fields_coexist_and_validate_schema() {
     let fixture = root
         .join("tests")
         .join("kernel_profile")
-        .join("policy_families_order.kr");
+        .join("policy_families_order_no_critical_alloc.kr");
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("time")
@@ -1664,18 +1735,7 @@ fn contracts_v2_semantic_fields_coexist_and_validate_schema() {
             }
         }])
     );
-    assert_eq!(
-        json["report"]["critical"]["violations"],
-        json!([{
-            "function": "entry",
-            "effect": "alloc",
-            "provenance": {
-                "direct": true,
-                "via_callee": [],
-                "via_extern": []
-            }
-        }])
-    );
+    assert_eq!(json["report"]["critical"]["violations"], json!([]));
 
     fs::remove_file(&out_path).ok();
 }
@@ -2188,7 +2248,7 @@ fn policy_without_evidence_keeps_output_exactly_unchanged() {
     let fixture = root
         .join("tests")
         .join("kernel_profile")
-        .join("policy_families_order.kr");
+        .join("policy_families_order_no_critical_alloc.kr");
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("time")
@@ -2246,7 +2306,7 @@ fn policy_evidence_irq_effect_is_deterministic() {
     let fixture = root
         .join("tests")
         .join("kernel_profile")
-        .join("policy_families_order.kr");
+        .join("policy_families_order_no_critical_alloc.kr");
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("time")
@@ -2382,7 +2442,7 @@ fn policy_evidence_critical_region_is_deterministic() {
     let fixture = root
         .join("tests")
         .join("kernel_profile")
-        .join("critical_region_alloc.kr");
+        .join("policy_families_order_no_critical_alloc.kr");
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("time")
@@ -2404,6 +2464,16 @@ fn policy_evidence_critical_region_is_deterministic() {
         .arg(contracts_path.as_os_str())
         .arg(fixture.as_os_str());
     check_cmd.assert().success();
+
+    let mut contracts_json: Value =
+        serde_json::from_str(&fs::read_to_string(&contracts_path).expect("contracts text"))
+            .expect("contracts json");
+    inject_single_critical_violation(&mut contracts_json, "entry", "alloc", true, &[], &[]);
+    fs::write(
+        &contracts_path,
+        serde_json::to_string(&contracts_json).expect("contracts json text"),
+    )
+    .expect("write mutated contracts");
 
     fs::write(
         &policy_path,
@@ -2447,7 +2517,7 @@ fn policy_evidence_blocks_follow_deterministic_violation_order() {
     let fixture = root
         .join("tests")
         .join("kernel_profile")
-        .join("policy_families_order.kr");
+        .join("policy_families_order_no_critical_alloc.kr");
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("time")
@@ -2469,6 +2539,16 @@ fn policy_evidence_blocks_follow_deterministic_violation_order() {
         .arg(contracts_path.as_os_str())
         .arg(fixture.as_os_str());
     check_cmd.assert().success();
+
+    let mut contracts_json: Value =
+        serde_json::from_str(&fs::read_to_string(&contracts_path).expect("contracts text"))
+            .expect("contracts json");
+    inject_single_critical_violation(&mut contracts_json, "entry", "alloc", true, &[], &[]);
+    fs::write(
+        &contracts_path,
+        serde_json::to_string(&contracts_json).expect("contracts json text"),
+    )
+    .expect("write mutated contracts");
 
     fs::write(
         &policy_path,
@@ -2642,7 +2722,7 @@ fn policy_outputs_cross_family_violations_in_deterministic_order() {
     let fixture = root
         .join("tests")
         .join("kernel_profile")
-        .join("policy_families_order.kr");
+        .join("policy_families_order_no_critical_alloc.kr");
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("time")
@@ -2662,6 +2742,16 @@ fn policy_outputs_cross_family_violations_in_deterministic_order() {
         .arg(contracts_path.as_os_str())
         .arg(fixture.as_os_str());
     check_cmd.assert().success();
+
+    let mut contracts_json: Value =
+        serde_json::from_str(&fs::read_to_string(&contracts_path).expect("contracts text"))
+            .expect("contracts json");
+    inject_single_critical_violation(&mut contracts_json, "entry", "alloc", true, &[], &[]);
+    fs::write(
+        &contracts_path,
+        serde_json::to_string(&contracts_json).expect("contracts json text"),
+    )
+    .expect("write mutated contracts");
 
     fs::write(
         &policy_path,
@@ -2717,7 +2807,7 @@ fn policy_catalog_rank_order_is_deterministic_across_families() {
     let fixture = root
         .join("tests")
         .join("kernel_profile")
-        .join("policy_families_order.kr");
+        .join("policy_families_order_no_critical_alloc.kr");
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("time")
@@ -2737,6 +2827,16 @@ fn policy_catalog_rank_order_is_deterministic_across_families() {
         .arg(contracts_path.as_os_str())
         .arg(fixture.as_os_str());
     check_cmd.assert().success();
+
+    let mut contracts_json: Value =
+        serde_json::from_str(&fs::read_to_string(&contracts_path).expect("contracts text"))
+            .expect("contracts json");
+    inject_single_critical_violation(&mut contracts_json, "entry", "alloc", true, &[], &[]);
+    fs::write(
+        &contracts_path,
+        serde_json::to_string(&contracts_json).expect("contracts json text"),
+    )
+    .expect("write mutated contracts");
 
     fs::write(
         &policy_path,

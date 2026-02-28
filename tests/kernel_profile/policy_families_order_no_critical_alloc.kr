@@ -1,0 +1,11 @@
+@module_caps(PhysMap);
+
+@ctx(irq)
+@caps(PhysMap)
+fn entry() {
+  allocpoint();
+  acquire(ConsoleLock);
+  acquire(SchedLock);
+  release(SchedLock);
+  release(ConsoleLock);
+}

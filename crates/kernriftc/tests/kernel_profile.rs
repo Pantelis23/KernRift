@@ -21,10 +21,9 @@ fn default_profile_behavior_is_unchanged() {
         "deny_unbounded_no_yield.kr",
         "deny_lock_depth_and_order.kr",
         "critical_region_yield.kr",
-        "critical_region_alloc.kr",
         "critical_region_block.kr",
         "critical_region_balanced.kr",
-        "policy_families_order.kr",
+        "policy_families_order_no_critical_alloc.kr",
         "irq_alloc_effect.kr",
         "irq_alloc_site.kr",
         "irq_caps_transitive.kr",
@@ -38,6 +37,8 @@ fn default_profile_behavior_is_unchanged() {
     }
 
     for fixture in [
+        "critical_region_alloc.kr",
+        "policy_families_order.kr",
         "irq_alloc_transitive.kr",
         "irq_block_site.kr",
         "irq_block_transitive.kr",
@@ -186,8 +187,8 @@ fn kernel_profile_denies_alloc_in_critical_region() {
     let assert = cmd.assert().failure().code(1);
     let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
     assert!(
-        stderr.contains("policy: KERNEL_CRITICAL_REGION_ALLOC:"),
-        "expected KERNEL_CRITICAL_REGION_ALLOC violation, got:\n{}",
+        stderr.contains("critical-region: CRITICAL_ALLOC_BOUNDARY:"),
+        "expected CRITICAL_ALLOC_BOUNDARY violation, got:\n{}",
         stderr
     );
 }
