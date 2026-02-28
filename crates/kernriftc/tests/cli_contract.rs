@@ -471,6 +471,78 @@ fn check_allows_alloc_outside_critical() {
 }
 
 #[test]
+fn check_rejects_capability_boundary_direct() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("capability_boundary_direct.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec![
+            "cap-check: CAPABILITY_BOUNDARY: function 'entry' reaches capability 'PhysMap' without declaring @caps(PhysMap) (direct=false, via_callee=[helper], via_extern=[])"
+        ]
+    );
+}
+
+#[test]
+fn check_rejects_capability_boundary_transitive() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("capability_boundary_transitive.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec![
+            "cap-check: CAPABILITY_BOUNDARY: function 'entry' reaches capability 'PhysMap' without declaring @caps(PhysMap) (direct=false, via_callee=[helper, mid], via_extern=[])",
+            "cap-check: CAPABILITY_BOUNDARY: function 'mid' reaches capability 'PhysMap' without declaring @caps(PhysMap) (direct=false, via_callee=[helper], via_extern=[])",
+        ]
+    );
+}
+
+#[test]
+fn check_allows_capability_boundary_when_declared() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("capability_boundary_declared.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    cmd.assert().success();
+}
+
+#[test]
+fn check_missing_module_cap_behavior_is_unchanged() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_fail").join("missing_cap.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec![
+            "cap-check: call 'caller -> mapit' violates caps_avail=module_caps, missing: PhysMap",
+            "cap-check: function 'mapit' requires unavailable caps: PhysMap",
+        ]
+    );
+}
+
+#[test]
 fn check_allows_block_effect_outside_irq() {
     let root = repo_root();
     let fixture = root
@@ -1233,7 +1305,7 @@ fn contracts_v2_facts_include_transitive_capabilities() {
         json!([{
             "capability": "PhysMap",
             "provenance": {
-                "direct": false,
+                "direct": true,
                 "via_callee": ["helper"],
                 "via_extern": []
             }
@@ -1307,7 +1379,7 @@ fn contracts_v2_transitive_capabilities_include_extern_stubs() {
         json!([{
             "capability": "PhysMap",
             "provenance": {
-                "direct": false,
+                "direct": true,
                 "via_callee": [],
                 "via_extern": ["map_io"]
             }
@@ -1318,7 +1390,7 @@ fn contracts_v2_transitive_capabilities_include_extern_stubs() {
         json!([{
             "capability": "PhysMap",
             "provenance": {
-                "direct": false,
+                "direct": true,
                 "via_callee": ["helper"],
                 "via_extern": ["map_io"]
             }
@@ -2033,7 +2105,7 @@ forbid_caps_in_irq = ["PhysMap"]
         lines,
         vec![
             "policy: KERNEL_IRQ_CAP_FORBID: function 'helper' is irq-reachable and uses forbidden capability 'PhysMap' (direct=true, via_callee=[], via_extern=[])",
-            "policy: KERNEL_IRQ_CAP_FORBID: function 'isr' is irq-reachable and uses forbidden capability 'PhysMap' (direct=false, via_callee=[helper], via_extern=[])",
+            "policy: KERNEL_IRQ_CAP_FORBID: function 'isr' is irq-reachable and uses forbidden capability 'PhysMap' (direct=true, via_callee=[helper], via_extern=[])",
         ],
         "expected deterministic capability violations, got:\n{}",
         fail_stderr
@@ -2230,8 +2302,8 @@ forbid_caps_in_irq = ["PhysMap"]
     assert_eq!(
         lines,
         vec![
-            "policy: KERNEL_IRQ_CAP_FORBID: function 'helper' is irq-reachable and uses forbidden capability 'PhysMap' (direct=false, via_callee=[], via_extern=[map_io])",
-            "policy: KERNEL_IRQ_CAP_FORBID: function 'isr' is irq-reachable and uses forbidden capability 'PhysMap' (direct=false, via_callee=[helper], via_extern=[map_io])",
+            "policy: KERNEL_IRQ_CAP_FORBID: function 'helper' is irq-reachable and uses forbidden capability 'PhysMap' (direct=true, via_callee=[], via_extern=[map_io])",
+            "policy: KERNEL_IRQ_CAP_FORBID: function 'isr' is irq-reachable and uses forbidden capability 'PhysMap' (direct=true, via_callee=[helper], via_extern=[map_io])",
             "policy: KERNEL_IRQ_CAP_FORBID: function 'map_io' is irq-reachable and uses forbidden capability 'PhysMap' (direct=true, via_callee=[], via_extern=[])",
         ],
         "expected deterministic extern capability propagation violations, got:\n{}",
@@ -2423,10 +2495,10 @@ forbid_caps_in_irq = ["PhysMap"]
             "evidence: direct=true",
             "evidence: via_callee=[]",
             "evidence: via_extern=[]",
-            "policy: KERNEL_IRQ_CAP_FORBID: function 'isr' is irq-reachable and uses forbidden capability 'PhysMap' (direct=false, via_callee=[helper], via_extern=[])",
+            "policy: KERNEL_IRQ_CAP_FORBID: function 'isr' is irq-reachable and uses forbidden capability 'PhysMap' (direct=true, via_callee=[helper], via_extern=[])",
             "evidence: symbol=isr",
             "evidence: capability=PhysMap",
-            "evidence: direct=false",
+            "evidence: direct=true",
             "evidence: via_callee=[helper]",
             "evidence: via_extern=[]",
         ]

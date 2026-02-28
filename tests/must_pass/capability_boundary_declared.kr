@@ -1,9 +1,7 @@
 @module_caps(PhysMap);
 
-@ctx(irq)
 @caps(PhysMap)
-fn isr() { helper(); }
+fn entry() { helper(); }
 
-@ctx(irq)
 @caps(PhysMap)
 fn helper() { }
