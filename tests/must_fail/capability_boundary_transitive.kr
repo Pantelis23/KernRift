@@ -1,0 +1,8 @@
+@module_caps(PhysMap);
+
+fn entry() { mid(); }
+
+fn mid() { helper(); }
+
+@caps(PhysMap)
+fn helper() { }

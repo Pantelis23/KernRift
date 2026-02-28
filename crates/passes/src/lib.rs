@@ -53,6 +53,12 @@ struct FunctionEffectSemantics {
     provenance: BTreeMap<Eff, EffectProvenance>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct FunctionCapabilitySemantics {
+    transitive: BTreeSet<String>,
+    provenance: BTreeMap<String, EffectProvenance>,
+}
+
 #[derive(Debug, Clone)]
 struct LockFrame {
     class: String,
@@ -205,6 +211,7 @@ fn cap_check(module: &KrirModule) -> Vec<CheckError> {
     let mut errs = Vec::new();
     let module_caps: BTreeSet<_> = module.module_caps.iter().cloned().collect();
     let map = fn_map(module);
+    let capability_semantics = capability_semantics_by_function(module);
 
     for f in &module.functions {
         let req: BTreeSet<_> = f.caps_req.iter().cloned().collect();
@@ -235,6 +242,34 @@ fn cap_check(module: &KrirModule) -> Vec<CheckError> {
                     edge.caller,
                     edge.callee,
                     missing.join(", ")
+                ),
+            });
+        }
+    }
+
+    for function in module.functions.iter().filter(|f| !f.is_extern) {
+        let declared: BTreeSet<_> = function.caps_req.iter().cloned().collect();
+        let Some(semantics) = capability_semantics.get(&function.name) else {
+            continue;
+        };
+        for capability in &semantics.transitive {
+            if !module_caps.contains(capability) {
+                continue;
+            }
+            if declared.contains(capability) {
+                continue;
+            }
+            let Some(provenance) = semantics.provenance.get(capability) else {
+                continue;
+            };
+            errs.push(CheckError {
+                pass: "cap-check",
+                message: format!(
+                    "CAPABILITY_BOUNDARY: function '{}' reaches capability '{}' without declaring @caps({}) ({})",
+                    function.name,
+                    capability,
+                    capability,
+                    format_effect_provenance(provenance)
                 ),
             });
         }
@@ -340,6 +375,115 @@ fn effect_semantics_by_function(module: &KrirModule) -> BTreeMap<String, Functio
             FunctionEffectSemantics {
                 transitive: transitive[idx].clone(),
                 provenance: effect_map,
+            },
+        );
+    }
+
+    by_name
+}
+
+fn capability_semantics_by_function(
+    module: &KrirModule,
+) -> BTreeMap<String, FunctionCapabilitySemantics> {
+    let names = module
+        .functions
+        .iter()
+        .map(|f| f.name.clone())
+        .collect::<Vec<_>>();
+    let index_by_name = names
+        .iter()
+        .enumerate()
+        .map(|(idx, name)| (name.clone(), idx))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut direct = vec![BTreeSet::<String>::new(); names.len()];
+    let mut is_extern = vec![false; names.len()];
+    for function in &module.functions {
+        if let Some(&idx) = index_by_name.get(&function.name) {
+            direct[idx].extend(function.caps_req.iter().cloned());
+            is_extern[idx] = function.is_extern;
+        }
+    }
+
+    let mut outgoing_sets = vec![BTreeSet::<usize>::new(); names.len()];
+    for edge in &module.call_edges {
+        let (Some(&caller), Some(&callee)) = (
+            index_by_name.get(&edge.caller),
+            index_by_name.get(&edge.callee),
+        ) else {
+            continue;
+        };
+        outgoing_sets[caller].insert(callee);
+    }
+    let outgoing = outgoing_sets
+        .into_iter()
+        .map(|set| set.into_iter().collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+
+    let mut transitive = direct.clone();
+    let mut provenance = vec![BTreeMap::<String, EffectProvenance>::new(); names.len()];
+    for (idx, direct_caps) in direct.iter().enumerate() {
+        for capability in direct_caps {
+            provenance[idx]
+                .entry(capability.clone())
+                .or_default()
+                .direct = true;
+        }
+    }
+
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for caller_idx in 0..names.len() {
+            for &callee_idx in &outgoing[caller_idx] {
+                let callee_caps = transitive[callee_idx].iter().cloned().collect::<Vec<_>>();
+                for capability in callee_caps {
+                    if transitive[caller_idx].insert(capability.clone()) {
+                        changed = true;
+                    }
+
+                    let callee_provenance = provenance[callee_idx]
+                        .get(&capability)
+                        .cloned()
+                        .unwrap_or_default();
+                    let entry = provenance[caller_idx].entry(capability).or_default();
+                    if is_extern[callee_idx] {
+                        if entry.via_extern.insert(names[callee_idx].clone()) {
+                            changed = true;
+                        }
+                    } else if entry.via_callee.insert(names[callee_idx].clone()) {
+                        changed = true;
+                    }
+
+                    let before_callee = entry.via_callee.len();
+                    entry.via_callee.extend(callee_provenance.via_callee);
+                    if entry.via_callee.len() != before_callee {
+                        changed = true;
+                    }
+                    let before_extern = entry.via_extern.len();
+                    entry.via_extern.extend(callee_provenance.via_extern);
+                    if entry.via_extern.len() != before_extern {
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+
+    let mut by_name = BTreeMap::<String, FunctionCapabilitySemantics>::new();
+    for (idx, name) in names.iter().enumerate() {
+        let mut cap_map = BTreeMap::<String, EffectProvenance>::new();
+        for capability in &transitive[idx] {
+            let mut entry = provenance[idx].get(capability).cloned().unwrap_or_default();
+            entry.via_callee.remove(name);
+            entry.via_extern.remove(name);
+            cap_map.insert(capability.clone(), entry);
+        }
+        by_name.insert(
+            name.clone(),
+            FunctionCapabilitySemantics {
+                transitive: transitive[idx].clone(),
+                provenance: cap_map,
             },
         );
     }
