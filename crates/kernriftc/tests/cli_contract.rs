@@ -471,6 +471,59 @@ fn check_allows_alloc_outside_critical() {
 }
 
 #[test]
+fn check_rejects_critical_block_boundary_direct() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("critical_block_direct.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec![
+            "critical-region: CRITICAL_BLOCK_BOUNDARY: function 'entry' uses block effect in critical region (direct=true, via_callee=[], via_extern=[])"
+        ]
+    );
+}
+
+#[test]
+fn check_rejects_critical_block_boundary_transitive() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("critical_block_transitive.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec![
+            "critical-region: CRITICAL_BLOCK_BOUNDARY: function 'entry' uses block effect in critical region (direct=false, via_callee=[helper], via_extern=[])"
+        ]
+    );
+}
+
+#[test]
+fn check_allows_block_outside_critical() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("block_outside_critical.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    cmd.assert().success();
+}
+
+#[test]
 fn check_rejects_capability_boundary_direct() {
     let root = repo_root();
     let fixture = root

@@ -81,6 +81,7 @@ pub fn analyze_module(module: &KrirModule) -> (AnalysisReport, Vec<CheckError>) 
     errs.extend(ctx_check(module));
     errs.extend(effect_check(module));
     errs.extend(critical_alloc_boundary_check(module));
+    errs.extend(critical_block_boundary_check(module));
     errs.extend(cap_check(module));
     errs.extend(critical_region_balance_check(module));
 
@@ -557,6 +558,71 @@ fn critical_alloc_boundary_check(module: &KrirModule) -> Vec<CheckError> {
                 pass: PASS_CRITICAL_REGION,
                 message: format!(
                     "CRITICAL_ALLOC_BOUNDARY: function '{}' uses alloc effect in critical region ({})",
+                    function.name,
+                    format_effect_provenance(&provenance)
+                ),
+            });
+        }
+    }
+
+    errs
+}
+
+fn critical_block_boundary_check(module: &KrirModule) -> Vec<CheckError> {
+    let effect_semantics = effect_semantics_by_function(module);
+    let map = fn_map(module);
+    let mut errs = Vec::new();
+
+    for function in module.functions.iter().filter(|f| !f.is_extern) {
+        let mut depth = 0_u64;
+        let mut provenance = EffectProvenance::default();
+
+        for op in &function.ops {
+            match op {
+                KrirOp::CriticalEnter => depth += 1,
+                KrirOp::CriticalExit => depth = depth.saturating_sub(1),
+                KrirOp::BlockPoint if depth > 0 => {
+                    provenance.direct = true;
+                }
+                KrirOp::Call { callee } if depth > 0 => {
+                    let Some(callee_semantics) = effect_semantics.get(callee) else {
+                        continue;
+                    };
+                    if !callee_semantics.transitive.contains(&Eff::Block) {
+                        continue;
+                    }
+                    let Some(callee_provenance) = callee_semantics.provenance.get(&Eff::Block)
+                    else {
+                        continue;
+                    };
+                    let is_extern = map.get(callee).map(|f| f.is_extern).unwrap_or(false);
+                    if is_extern {
+                        provenance.via_extern.insert(callee.clone());
+                    } else {
+                        provenance.via_callee.insert(callee.clone());
+                    }
+                    provenance
+                        .via_callee
+                        .extend(callee_provenance.via_callee.iter().cloned());
+                    provenance
+                        .via_extern
+                        .extend(callee_provenance.via_extern.iter().cloned());
+                }
+                _ => {}
+            }
+        }
+
+        provenance.via_callee.remove(&function.name);
+        provenance.via_extern.remove(&function.name);
+
+        if provenance.direct
+            || !provenance.via_callee.is_empty()
+            || !provenance.via_extern.is_empty()
+        {
+            errs.push(CheckError {
+                pass: PASS_CRITICAL_REGION,
+                message: format!(
+                    "CRITICAL_BLOCK_BOUNDARY: function '{}' uses block effect in critical region ({})",
                     function.name,
                     format_effect_provenance(&provenance)
                 ),
