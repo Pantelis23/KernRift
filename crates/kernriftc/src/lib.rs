@@ -3,7 +3,8 @@ use std::path::Path;
 use hir::lower_to_krir_with_surface;
 pub use hir::{
     AdaptiveFeatureProposal, AdaptiveFeatureStatus, AdaptiveSurfaceFeature, SurfaceProfile,
-    adaptive_surface_features, irq_handler_alias_proposal,
+    adaptive_feature_proposal, adaptive_feature_proposals, adaptive_surface_features,
+    irq_handler_alias_proposal,
 };
 use krir::KrirModule;
 use parser::parse_module;

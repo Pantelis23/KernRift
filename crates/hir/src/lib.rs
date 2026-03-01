@@ -36,6 +36,7 @@ pub enum AdaptiveFeatureStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct AdaptiveSurfaceFeature {
     pub id: &'static str,
+    pub proposal_id: &'static str,
     pub surface_form: &'static str,
     pub status: AdaptiveFeatureStatus,
     pub lowering_target: &'static str,
@@ -69,6 +70,7 @@ enum AdaptiveLoweringRule {
 const ADAPTIVE_SURFACE_FEATURES: [AdaptiveSurfaceFeature; 4] = [
     AdaptiveSurfaceFeature {
         id: "irq_handler_alias",
+        proposal_id: "irq_handler_alias",
         surface_form: "irq_handler",
         status: AdaptiveFeatureStatus::Experimental,
         lowering_target: "@ctx(irq)",
@@ -80,6 +82,7 @@ const ADAPTIVE_SURFACE_FEATURES: [AdaptiveSurfaceFeature; 4] = [
     },
     AdaptiveSurfaceFeature {
         id: "thread_entry_alias",
+        proposal_id: "thread_entry_alias",
         surface_form: "thread_entry",
         status: AdaptiveFeatureStatus::Experimental,
         lowering_target: "@ctx(thread)",
@@ -91,6 +94,7 @@ const ADAPTIVE_SURFACE_FEATURES: [AdaptiveSurfaceFeature; 4] = [
     },
     AdaptiveSurfaceFeature {
         id: "may_block_alias",
+        proposal_id: "may_block_alias",
         surface_form: "may_block",
         status: AdaptiveFeatureStatus::Experimental,
         lowering_target: "@eff(block)",
@@ -102,6 +106,7 @@ const ADAPTIVE_SURFACE_FEATURES: [AdaptiveSurfaceFeature; 4] = [
     },
     AdaptiveSurfaceFeature {
         id: "irq_legacy_alias",
+        proposal_id: "irq_legacy_alias",
         surface_form: "irq_legacy",
         status: AdaptiveFeatureStatus::Deprecated,
         lowering_target: "@ctx(irq)",
@@ -115,6 +120,66 @@ const ADAPTIVE_SURFACE_FEATURES: [AdaptiveSurfaceFeature; 4] = [
 
 pub fn adaptive_surface_features() -> &'static [AdaptiveSurfaceFeature] {
     &ADAPTIVE_SURFACE_FEATURES
+}
+
+const ADAPTIVE_FEATURE_PROPOSALS: [AdaptiveFeatureProposal; 4] = [
+    AdaptiveFeatureProposal {
+        id: "irq_handler_alias",
+        title: "Experimental @irq_handler surface alias",
+        motivation: "Provide a governed surface-only shorthand for irq-context entry points.",
+        syntax_before: "@ctx(irq) fn isr() { }",
+        syntax_after: "@irq_handler fn isr() { }",
+        lowering_description: "Lower @irq_handler to the existing canonical @ctx(irq) representation during HIR lowering.",
+        compatibility_risk: "Low; stable mode rejects the alias and experimental mode lowers to existing canonical semantics.",
+        migration_plan: "Keep the alias experimental until usage and diagnostics stabilize; projects can stay pinned to stable to avoid it.",
+        status: AdaptiveFeatureStatus::Experimental,
+    },
+    AdaptiveFeatureProposal {
+        id: "thread_entry_alias",
+        title: "Experimental @thread_entry surface alias",
+        motivation: "Provide a governed surface-only shorthand for thread-only entry points.",
+        syntax_before: "@ctx(thread) fn worker() { }",
+        syntax_after: "@thread_entry fn worker() { }",
+        lowering_description: "Lower @thread_entry to the existing canonical @ctx(thread) representation during HIR lowering.",
+        compatibility_risk: "Low; stable mode rejects the alias and experimental mode lowers to existing canonical semantics.",
+        migration_plan: "Keep the alias experimental until usage and diagnostics stabilize; projects can stay pinned to stable to avoid it.",
+        status: AdaptiveFeatureStatus::Experimental,
+    },
+    AdaptiveFeatureProposal {
+        id: "may_block_alias",
+        title: "Experimental @may_block surface alias",
+        motivation: "Provide a governed surface-only shorthand for declaring block effects.",
+        syntax_before: "@eff(block) fn worker() { }",
+        syntax_after: "@may_block fn worker() { }",
+        lowering_description: "Lower @may_block to the existing canonical @eff(block) representation during HIR lowering.",
+        compatibility_risk: "Low; stable mode rejects the alias and experimental mode lowers to existing canonical semantics.",
+        migration_plan: "Keep the alias experimental until usage and diagnostics stabilize; projects can stay pinned to stable to avoid it.",
+        status: AdaptiveFeatureStatus::Experimental,
+    },
+    AdaptiveFeatureProposal {
+        id: "irq_legacy_alias",
+        title: "Deprecated @irq_legacy surface alias",
+        motivation: "Preserve a historical alias only long enough to exercise deterministic lifecycle gating.",
+        syntax_before: "@ctx(irq) fn legacy_isr() { }",
+        syntax_after: "@irq_legacy fn legacy_isr() { }",
+        lowering_description: "Would lower to the existing canonical @ctx(irq) representation if lifecycle policy allowed it.",
+        compatibility_risk: "Medium; the alias is deprecated and intentionally unavailable under current surface profiles.",
+        migration_plan: "Replace with @ctx(irq) or @irq_handler depending on the chosen profile policy.",
+        status: AdaptiveFeatureStatus::Deprecated,
+    },
+];
+
+pub fn adaptive_feature_proposals() -> &'static [AdaptiveFeatureProposal] {
+    &ADAPTIVE_FEATURE_PROPOSALS
+}
+
+pub fn adaptive_feature_proposal(feature_id: &str) -> Option<&'static AdaptiveFeatureProposal> {
+    let feature = ADAPTIVE_SURFACE_FEATURES
+        .iter()
+        .find(|feature| feature.id == feature_id)?;
+    ADAPTIVE_FEATURE_PROPOSALS
+        .iter()
+        .find(|proposal| proposal.id == feature.proposal_id)
 }
 
 fn adaptive_surface_feature(attr_name: &str) -> Option<&'static AdaptiveSurfaceFeature> {
@@ -168,17 +233,7 @@ fn feature_unavailability_error(
 }
 
 pub fn irq_handler_alias_proposal() -> AdaptiveFeatureProposal {
-    AdaptiveFeatureProposal {
-        id: "irq_handler_alias",
-        title: "Experimental @irq_handler surface alias",
-        motivation: "Provide a governed surface-only shorthand for irq-context entry points.",
-        syntax_before: "@ctx(irq) fn isr() { }",
-        syntax_after: "@irq_handler fn isr() { }",
-        lowering_description: "Lower @irq_handler to the existing canonical @ctx(irq) representation during HIR lowering.",
-        compatibility_risk: "Low; stable mode rejects the alias and experimental mode lowers to existing canonical semantics.",
-        migration_plan: "Keep the alias experimental until usage and diagnostics stabilize; projects can stay pinned to stable to avoid it.",
-        status: AdaptiveFeatureStatus::Experimental,
-    }
+    *adaptive_feature_proposal("irq_handler_alias").expect("irq_handler_alias proposal")
 }
 
 pub fn lower_to_krir(ast: &ModuleAst) -> Result<KrirModule, Vec<String>> {
@@ -486,9 +541,9 @@ fn parse_lock_budget(attr: &RawAttr) -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AdaptiveFeatureStatus, SurfaceProfile, adaptive_surface_features,
-        irq_handler_alias_proposal, lower_to_krir, lower_to_krir_with_surface,
-        surface_profile_enables_feature,
+        AdaptiveFeatureStatus, SurfaceProfile, adaptive_feature_proposal,
+        adaptive_feature_proposals, adaptive_surface_features, lower_to_krir,
+        lower_to_krir_with_surface, surface_profile_enables_feature,
     };
     use parser::parse_module;
     use proptest::prelude::*;
@@ -602,6 +657,7 @@ mod tests {
             json!([
                 {
                     "id": "irq_handler_alias",
+                    "proposal_id": "irq_handler_alias",
                     "surface_form": "irq_handler",
                     "status": "experimental",
                     "lowering_target": "@ctx(irq)",
@@ -612,6 +668,7 @@ mod tests {
                 },
                 {
                     "id": "thread_entry_alias",
+                    "proposal_id": "thread_entry_alias",
                     "surface_form": "thread_entry",
                     "status": "experimental",
                     "lowering_target": "@ctx(thread)",
@@ -622,6 +679,7 @@ mod tests {
                 },
                 {
                     "id": "may_block_alias",
+                    "proposal_id": "may_block_alias",
                     "surface_form": "may_block",
                     "status": "experimental",
                     "lowering_target": "@eff(block)",
@@ -632,6 +690,7 @@ mod tests {
                 },
                 {
                     "id": "irq_legacy_alias",
+                    "proposal_id": "irq_legacy_alias",
                     "surface_form": "irq_legacy",
                     "status": "deprecated",
                     "lowering_target": "@ctx(irq)",
@@ -644,19 +703,63 @@ mod tests {
         );
 
         assert_eq!(
-            serde_json::to_value(irq_handler_alias_proposal()).expect("proposal json"),
-            json!({
-                "id": "irq_handler_alias",
-                "title": "Experimental @irq_handler surface alias",
-                "motivation": "Provide a governed surface-only shorthand for irq-context entry points.",
-                "syntax_before": "@ctx(irq) fn isr() { }",
-                "syntax_after": "@irq_handler fn isr() { }",
-                "lowering_description": "Lower @irq_handler to the existing canonical @ctx(irq) representation during HIR lowering.",
-                "compatibility_risk": "Low; stable mode rejects the alias and experimental mode lowers to existing canonical semantics.",
-                "migration_plan": "Keep the alias experimental until usage and diagnostics stabilize; projects can stay pinned to stable to avoid it.",
-                "status": "experimental"
-            })
+            serde_json::to_value(adaptive_feature_proposals()).expect("proposal json"),
+            json!([
+                {
+                    "id": "irq_handler_alias",
+                    "title": "Experimental @irq_handler surface alias",
+                    "motivation": "Provide a governed surface-only shorthand for irq-context entry points.",
+                    "syntax_before": "@ctx(irq) fn isr() { }",
+                    "syntax_after": "@irq_handler fn isr() { }",
+                    "lowering_description": "Lower @irq_handler to the existing canonical @ctx(irq) representation during HIR lowering.",
+                    "compatibility_risk": "Low; stable mode rejects the alias and experimental mode lowers to existing canonical semantics.",
+                    "migration_plan": "Keep the alias experimental until usage and diagnostics stabilize; projects can stay pinned to stable to avoid it.",
+                    "status": "experimental"
+                },
+                {
+                    "id": "thread_entry_alias",
+                    "title": "Experimental @thread_entry surface alias",
+                    "motivation": "Provide a governed surface-only shorthand for thread-only entry points.",
+                    "syntax_before": "@ctx(thread) fn worker() { }",
+                    "syntax_after": "@thread_entry fn worker() { }",
+                    "lowering_description": "Lower @thread_entry to the existing canonical @ctx(thread) representation during HIR lowering.",
+                    "compatibility_risk": "Low; stable mode rejects the alias and experimental mode lowers to existing canonical semantics.",
+                    "migration_plan": "Keep the alias experimental until usage and diagnostics stabilize; projects can stay pinned to stable to avoid it.",
+                    "status": "experimental"
+                },
+                {
+                    "id": "may_block_alias",
+                    "title": "Experimental @may_block surface alias",
+                    "motivation": "Provide a governed surface-only shorthand for declaring block effects.",
+                    "syntax_before": "@eff(block) fn worker() { }",
+                    "syntax_after": "@may_block fn worker() { }",
+                    "lowering_description": "Lower @may_block to the existing canonical @eff(block) representation during HIR lowering.",
+                    "compatibility_risk": "Low; stable mode rejects the alias and experimental mode lowers to existing canonical semantics.",
+                    "migration_plan": "Keep the alias experimental until usage and diagnostics stabilize; projects can stay pinned to stable to avoid it.",
+                    "status": "experimental"
+                },
+                {
+                    "id": "irq_legacy_alias",
+                    "title": "Deprecated @irq_legacy surface alias",
+                    "motivation": "Preserve a historical alias only long enough to exercise deterministic lifecycle gating.",
+                    "syntax_before": "@ctx(irq) fn legacy_isr() { }",
+                    "syntax_after": "@irq_legacy fn legacy_isr() { }",
+                    "lowering_description": "Would lower to the existing canonical @ctx(irq) representation if lifecycle policy allowed it.",
+                    "compatibility_risk": "Medium; the alias is deprecated and intentionally unavailable under current surface profiles.",
+                    "migration_plan": "Replace with @ctx(irq) or @irq_handler depending on the chosen profile policy.",
+                    "status": "deprecated"
+                }
+            ])
         );
+    }
+
+    #[test]
+    fn every_adaptive_feature_links_to_one_canonical_proposal() {
+        for feature in adaptive_surface_features() {
+            let proposal = adaptive_feature_proposal(feature.id)
+                .unwrap_or_else(|| panic!("missing proposal for feature '{}'", feature.id));
+            assert_eq!(proposal.id, feature.proposal_id);
+        }
     }
 
     #[test]
@@ -691,6 +794,7 @@ mod tests {
 
         let stable_feature = super::AdaptiveSurfaceFeature {
             id: "stable_alias",
+            proposal_id: "stable_alias",
             surface_form: "stable_alias",
             status: AdaptiveFeatureStatus::Stable,
             lowering_target: "@ctx(thread)",
@@ -713,9 +817,35 @@ mod tests {
 
     #[test]
     fn proposal_example_file_matches_serialized_proposal() {
-        let expected =
-            include_str!("../../../docs/design/examples/irq_handler_alias.proposal.json");
-        let actual = serde_json::to_string_pretty(&irq_handler_alias_proposal()).expect("proposal");
-        assert_eq!(actual.trim_end(), expected.trim_end());
+        let cases = [
+            (
+                "irq_handler_alias",
+                include_str!("../../../docs/design/examples/irq_handler_alias.proposal.json"),
+            ),
+            (
+                "thread_entry_alias",
+                include_str!("../../../docs/design/examples/thread_entry_alias.proposal.json"),
+            ),
+            (
+                "may_block_alias",
+                include_str!("../../../docs/design/examples/may_block_alias.proposal.json"),
+            ),
+            (
+                "irq_legacy_alias",
+                include_str!("../../../docs/design/examples/irq_legacy_alias.proposal.json"),
+            ),
+        ];
+
+        for (feature_id, expected) in cases {
+            let actual = serde_json::to_string_pretty(
+                adaptive_feature_proposal(feature_id).expect("proposal"),
+            )
+            .expect("proposal");
+            assert_eq!(
+                actual.trim_end(),
+                expected.trim_end(),
+                "proposal file drifted"
+            );
+        }
     }
 }
