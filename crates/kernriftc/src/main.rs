@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::Path;
-use std::process::ExitCode;
+use std::path::{Path, PathBuf};
+use std::process::{Command as ProcessCommand, ExitCode};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -13,10 +13,11 @@ use emit::{
 };
 use jsonschema::JSONSchema;
 use kernriftc::{
-    SurfaceProfile, adaptive_feature_promotion_readiness, adaptive_feature_proposal_summaries,
-    adaptive_surface_features, adaptive_surface_features_for_profile, analyze, check_file,
-    check_file_with_surface, check_module, compile_file, compile_file_with_surface,
-    migrate_preview_file_with_surface, validate_adaptive_feature_governance,
+    AdaptiveFeaturePromotionPlan, SurfaceProfile, adaptive_feature_promotion_plan,
+    adaptive_feature_promotion_readiness, adaptive_feature_proposal_summaries,
+    adaptive_surface_features_for_profile, analyze, check_file, check_file_with_surface,
+    check_module, compile_file, compile_file_with_surface, migrate_preview_file_with_surface,
+    validate_adaptive_feature_governance,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -744,6 +745,20 @@ struct ProposalsArgs {
     validate: bool,
     promotion_readiness: bool,
     promote_feature: Option<String>,
+    dry_run: bool,
+}
+
+#[derive(Debug)]
+struct PromotionTargetFiles {
+    hir_path: PathBuf,
+    proposal_path: PathBuf,
+}
+
+#[derive(Debug)]
+struct PromotionFileUpdate {
+    path: PathBuf,
+    original: String,
+    updated: String,
 }
 
 #[derive(Debug)]
@@ -1396,6 +1411,7 @@ fn parse_proposals_args(args: &[String]) -> Result<ProposalsArgs, String> {
     let mut validate = false;
     let mut promotion_readiness = false;
     let mut promote_feature = None::<String>;
+    let mut dry_run = false;
     let mut idx = 0usize;
     while idx < args.len() {
         let arg = &args[idx];
@@ -1448,6 +1464,12 @@ fn parse_proposals_args(args: &[String]) -> Result<ProposalsArgs, String> {
                 promote_feature = Some(value.clone());
                 idx += 1;
             }
+            "--dry-run" => {
+                if dry_run {
+                    return Err("invalid proposals mode: duplicate --dry-run".to_string());
+                }
+                dry_run = true;
+            }
             other => {
                 return Err(format!(
                     "invalid proposals mode: unexpected argument '{}'",
@@ -1458,10 +1480,17 @@ fn parse_proposals_args(args: &[String]) -> Result<ProposalsArgs, String> {
         idx += 1;
     }
 
+    if dry_run && promote_feature.is_none() {
+        return Err(
+            "invalid proposals mode: --dry-run requires --promote <feature-id>".to_string(),
+        );
+    }
+
     Ok(ProposalsArgs {
         validate,
         promotion_readiness,
         promote_feature,
+        dry_run,
     })
 }
 
@@ -2102,7 +2131,7 @@ fn run_proposals(args: &ProposalsArgs) -> ExitCode {
     }
 
     if let Some(feature_id) = args.promote_feature.as_deref() {
-        match apply_adaptive_feature_promotion(Path::new("."), feature_id) {
+        match apply_adaptive_feature_promotion(Path::new("."), feature_id, args.dry_run) {
             Ok(line) => {
                 println!("{}", line);
                 return ExitCode::SUCCESS;
@@ -2143,65 +2172,30 @@ fn run_proposals(args: &ProposalsArgs) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn apply_adaptive_feature_promotion(repo_root: &Path, feature_id: &str) -> Result<String, String> {
-    let readiness = adaptive_feature_promotion_readiness()
-        .into_iter()
-        .find(|entry| entry.feature_id == feature_id)
-        .ok_or_else(|| format!("proposal-promotion: unknown feature '{}'", feature_id))?;
-    if !readiness.promotable_to_stable {
-        return Err(format!(
-            "proposal-promotion: feature '{}' is not promotable: {}",
-            feature_id, readiness.reason
+fn apply_adaptive_feature_promotion(
+    repo_root: &Path,
+    feature_id: &str,
+    dry_run: bool,
+) -> Result<String, String> {
+    validate_governance_repo_root(repo_root)?;
+    ensure_clean_governance_worktree(repo_root)?;
+
+    let plan = adaptive_feature_promotion_plan(feature_id)?;
+    let paths = promotion_target_files(repo_root, &plan);
+    let updates = build_promotion_target_updates(&paths, &plan)?;
+
+    if dry_run {
+        return Ok(format!(
+            "proposal-promotion: dry-run promotion for feature '{}' is valid",
+            feature_id
         ));
     }
 
-    let feature = adaptive_surface_features()
-        .iter()
-        .find(|feature| feature.id == feature_id)
-        .ok_or_else(|| format!("proposal-promotion: unknown feature '{}'", feature_id))?;
-
-    let hir_path = repo_root
-        .join("crates")
-        .join("hir")
-        .join("src")
-        .join("lib.rs");
-    let proposal_path = repo_root
-        .join("docs")
-        .join("design")
-        .join("examples")
-        .join(format!("{}.proposal.json", feature.proposal_id));
-
-    let hir_src = fs::read_to_string(&hir_path).map_err(|err| {
-        format!(
-            "proposal-promotion: failed to read '{}': {}",
-            hir_path.display(),
-            err
-        )
-    })?;
-    let updated_hir = promote_status_in_hir_source(&hir_src, feature.id, feature.proposal_id)?;
-    fs::write(&hir_path, updated_hir).map_err(|err| {
-        format!(
-            "proposal-promotion: failed to write '{}': {}",
-            hir_path.display(),
-            err
-        )
-    })?;
-
-    let proposal_src = fs::read_to_string(&proposal_path).map_err(|err| {
-        format!(
-            "proposal-promotion: failed to read '{}': {}",
-            proposal_path.display(),
-            err
-        )
-    })?;
-    let updated_proposal = promote_status_in_proposal_example(&proposal_src, feature.proposal_id)?;
-    fs::write(&proposal_path, updated_proposal).map_err(|err| {
-        format!(
-            "proposal-promotion: failed to write '{}': {}",
-            proposal_path.display(),
-            err
-        )
-    })?;
+    write_files_atomically(&updates)?;
+    if let Err(err) = validate_written_promotion_files(&updates, &plan) {
+        rollback_written_promotion_files(&updates)?;
+        return Err(err);
+    }
 
     Ok(format!(
         "proposal-promotion: promoted feature '{}' to stable",
@@ -2209,17 +2203,112 @@ fn apply_adaptive_feature_promotion(repo_root: &Path, feature_id: &str) -> Resul
     ))
 }
 
+fn validate_governance_repo_root(repo_root: &Path) -> Result<(), String> {
+    let required = [
+        repo_root.join(".git"),
+        repo_root
+            .join("crates")
+            .join("hir")
+            .join("src")
+            .join("lib.rs"),
+        repo_root.join("docs").join("design").join("examples"),
+    ];
+    if required.iter().all(|path| path.exists()) {
+        Ok(())
+    } else {
+        Err("proposal-promotion: current directory is not a KernRift repo root".to_string())
+    }
+}
+
+fn ensure_clean_governance_worktree(repo_root: &Path) -> Result<(), String> {
+    let output = ProcessCommand::new("git")
+        .arg("status")
+        .arg("--porcelain=v1")
+        .current_dir(repo_root)
+        .output()
+        .map_err(|err| format!("proposal-promotion: failed to run git status: {}", err))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "proposal-promotion: failed to run git status: {}",
+            stderr.trim()
+        ));
+    }
+    if !output.stdout.is_empty() {
+        return Err("proposal-promotion: repository worktree is not clean".to_string());
+    }
+    Ok(())
+}
+
+fn promotion_target_files(
+    repo_root: &Path,
+    plan: &AdaptiveFeaturePromotionPlan,
+) -> PromotionTargetFiles {
+    PromotionTargetFiles {
+        hir_path: repo_root
+            .join("crates")
+            .join("hir")
+            .join("src")
+            .join("lib.rs"),
+        proposal_path: repo_root
+            .join("docs")
+            .join("design")
+            .join("examples")
+            .join(format!("{}.proposal.json", plan.proposal_id)),
+    }
+}
+
+fn build_promotion_target_updates(
+    paths: &PromotionTargetFiles,
+    plan: &AdaptiveFeaturePromotionPlan,
+) -> Result<Vec<PromotionFileUpdate>, String> {
+    let hir_original = fs::read_to_string(&paths.hir_path).map_err(|err| {
+        format!(
+            "proposal-promotion: failed to read '{}': {}",
+            paths.hir_path.display(),
+            err
+        )
+    })?;
+    let proposal_original = fs::read_to_string(&paths.proposal_path).map_err(|err| {
+        format!(
+            "proposal-promotion: failed to read '{}': {}",
+            paths.proposal_path.display(),
+            err
+        )
+    })?;
+
+    let hir_updated = promote_status_in_hir_source(&hir_original, plan)?;
+    let proposal_updated = promote_proposal_example_json(&proposal_original, plan)?;
+
+    Ok(vec![
+        PromotionFileUpdate {
+            path: paths.hir_path.clone(),
+            original: hir_original,
+            updated: hir_updated,
+        },
+        PromotionFileUpdate {
+            path: paths.proposal_path.clone(),
+            original: proposal_original,
+            updated: proposal_updated,
+        },
+    ])
+}
+
 fn promote_status_in_hir_source(
     src: &str,
-    feature_id: &str,
-    proposal_id: &str,
+    plan: &AdaptiveFeaturePromotionPlan,
 ) -> Result<String, String> {
-    let updated_feature =
-        promote_status_in_rust_entry(src, "const ADAPTIVE_SURFACE_FEATURES:", feature_id)?;
+    let src = promote_status_in_rust_entry(
+        src,
+        "const ADAPTIVE_SURFACE_FEATURES:",
+        plan.feature_id,
+        plan.feature_id,
+    )?;
     promote_status_in_rust_entry(
-        &updated_feature,
+        &src,
         "const ADAPTIVE_FEATURE_PROPOSALS:",
-        proposal_id,
+        plan.proposal_id,
+        plan.feature_id,
     )
 }
 
@@ -2227,53 +2316,288 @@ fn promote_status_in_rust_entry(
     src: &str,
     section_marker: &str,
     entry_id: &str,
+    feature_id: &str,
 ) -> Result<String, String> {
     let section_start = src.find(section_marker).ok_or_else(|| {
         format!(
-            "proposal-promotion: missing section marker '{}'",
+            "proposal-promotion: failed to locate '{}' in crates/hir/src/lib.rs",
             section_marker
         )
     })?;
     let id_marker = format!("        id: \"{}\",", entry_id);
-    let entry_start_rel = src[section_start..].find(&id_marker).ok_or_else(|| {
+    let relative_entry_start = src[section_start..]
+        .find(&id_marker)
+        .ok_or_else(|| format!("proposal-promotion: failed to locate entry '{}'", entry_id))?;
+    let entry_start = section_start + relative_entry_start;
+    let relative_entry_end = src[entry_start..].find("    },").ok_or_else(|| {
         format!(
-            "proposal-promotion: missing entry '{}' in section '{}'",
-            entry_id, section_marker
+            "proposal-promotion: failed to locate end of entry '{}'",
+            entry_id
         )
     })?;
-    let entry_start = section_start + entry_start_rel;
-    let entry_end_rel = src[entry_start..]
-        .find("    },")
-        .ok_or_else(|| format!("proposal-promotion: malformed entry '{}'", entry_id))?;
-    let entry_end = entry_start + entry_end_rel;
+    let entry_end = entry_start + relative_entry_end;
     let entry = &src[entry_start..entry_end];
-    let old = "        status: AdaptiveFeatureStatus::Experimental,";
-    let new = "        status: AdaptiveFeatureStatus::Stable,";
-    if !entry.contains(old) {
+    let experimental = "status: AdaptiveFeatureStatus::Experimental,";
+    let stable = "status: AdaptiveFeatureStatus::Stable,";
+    if !entry.contains(experimental) {
         return Err(format!(
-            "proposal-promotion: entry '{}' is not promotable from experimental",
-            entry_id
+            "proposal-promotion: feature '{}' is not promotable: expected experimental status in '{}'",
+            feature_id, entry_id
         ));
     }
-
-    let replaced_entry = entry.replacen(old, new, 1);
-    let mut updated = String::with_capacity(src.len());
-    updated.push_str(&src[..entry_start]);
-    updated.push_str(&replaced_entry);
-    updated.push_str(&src[entry_end..]);
-    Ok(updated)
+    let replaced = entry.replacen(experimental, stable, 1);
+    let mut out = String::with_capacity(src.len() - entry.len() + replaced.len());
+    out.push_str(&src[..entry_start]);
+    out.push_str(&replaced);
+    out.push_str(&src[entry_end..]);
+    Ok(out)
 }
 
-fn promote_status_in_proposal_example(src: &str, proposal_id: &str) -> Result<String, String> {
-    let old = "  \"status\": \"experimental\"";
-    let new = "  \"status\": \"stable\"";
-    if !src.contains(old) {
+fn promote_proposal_example_json(
+    src: &str,
+    plan: &AdaptiveFeaturePromotionPlan,
+) -> Result<String, String> {
+    let mut value: Value = serde_json::from_str(src)
+        .map_err(|err| format!("proposal-promotion: failed to parse proposal JSON: {}", err))?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| "proposal-promotion: proposal JSON must be an object".to_string())?;
+    object.insert("status".to_string(), Value::String("stable".to_string()));
+    object.insert(
+        "title".to_string(),
+        Value::String(plan.normalized_proposal_title.clone()),
+    );
+    object.insert(
+        "compatibility_risk".to_string(),
+        Value::String(plan.normalized_compatibility_risk.clone()),
+    );
+    object.insert(
+        "migration_plan".to_string(),
+        Value::String(plan.normalized_migration_plan.clone()),
+    );
+    let mut text = serde_json::to_string_pretty(&value).map_err(|err| {
+        format!(
+            "proposal-promotion: failed to serialize proposal JSON: {}",
+            err
+        )
+    })?;
+    text.push('\n');
+    Ok(text)
+}
+
+fn write_files_atomically(updates: &[PromotionFileUpdate]) -> Result<(), String> {
+    let mut temp_paths = Vec::<PathBuf>::new();
+    for (idx, update) in updates.iter().enumerate() {
+        let tmp = update.path.with_extension(format!(
+            "{}.kernriftc-promote-{}.tmp",
+            update
+                .path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .unwrap_or("file"),
+            idx
+        ));
+        fs::write(&tmp, &update.updated).map_err(|err| {
+            let _ = remove_temp_files(&temp_paths);
+            format!(
+                "proposal-promotion: failed to stage '{}': {}",
+                update.path.display(),
+                err
+            )
+        })?;
+        temp_paths.push(tmp);
+    }
+
+    let mut renamed = Vec::<(PathBuf, String)>::new();
+    for (update, tmp) in updates.iter().zip(temp_paths.iter()) {
+        if let Err(err) = fs::rename(tmp, &update.path) {
+            let _ = rollback_renamed_files(&renamed);
+            let _ = remove_temp_files(&temp_paths);
+            return Err(format!(
+                "proposal-promotion: failed to commit '{}': {}",
+                update.path.display(),
+                err
+            ));
+        }
+        renamed.push((update.path.clone(), update.original.clone()));
+    }
+
+    Ok(())
+}
+
+fn validate_written_promotion_files(
+    updates: &[PromotionFileUpdate],
+    plan: &AdaptiveFeaturePromotionPlan,
+) -> Result<(), String> {
+    for update in updates {
+        let current = fs::read_to_string(&update.path).map_err(|err| {
+            format!(
+                "proposal-promotion: failed to read '{}' after write: {}",
+                update.path.display(),
+                err
+            )
+        })?;
+        if current != update.updated {
+            return Err(format!(
+                "proposal-promotion: validation failed for '{}'",
+                update.path.display()
+            ));
+        }
+    }
+
+    let hir_update = updates
+        .iter()
+        .find(|update| update.path.ends_with("crates/hir/src/lib.rs"))
+        .ok_or_else(|| "proposal-promotion: missing HIR update target".to_string())?;
+    let proposal_update = updates
+        .iter()
+        .find(|update| {
+            update
+                .path
+                .ends_with(format!("{}.proposal.json", plan.proposal_id))
+        })
+        .ok_or_else(|| "proposal-promotion: missing proposal update target".to_string())?;
+
+    let feature_entry = extract_hir_entry(
+        &hir_update.updated,
+        "const ADAPTIVE_SURFACE_FEATURES:",
+        plan.feature_id,
+    )?;
+    if !feature_entry.contains("status: AdaptiveFeatureStatus::Stable,") {
         return Err(format!(
-            "proposal-promotion: proposal example '{}' is not promotable from experimental",
-            proposal_id
+            "proposal-promotion: validation failed for feature '{}'",
+            plan.feature_id
         ));
     }
-    Ok(src.replacen(old, new, 1))
+
+    let proposal_entry = extract_hir_entry(
+        &hir_update.updated,
+        "const ADAPTIVE_FEATURE_PROPOSALS:",
+        plan.proposal_id,
+    )?;
+    if !proposal_entry.contains("status: AdaptiveFeatureStatus::Stable,") {
+        return Err(format!(
+            "proposal-promotion: validation failed for proposal '{}'",
+            plan.proposal_id
+        ));
+    }
+
+    let proposal_json: Value = serde_json::from_str(&proposal_update.updated).map_err(|err| {
+        format!(
+            "proposal-promotion: validation failed for proposal '{}': {}",
+            plan.proposal_id, err
+        )
+    })?;
+    let obj = proposal_json.as_object().ok_or_else(|| {
+        "proposal-promotion: validation failed for proposal JSON object".to_string()
+    })?;
+    let status = obj
+        .get("status")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "proposal-promotion: validation failed for proposal status".to_string())?;
+    let title = obj
+        .get("title")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "proposal-promotion: validation failed for proposal title".to_string())?;
+    let compatibility = obj
+        .get("compatibility_risk")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            "proposal-promotion: validation failed for proposal compatibility text".to_string()
+        })?;
+    let migration = obj
+        .get("migration_plan")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            "proposal-promotion: validation failed for proposal migration text".to_string()
+        })?;
+    if status != "stable"
+        || title != plan.normalized_proposal_title
+        || compatibility != plan.normalized_compatibility_risk
+        || migration != plan.normalized_migration_plan
+    {
+        return Err(format!(
+            "proposal-promotion: validation failed for proposal '{}'",
+            plan.proposal_id
+        ));
+    }
+
+    Ok(())
+}
+
+fn extract_hir_entry(src: &str, section_marker: &str, entry_id: &str) -> Result<String, String> {
+    let section_start = src.find(section_marker).ok_or_else(|| {
+        format!(
+            "proposal-promotion: failed to locate '{}' in crates/hir/src/lib.rs",
+            section_marker
+        )
+    })?;
+    let id_marker = format!("        id: \"{}\",", entry_id);
+    let relative_entry_start = src[section_start..]
+        .find(&id_marker)
+        .ok_or_else(|| format!("proposal-promotion: failed to locate entry '{}'", entry_id))?;
+    let entry_start = section_start + relative_entry_start;
+    let relative_entry_end = src[entry_start..].find("    },").ok_or_else(|| {
+        format!(
+            "proposal-promotion: failed to locate end of entry '{}'",
+            entry_id
+        )
+    })?;
+    let entry_end = entry_start + relative_entry_end;
+    Ok(src[entry_start..entry_end].to_string())
+}
+
+fn rollback_written_promotion_files(updates: &[PromotionFileUpdate]) -> Result<(), String> {
+    let mut errs = Vec::<String>::new();
+    for update in updates {
+        if let Err(err) = fs::write(&update.path, &update.original) {
+            errs.push(format!("{}: {}", update.path.display(), err));
+        }
+    }
+    if errs.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "proposal-promotion: rollback failed for {}",
+            errs.join(", ")
+        ))
+    }
+}
+
+fn rollback_renamed_files(renamed: &[(PathBuf, String)]) -> Result<(), String> {
+    let mut errs = Vec::<String>::new();
+    for (path, original) in renamed.iter().rev() {
+        if let Err(err) = fs::write(path, original) {
+            errs.push(format!("{}: {}", path.display(), err));
+        }
+    }
+    if errs.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "proposal-promotion: rollback failed for {}",
+            errs.join(", ")
+        ))
+    }
+}
+
+fn remove_temp_files(temp_paths: &[PathBuf]) -> Result<(), String> {
+    let mut errs = Vec::<String>::new();
+    for path in temp_paths {
+        if let Err(err) = fs::remove_file(path)
+            && path.exists()
+        {
+            errs.push(format!("{}: {}", path.display(), err));
+        }
+    }
+    if errs.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "proposal-promotion: temp cleanup failed for {}",
+            errs.join(", ")
+        ))
+    }
 }
 
 fn run_migrate_preview(args: &MigratePreviewArgs) -> ExitCode {
@@ -4602,6 +4926,7 @@ fn print_usage() {
     eprintln!("  kernriftc proposals --validate");
     eprintln!("  kernriftc proposals --promotion-readiness");
     eprintln!("  kernriftc proposals --promote <feature-id>");
+    eprintln!("  kernriftc proposals --promote <feature-id> --dry-run");
     eprintln!("  kernriftc migrate-preview --surface stable <file.kr>");
     eprintln!("  kernriftc migrate-preview --surface experimental <file.kr>");
     eprintln!("  kernriftc inspect --contracts <contracts.json>");

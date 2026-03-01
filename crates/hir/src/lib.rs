@@ -102,6 +102,15 @@ pub struct AdaptiveFeaturePromotionReadiness {
     pub reason: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdaptiveFeaturePromotionPlan {
+    pub feature_id: &'static str,
+    pub proposal_id: &'static str,
+    pub normalized_proposal_title: String,
+    pub normalized_compatibility_risk: String,
+    pub normalized_migration_plan: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AdaptiveLoweringRule {
     ContextAlias(&'static [Ctx]),
@@ -305,6 +314,16 @@ pub fn adaptive_feature_promotion_readiness() -> Vec<AdaptiveFeaturePromotionRea
     )
 }
 
+pub fn adaptive_feature_promotion_plan(
+    feature_id: &str,
+) -> Result<AdaptiveFeaturePromotionPlan, String> {
+    adaptive_feature_promotion_plan_with(
+        &ADAPTIVE_SURFACE_FEATURES,
+        &ADAPTIVE_FEATURE_PROPOSALS,
+        feature_id,
+    )
+}
+
 fn adaptive_feature_promotion_readiness_with(
     features: &[AdaptiveSurfaceFeature],
     proposals: &[AdaptiveFeatureProposal],
@@ -385,6 +404,88 @@ fn promotion_readiness_reason(
     }
 
     None
+}
+
+fn adaptive_feature_promotion_plan_with(
+    features: &[AdaptiveSurfaceFeature],
+    proposals: &[AdaptiveFeatureProposal],
+    feature_id: &str,
+) -> Result<AdaptiveFeaturePromotionPlan, String> {
+    let readiness = adaptive_feature_promotion_readiness_with(features, proposals)
+        .into_iter()
+        .find(|entry| entry.feature_id == feature_id)
+        .ok_or_else(|| format!("proposal-promotion: unknown feature '{}'", feature_id))?;
+    if !readiness.promotable_to_stable {
+        return Err(format!(
+            "proposal-promotion: feature '{}' is not promotable: {}",
+            feature_id, readiness.reason
+        ));
+    }
+
+    let Some(feature) = features.iter().find(|feature| feature.id == feature_id) else {
+        return Err(format!(
+            "proposal-promotion: unknown feature '{}'",
+            feature_id
+        ));
+    };
+    let Some(proposal) = proposals
+        .iter()
+        .find(|proposal| proposal.id == feature.proposal_id)
+    else {
+        return Err(format!(
+            "proposal-promotion: feature '{}' references missing proposal '{}'",
+            feature_id, feature.proposal_id
+        ));
+    };
+
+    let mut promoted_features = features.to_vec();
+    let feature_idx = promoted_features
+        .iter()
+        .position(|entry| entry.id == feature_id)
+        .expect("promotion feature position");
+    promoted_features[feature_idx].status = AdaptiveFeatureStatus::Stable;
+
+    let mut promoted_proposals = proposals.to_vec();
+    let proposal_idx = promoted_proposals
+        .iter()
+        .position(|entry| entry.id == proposal.id)
+        .expect("promotion proposal position");
+    promoted_proposals[proposal_idx].status = AdaptiveFeatureStatus::Stable;
+
+    let governance_errors =
+        validate_adaptive_feature_governance_with(&promoted_features, &promoted_proposals);
+    if let Some(err) = governance_errors.first() {
+        return Err(format!(
+            "proposal-promotion: post-promotion governance validation failed: {}",
+            err
+        ));
+    }
+
+    let post_promotion =
+        adaptive_feature_promotion_readiness_with(&promoted_features, &promoted_proposals);
+    let promoted_entry = post_promotion
+        .iter()
+        .find(|entry| entry.feature_id == feature_id)
+        .expect("post-promotion feature readiness");
+    if promoted_entry.promotable_to_stable || promoted_entry.reason != "already stable" {
+        return Err(format!(
+            "proposal-promotion: post-promotion readiness validation failed for '{}'",
+            feature_id
+        ));
+    }
+
+    Ok(AdaptiveFeaturePromotionPlan {
+        feature_id: feature.id,
+        proposal_id: proposal.id,
+        normalized_proposal_title: format!("Stable @{} surface alias", feature.surface_form),
+        normalized_compatibility_risk:
+            "Low; the alias is stable and lowers to existing canonical semantics in all supported surface profiles."
+                .to_string(),
+        normalized_migration_plan: format!(
+            "No migration required; the alias is now stable and remains interchangeable with {}.",
+            feature.canonical_replacement
+        ),
+    })
 }
 
 fn validate_adaptive_feature_governance_with(
@@ -854,9 +955,10 @@ fn parse_lock_budget(attr: &RawAttr) -> Result<u64, String> {
 mod tests {
     use super::{
         AdaptiveFeatureProposal, AdaptiveFeatureStatus, AdaptiveLoweringRule,
-        AdaptiveSurfaceFeature, SurfaceProfile, adaptive_feature_promotion_readiness_with,
-        adaptive_feature_proposal, adaptive_feature_proposals, adaptive_surface_features,
-        lower_to_krir, lower_to_krir_with_surface, surface_profile_enables_feature,
+        AdaptiveSurfaceFeature, SurfaceProfile, adaptive_feature_promotion_plan_with,
+        adaptive_feature_promotion_readiness_with, adaptive_feature_proposal,
+        adaptive_feature_proposals, adaptive_surface_features, lower_to_krir,
+        lower_to_krir_with_surface, surface_profile_enables_feature,
         validate_adaptive_feature_governance, validate_adaptive_feature_governance_with,
     };
     use parser::parse_module;
@@ -1253,5 +1355,29 @@ mod tests {
         assert_eq!(readiness.len(), 1);
         assert!(!readiness[0].promotable_to_stable);
         assert_eq!(readiness[0].reason, "migration metadata incomplete");
+    }
+
+    #[test]
+    fn adaptive_feature_promotion_plan_normalizes_stable_proposal_text() {
+        let plan = adaptive_feature_promotion_plan_with(
+            adaptive_surface_features(),
+            adaptive_feature_proposals(),
+            "irq_handler_alias",
+        )
+        .expect("promotion plan");
+        assert_eq!(plan.feature_id, "irq_handler_alias");
+        assert_eq!(plan.proposal_id, "irq_handler_alias");
+        assert_eq!(
+            plan.normalized_proposal_title,
+            "Stable @irq_handler surface alias"
+        );
+        assert_eq!(
+            plan.normalized_compatibility_risk,
+            "Low; the alias is stable and lowers to existing canonical semantics in all supported surface profiles."
+        );
+        assert_eq!(
+            plan.normalized_migration_plan,
+            "No migration required; the alias is now stable and remains interchangeable with @ctx(irq)."
+        );
     }
 }

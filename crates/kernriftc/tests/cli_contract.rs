@@ -110,6 +110,19 @@ fn write_promotion_repo_fixture(feature_id: &str) -> PathBuf {
         proposal_dir.join(format!("{}.proposal.json", feature_id)),
     )
     .expect("copy proposal example");
+    let git = |args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .current_dir(&repo_dir)
+            .args(args)
+            .status()
+            .expect("run git");
+        assert!(status.success(), "git {:?} failed", args);
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.name", "KernRift Test"]);
+    git(&["config", "user.email", "kernrift@example.test"]);
+    git(&["add", "."]);
+    git(&["commit", "-m", "baseline"]);
     repo_dir
 }
 
@@ -929,7 +942,63 @@ fn proposals_promote_irq_handler_alias_updates_statuses_deterministically() {
     )
     .expect("read updated proposal");
     assert!(proposal_json.contains("  \"status\": \"stable\""));
+    assert!(proposal_json.contains("  \"title\": \"Stable @irq_handler surface alias\""));
+    assert!(proposal_json.contains("  \"compatibility_risk\": \"Low; the alias is stable and lowers to existing canonical semantics in all supported surface profiles.\""));
+    assert!(proposal_json.contains("  \"migration_plan\": \"No migration required; the alias is now stable and remains interchangeable with @ctx(irq).\""));
     assert!(!proposal_json.contains("  \"status\": \"experimental\""));
+}
+
+#[test]
+fn proposals_promote_dry_run_is_deterministic_and_non_mutating() {
+    let repo_dir = write_promotion_repo_fixture("irq_handler_alias");
+    let before_hir = fs::read_to_string(
+        repo_dir
+            .join("crates")
+            .join("hir")
+            .join("src")
+            .join("lib.rs"),
+    )
+    .expect("read baseline hir");
+    let before_proposal = fs::read_to_string(
+        repo_dir
+            .join("docs")
+            .join("design")
+            .join("examples")
+            .join("irq_handler_alias.proposal.json"),
+    )
+    .expect("read baseline proposal");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&repo_dir)
+        .arg("proposals")
+        .arg("--promote")
+        .arg("irq_handler_alias")
+        .arg("--dry-run");
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        vec!["proposal-promotion: dry-run promotion for feature 'irq_handler_alias' is valid"]
+    );
+
+    let after_hir = fs::read_to_string(
+        repo_dir
+            .join("crates")
+            .join("hir")
+            .join("src")
+            .join("lib.rs"),
+    )
+    .expect("read dry-run hir");
+    let after_proposal = fs::read_to_string(
+        repo_dir
+            .join("docs")
+            .join("design")
+            .join("examples")
+            .join("irq_handler_alias.proposal.json"),
+    )
+    .expect("read dry-run proposal");
+    assert_eq!(after_hir, before_hir);
+    assert_eq!(after_proposal, before_proposal);
 }
 
 #[test]
@@ -969,9 +1038,9 @@ fn proposals_promote_stable_feature_is_rejected_deterministically() {
 
 #[test]
 fn proposals_promote_unknown_feature_is_rejected_deterministically() {
-    let root = repo_root();
+    let repo_dir = write_promotion_repo_fixture("irq_handler_alias");
     let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
+    cmd.current_dir(&repo_dir)
         .arg("proposals")
         .arg("--promote")
         .arg("unknown_alias");
@@ -980,6 +1049,64 @@ fn proposals_promote_unknown_feature_is_rejected_deterministically() {
     assert_eq!(
         stderr.lines().next(),
         Some("proposal-promotion: unknown feature 'unknown_alias'")
+    );
+}
+
+#[test]
+fn proposals_promote_duplicate_dry_run_is_rejected_deterministically() {
+    let root = repo_root();
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("proposals")
+        .arg("--promote")
+        .arg("irq_handler_alias")
+        .arg("--dry-run")
+        .arg("--dry-run");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("invalid proposals mode: duplicate --dry-run")
+    );
+}
+
+#[test]
+fn proposals_promote_dirty_worktree_is_rejected_deterministically() {
+    let repo_dir = write_promotion_repo_fixture("irq_handler_alias");
+    fs::write(repo_dir.join("DIRTY.txt"), "dirty\n").expect("write dirty file");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&repo_dir)
+        .arg("proposals")
+        .arg("--promote")
+        .arg("irq_handler_alias");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("proposal-promotion: repository worktree is not clean")
+    );
+}
+
+#[test]
+fn proposals_promote_invalid_repo_root_is_rejected_deterministically() {
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let repo_dir = std::env::temp_dir().join(format!("kernrift-invalid-promotion-root-{}", ts));
+    fs::create_dir_all(&repo_dir).expect("create temp dir");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&repo_dir)
+        .arg("proposals")
+        .arg("--promote")
+        .arg("irq_handler_alias");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("proposal-promotion: current directory is not a KernRift repo root")
     );
 }
 

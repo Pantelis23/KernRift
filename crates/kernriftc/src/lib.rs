@@ -2,8 +2,9 @@ use std::path::Path;
 
 use hir::lower_to_krir_with_surface;
 pub use hir::{
-    AdaptiveFeaturePromotionReadiness, AdaptiveFeatureProposal, AdaptiveFeatureProposalSummary,
-    AdaptiveFeatureStatus, AdaptiveMigrationPreviewEntry, AdaptiveSurfaceFeature, SurfaceProfile,
+    AdaptiveFeaturePromotionPlan, AdaptiveFeaturePromotionReadiness, AdaptiveFeatureProposal,
+    AdaptiveFeatureProposalSummary, AdaptiveFeatureStatus, AdaptiveMigrationPreviewEntry,
+    AdaptiveSurfaceFeature, SurfaceProfile, adaptive_feature_promotion_plan,
     adaptive_feature_promotion_readiness, adaptive_feature_proposal,
     adaptive_feature_proposal_summaries, adaptive_feature_proposals, adaptive_surface_features,
     adaptive_surface_features_for_profile, adaptive_surface_migration_preview,
