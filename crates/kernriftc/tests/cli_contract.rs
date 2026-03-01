@@ -728,6 +728,88 @@ fn features_surface_unexpected_arg_is_rejected_deterministically() {
 }
 
 #[test]
+fn proposals_output_is_exact() {
+    let root = repo_root();
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("proposals");
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        vec![
+            "proposals: 4",
+            "features: 4",
+            "feature: irq_handler_alias",
+            "proposal_id: irq_handler_alias",
+            "status: experimental",
+            "surface_form: @irq_handler",
+            "lowering_target: @ctx(irq)",
+            "canonical_replacement: @ctx(irq)",
+            "feature: irq_legacy_alias",
+            "proposal_id: irq_legacy_alias",
+            "status: deprecated",
+            "surface_form: @irq_legacy",
+            "lowering_target: @ctx(irq)",
+            "canonical_replacement: @ctx(irq)",
+            "feature: may_block_alias",
+            "proposal_id: may_block_alias",
+            "status: experimental",
+            "surface_form: @may_block",
+            "lowering_target: @eff(block)",
+            "canonical_replacement: @eff(block)",
+            "feature: thread_entry_alias",
+            "proposal_id: thread_entry_alias",
+            "status: stable",
+            "surface_form: @thread_entry",
+            "lowering_target: @ctx(thread)",
+            "canonical_replacement: @ctx(thread)",
+        ]
+    );
+}
+
+#[test]
+fn proposals_validate_output_is_exact() {
+    let root = repo_root();
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("proposals").arg("--validate");
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        vec!["proposal-validation: OK"]
+    );
+}
+
+#[test]
+fn proposals_duplicate_validate_flag_is_rejected_deterministically() {
+    let root = repo_root();
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("proposals")
+        .arg("--validate")
+        .arg("--validate");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("invalid proposals mode: duplicate --validate")
+    );
+}
+
+#[test]
+fn proposals_unexpected_arg_is_rejected_deterministically() {
+    let root = repo_root();
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("proposals").arg("extra");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("invalid proposals mode: unexpected argument 'extra'")
+    );
+}
+
+#[test]
 fn migrate_preview_surface_stable_output_is_exact() {
     let root = repo_root();
     let fixture = root

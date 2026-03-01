@@ -13,9 +13,10 @@ use emit::{
 };
 use jsonschema::JSONSchema;
 use kernriftc::{
-    SurfaceProfile, adaptive_surface_features_for_profile, analyze, check_file,
-    check_file_with_surface, check_module, compile_file, compile_file_with_surface,
-    migrate_preview_file_with_surface,
+    SurfaceProfile, adaptive_feature_proposal_summaries, adaptive_surface_features_for_profile,
+    analyze, check_file, check_file_with_surface, check_module, compile_file,
+    compile_file_with_surface, migrate_preview_file_with_surface,
+    validate_adaptive_feature_governance,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -739,6 +740,11 @@ struct FeaturesArgs {
 }
 
 #[derive(Debug)]
+struct ProposalsArgs {
+    validate: bool,
+}
+
+#[derive(Debug)]
 struct MigratePreviewArgs {
     surface: SurfaceProfile,
     input_path: String,
@@ -972,6 +978,14 @@ fn main() -> ExitCode {
         },
         "features" => match parse_features_args(&args[2..]) {
             Ok(parsed) => run_features(parsed.surface),
+            Err(err) => {
+                eprintln!("{}", err);
+                print_usage();
+                ExitCode::from(EXIT_INVALID_INPUT)
+            }
+        },
+        "proposals" => match parse_proposals_args(&args[2..]) {
+            Ok(parsed) => run_proposals(&parsed),
             Err(err) => {
                 eprintln!("{}", err);
                 print_usage();
@@ -1374,6 +1388,28 @@ fn parse_migrate_preview_args(args: &[String]) -> Result<MigratePreviewArgs, Str
         surface,
         input_path,
     })
+}
+
+fn parse_proposals_args(args: &[String]) -> Result<ProposalsArgs, String> {
+    let mut validate = false;
+    for arg in args {
+        match arg.as_str() {
+            "--validate" => {
+                if validate {
+                    return Err("invalid proposals mode: duplicate --validate".to_string());
+                }
+                validate = true;
+            }
+            other => {
+                return Err(format!(
+                    "invalid proposals mode: unexpected argument '{}'",
+                    other
+                ));
+            }
+        }
+    }
+
+    Ok(ProposalsArgs { validate })
 }
 
 fn parse_verify_args(args: &[String]) -> Result<VerifyArgs, String> {
@@ -1995,6 +2031,36 @@ fn run_features(surface: SurfaceProfile) -> ExitCode {
         println!("migration_safe: {}", feature.migration_safe);
         println!("canonical_replacement: {}", feature.canonical_replacement);
         println!("rewrite_intent: {}", feature.rewrite_intent);
+    }
+    ExitCode::SUCCESS
+}
+
+fn run_proposals(args: &ProposalsArgs) -> ExitCode {
+    if args.validate {
+        let errors = validate_adaptive_feature_governance();
+        if errors.is_empty() {
+            println!("proposal-validation: OK");
+            return ExitCode::SUCCESS;
+        }
+        for err in errors {
+            println!("{}", err);
+        }
+        return ExitCode::from(1);
+    }
+
+    let proposals = adaptive_feature_proposal_summaries();
+    println!("proposals: {}", proposals.len());
+    println!("features: {}", proposals.len());
+    for summary in proposals {
+        println!("feature: {}", summary.feature.id);
+        println!("proposal_id: {}", summary.proposal.id);
+        println!("status: {}", summary.feature.status.as_str());
+        println!("surface_form: @{}", summary.feature.surface_form);
+        println!("lowering_target: {}", summary.feature.lowering_target);
+        println!(
+            "canonical_replacement: {}",
+            summary.feature.canonical_replacement
+        );
     }
     ExitCode::SUCCESS
 }
@@ -4321,6 +4387,8 @@ fn print_usage() {
     eprintln!("  kernriftc policy --evidence --policy <policy.toml> --contracts <contracts.json>");
     eprintln!("  kernriftc features --surface stable");
     eprintln!("  kernriftc features --surface experimental");
+    eprintln!("  kernriftc proposals");
+    eprintln!("  kernriftc proposals --validate");
     eprintln!("  kernriftc migrate-preview --surface stable <file.kr>");
     eprintln!("  kernriftc migrate-preview --surface experimental <file.kr>");
     eprintln!("  kernriftc inspect --contracts <contracts.json>");
