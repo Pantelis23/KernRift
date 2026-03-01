@@ -2,8 +2,95 @@ use std::collections::BTreeSet;
 
 use krir::{CallEdge, Ctx, Eff, Function, FunctionAttrs, KrirModule, KrirOp};
 use parser::{FnAst, ModuleAst, RawAttr, Stmt, split_csv};
+use serde::Serialize;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SurfaceProfile {
+    #[default]
+    Stable,
+    Experimental,
+}
+
+impl SurfaceProfile {
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        match raw {
+            "stable" => Ok(Self::Stable),
+            "experimental" => Ok(Self::Experimental),
+            other => Err(format!(
+                "invalid surface mode '{}', expected 'stable' or 'experimental'",
+                other
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdaptiveFeatureStatus {
+    Experimental,
+    Stable,
+    Deprecated,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct AdaptiveSurfaceFeature {
+    pub id: &'static str,
+    pub status: AdaptiveFeatureStatus,
+    pub lowering_target: &'static str,
+    pub safety_notes: &'static str,
+    pub migration_supported: bool,
+    pub surface_profile_gate: SurfaceProfile,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct AdaptiveFeatureProposal {
+    pub id: &'static str,
+    pub title: &'static str,
+    pub motivation: &'static str,
+    pub syntax_before: &'static str,
+    pub syntax_after: &'static str,
+    pub lowering_description: &'static str,
+    pub compatibility_risk: &'static str,
+    pub migration_plan: &'static str,
+    pub status: AdaptiveFeatureStatus,
+}
+
+const ADAPTIVE_SURFACE_FEATURES: [AdaptiveSurfaceFeature; 1] = [AdaptiveSurfaceFeature {
+    id: "irq_handler_alias",
+    status: AdaptiveFeatureStatus::Experimental,
+    lowering_target: "@ctx(irq)",
+    safety_notes: "Pure surface alias; lowers to the existing irq context declaration.",
+    migration_supported: true,
+    surface_profile_gate: SurfaceProfile::Experimental,
+}];
+
+pub fn adaptive_surface_features() -> &'static [AdaptiveSurfaceFeature] {
+    &ADAPTIVE_SURFACE_FEATURES
+}
+
+pub fn irq_handler_alias_proposal() -> AdaptiveFeatureProposal {
+    AdaptiveFeatureProposal {
+        id: "irq_handler_alias",
+        title: "Experimental @irq_handler surface alias",
+        motivation: "Provide a governed surface-only shorthand for irq-context entry points.",
+        syntax_before: "@ctx(irq) fn isr() { }",
+        syntax_after: "@irq_handler fn isr() { }",
+        lowering_description: "Lower @irq_handler to the existing canonical @ctx(irq) representation during HIR lowering.",
+        compatibility_risk: "Low; stable mode rejects the alias and experimental mode lowers to existing canonical semantics.",
+        migration_plan: "Keep the alias experimental until usage and diagnostics stabilize; projects can stay pinned to stable to avoid it.",
+        status: AdaptiveFeatureStatus::Experimental,
+    }
+}
 
 pub fn lower_to_krir(ast: &ModuleAst) -> Result<KrirModule, Vec<String>> {
+    lower_to_krir_with_surface(ast, SurfaceProfile::Stable)
+}
+
+pub fn lower_to_krir_with_surface(
+    ast: &ModuleAst,
+    surface_profile: SurfaceProfile,
+) -> Result<KrirModule, Vec<String>> {
     let mut errors = Vec::new();
     let mut functions = Vec::new();
     let mut names = BTreeSet::new();
@@ -15,7 +102,7 @@ pub fn lower_to_krir(ast: &ModuleAst) -> Result<KrirModule, Vec<String>> {
     }
 
     for item in &ast.items {
-        match lower_function(item) {
+        match lower_function(item, surface_profile) {
             Ok(function) => functions.push(function),
             Err(errs) => errors.extend(errs),
         }
@@ -57,7 +144,7 @@ pub fn lower_to_krir(ast: &ModuleAst) -> Result<KrirModule, Vec<String>> {
     Ok(module)
 }
 
-fn lower_function(item: &FnAst) -> Result<Function, Vec<String>> {
+fn lower_function(item: &FnAst, surface_profile: SurfaceProfile) -> Result<Function, Vec<String>> {
     let mut errors = Vec::new();
     let mut ctx_ok = BTreeSet::new();
     let mut eff_used = BTreeSet::new();
@@ -91,6 +178,18 @@ fn lower_function(item: &FnAst) -> Result<Function, Vec<String>> {
                 }
             }
             "irq" => {
+                saw_ctx = true;
+                ctx_ok.clear();
+                ctx_ok.insert(Ctx::Irq);
+            }
+            "irq_handler" => {
+                if surface_profile != SurfaceProfile::Experimental {
+                    errors.push(format!(
+                        "surface feature '@irq_handler' requires --surface experimental for '{}'",
+                        item.name
+                    ));
+                    continue;
+                }
                 saw_ctx = true;
                 ctx_ok.clear();
                 ctx_ok.insert(Ctx::Irq);
@@ -278,9 +377,13 @@ fn parse_lock_budget(attr: &RawAttr) -> Result<u64, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::lower_to_krir;
+    use super::{
+        SurfaceProfile, adaptive_surface_features, irq_handler_alias_proposal, lower_to_krir,
+        lower_to_krir_with_surface,
+    };
     use parser::parse_module;
     use proptest::prelude::*;
+    use serde_json::json;
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(128))]
@@ -300,5 +403,67 @@ mod tests {
                 prop_assert!(lowered.is_ok());
             }
         }
+    }
+
+    #[test]
+    fn irq_handler_alias_is_rejected_in_stable_surface() {
+        let ast = parse_module("@irq_handler fn isr() { }").expect("parse");
+        let errs = lower_to_krir_with_surface(&ast, SurfaceProfile::Stable)
+            .expect_err("stable surface must reject irq_handler");
+        assert_eq!(
+            errs,
+            vec!["surface feature '@irq_handler' requires --surface experimental for 'isr'"]
+        );
+    }
+
+    #[test]
+    fn irq_handler_alias_lowers_identically_to_ctx_irq_in_experimental_surface() {
+        let alias_ast = parse_module("@irq_handler fn isr() { }").expect("parse alias");
+        let canonical_ast = parse_module("@ctx(irq) fn isr() { }").expect("parse canonical");
+
+        let alias = lower_to_krir_with_surface(&alias_ast, SurfaceProfile::Experimental)
+            .expect("experimental alias lowering");
+        let canonical =
+            lower_to_krir_with_surface(&canonical_ast, SurfaceProfile::Stable).expect("lower");
+
+        assert_eq!(alias, canonical);
+    }
+
+    #[test]
+    fn adaptive_feature_registry_and_proposal_are_deterministic() {
+        assert_eq!(
+            serde_json::to_value(adaptive_surface_features()).expect("registry json"),
+            json!([{
+                "id": "irq_handler_alias",
+                "status": "experimental",
+                "lowering_target": "@ctx(irq)",
+                "safety_notes": "Pure surface alias; lowers to the existing irq context declaration.",
+                "migration_supported": true,
+                "surface_profile_gate": "experimental"
+            }])
+        );
+
+        assert_eq!(
+            serde_json::to_value(irq_handler_alias_proposal()).expect("proposal json"),
+            json!({
+                "id": "irq_handler_alias",
+                "title": "Experimental @irq_handler surface alias",
+                "motivation": "Provide a governed surface-only shorthand for irq-context entry points.",
+                "syntax_before": "@ctx(irq) fn isr() { }",
+                "syntax_after": "@irq_handler fn isr() { }",
+                "lowering_description": "Lower @irq_handler to the existing canonical @ctx(irq) representation during HIR lowering.",
+                "compatibility_risk": "Low; stable mode rejects the alias and experimental mode lowers to existing canonical semantics.",
+                "migration_plan": "Keep the alias experimental until usage and diagnostics stabilize; projects can stay pinned to stable to avoid it.",
+                "status": "experimental"
+            })
+        );
+    }
+
+    #[test]
+    fn proposal_example_file_matches_serialized_proposal() {
+        let expected =
+            include_str!("../../../docs/design/examples/irq_handler_alias.proposal.json");
+        let actual = serde_json::to_string_pretty(&irq_handler_alias_proposal()).expect("proposal");
+        assert_eq!(actual.trim_end(), expected.trim_end());
     }
 }

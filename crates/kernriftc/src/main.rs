@@ -12,7 +12,10 @@ use emit::{
     emit_contracts_json_with_schema, emit_krir_json, emit_lockgraph_json, emit_report_json,
 };
 use jsonschema::JSONSchema;
-use kernriftc::{analyze, check_file, check_module, compile_file};
+use kernriftc::{
+    SurfaceProfile, analyze, check_file, check_file_with_surface, check_module, compile_file,
+    compile_file_with_surface,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -739,6 +742,7 @@ impl PartialOrd for PolicyViolation {
 #[derive(Debug)]
 struct CheckArgs {
     path: String,
+    surface: SurfaceProfile,
     profile: Option<CheckProfile>,
     contracts_schema: Option<ContractsSchemaArg>,
     contracts_out: Option<String>,
@@ -995,6 +999,8 @@ fn main() -> ExitCode {
 }
 
 fn parse_check_args(args: &[String]) -> Result<CheckArgs, String> {
+    let mut surface = SurfaceProfile::Stable;
+    let mut saw_surface = false;
     let mut profile = None::<CheckProfile>;
     let mut contracts_schema = None::<ContractsSchemaArg>;
     let mut contracts_out = None::<String>;
@@ -1007,6 +1013,18 @@ fn parse_check_args(args: &[String]) -> Result<CheckArgs, String> {
     let mut idx = 0usize;
     while idx < args.len() {
         match args[idx].as_str() {
+            "--surface" => {
+                if saw_surface {
+                    return Err("invalid check mode: duplicate --surface".to_string());
+                }
+                let Some(value) = args.get(idx + 1) else {
+                    return Err("invalid check mode: --surface requires a value".to_string());
+                };
+                surface = SurfaceProfile::parse(value)
+                    .map_err(|err| format!("invalid check mode: {}", err))?;
+                saw_surface = true;
+                idx += 2;
+            }
             "--profile" => {
                 if profile.is_some() {
                     return Err("invalid check mode: duplicate --profile".to_string());
@@ -1106,6 +1124,7 @@ fn parse_check_args(args: &[String]) -> Result<CheckArgs, String> {
 
     Ok(CheckArgs {
         path: positionals.remove(0),
+        surface,
         profile,
         contracts_schema,
         contracts_out,
@@ -1338,7 +1357,7 @@ fn run_check(args: &CheckArgs) -> ExitCode {
         && args.sign_key_path.is_none()
         && args.sig_out.is_none()
     {
-        return match check_file(Path::new(&args.path)) {
+        return match check_file_with_surface(Path::new(&args.path), args.surface) {
             Ok(()) => ExitCode::SUCCESS,
             Err(errs) => {
                 print_errors(&errs);
@@ -1347,7 +1366,7 @@ fn run_check(args: &CheckArgs) -> ExitCode {
         };
     }
 
-    let module = match compile_file(Path::new(&args.path)) {
+    let module = match compile_file_with_surface(Path::new(&args.path), args.surface) {
         Ok(module) => module,
         Err(errs) => {
             print_errors(&errs);
@@ -4122,6 +4141,8 @@ fn print_usage() {
     eprintln!("usage:");
     eprintln!("  kernriftc --version");
     eprintln!("  kernriftc check <file.kr>");
+    eprintln!("  kernriftc check --surface stable <file.kr>");
+    eprintln!("  kernriftc check --surface experimental <file.kr>");
     eprintln!("  kernriftc check --profile kernel <file.kr>");
     eprintln!("  kernriftc check --contracts-schema v2 <file.kr>");
     eprintln!("  kernriftc check --profile kernel --contracts-schema v2 <file.kr>");
