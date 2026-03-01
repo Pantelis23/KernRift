@@ -1,0 +1,2 @@
+@irq_legacy
+fn legacy_isr() { }
