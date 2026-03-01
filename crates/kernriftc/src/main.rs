@@ -15,6 +15,7 @@ use jsonschema::JSONSchema;
 use kernriftc::{
     SurfaceProfile, adaptive_surface_features_for_profile, analyze, check_file,
     check_file_with_surface, check_module, compile_file, compile_file_with_surface,
+    migrate_preview_file_with_surface,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -737,6 +738,12 @@ struct FeaturesArgs {
     surface: SurfaceProfile,
 }
 
+#[derive(Debug)]
+struct MigratePreviewArgs {
+    surface: SurfaceProfile,
+    input_path: String,
+}
+
 impl PartialOrd for PolicyViolation {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
@@ -965,6 +972,14 @@ fn main() -> ExitCode {
         },
         "features" => match parse_features_args(&args[2..]) {
             Ok(parsed) => run_features(parsed.surface),
+            Err(err) => {
+                eprintln!("{}", err);
+                print_usage();
+                ExitCode::from(EXIT_INVALID_INPUT)
+            }
+        },
+        "migrate-preview" => match parse_migrate_preview_args(&args[2..]) {
+            Ok(parsed) => run_migrate_preview(&parsed),
             Err(err) => {
                 eprintln!("{}", err);
                 print_usage();
@@ -1306,6 +1321,59 @@ fn parse_features_args(args: &[String]) -> Result<FeaturesArgs, String> {
     };
 
     Ok(FeaturesArgs { surface })
+}
+
+fn parse_migrate_preview_args(args: &[String]) -> Result<MigratePreviewArgs, String> {
+    let mut surface = None::<SurfaceProfile>;
+    let mut input_path = None::<String>;
+    let mut idx = 0usize;
+    while idx < args.len() {
+        match args[idx].as_str() {
+            "--surface" => {
+                if surface.is_some() {
+                    return Err("invalid migrate-preview mode: duplicate --surface".to_string());
+                }
+                idx += 1;
+                if idx >= args.len() {
+                    return Err(
+                        "invalid migrate-preview mode: --surface requires a value".to_string()
+                    );
+                }
+                surface = Some(
+                    SurfaceProfile::parse(&args[idx])
+                        .map_err(|err| format!("invalid migrate-preview mode: {}", err))?,
+                );
+            }
+            other if other.starts_with('-') => {
+                return Err(format!(
+                    "invalid migrate-preview mode: unexpected argument '{}'",
+                    other
+                ));
+            }
+            other => {
+                if input_path.is_some() {
+                    return Err(format!(
+                        "invalid migrate-preview mode: unexpected argument '{}'",
+                        other
+                    ));
+                }
+                input_path = Some(other.to_string());
+            }
+        }
+        idx += 1;
+    }
+
+    let Some(surface) = surface else {
+        return Err("invalid migrate-preview mode: missing --surface".to_string());
+    };
+    let Some(input_path) = input_path else {
+        return Err("invalid migrate-preview mode: missing input file".to_string());
+    };
+
+    Ok(MigratePreviewArgs {
+        surface,
+        input_path,
+    })
 }
 
 fn parse_verify_args(args: &[String]) -> Result<VerifyArgs, String> {
@@ -1927,6 +1995,34 @@ fn run_features(surface: SurfaceProfile) -> ExitCode {
         println!("migration_safe: {}", feature.migration_safe);
         println!("canonical_replacement: {}", feature.canonical_replacement);
         println!("rewrite_intent: {}", feature.rewrite_intent);
+    }
+    ExitCode::SUCCESS
+}
+
+fn run_migrate_preview(args: &MigratePreviewArgs) -> ExitCode {
+    let entries = match migrate_preview_file_with_surface(Path::new(&args.input_path), args.surface)
+    {
+        Ok(entries) => entries,
+        Err(errs) => {
+            print_errors(&errs);
+            return ExitCode::from(1);
+        }
+    };
+
+    println!("surface: {}", args.surface.as_str());
+    println!("migrations: {}", entries.len());
+    for entry in entries {
+        println!("function: {}", entry.function_name);
+        println!("surface_form: @{}", entry.feature.surface_form);
+        println!("feature: {}", entry.feature.id);
+        println!("status: {}", entry.feature.status.as_str());
+        println!("enabled_under_surface: {}", entry.enabled_under_surface);
+        println!(
+            "canonical_replacement: {}",
+            entry.feature.canonical_replacement
+        );
+        println!("migration_safe: {}", entry.feature.migration_safe);
+        println!("rewrite_intent: {}", entry.feature.rewrite_intent);
     }
     ExitCode::SUCCESS
 }
@@ -4225,6 +4321,8 @@ fn print_usage() {
     eprintln!("  kernriftc policy --evidence --policy <policy.toml> --contracts <contracts.json>");
     eprintln!("  kernriftc features --surface stable");
     eprintln!("  kernriftc features --surface experimental");
+    eprintln!("  kernriftc migrate-preview --surface stable <file.kr>");
+    eprintln!("  kernriftc migrate-preview --surface experimental <file.kr>");
     eprintln!("  kernriftc inspect --contracts <contracts.json>");
     eprintln!("  kernriftc inspect-report --report <verify-report.json>");
     eprintln!("  kernriftc verify --contracts <contracts.json> --hash <contracts.sha256>");

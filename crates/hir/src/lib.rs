@@ -81,6 +81,13 @@ pub struct AdaptiveFeatureProposal {
     pub status: AdaptiveFeatureStatus,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdaptiveMigrationPreviewEntry {
+    pub function_name: String,
+    pub feature: &'static AdaptiveSurfaceFeature,
+    pub enabled_under_surface: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AdaptiveLoweringRule {
     ContextAlias(&'static [Ctx]),
@@ -163,6 +170,39 @@ pub fn adaptive_surface_features_for_profile(
         .collect::<Vec<_>>();
     features.sort_by(|a, b| a.id.cmp(b.id));
     features
+}
+
+pub fn adaptive_surface_migration_preview(
+    ast: &ModuleAst,
+    surface_profile: SurfaceProfile,
+) -> Vec<AdaptiveMigrationPreviewEntry> {
+    let mut entries = Vec::new();
+
+    for item in &ast.items {
+        for (ordinal, attr) in item.attrs.iter().enumerate() {
+            if let Some(feature) = adaptive_surface_feature(&attr.name) {
+                entries.push((
+                    item.name.clone(),
+                    feature,
+                    surface_profile_enables_feature(surface_profile, feature),
+                    ordinal,
+                ));
+            }
+        }
+    }
+
+    entries.sort_by(|a, b| (a.0.as_str(), a.1.id, a.3).cmp(&(b.0.as_str(), b.1.id, b.3)));
+
+    entries
+        .into_iter()
+        .map(
+            |(function_name, feature, enabled_under_surface, _)| AdaptiveMigrationPreviewEntry {
+                function_name,
+                feature,
+                enabled_under_surface,
+            },
+        )
+        .collect()
 }
 
 const ADAPTIVE_FEATURE_PROPOSALS: [AdaptiveFeatureProposal; 4] = [
