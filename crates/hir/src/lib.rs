@@ -66,7 +66,7 @@ enum AdaptiveLoweringRule {
     EffectAlias(&'static [Eff]),
 }
 
-const ADAPTIVE_SURFACE_FEATURES: [AdaptiveSurfaceFeature; 3] = [
+const ADAPTIVE_SURFACE_FEATURES: [AdaptiveSurfaceFeature; 4] = [
     AdaptiveSurfaceFeature {
         id: "irq_handler_alias",
         surface_form: "irq_handler",
@@ -100,6 +100,17 @@ const ADAPTIVE_SURFACE_FEATURES: [AdaptiveSurfaceFeature; 3] = [
         surface_profile_gate: SurfaceProfile::Experimental,
         lowering_rule: AdaptiveLoweringRule::EffectAlias(&[Eff::Block]),
     },
+    AdaptiveSurfaceFeature {
+        id: "irq_legacy_alias",
+        surface_form: "irq_legacy",
+        status: AdaptiveFeatureStatus::Deprecated,
+        lowering_target: "@ctx(irq)",
+        safety_notes: "Deprecated surface alias kept only to prove centralized lifecycle gating.",
+        migration_supported: true,
+        migration_note: "Replace with @ctx(irq) or @irq_handler depending on the chosen profile policy.",
+        surface_profile_gate: SurfaceProfile::Stable,
+        lowering_rule: AdaptiveLoweringRule::ContextAlias(&[Ctx::Irq]),
+    },
 ];
 
 pub fn adaptive_surface_features() -> &'static [AdaptiveSurfaceFeature] {
@@ -121,6 +132,37 @@ fn surface_profile_enables_feature(
         SurfaceProfile::Experimental => matches!(
             feature.status,
             AdaptiveFeatureStatus::Stable | AdaptiveFeatureStatus::Experimental
+        ),
+    }
+}
+
+fn feature_unavailability_error(
+    surface_profile: SurfaceProfile,
+    feature: &AdaptiveSurfaceFeature,
+    function_name: &str,
+) -> String {
+    match feature.status {
+        AdaptiveFeatureStatus::Experimental => format!(
+            "surface feature '@{}' requires --surface experimental for '{}'",
+            feature.surface_form, function_name
+        ),
+        AdaptiveFeatureStatus::Deprecated => format!(
+            "surface feature '@{}' is deprecated and unavailable under --surface {} for '{}'",
+            feature.surface_form,
+            match surface_profile {
+                SurfaceProfile::Stable => "stable",
+                SurfaceProfile::Experimental => "experimental",
+            },
+            function_name
+        ),
+        AdaptiveFeatureStatus::Stable => format!(
+            "surface feature '@{}' is unavailable under --surface {} for '{}'",
+            feature.surface_form,
+            match surface_profile {
+                SurfaceProfile::Stable => "stable",
+                SurfaceProfile::Experimental => "experimental",
+            },
+            function_name
         ),
     }
 }
@@ -268,9 +310,10 @@ fn lower_function(item: &FnAst, surface_profile: SurfaceProfile) -> Result<Funct
             other => {
                 if let Some(feature) = adaptive_surface_feature(other) {
                     if !surface_profile_enables_feature(surface_profile, feature) {
-                        errors.push(format!(
-                            "surface feature '@{}' requires --surface experimental for '{}'",
-                            feature.surface_form, item.name
+                        errors.push(feature_unavailability_error(
+                            surface_profile,
+                            feature,
+                            &item.name,
                         ));
                         continue;
                     }
@@ -531,6 +574,28 @@ mod tests {
     }
 
     #[test]
+    fn deprecated_adaptive_alias_is_rejected_in_all_profiles() {
+        let ast = parse_module("@irq_legacy fn legacy_isr() { }").expect("parse");
+        let stable_errs = lower_to_krir_with_surface(&ast, SurfaceProfile::Stable)
+            .expect_err("stable must reject deprecated alias");
+        let experimental_errs = lower_to_krir_with_surface(&ast, SurfaceProfile::Experimental)
+            .expect_err("experimental must reject deprecated alias");
+
+        assert_eq!(
+            stable_errs,
+            vec![
+                "surface feature '@irq_legacy' is deprecated and unavailable under --surface stable for 'legacy_isr'"
+            ]
+        );
+        assert_eq!(
+            experimental_errs,
+            vec![
+                "surface feature '@irq_legacy' is deprecated and unavailable under --surface experimental for 'legacy_isr'"
+            ]
+        );
+    }
+
+    #[test]
     fn adaptive_feature_registry_and_proposal_are_deterministic() {
         assert_eq!(
             serde_json::to_value(adaptive_surface_features()).expect("registry json"),
@@ -564,6 +629,16 @@ mod tests {
                     "migration_supported": true,
                     "migration_note": "Replace with @eff(block) when pinning code back to stable.",
                     "surface_profile_gate": "experimental"
+                },
+                {
+                    "id": "irq_legacy_alias",
+                    "surface_form": "irq_legacy",
+                    "status": "deprecated",
+                    "lowering_target": "@ctx(irq)",
+                    "safety_notes": "Deprecated surface alias kept only to prove centralized lifecycle gating.",
+                    "migration_supported": true,
+                    "migration_note": "Replace with @ctx(irq) or @irq_handler depending on the chosen profile policy.",
+                    "surface_profile_gate": "stable"
                 }
             ])
         );
@@ -596,11 +671,22 @@ mod tests {
         assert!(
             features
                 .iter()
+                .filter(|feature| matches!(feature.status, AdaptiveFeatureStatus::Experimental))
                 .all(|feature| surface_profile_enables_feature(
                     SurfaceProfile::Experimental,
                     feature
                 )),
-            "experimental must enable all current adaptive features"
+            "experimental must enable experimental features"
+        );
+        assert!(
+            features
+                .iter()
+                .filter(|feature| matches!(feature.status, AdaptiveFeatureStatus::Deprecated))
+                .all(|feature| !surface_profile_enables_feature(
+                    SurfaceProfile::Experimental,
+                    feature
+                )),
+            "experimental must not enable deprecated features by default"
         );
 
         let stable_feature = super::AdaptiveSurfaceFeature {

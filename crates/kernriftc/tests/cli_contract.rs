@@ -542,6 +542,54 @@ fn check_surface_experimental_accepts_may_block_alias() {
 }
 
 #[test]
+fn check_surface_stable_rejects_deprecated_irq_legacy_alias() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("living_compiler")
+        .join("irq_legacy_alias.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--surface")
+        .arg("stable")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec![
+            "surface feature '@irq_legacy' is deprecated and unavailable under --surface stable for 'legacy_isr'"
+        ]
+    );
+}
+
+#[test]
+fn check_surface_experimental_rejects_deprecated_irq_legacy_alias() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("living_compiler")
+        .join("irq_legacy_alias.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--surface")
+        .arg("experimental")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec![
+            "surface feature '@irq_legacy' is deprecated and unavailable under --surface experimental for 'legacy_isr'"
+        ]
+    );
+}
+
+#[test]
 fn check_yield_hidden_two_levels_exits_nonzero_with_lockgraph_message() {
     let root = repo_root();
     let fixture = root
