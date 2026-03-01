@@ -88,6 +88,12 @@ pub struct AdaptiveMigrationPreviewEntry {
     pub enabled_under_surface: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdaptiveFeatureProposalSummary {
+    pub feature: &'static AdaptiveSurfaceFeature,
+    pub proposal: &'static AdaptiveFeatureProposal,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AdaptiveLoweringRule {
     ContextAlias(&'static [Ctx]),
@@ -205,6 +211,18 @@ pub fn adaptive_surface_migration_preview(
         .collect()
 }
 
+pub fn adaptive_feature_proposal_summaries() -> Vec<AdaptiveFeatureProposalSummary> {
+    let mut summaries = ADAPTIVE_SURFACE_FEATURES
+        .iter()
+        .map(|feature| AdaptiveFeatureProposalSummary {
+            feature,
+            proposal: adaptive_feature_proposal(feature.id).expect("feature proposal"),
+        })
+        .collect::<Vec<_>>();
+    summaries.sort_by(|a, b| a.feature.id.cmp(b.feature.id));
+    summaries
+}
+
 const ADAPTIVE_FEATURE_PROPOSALS: [AdaptiveFeatureProposal; 4] = [
     AdaptiveFeatureProposal {
         id: "irq_handler_alias",
@@ -263,6 +281,120 @@ pub fn adaptive_feature_proposal(feature_id: &str) -> Option<&'static AdaptiveFe
     ADAPTIVE_FEATURE_PROPOSALS
         .iter()
         .find(|proposal| proposal.id == feature.proposal_id)
+}
+
+pub fn validate_adaptive_feature_governance() -> Vec<String> {
+    validate_adaptive_feature_governance_with(
+        &ADAPTIVE_SURFACE_FEATURES,
+        &ADAPTIVE_FEATURE_PROPOSALS,
+    )
+}
+
+fn validate_adaptive_feature_governance_with(
+    features: &[AdaptiveSurfaceFeature],
+    proposals: &[AdaptiveFeatureProposal],
+) -> Vec<String> {
+    let mut errors = Vec::new();
+
+    for feature in features {
+        let Some(proposal) = proposals
+            .iter()
+            .find(|proposal| proposal.id == feature.proposal_id)
+        else {
+            errors.push(format!(
+                "proposal-validation: feature '{}' references missing proposal '{}'",
+                feature.id, feature.proposal_id
+            ));
+            continue;
+        };
+
+        if feature.status != proposal.status {
+            errors.push(format!(
+                "proposal-validation: feature '{}' status mismatch with proposal",
+                feature.id
+            ));
+        }
+
+        if !proposal
+            .syntax_after
+            .contains(&format!("@{}", feature.surface_form))
+        {
+            errors.push(format!(
+                "proposal-validation: feature '{}' syntax_after mismatch for surface form '@{}'",
+                feature.id, feature.surface_form
+            ));
+        }
+
+        if !proposal.syntax_before.contains(feature.lowering_target) {
+            errors.push(format!(
+                "proposal-validation: feature '{}' syntax_before mismatch for lowering target '{}'",
+                feature.id, feature.lowering_target
+            ));
+        }
+
+        if !proposal
+            .lowering_description
+            .contains(feature.lowering_target)
+        {
+            errors.push(format!(
+                "proposal-validation: feature '{}' lowering description mismatch for '{}'",
+                feature.id, feature.lowering_target
+            ));
+        }
+
+        if !feature
+            .rewrite_intent
+            .contains(feature.canonical_replacement)
+        {
+            errors.push(format!(
+                "proposal-validation: feature '{}' rewrite intent mismatch for canonical replacement '{}'",
+                feature.id, feature.canonical_replacement
+            ));
+        }
+
+        match feature.status {
+            AdaptiveFeatureStatus::Stable => {
+                if !surface_profile_enables_feature(SurfaceProfile::Stable, feature) {
+                    errors.push(format!(
+                        "proposal-validation: stable feature '{}' is not enabled under stable",
+                        feature.id
+                    ));
+                }
+            }
+            AdaptiveFeatureStatus::Deprecated => {
+                if surface_profile_enables_feature(SurfaceProfile::Stable, feature)
+                    || surface_profile_enables_feature(SurfaceProfile::Experimental, feature)
+                {
+                    errors.push(format!(
+                        "proposal-validation: deprecated feature '{}' must be disabled under all profiles",
+                        feature.id
+                    ));
+                }
+            }
+            AdaptiveFeatureStatus::Experimental => {}
+        }
+    }
+
+    for proposal in proposals {
+        let references = features
+            .iter()
+            .filter(|feature| feature.proposal_id == proposal.id)
+            .count();
+        if references == 0 {
+            errors.push(format!(
+                "proposal-validation: proposal '{}' is unreferenced",
+                proposal.id
+            ));
+        } else if references > 1 {
+            errors.push(format!(
+                "proposal-validation: proposal '{}' is referenced {} times",
+                proposal.id, references
+            ));
+        }
+    }
+
+    errors.sort();
+    errors
 }
 
 fn adaptive_surface_feature(attr_name: &str) -> Option<&'static AdaptiveSurfaceFeature> {
@@ -624,9 +756,11 @@ fn parse_lock_budget(attr: &RawAttr) -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AdaptiveFeatureStatus, SurfaceProfile, adaptive_feature_proposal,
+        AdaptiveFeatureProposal, AdaptiveFeatureStatus, AdaptiveLoweringRule,
+        AdaptiveSurfaceFeature, SurfaceProfile, adaptive_feature_proposal,
         adaptive_feature_proposals, adaptive_surface_features, lower_to_krir,
         lower_to_krir_with_surface, surface_profile_enables_feature,
+        validate_adaptive_feature_governance, validate_adaptive_feature_governance_with,
     };
     use parser::parse_module;
     use proptest::prelude::*;
@@ -947,5 +1081,45 @@ mod tests {
                 "proposal file drifted"
             );
         }
+    }
+
+    #[test]
+    fn adaptive_feature_governance_validation_is_deterministic() {
+        assert!(validate_adaptive_feature_governance().is_empty());
+
+        let bad_features = [AdaptiveSurfaceFeature {
+            id: "broken_alias",
+            proposal_id: "missing_alias_proposal",
+            surface_form: "broken",
+            status: AdaptiveFeatureStatus::Stable,
+            lowering_target: "@ctx(thread)",
+            safety_notes: "test-only",
+            migration_supported: true,
+            migration_note: "test-only",
+            canonical_replacement: "@ctx(thread)",
+            migration_safe: true,
+            rewrite_intent: "Replace the attribute token `@broken` with `@ctx(thread)`.",
+            surface_profile_gate: SurfaceProfile::Stable,
+            lowering_rule: AdaptiveLoweringRule::ContextAlias(&[super::Ctx::Thread]),
+        }];
+        let bad_proposals = [AdaptiveFeatureProposal {
+            id: "shared_proposal",
+            title: "Broken proposal",
+            motivation: "test-only",
+            syntax_before: "@ctx(thread) fn worker() { }",
+            syntax_after: "@other_alias fn worker() { }",
+            lowering_description: "Lower to a mismatched target.",
+            compatibility_risk: "test-only",
+            migration_plan: "test-only",
+            status: AdaptiveFeatureStatus::Experimental,
+        }];
+
+        assert_eq!(
+            validate_adaptive_feature_governance_with(&bad_features, &bad_proposals),
+            vec![
+                "proposal-validation: feature 'broken_alias' references missing proposal 'missing_alias_proposal'",
+                "proposal-validation: proposal 'shared_proposal' is unreferenced",
+            ]
+        );
     }
 }

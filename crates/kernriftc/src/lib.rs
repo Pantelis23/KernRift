@@ -2,10 +2,12 @@ use std::path::Path;
 
 use hir::lower_to_krir_with_surface;
 pub use hir::{
-    AdaptiveFeatureProposal, AdaptiveFeatureStatus, AdaptiveMigrationPreviewEntry,
-    AdaptiveSurfaceFeature, SurfaceProfile, adaptive_feature_proposal, adaptive_feature_proposals,
+    AdaptiveFeatureProposal, AdaptiveFeatureProposalSummary, AdaptiveFeatureStatus,
+    AdaptiveMigrationPreviewEntry, AdaptiveSurfaceFeature, SurfaceProfile,
+    adaptive_feature_proposal, adaptive_feature_proposal_summaries, adaptive_feature_proposals,
     adaptive_surface_features, adaptive_surface_features_for_profile,
     adaptive_surface_migration_preview, irq_handler_alias_proposal,
+    validate_adaptive_feature_governance,
 };
 use krir::KrirModule;
 use parser::parse_module;
