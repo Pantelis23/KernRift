@@ -931,6 +931,9 @@ fn proposals_promote_irq_handler_alias_updates_statuses_deterministically() {
         "irq_handler_alias",
     );
     assert!(proposal_entry.contains("status: AdaptiveFeatureStatus::Stable,"));
+    assert!(proposal_entry.contains("title: \"Stable @irq_handler surface alias\","));
+    assert!(proposal_entry.contains("compatibility_risk: \"Low; the alias is stable and lowers to existing canonical semantics in all supported surface profiles.\","));
+    assert!(proposal_entry.contains("migration_plan: \"No migration required; the alias is now stable and remains interchangeable with @ctx(irq).\","));
     assert!(!proposal_entry.contains("status: AdaptiveFeatureStatus::Experimental,"));
 
     let proposal_json = fs::read_to_string(

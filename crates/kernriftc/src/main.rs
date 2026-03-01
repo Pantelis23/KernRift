@@ -2304,12 +2304,13 @@ fn promote_status_in_hir_source(
         plan.feature_id,
         plan.feature_id,
     )?;
-    promote_status_in_rust_entry(
+    let src = promote_status_in_rust_entry(
         &src,
         "const ADAPTIVE_FEATURE_PROPOSALS:",
         plan.proposal_id,
         plan.feature_id,
-    )
+    )?;
+    normalize_proposal_text_in_hir_source(&src, plan)
 }
 
 fn promote_status_in_rust_entry(
@@ -2350,6 +2351,82 @@ fn promote_status_in_rust_entry(
     out.push_str(&src[..entry_start]);
     out.push_str(&replaced);
     out.push_str(&src[entry_end..]);
+    Ok(out)
+}
+
+fn normalize_proposal_text_in_hir_source(
+    src: &str,
+    plan: &AdaptiveFeaturePromotionPlan,
+) -> Result<String, String> {
+    let section_marker = "const ADAPTIVE_FEATURE_PROPOSALS:";
+    let section_start = src.find(section_marker).ok_or_else(|| {
+        format!(
+            "proposal-promotion: failed to locate '{}' in crates/hir/src/lib.rs",
+            section_marker
+        )
+    })?;
+    let id_marker = format!("        id: \"{}\",", plan.proposal_id);
+    let relative_entry_start = src[section_start..].find(&id_marker).ok_or_else(|| {
+        format!(
+            "proposal-promotion: failed to locate entry '{}'",
+            plan.proposal_id
+        )
+    })?;
+    let entry_start = section_start + relative_entry_start;
+    let relative_entry_end = src[entry_start..].find("    },").ok_or_else(|| {
+        format!(
+            "proposal-promotion: failed to locate end of entry '{}'",
+            plan.proposal_id
+        )
+    })?;
+    let entry_end = entry_start + relative_entry_end;
+    let entry = &src[entry_start..entry_end];
+
+    let normalized = replace_rust_string_field(entry, "title", &plan.normalized_proposal_title)?;
+    let normalized = replace_rust_string_field(
+        &normalized,
+        "compatibility_risk",
+        &plan.normalized_compatibility_risk,
+    )?;
+    let normalized = replace_rust_string_field(
+        &normalized,
+        "migration_plan",
+        &plan.normalized_migration_plan,
+    )?;
+
+    let mut out = String::with_capacity(src.len() - entry.len() + normalized.len());
+    out.push_str(&src[..entry_start]);
+    out.push_str(&normalized);
+    out.push_str(&src[entry_end..]);
+    Ok(out)
+}
+
+fn replace_rust_string_field(
+    src: &str,
+    field_name: &str,
+    new_value: &str,
+) -> Result<String, String> {
+    let field_marker = format!("        {}: \"", field_name);
+    let field_start = src.find(&field_marker).ok_or_else(|| {
+        format!(
+            "proposal-promotion: failed to locate field '{}' in proposal entry",
+            field_name
+        )
+    })?;
+    let value_start = field_start + field_marker.len();
+    let value_end = src[value_start..]
+        .find("\",")
+        .map(|idx| value_start + idx)
+        .ok_or_else(|| {
+            format!(
+                "proposal-promotion: failed to locate end of field '{}' in proposal entry",
+                field_name
+            )
+        })?;
+    let mut out = String::with_capacity(src.len() - (value_end - value_start) + new_value.len());
+    out.push_str(&src[..value_start]);
+    out.push_str(new_value);
+    out.push_str(&src[value_end..]);
     Ok(out)
 }
 
@@ -2475,7 +2552,17 @@ fn validate_written_promotion_files(
         "const ADAPTIVE_FEATURE_PROPOSALS:",
         plan.proposal_id,
     )?;
-    if !proposal_entry.contains("status: AdaptiveFeatureStatus::Stable,") {
+    if !proposal_entry.contains("status: AdaptiveFeatureStatus::Stable,")
+        || !proposal_entry.contains(&format!("title: \"{}\",", plan.normalized_proposal_title))
+        || !proposal_entry.contains(&format!(
+            "compatibility_risk: \"{}\",",
+            plan.normalized_compatibility_risk
+        ))
+        || !proposal_entry.contains(&format!(
+            "migration_plan: \"{}\",",
+            plan.normalized_migration_plan
+        ))
+    {
         return Err(format!(
             "proposal-promotion: validation failed for proposal '{}'",
             plan.proposal_id
