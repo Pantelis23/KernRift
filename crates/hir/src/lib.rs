@@ -36,11 +36,15 @@ pub enum AdaptiveFeatureStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct AdaptiveSurfaceFeature {
     pub id: &'static str,
+    pub surface_form: &'static str,
     pub status: AdaptiveFeatureStatus,
     pub lowering_target: &'static str,
     pub safety_notes: &'static str,
     pub migration_supported: bool,
+    pub migration_note: &'static str,
     pub surface_profile_gate: SurfaceProfile,
+    #[serde(skip_serializing)]
+    lowering_rule: AdaptiveLoweringRule,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -56,17 +60,56 @@ pub struct AdaptiveFeatureProposal {
     pub status: AdaptiveFeatureStatus,
 }
 
-const ADAPTIVE_SURFACE_FEATURES: [AdaptiveSurfaceFeature; 1] = [AdaptiveSurfaceFeature {
-    id: "irq_handler_alias",
-    status: AdaptiveFeatureStatus::Experimental,
-    lowering_target: "@ctx(irq)",
-    safety_notes: "Pure surface alias; lowers to the existing irq context declaration.",
-    migration_supported: true,
-    surface_profile_gate: SurfaceProfile::Experimental,
-}];
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AdaptiveLoweringRule {
+    ContextAlias(&'static [Ctx]),
+    EffectAlias(&'static [Eff]),
+}
+
+const ADAPTIVE_SURFACE_FEATURES: [AdaptiveSurfaceFeature; 3] = [
+    AdaptiveSurfaceFeature {
+        id: "irq_handler_alias",
+        surface_form: "irq_handler",
+        status: AdaptiveFeatureStatus::Experimental,
+        lowering_target: "@ctx(irq)",
+        safety_notes: "Pure surface alias; lowers to the existing irq context declaration.",
+        migration_supported: true,
+        migration_note: "Replace with @ctx(irq) when pinning code back to stable.",
+        surface_profile_gate: SurfaceProfile::Experimental,
+        lowering_rule: AdaptiveLoweringRule::ContextAlias(&[Ctx::Irq]),
+    },
+    AdaptiveSurfaceFeature {
+        id: "thread_entry_alias",
+        surface_form: "thread_entry",
+        status: AdaptiveFeatureStatus::Experimental,
+        lowering_target: "@ctx(thread)",
+        safety_notes: "Pure surface alias; lowers to the existing thread context declaration.",
+        migration_supported: true,
+        migration_note: "Replace with @ctx(thread) when pinning code back to stable.",
+        surface_profile_gate: SurfaceProfile::Experimental,
+        lowering_rule: AdaptiveLoweringRule::ContextAlias(&[Ctx::Thread]),
+    },
+    AdaptiveSurfaceFeature {
+        id: "may_block_alias",
+        surface_form: "may_block",
+        status: AdaptiveFeatureStatus::Experimental,
+        lowering_target: "@eff(block)",
+        safety_notes: "Pure surface alias; lowers to the existing block effect declaration.",
+        migration_supported: true,
+        migration_note: "Replace with @eff(block) when pinning code back to stable.",
+        surface_profile_gate: SurfaceProfile::Experimental,
+        lowering_rule: AdaptiveLoweringRule::EffectAlias(&[Eff::Block]),
+    },
+];
 
 pub fn adaptive_surface_features() -> &'static [AdaptiveSurfaceFeature] {
     &ADAPTIVE_SURFACE_FEATURES
+}
+
+fn adaptive_surface_feature(attr_name: &str) -> Option<&'static AdaptiveSurfaceFeature> {
+    ADAPTIVE_SURFACE_FEATURES
+        .iter()
+        .find(|feature| feature.surface_form == attr_name)
 }
 
 pub fn irq_handler_alias_proposal() -> AdaptiveFeatureProposal {
@@ -182,18 +225,6 @@ fn lower_function(item: &FnAst, surface_profile: SurfaceProfile) -> Result<Funct
                 ctx_ok.clear();
                 ctx_ok.insert(Ctx::Irq);
             }
-            "irq_handler" => {
-                if surface_profile != SurfaceProfile::Experimental {
-                    errors.push(format!(
-                        "surface feature '@irq_handler' requires --surface experimental for '{}'",
-                        item.name
-                    ));
-                    continue;
-                }
-                saw_ctx = true;
-                ctx_ok.clear();
-                ctx_ok.insert(Ctx::Irq);
-            }
             "noirq" => {
                 saw_ctx = true;
                 ctx_ok.clear();
@@ -222,10 +253,31 @@ fn lower_function(item: &FnAst, surface_profile: SurfaceProfile) -> Result<Funct
             },
             "module_caps" => {}
             other => {
-                errors.push(format!(
-                    "unknown attribute '@{}' on function '{}'",
-                    other, item.name
-                ));
+                if let Some(feature) = adaptive_surface_feature(other) {
+                    if surface_profile != feature.surface_profile_gate {
+                        errors.push(format!(
+                            "surface feature '@{}' requires --surface experimental for '{}'",
+                            feature.surface_form, item.name
+                        ));
+                        continue;
+                    }
+                    match feature.lowering_rule {
+                        AdaptiveLoweringRule::ContextAlias(ctxs) => {
+                            saw_ctx = true;
+                            ctx_ok.clear();
+                            ctx_ok.extend(ctxs.iter().copied());
+                        }
+                        AdaptiveLoweringRule::EffectAlias(effs) => {
+                            saw_eff = true;
+                            eff_used.extend(effs.iter().copied());
+                        }
+                    }
+                } else {
+                    errors.push(format!(
+                        "unknown attribute '@{}' on function '{}'",
+                        other, item.name
+                    ));
+                }
             }
         }
     }
@@ -417,30 +469,89 @@ mod tests {
     }
 
     #[test]
-    fn irq_handler_alias_lowers_identically_to_ctx_irq_in_experimental_surface() {
-        let alias_ast = parse_module("@irq_handler fn isr() { }").expect("parse alias");
-        let canonical_ast = parse_module("@ctx(irq) fn isr() { }").expect("parse canonical");
+    fn adaptive_surface_aliases_lower_identically_to_canonical_forms() {
+        let cases = [
+            ("@irq_handler fn isr() { }", "@ctx(irq) fn isr() { }"),
+            (
+                "@thread_entry fn worker() { }",
+                "@ctx(thread) fn worker() { }",
+            ),
+            ("@may_block fn worker() { }", "@eff(block) fn worker() { }"),
+        ];
 
-        let alias = lower_to_krir_with_surface(&alias_ast, SurfaceProfile::Experimental)
-            .expect("experimental alias lowering");
-        let canonical =
-            lower_to_krir_with_surface(&canonical_ast, SurfaceProfile::Stable).expect("lower");
+        for (alias_src, canonical_src) in cases {
+            let alias_ast = parse_module(alias_src).expect("parse alias");
+            let canonical_ast = parse_module(canonical_src).expect("parse canonical");
+            let alias = lower_to_krir_with_surface(&alias_ast, SurfaceProfile::Experimental)
+                .expect("experimental alias lowering");
+            let canonical =
+                lower_to_krir_with_surface(&canonical_ast, SurfaceProfile::Stable).expect("lower");
+            assert_eq!(alias, canonical, "alias '{}' drifted", alias_src);
+        }
+    }
 
-        assert_eq!(alias, canonical);
+    #[test]
+    fn additional_adaptive_aliases_are_rejected_in_stable_surface() {
+        let cases = [
+            (
+                "@thread_entry fn worker() { }",
+                "surface feature '@thread_entry' requires --surface experimental for 'worker'",
+            ),
+            (
+                "@may_block fn worker() { }",
+                "surface feature '@may_block' requires --surface experimental for 'worker'",
+            ),
+        ];
+
+        for (src, expected) in cases {
+            let ast = parse_module(src).expect("parse");
+            let errs = lower_to_krir_with_surface(&ast, SurfaceProfile::Stable)
+                .expect_err("stable surface must reject alias");
+            assert_eq!(
+                errs,
+                vec![expected],
+                "stable rejection drifted for '{}'",
+                src
+            );
+        }
     }
 
     #[test]
     fn adaptive_feature_registry_and_proposal_are_deterministic() {
         assert_eq!(
             serde_json::to_value(adaptive_surface_features()).expect("registry json"),
-            json!([{
-                "id": "irq_handler_alias",
-                "status": "experimental",
-                "lowering_target": "@ctx(irq)",
-                "safety_notes": "Pure surface alias; lowers to the existing irq context declaration.",
-                "migration_supported": true,
-                "surface_profile_gate": "experimental"
-            }])
+            json!([
+                {
+                    "id": "irq_handler_alias",
+                    "surface_form": "irq_handler",
+                    "status": "experimental",
+                    "lowering_target": "@ctx(irq)",
+                    "safety_notes": "Pure surface alias; lowers to the existing irq context declaration.",
+                    "migration_supported": true,
+                    "migration_note": "Replace with @ctx(irq) when pinning code back to stable.",
+                    "surface_profile_gate": "experimental"
+                },
+                {
+                    "id": "thread_entry_alias",
+                    "surface_form": "thread_entry",
+                    "status": "experimental",
+                    "lowering_target": "@ctx(thread)",
+                    "safety_notes": "Pure surface alias; lowers to the existing thread context declaration.",
+                    "migration_supported": true,
+                    "migration_note": "Replace with @ctx(thread) when pinning code back to stable.",
+                    "surface_profile_gate": "experimental"
+                },
+                {
+                    "id": "may_block_alias",
+                    "surface_form": "may_block",
+                    "status": "experimental",
+                    "lowering_target": "@eff(block)",
+                    "safety_notes": "Pure surface alias; lowers to the existing block effect declaration.",
+                    "migration_supported": true,
+                    "migration_note": "Replace with @eff(block) when pinning code back to stable.",
+                    "surface_profile_gate": "experimental"
+                }
+            ])
         );
 
         assert_eq!(

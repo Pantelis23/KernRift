@@ -464,6 +464,84 @@ fn check_surface_invalid_value_is_rejected_deterministically() {
 }
 
 #[test]
+fn check_surface_stable_rejects_thread_entry_alias() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("living_compiler")
+        .join("thread_entry_alias.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--surface")
+        .arg("stable")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec!["surface feature '@thread_entry' requires --surface experimental for 'worker'"]
+    );
+}
+
+#[test]
+fn check_surface_experimental_accepts_thread_entry_alias() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("living_compiler")
+        .join("thread_entry_alias.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--surface")
+        .arg("experimental")
+        .arg(fixture.as_os_str());
+    cmd.assert().success();
+}
+
+#[test]
+fn check_surface_stable_rejects_may_block_alias() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("living_compiler")
+        .join("may_block_alias.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--surface")
+        .arg("stable")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec!["surface feature '@may_block' requires --surface experimental for 'worker'"]
+    );
+}
+
+#[test]
+fn check_surface_experimental_accepts_may_block_alias() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("living_compiler")
+        .join("may_block_alias.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--surface")
+        .arg("experimental")
+        .arg(fixture.as_os_str());
+    cmd.assert().success();
+}
+
+#[test]
 fn check_yield_hidden_two_levels_exits_nonzero_with_lockgraph_message() {
     let root = repo_root();
     let fixture = root
