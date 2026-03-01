@@ -1,20 +1,38 @@
 use std::path::Path;
 
-use hir::lower_to_krir;
+use hir::lower_to_krir_with_surface;
+pub use hir::{
+    AdaptiveFeatureProposal, AdaptiveFeatureStatus, AdaptiveSurfaceFeature, SurfaceProfile,
+    adaptive_surface_features, irq_handler_alias_proposal,
+};
 use krir::KrirModule;
 use parser::parse_module;
 pub use passes::{AnalysisReport, NoYieldSpan};
 use passes::{CheckError, analyze_module, run_checks};
 
 pub fn compile_source(src: &str) -> Result<KrirModule, Vec<String>> {
+    compile_source_with_surface(src, SurfaceProfile::Stable)
+}
+
+pub fn compile_source_with_surface(
+    src: &str,
+    surface_profile: SurfaceProfile,
+) -> Result<KrirModule, Vec<String>> {
     let ast = parse_module(src)?;
-    lower_to_krir(&ast)
+    lower_to_krir_with_surface(&ast, surface_profile)
 }
 
 pub fn compile_file(path: &Path) -> Result<KrirModule, Vec<String>> {
+    compile_file_with_surface(path, SurfaceProfile::Stable)
+}
+
+pub fn compile_file_with_surface(
+    path: &Path,
+    surface_profile: SurfaceProfile,
+) -> Result<KrirModule, Vec<String>> {
     let src = std::fs::read_to_string(path)
         .map_err(|e| vec![format!("failed to read '{}': {}", path.display(), e)])?;
-    compile_source(&src)
+    compile_source_with_surface(&src, surface_profile)
 }
 
 pub fn check_module(module: &KrirModule) -> Result<(), Vec<String>> {
@@ -22,7 +40,14 @@ pub fn check_module(module: &KrirModule) -> Result<(), Vec<String>> {
 }
 
 pub fn check_file(path: &Path) -> Result<(), Vec<String>> {
-    let module = compile_file(path)?;
+    check_file_with_surface(path, SurfaceProfile::Stable)
+}
+
+pub fn check_file_with_surface(
+    path: &Path,
+    surface_profile: SurfaceProfile,
+) -> Result<(), Vec<String>> {
+    let module = compile_file_with_surface(path, surface_profile)?;
     check_module(&module)
 }
 

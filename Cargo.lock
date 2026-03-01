@@ -582,6 +582,8 @@ dependencies = [
  "krir",
  "parser",
  "proptest",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

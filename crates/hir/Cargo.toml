@@ -8,6 +8,8 @@ authors.workspace = true
 [dependencies]
 parser = { path = "../parser" }
 krir = { path = "../krir" }
+serde.workspace = true
 
 [dev-dependencies]
 proptest = "1"
+serde_json.workspace = true
