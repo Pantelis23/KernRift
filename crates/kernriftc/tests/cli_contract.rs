@@ -102,14 +102,19 @@ fn write_promotion_repo_fixture(feature_id: &str) -> PathBuf {
         hir_dir.join("lib.rs"),
     )
     .expect("copy hir lib");
-    fs::copy(
-        root.join("docs")
-            .join("design")
-            .join("examples")
-            .join(format!("{}.proposal.json", feature_id)),
-        proposal_dir.join(format!("{}.proposal.json", feature_id)),
-    )
-    .expect("copy proposal example");
+    for entry in
+        fs::read_dir(root.join("docs").join("design").join("examples")).expect("read proposal dir")
+    {
+        let entry = entry.expect("proposal dir entry");
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+            fs::copy(
+                &path,
+                proposal_dir.join(path.file_name().expect("proposal file name")),
+            )
+            .expect("copy proposal example");
+        }
+    }
     let git = |args: &[&str]| {
         let status = std::process::Command::new("git")
             .current_dir(&repo_dir)
@@ -126,12 +131,50 @@ fn write_promotion_repo_fixture(feature_id: &str) -> PathBuf {
     repo_dir
 }
 
+fn git_commit_all(repo_dir: &Path, message: &str) {
+    let git = |args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .current_dir(repo_dir)
+            .args(args)
+            .status()
+            .expect("run git");
+        assert!(status.success(), "git {:?} failed", args);
+    };
+    git(&["add", "."]);
+    git(&["commit", "-m", message]);
+}
+
+fn replace_once_in_file(path: &Path, from: &str, to: &str) {
+    let src = fs::read_to_string(path).expect("read file");
+    assert!(src.contains(from), "missing pattern '{}'", from);
+    let updated = src.replacen(from, to, 1);
+    fs::write(path, updated).expect("write file");
+}
+
 fn hir_entry_slice(src: &str, section_marker: &str, entry_id: &str) -> String {
     let section_start = src.find(section_marker).expect("section marker");
     let id_marker = format!("        id: \"{}\",", entry_id);
     let entry_start = section_start + src[section_start..].find(&id_marker).expect("entry");
     let entry_end = entry_start + src[entry_start..].find("    },").expect("entry end");
     src[entry_start..entry_end].to_string()
+}
+
+fn replace_in_hir_entry(path: &Path, section_marker: &str, entry_id: &str, from: &str, to: &str) {
+    let src = fs::read_to_string(path).expect("read hir file");
+    let section_start = src.find(section_marker).expect("section marker");
+    let id_marker = format!("        id: \"{}\",", entry_id);
+    let relative_entry_start = src[section_start..].find(&id_marker).expect("entry");
+    let entry_start = section_start + relative_entry_start;
+    let relative_entry_end = src[entry_start..].find("    },").expect("entry end");
+    let entry_end = entry_start + relative_entry_end;
+    let entry = &src[entry_start..entry_end];
+    assert!(entry.contains(from), "missing pattern '{}'", from);
+    let replaced = entry.replacen(from, to, 1);
+    let mut out = String::with_capacity(src.len() - entry.len() + replaced.len());
+    out.push_str(&src[..entry_start]);
+    out.push_str(&replaced);
+    out.push_str(&src[entry_end..]);
+    fs::write(path, out).expect("write hir file");
 }
 
 #[test]
@@ -1110,6 +1153,283 @@ fn proposals_promote_invalid_repo_root_is_rejected_deterministically() {
     assert_eq!(
         stderr.lines().next(),
         Some("proposal-promotion: current directory is not a KernRift repo root")
+    );
+}
+
+#[test]
+fn proposals_promote_missing_feature_entry_is_rejected_deterministically() {
+    let repo_dir = write_promotion_repo_fixture("irq_handler_alias");
+    let hir_path = repo_dir
+        .join("crates")
+        .join("hir")
+        .join("src")
+        .join("lib.rs");
+    replace_in_hir_entry(
+        &hir_path,
+        "const ADAPTIVE_SURFACE_FEATURES:",
+        "irq_handler_alias",
+        "id: \"irq_handler_alias\",",
+        "id: \"irq_handler_alias_missing\",",
+    );
+    git_commit_all(&repo_dir, "remove feature entry identity");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&repo_dir)
+        .arg("proposals")
+        .arg("--promote")
+        .arg("irq_handler_alias");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("proposal-promotion: target repo missing feature 'irq_handler_alias'")
+    );
+}
+
+#[test]
+fn proposals_promote_missing_hir_proposal_entry_is_rejected_deterministically() {
+    let repo_dir = write_promotion_repo_fixture("irq_handler_alias");
+    let hir_path = repo_dir
+        .join("crates")
+        .join("hir")
+        .join("src")
+        .join("lib.rs");
+    replace_in_hir_entry(
+        &hir_path,
+        "const ADAPTIVE_SURFACE_FEATURES:",
+        "irq_handler_alias",
+        "proposal_id: \"irq_handler_alias\",",
+        "proposal_id: \"missing_alias\",",
+    );
+    git_commit_all(&repo_dir, "remove linked proposal entry");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&repo_dir)
+        .arg("proposals")
+        .arg("--promote")
+        .arg("irq_handler_alias");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("proposal-promotion: target repo missing proposal 'missing_alias'")
+    );
+}
+
+#[test]
+fn proposals_promote_missing_json_proposal_is_rejected_deterministically() {
+    let repo_dir = write_promotion_repo_fixture("irq_handler_alias");
+    fs::remove_file(
+        repo_dir
+            .join("docs")
+            .join("design")
+            .join("examples")
+            .join("irq_handler_alias.proposal.json"),
+    )
+    .expect("remove proposal json");
+    git_commit_all(&repo_dir, "remove json proposal");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&repo_dir)
+        .arg("proposals")
+        .arg("--promote")
+        .arg("irq_handler_alias");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("proposal-promotion: target repo missing proposal 'irq_handler_alias'")
+    );
+}
+
+#[test]
+fn proposals_promote_proposal_linkage_drift_is_rejected_deterministically() {
+    let repo_dir = write_promotion_repo_fixture("irq_handler_alias");
+    let hir_path = repo_dir
+        .join("crates")
+        .join("hir")
+        .join("src")
+        .join("lib.rs");
+    replace_in_hir_entry(
+        &hir_path,
+        "const ADAPTIVE_SURFACE_FEATURES:",
+        "irq_handler_alias",
+        "proposal_id: \"irq_handler_alias\",",
+        "proposal_id: \"may_block_alias\",",
+    );
+    git_commit_all(&repo_dir, "drift proposal linkage");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&repo_dir)
+        .arg("proposals")
+        .arg("--promote")
+        .arg("irq_handler_alias");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some(
+            "proposal-promotion: target repo feature 'irq_handler_alias' proposal linkage mismatch"
+        )
+    );
+}
+
+#[test]
+fn proposals_promote_canonical_replacement_drift_is_rejected_deterministically() {
+    let repo_dir = write_promotion_repo_fixture("irq_handler_alias");
+    let hir_path = repo_dir
+        .join("crates")
+        .join("hir")
+        .join("src")
+        .join("lib.rs");
+    replace_in_hir_entry(
+        &hir_path,
+        "const ADAPTIVE_SURFACE_FEATURES:",
+        "irq_handler_alias",
+        "canonical_replacement: \"@ctx(irq)\",",
+        "canonical_replacement: \"@ctx(thread)\",",
+    );
+    git_commit_all(&repo_dir, "drift canonical replacement");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&repo_dir)
+        .arg("proposals")
+        .arg("--promote")
+        .arg("irq_handler_alias");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some(
+            "proposal-promotion: target repo feature 'irq_handler_alias' canonical replacement mismatch"
+        )
+    );
+}
+
+#[test]
+fn proposals_promote_feature_status_drift_is_rejected_deterministically() {
+    let repo_dir = write_promotion_repo_fixture("irq_handler_alias");
+    let hir_path = repo_dir
+        .join("crates")
+        .join("hir")
+        .join("src")
+        .join("lib.rs");
+    replace_in_hir_entry(
+        &hir_path,
+        "const ADAPTIVE_SURFACE_FEATURES:",
+        "irq_handler_alias",
+        "status: AdaptiveFeatureStatus::Experimental,",
+        "status: AdaptiveFeatureStatus::Stable,",
+    );
+    git_commit_all(&repo_dir, "drift feature status");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&repo_dir)
+        .arg("proposals")
+        .arg("--promote")
+        .arg("irq_handler_alias");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some(
+            "proposal-promotion: binary/repo disagreement for feature 'irq_handler_alias' current status"
+        )
+    );
+}
+
+#[test]
+fn proposals_promote_hir_proposal_status_drift_is_rejected_deterministically() {
+    let repo_dir = write_promotion_repo_fixture("irq_handler_alias");
+    let hir_path = repo_dir
+        .join("crates")
+        .join("hir")
+        .join("src")
+        .join("lib.rs");
+    replace_in_hir_entry(
+        &hir_path,
+        "const ADAPTIVE_FEATURE_PROPOSALS:",
+        "irq_handler_alias",
+        "status: AdaptiveFeatureStatus::Experimental,",
+        "status: AdaptiveFeatureStatus::Stable,",
+    );
+    git_commit_all(&repo_dir, "drift proposal status in hir");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&repo_dir)
+        .arg("proposals")
+        .arg("--promote")
+        .arg("irq_handler_alias");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some(
+            "proposal-promotion: target repo proposal 'irq_handler_alias' status mismatch between HIR and JSON"
+        )
+    );
+}
+
+#[test]
+fn proposals_promote_json_proposal_status_drift_is_rejected_deterministically() {
+    let repo_dir = write_promotion_repo_fixture("irq_handler_alias");
+    let json_path = repo_dir
+        .join("docs")
+        .join("design")
+        .join("examples")
+        .join("irq_handler_alias.proposal.json");
+    replace_once_in_file(
+        &json_path,
+        "\"status\": \"experimental\"",
+        "\"status\": \"stable\"",
+    );
+    git_commit_all(&repo_dir, "drift proposal status in json");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&repo_dir)
+        .arg("proposals")
+        .arg("--promote")
+        .arg("irq_handler_alias");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some(
+            "proposal-promotion: target repo proposal 'irq_handler_alias' status mismatch between HIR and JSON"
+        )
+    );
+}
+
+#[test]
+fn proposals_promote_dry_run_fails_on_repo_drift_deterministically() {
+    let repo_dir = write_promotion_repo_fixture("irq_handler_alias");
+    let hir_path = repo_dir
+        .join("crates")
+        .join("hir")
+        .join("src")
+        .join("lib.rs");
+    replace_in_hir_entry(
+        &hir_path,
+        "const ADAPTIVE_SURFACE_FEATURES:",
+        "irq_handler_alias",
+        "canonical_replacement: \"@ctx(irq)\",",
+        "canonical_replacement: \"@ctx(thread)\",",
+    );
+    git_commit_all(&repo_dir, "drift canonical replacement for dry run");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&repo_dir)
+        .arg("proposals")
+        .arg("--promote")
+        .arg("irq_handler_alias")
+        .arg("--dry-run");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some(
+            "proposal-promotion: target repo feature 'irq_handler_alias' canonical replacement mismatch"
+        )
     );
 }
 

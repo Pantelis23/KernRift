@@ -762,6 +762,39 @@ struct PromotionFileUpdate {
 }
 
 #[derive(Debug)]
+struct CompiledPromotionState {
+    feature_id: &'static str,
+    proposal_id: &'static str,
+    feature_status: &'static str,
+    proposal_status: &'static str,
+    canonical_replacement: &'static str,
+}
+
+#[derive(Debug)]
+struct RepoFeatureState {
+    feature_id: String,
+    proposal_id: String,
+    status: String,
+    canonical_replacement: String,
+}
+
+#[derive(Debug)]
+struct RepoProposalState {
+    id: String,
+    status: String,
+    title: String,
+    compatibility_risk: String,
+    migration_plan: String,
+}
+
+#[derive(Debug)]
+struct RepoPromotionState {
+    feature: RepoFeatureState,
+    proposal_hir: RepoProposalState,
+    proposal_json: RepoProposalState,
+}
+
+#[derive(Debug)]
 struct MigratePreviewArgs {
     surface: SurfaceProfile,
     input_path: String,
@@ -2181,6 +2214,9 @@ fn apply_adaptive_feature_promotion(
     ensure_clean_governance_worktree(repo_root)?;
 
     let plan = adaptive_feature_promotion_plan(feature_id)?;
+    let compiled_state = compiled_promotion_state(feature_id)?;
+    let repo_state = load_repo_promotion_state(repo_root, feature_id)?;
+    validate_repo_promotion_state(&compiled_state, &repo_state)?;
     let paths = promotion_target_files(repo_root, &plan);
     let updates = build_promotion_target_updates(&paths, &plan)?;
 
@@ -2201,6 +2237,20 @@ fn apply_adaptive_feature_promotion(
         "proposal-promotion: promoted feature '{}' to stable",
         feature_id
     ))
+}
+
+fn compiled_promotion_state(feature_id: &str) -> Result<CompiledPromotionState, String> {
+    let summary = adaptive_feature_proposal_summaries()
+        .into_iter()
+        .find(|summary| summary.feature.id == feature_id)
+        .ok_or_else(|| format!("proposal-promotion: unknown feature '{}'", feature_id))?;
+    Ok(CompiledPromotionState {
+        feature_id: summary.feature.id,
+        proposal_id: summary.feature.proposal_id,
+        feature_status: summary.feature.status.as_str(),
+        proposal_status: summary.proposal.status.as_str(),
+        canonical_replacement: summary.feature.canonical_replacement,
+    })
 }
 
 fn validate_governance_repo_root(repo_root: &Path) -> Result<(), String> {
@@ -2256,6 +2306,268 @@ fn promotion_target_files(
             .join("examples")
             .join(format!("{}.proposal.json", plan.proposal_id)),
     }
+}
+
+fn load_repo_promotion_state(
+    repo_root: &Path,
+    feature_id: &str,
+) -> Result<RepoPromotionState, String> {
+    let hir_path = repo_root
+        .join("crates")
+        .join("hir")
+        .join("src")
+        .join("lib.rs");
+    let hir_src = fs::read_to_string(&hir_path).map_err(|err| {
+        format!(
+            "proposal-promotion: failed to read '{}': {}",
+            hir_path.display(),
+            err
+        )
+    })?;
+
+    let feature_entry = extract_hir_entry(&hir_src, "const ADAPTIVE_SURFACE_FEATURES:", feature_id)
+        .map_err(|_| {
+            format!(
+                "proposal-promotion: target repo missing feature '{}'",
+                feature_id
+            )
+        })?;
+    let feature = RepoFeatureState {
+        feature_id: extract_rust_string_field(&feature_entry, "id").map_err(|_| {
+            format!(
+                "proposal-promotion: target repo missing feature '{}'",
+                feature_id
+            )
+        })?,
+        proposal_id: extract_rust_string_field(&feature_entry, "proposal_id").map_err(|_| {
+            format!(
+                "proposal-promotion: target repo missing feature '{}'",
+                feature_id
+            )
+        })?,
+        status: extract_rust_status_field(&feature_entry).map_err(|_| {
+            format!(
+                "proposal-promotion: target repo missing feature '{}'",
+                feature_id
+            )
+        })?,
+        canonical_replacement: extract_rust_string_field(&feature_entry, "canonical_replacement")
+            .map_err(|_| {
+            format!(
+                "proposal-promotion: target repo missing feature '{}'",
+                feature_id
+            )
+        })?,
+    };
+
+    let proposal_entry = extract_hir_entry(
+        &hir_src,
+        "const ADAPTIVE_FEATURE_PROPOSALS:",
+        &feature.proposal_id,
+    )
+    .map_err(|_| {
+        format!(
+            "proposal-promotion: target repo missing proposal '{}'",
+            feature.proposal_id
+        )
+    })?;
+    let proposal_hir = RepoProposalState {
+        id: extract_rust_string_field(&proposal_entry, "id").map_err(|_| {
+            format!(
+                "proposal-promotion: target repo missing proposal '{}'",
+                feature.proposal_id
+            )
+        })?,
+        status: extract_rust_status_field(&proposal_entry).map_err(|_| {
+            format!(
+                "proposal-promotion: target repo missing proposal '{}'",
+                feature.proposal_id
+            )
+        })?,
+        title: extract_rust_string_field(&proposal_entry, "title").map_err(|_| {
+            format!(
+                "proposal-promotion: target repo missing proposal '{}'",
+                feature.proposal_id
+            )
+        })?,
+        compatibility_risk: extract_rust_string_field(&proposal_entry, "compatibility_risk")
+            .map_err(|_| {
+                format!(
+                    "proposal-promotion: target repo missing proposal '{}'",
+                    feature.proposal_id
+                )
+            })?,
+        migration_plan: extract_rust_string_field(&proposal_entry, "migration_plan").map_err(
+            |_| {
+                format!(
+                    "proposal-promotion: target repo missing proposal '{}'",
+                    feature.proposal_id
+                )
+            },
+        )?,
+    };
+
+    let proposal_json_path = repo_root
+        .join("docs")
+        .join("design")
+        .join("examples")
+        .join(format!("{}.proposal.json", feature.proposal_id));
+    let proposal_json_text = fs::read_to_string(&proposal_json_path).map_err(|_| {
+        format!(
+            "proposal-promotion: target repo missing proposal '{}'",
+            feature.proposal_id
+        )
+    })?;
+    let proposal_json_value: Value = serde_json::from_str(&proposal_json_text).map_err(|err| {
+        format!(
+            "proposal-promotion: failed to parse proposal JSON '{}': {}",
+            proposal_json_path.display(),
+            err
+        )
+    })?;
+    let proposal_json_obj = proposal_json_value.as_object().ok_or_else(|| {
+        format!(
+            "proposal-promotion: failed to parse proposal JSON '{}': expected object",
+            proposal_json_path.display()
+        )
+    })?;
+    let proposal_json = RepoProposalState {
+        id: proposal_json_obj
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                format!(
+                    "proposal-promotion: target repo missing proposal '{}'",
+                    feature.proposal_id
+                )
+            })?
+            .to_string(),
+        status: proposal_json_obj
+            .get("status")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                format!(
+                    "proposal-promotion: target repo missing proposal '{}'",
+                    feature.proposal_id
+                )
+            })?
+            .to_string(),
+        title: proposal_json_obj
+            .get("title")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                format!(
+                    "proposal-promotion: target repo missing proposal '{}'",
+                    feature.proposal_id
+                )
+            })?
+            .to_string(),
+        compatibility_risk: proposal_json_obj
+            .get("compatibility_risk")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                format!(
+                    "proposal-promotion: target repo missing proposal '{}'",
+                    feature.proposal_id
+                )
+            })?
+            .to_string(),
+        migration_plan: proposal_json_obj
+            .get("migration_plan")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                format!(
+                    "proposal-promotion: target repo missing proposal '{}'",
+                    feature.proposal_id
+                )
+            })?
+            .to_string(),
+    };
+
+    Ok(RepoPromotionState {
+        feature,
+        proposal_hir,
+        proposal_json,
+    })
+}
+
+fn validate_repo_promotion_state(
+    compiled: &CompiledPromotionState,
+    repo: &RepoPromotionState,
+) -> Result<(), String> {
+    if repo.feature.feature_id != compiled.feature_id {
+        return Err(format!(
+            "proposal-promotion: target repo missing feature '{}'",
+            compiled.feature_id
+        ));
+    }
+    if repo.feature.proposal_id != compiled.proposal_id {
+        return Err(format!(
+            "proposal-promotion: target repo feature '{}' proposal linkage mismatch",
+            compiled.feature_id
+        ));
+    }
+    if repo.feature.canonical_replacement != compiled.canonical_replacement {
+        return Err(format!(
+            "proposal-promotion: target repo feature '{}' canonical replacement mismatch",
+            compiled.feature_id
+        ));
+    }
+    if repo.proposal_hir.id != repo.proposal_json.id {
+        return Err(format!(
+            "proposal-promotion: target repo proposal '{}' id mismatch between HIR and JSON",
+            compiled.proposal_id
+        ));
+    }
+    if repo.proposal_hir.title != repo.proposal_json.title {
+        return Err(format!(
+            "proposal-promotion: target repo proposal '{}' title mismatch between HIR and JSON",
+            compiled.proposal_id
+        ));
+    }
+    if repo.proposal_hir.compatibility_risk != repo.proposal_json.compatibility_risk {
+        return Err(format!(
+            "proposal-promotion: target repo proposal '{}' compatibility text mismatch between HIR and JSON",
+            compiled.proposal_id
+        ));
+    }
+    if repo.proposal_hir.migration_plan != repo.proposal_json.migration_plan {
+        return Err(format!(
+            "proposal-promotion: target repo proposal '{}' migration text mismatch between HIR and JSON",
+            compiled.proposal_id
+        ));
+    }
+    if repo.proposal_hir.status != repo.proposal_json.status {
+        return Err(format!(
+            "proposal-promotion: target repo proposal '{}' status mismatch between HIR and JSON",
+            compiled.proposal_id
+        ));
+    }
+    if repo.feature.status != compiled.feature_status {
+        return Err(format!(
+            "proposal-promotion: binary/repo disagreement for feature '{}' current status",
+            compiled.feature_id
+        ));
+    }
+    if repo.proposal_hir.status != compiled.proposal_status {
+        return Err(format!(
+            "proposal-promotion: binary/repo disagreement for proposal '{}' current status",
+            compiled.proposal_id
+        ));
+    }
+    if repo.feature.status != "experimental" {
+        return Err(format!(
+            "proposal-promotion: target repo feature '{}' is not experimental",
+            compiled.feature_id
+        ));
+    }
+    if repo.proposal_hir.status != "experimental" {
+        return Err(format!(
+            "proposal-promotion: target repo proposal '{}' is not experimental",
+            compiled.proposal_id
+        ));
+    }
+    Ok(())
 }
 
 fn build_promotion_target_updates(
@@ -2428,6 +2740,37 @@ fn replace_rust_string_field(
     out.push_str(new_value);
     out.push_str(&src[value_end..]);
     Ok(out)
+}
+
+fn extract_rust_string_field(src: &str, field_name: &str) -> Result<String, String> {
+    let field_marker = format!("        {}: \"", field_name);
+    let field_start = src
+        .find(&field_marker)
+        .ok_or_else(|| format!("missing rust string field '{}'", field_name))?;
+    let value_start = field_start + field_marker.len();
+    let value_end = src[value_start..]
+        .find("\",")
+        .map(|idx| value_start + idx)
+        .ok_or_else(|| format!("missing rust string field end '{}'", field_name))?;
+    Ok(src[value_start..value_end].to_string())
+}
+
+fn extract_rust_status_field(src: &str) -> Result<String, String> {
+    let marker = "status: AdaptiveFeatureStatus::";
+    let start = src
+        .find(marker)
+        .ok_or_else(|| "missing rust status field".to_string())?
+        + marker.len();
+    let end = src[start..]
+        .find(',')
+        .map(|idx| start + idx)
+        .ok_or_else(|| "missing rust status field end".to_string())?;
+    match &src[start..end] {
+        "Experimental" => Ok("experimental".to_string()),
+        "Stable" => Ok("stable".to_string()),
+        "Deprecated" => Ok("deprecated".to_string()),
+        other => Err(format!("unknown rust status '{}'", other)),
+    }
 }
 
 fn promote_proposal_example_json(
