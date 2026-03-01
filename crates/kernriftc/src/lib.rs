@@ -2,9 +2,10 @@ use std::path::Path;
 
 use hir::lower_to_krir_with_surface;
 pub use hir::{
-    AdaptiveFeatureProposal, AdaptiveFeatureStatus, AdaptiveSurfaceFeature, SurfaceProfile,
-    adaptive_feature_proposal, adaptive_feature_proposals, adaptive_surface_features,
-    adaptive_surface_features_for_profile, irq_handler_alias_proposal,
+    AdaptiveFeatureProposal, AdaptiveFeatureStatus, AdaptiveMigrationPreviewEntry,
+    AdaptiveSurfaceFeature, SurfaceProfile, adaptive_feature_proposal, adaptive_feature_proposals,
+    adaptive_surface_features, adaptive_surface_features_for_profile,
+    adaptive_surface_migration_preview, irq_handler_alias_proposal,
 };
 use krir::KrirModule;
 use parser::parse_module;
@@ -61,6 +62,23 @@ pub fn analyze(module: &KrirModule) -> (AnalysisReport, Vec<String>) {
 pub fn analyze_file(path: &Path) -> Result<(AnalysisReport, Vec<String>), Vec<String>> {
     let module = compile_file(path)?;
     Ok(analyze(&module))
+}
+
+pub fn migrate_preview_source_with_surface(
+    src: &str,
+    surface_profile: SurfaceProfile,
+) -> Result<Vec<AdaptiveMigrationPreviewEntry>, Vec<String>> {
+    let ast = parse_module(src)?;
+    Ok(adaptive_surface_migration_preview(&ast, surface_profile))
+}
+
+pub fn migrate_preview_file_with_surface(
+    path: &Path,
+    surface_profile: SurfaceProfile,
+) -> Result<Vec<AdaptiveMigrationPreviewEntry>, Vec<String>> {
+    let src = std::fs::read_to_string(path)
+        .map_err(|e| vec![format!("failed to read '{}': {}", path.display(), e)])?;
+    migrate_preview_source_with_surface(&src, surface_profile)
 }
 
 fn format_check_errors(mut errs: Vec<CheckError>) -> Vec<String> {
