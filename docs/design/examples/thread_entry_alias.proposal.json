@@ -1,11 +1,11 @@
 {
   "id": "thread_entry_alias",
-  "title": "Experimental @thread_entry surface alias",
+  "title": "Stable @thread_entry surface alias",
   "motivation": "Provide a governed surface-only shorthand for thread-only entry points.",
   "syntax_before": "@ctx(thread) fn worker() { }",
   "syntax_after": "@thread_entry fn worker() { }",
   "lowering_description": "Lower @thread_entry to the existing canonical @ctx(thread) representation during HIR lowering.",
-  "compatibility_risk": "Low; stable mode rejects the alias and experimental mode lowers to existing canonical semantics.",
-  "migration_plan": "Keep the alias experimental until usage and diagnostics stabilize; projects can stay pinned to stable to avoid it.",
-  "status": "experimental"
+  "compatibility_risk": "Low; the alias is stable and lowers to existing canonical semantics in all supported surface profiles.",
+  "migration_plan": "No migration required; the alias is now stable and remains interchangeable with @ctx(thread).",
+  "status": "stable"
 }

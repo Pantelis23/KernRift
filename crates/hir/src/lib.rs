@@ -107,7 +107,7 @@ const ADAPTIVE_SURFACE_FEATURES: [AdaptiveSurfaceFeature; 4] = [
         id: "thread_entry_alias",
         proposal_id: "thread_entry_alias",
         surface_form: "thread_entry",
-        status: AdaptiveFeatureStatus::Experimental,
+        status: AdaptiveFeatureStatus::Stable,
         lowering_target: "@ctx(thread)",
         safety_notes: "Pure surface alias; lowers to the existing thread context declaration.",
         migration_supported: true,
@@ -115,7 +115,7 @@ const ADAPTIVE_SURFACE_FEATURES: [AdaptiveSurfaceFeature; 4] = [
         canonical_replacement: "@ctx(thread)",
         migration_safe: true,
         rewrite_intent: "Replace the attribute token `@thread_entry` with `@ctx(thread)`.",
-        surface_profile_gate: SurfaceProfile::Experimental,
+        surface_profile_gate: SurfaceProfile::Stable,
         lowering_rule: AdaptiveLoweringRule::ContextAlias(&[Ctx::Thread]),
     },
     AdaptiveSurfaceFeature {
@@ -179,14 +179,14 @@ const ADAPTIVE_FEATURE_PROPOSALS: [AdaptiveFeatureProposal; 4] = [
     },
     AdaptiveFeatureProposal {
         id: "thread_entry_alias",
-        title: "Experimental @thread_entry surface alias",
+        title: "Stable @thread_entry surface alias",
         motivation: "Provide a governed surface-only shorthand for thread-only entry points.",
         syntax_before: "@ctx(thread) fn worker() { }",
         syntax_after: "@thread_entry fn worker() { }",
         lowering_description: "Lower @thread_entry to the existing canonical @ctx(thread) representation during HIR lowering.",
-        compatibility_risk: "Low; stable mode rejects the alias and experimental mode lowers to existing canonical semantics.",
-        migration_plan: "Keep the alias experimental until usage and diagnostics stabilize; projects can stay pinned to stable to avoid it.",
-        status: AdaptiveFeatureStatus::Experimental,
+        compatibility_risk: "Low; the alias is stable and lowers to existing canonical semantics in all supported surface profiles.",
+        migration_plan: "No migration required; the alias is now stable and remains interchangeable with @ctx(thread).",
+        status: AdaptiveFeatureStatus::Stable,
     },
     AdaptiveFeatureProposal {
         id: "may_block_alias",
@@ -647,16 +647,10 @@ mod tests {
 
     #[test]
     fn additional_adaptive_aliases_are_rejected_in_stable_surface() {
-        let cases = [
-            (
-                "@thread_entry fn worker() { }",
-                "surface feature '@thread_entry' requires --surface experimental for 'worker'",
-            ),
-            (
-                "@may_block fn worker() { }",
-                "surface feature '@may_block' requires --surface experimental for 'worker'",
-            ),
-        ];
+        let cases = [(
+            "@may_block fn worker() { }",
+            "surface feature '@may_block' requires --surface experimental for 'worker'",
+        )];
 
         for (src, expected) in cases {
             let ast = parse_module(src).expect("parse");
@@ -716,7 +710,7 @@ mod tests {
                     "id": "thread_entry_alias",
                     "proposal_id": "thread_entry_alias",
                     "surface_form": "thread_entry",
-                    "status": "experimental",
+                    "status": "stable",
                     "lowering_target": "@ctx(thread)",
                     "safety_notes": "Pure surface alias; lowers to the existing thread context declaration.",
                     "migration_supported": true,
@@ -724,7 +718,7 @@ mod tests {
                     "canonical_replacement": "@ctx(thread)",
                     "migration_safe": true,
                     "rewrite_intent": "Replace the attribute token `@thread_entry` with `@ctx(thread)`.",
-                    "surface_profile_gate": "experimental"
+                    "surface_profile_gate": "stable"
                 },
                 {
                     "id": "may_block_alias",
@@ -773,14 +767,14 @@ mod tests {
                 },
                 {
                     "id": "thread_entry_alias",
-                    "title": "Experimental @thread_entry surface alias",
+                    "title": "Stable @thread_entry surface alias",
                     "motivation": "Provide a governed surface-only shorthand for thread-only entry points.",
                     "syntax_before": "@ctx(thread) fn worker() { }",
                     "syntax_after": "@thread_entry fn worker() { }",
                     "lowering_description": "Lower @thread_entry to the existing canonical @ctx(thread) representation during HIR lowering.",
-                    "compatibility_risk": "Low; stable mode rejects the alias and experimental mode lowers to existing canonical semantics.",
-                    "migration_plan": "Keep the alias experimental until usage and diagnostics stabilize; projects can stay pinned to stable to avoid it.",
-                    "status": "experimental"
+                    "compatibility_risk": "Low; the alias is stable and lowers to existing canonical semantics in all supported surface profiles.",
+                    "migration_plan": "No migration required; the alias is now stable and remains interchangeable with @ctx(thread).",
+                    "status": "stable"
                 },
                 {
                     "id": "may_block_alias",
@@ -823,6 +817,14 @@ mod tests {
         assert!(
             features
                 .iter()
+                .filter(|feature| matches!(feature.status, AdaptiveFeatureStatus::Stable))
+                .all(|feature| surface_profile_enables_feature(SurfaceProfile::Stable, feature)),
+            "stable must enable stable features"
+        );
+        assert!(
+            features
+                .iter()
+                .filter(|feature| matches!(feature.status, AdaptiveFeatureStatus::Experimental))
                 .all(|feature| !surface_profile_enables_feature(SurfaceProfile::Stable, feature)),
             "stable must not enable experimental-only features"
         );

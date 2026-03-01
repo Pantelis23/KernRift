@@ -464,7 +464,7 @@ fn check_surface_invalid_value_is_rejected_deterministically() {
 }
 
 #[test]
-fn check_surface_stable_rejects_thread_entry_alias() {
+fn check_surface_stable_accepts_thread_entry_alias() {
     let root = repo_root();
     let fixture = root
         .join("tests")
@@ -477,12 +477,7 @@ fn check_surface_stable_rejects_thread_entry_alias() {
         .arg("--surface")
         .arg("stable")
         .arg(fixture.as_os_str());
-    let assert = cmd.assert().failure().code(1);
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
-    assert_eq!(
-        stderr.lines().collect::<Vec<_>>(),
-        vec!["surface feature '@thread_entry' requires --surface experimental for 'worker'"]
-    );
+    cmd.assert().success();
 }
 
 #[test]
@@ -601,7 +596,18 @@ fn features_surface_stable_output_is_exact() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
     assert_eq!(
         stdout.lines().collect::<Vec<_>>(),
-        vec!["surface: stable", "features: 0"]
+        vec![
+            "surface: stable",
+            "features: 1",
+            "feature: thread_entry_alias",
+            "status: stable",
+            "surface_form: @thread_entry",
+            "lowering_target: @ctx(thread)",
+            "proposal_id: thread_entry_alias",
+            "migration_safe: true",
+            "canonical_replacement: @ctx(thread)",
+            "rewrite_intent: Replace the attribute token `@thread_entry` with `@ctx(thread)`.",
+        ]
     );
 }
 
@@ -637,7 +643,7 @@ fn features_surface_experimental_output_is_exact() {
             "canonical_replacement: @eff(block)",
             "rewrite_intent: Replace the attribute token `@may_block` with `@eff(block)`.",
             "feature: thread_entry_alias",
-            "status: experimental",
+            "status: stable",
             "surface_form: @thread_entry",
             "lowering_target: @ctx(thread)",
             "proposal_id: thread_entry_alias",
@@ -664,7 +670,7 @@ fn features_surface_stable_and_experimental_differ_correctly() {
     let stable = run("stable");
     let experimental = run("experimental");
     assert_ne!(stable, experimental);
-    assert_eq!(stable.lines().nth(1), Some("features: 0"));
+    assert_eq!(stable.lines().nth(1), Some("features: 1"));
     assert_eq!(experimental.lines().nth(1), Some("features: 3"));
 }
 
