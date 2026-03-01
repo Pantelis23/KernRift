@@ -86,6 +86,41 @@ fn write_verify_report_fixture(label: &str, report_json: &Value) -> PathBuf {
     report_path
 }
 
+fn write_promotion_repo_fixture(feature_id: &str) -> PathBuf {
+    let root = repo_root();
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let repo_dir = std::env::temp_dir().join(format!("kernrift-promotion-{}-{}", feature_id, ts));
+    let hir_dir = repo_dir.join("crates").join("hir").join("src");
+    let proposal_dir = repo_dir.join("docs").join("design").join("examples");
+    fs::create_dir_all(&hir_dir).expect("create hir dir");
+    fs::create_dir_all(&proposal_dir).expect("create proposal dir");
+    fs::copy(
+        root.join("crates").join("hir").join("src").join("lib.rs"),
+        hir_dir.join("lib.rs"),
+    )
+    .expect("copy hir lib");
+    fs::copy(
+        root.join("docs")
+            .join("design")
+            .join("examples")
+            .join(format!("{}.proposal.json", feature_id)),
+        proposal_dir.join(format!("{}.proposal.json", feature_id)),
+    )
+    .expect("copy proposal example");
+    repo_dir
+}
+
+fn hir_entry_slice(src: &str, section_marker: &str, entry_id: &str) -> String {
+    let section_start = src.find(section_marker).expect("section marker");
+    let id_marker = format!("        id: \"{}\",", entry_id);
+    let entry_start = section_start + src[section_start..].find(&id_marker).expect("entry");
+    let entry_end = entry_start + src[entry_start..].find("    },").expect("entry end");
+    src[entry_start..entry_end].to_string()
+}
+
 #[test]
 fn report_unknown_metric_exits_nonzero() {
     let root = repo_root();
@@ -842,6 +877,109 @@ fn proposals_duplicate_promotion_readiness_flag_is_rejected_deterministically() 
     assert_eq!(
         stderr.lines().next(),
         Some("invalid proposals mode: duplicate --promotion-readiness")
+    );
+}
+
+#[test]
+fn proposals_promote_irq_handler_alias_updates_statuses_deterministically() {
+    let repo_dir = write_promotion_repo_fixture("irq_handler_alias");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&repo_dir)
+        .arg("proposals")
+        .arg("--promote")
+        .arg("irq_handler_alias");
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        vec!["proposal-promotion: promoted feature 'irq_handler_alias' to stable"]
+    );
+
+    let hir_src = fs::read_to_string(
+        repo_dir
+            .join("crates")
+            .join("hir")
+            .join("src")
+            .join("lib.rs"),
+    )
+    .expect("read updated hir");
+    let feature_entry = hir_entry_slice(
+        &hir_src,
+        "const ADAPTIVE_SURFACE_FEATURES:",
+        "irq_handler_alias",
+    );
+    assert!(feature_entry.contains("status: AdaptiveFeatureStatus::Stable,"));
+    assert!(!feature_entry.contains("status: AdaptiveFeatureStatus::Experimental,"));
+
+    let proposal_entry = hir_entry_slice(
+        &hir_src,
+        "const ADAPTIVE_FEATURE_PROPOSALS:",
+        "irq_handler_alias",
+    );
+    assert!(proposal_entry.contains("status: AdaptiveFeatureStatus::Stable,"));
+    assert!(!proposal_entry.contains("status: AdaptiveFeatureStatus::Experimental,"));
+
+    let proposal_json = fs::read_to_string(
+        repo_dir
+            .join("docs")
+            .join("design")
+            .join("examples")
+            .join("irq_handler_alias.proposal.json"),
+    )
+    .expect("read updated proposal");
+    assert!(proposal_json.contains("  \"status\": \"stable\""));
+    assert!(!proposal_json.contains("  \"status\": \"experimental\""));
+}
+
+#[test]
+fn proposals_promote_duplicate_flag_is_rejected_deterministically() {
+    let root = repo_root();
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("proposals")
+        .arg("--promote")
+        .arg("irq_handler_alias")
+        .arg("--promote")
+        .arg("may_block_alias");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("invalid proposals mode: duplicate --promote")
+    );
+}
+
+#[test]
+fn proposals_promote_stable_feature_is_rejected_deterministically() {
+    let repo_dir = write_promotion_repo_fixture("thread_entry_alias");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&repo_dir)
+        .arg("proposals")
+        .arg("--promote")
+        .arg("thread_entry_alias");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("proposal-promotion: feature 'thread_entry_alias' is not promotable: already stable")
+    );
+}
+
+#[test]
+fn proposals_promote_unknown_feature_is_rejected_deterministically() {
+    let root = repo_root();
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("proposals")
+        .arg("--promote")
+        .arg("unknown_alias");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("proposal-promotion: unknown feature 'unknown_alias'")
     );
 }
 
