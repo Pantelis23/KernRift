@@ -23,6 +23,13 @@ impl SurfaceProfile {
             )),
         }
     }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::Experimental => "experimental",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -31,6 +38,16 @@ pub enum AdaptiveFeatureStatus {
     Experimental,
     Stable,
     Deprecated,
+}
+
+impl AdaptiveFeatureStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Experimental => "experimental",
+            Self::Stable => "stable",
+            Self::Deprecated => "deprecated",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -135,6 +152,17 @@ const ADAPTIVE_SURFACE_FEATURES: [AdaptiveSurfaceFeature; 4] = [
 
 pub fn adaptive_surface_features() -> &'static [AdaptiveSurfaceFeature] {
     &ADAPTIVE_SURFACE_FEATURES
+}
+
+pub fn adaptive_surface_features_for_profile(
+    surface_profile: SurfaceProfile,
+) -> Vec<&'static AdaptiveSurfaceFeature> {
+    let mut features = ADAPTIVE_SURFACE_FEATURES
+        .iter()
+        .filter(|feature| surface_profile_enables_feature(surface_profile, feature))
+        .collect::<Vec<_>>();
+    features.sort_by(|a, b| a.id.cmp(b.id));
+    features
 }
 
 const ADAPTIVE_FEATURE_PROPOSALS: [AdaptiveFeatureProposal; 4] = [

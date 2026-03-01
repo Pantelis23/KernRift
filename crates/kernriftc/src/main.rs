@@ -13,8 +13,8 @@ use emit::{
 };
 use jsonschema::JSONSchema;
 use kernriftc::{
-    SurfaceProfile, analyze, check_file, check_file_with_surface, check_module, compile_file,
-    compile_file_with_surface,
+    SurfaceProfile, adaptive_surface_features_for_profile, analyze, check_file,
+    check_file_with_surface, check_module, compile_file, compile_file_with_surface,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -733,6 +733,10 @@ struct InspectReportArgs {
     report_path: String,
 }
 
+struct FeaturesArgs {
+    surface: SurfaceProfile,
+}
+
 impl PartialOrd for PolicyViolation {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
@@ -953,6 +957,14 @@ fn main() -> ExitCode {
         },
         "inspect-report" => match parse_inspect_report_args(&args[2..]) {
             Ok(parsed) => run_inspect_report(&parsed.report_path),
+            Err(err) => {
+                eprintln!("{}", err);
+                print_usage();
+                ExitCode::from(EXIT_INVALID_INPUT)
+            }
+        },
+        "features" => match parse_features_args(&args[2..]) {
+            Ok(parsed) => run_features(parsed.surface),
             Err(err) => {
                 eprintln!("{}", err);
                 print_usage();
@@ -1259,6 +1271,41 @@ fn parse_inspect_report_args(args: &[String]) -> Result<InspectReportArgs, Strin
     };
 
     Ok(InspectReportArgs { report_path })
+}
+
+fn parse_features_args(args: &[String]) -> Result<FeaturesArgs, String> {
+    let mut surface = None::<SurfaceProfile>;
+    let mut idx = 0usize;
+    while idx < args.len() {
+        match args[idx].as_str() {
+            "--surface" => {
+                if surface.is_some() {
+                    return Err("invalid features mode: duplicate --surface".to_string());
+                }
+                idx += 1;
+                if idx >= args.len() {
+                    return Err("invalid features mode: --surface requires a value".to_string());
+                }
+                surface = Some(
+                    SurfaceProfile::parse(&args[idx])
+                        .map_err(|err| format!("invalid features mode: {}", err))?,
+                );
+            }
+            other => {
+                return Err(format!(
+                    "invalid features mode: unexpected argument '{}'",
+                    other
+                ));
+            }
+        }
+        idx += 1;
+    }
+
+    let Some(surface) = surface else {
+        return Err("invalid features mode: missing --surface".to_string());
+    };
+
+    Ok(FeaturesArgs { surface })
 }
 
 fn parse_verify_args(args: &[String]) -> Result<VerifyArgs, String> {
@@ -1864,6 +1911,23 @@ fn run_inspect_report(report_path: &str) -> ExitCode {
     };
 
     println!("{}", format_verify_report_inspect_summary(&report));
+    ExitCode::SUCCESS
+}
+
+fn run_features(surface: SurfaceProfile) -> ExitCode {
+    let features = adaptive_surface_features_for_profile(surface);
+    println!("surface: {}", surface.as_str());
+    println!("features: {}", features.len());
+    for feature in features {
+        println!("feature: {}", feature.id);
+        println!("status: {}", feature.status.as_str());
+        println!("surface_form: @{}", feature.surface_form);
+        println!("lowering_target: {}", feature.lowering_target);
+        println!("proposal_id: {}", feature.proposal_id);
+        println!("migration_safe: {}", feature.migration_safe);
+        println!("canonical_replacement: {}", feature.canonical_replacement);
+        println!("rewrite_intent: {}", feature.rewrite_intent);
+    }
     ExitCode::SUCCESS
 }
 
@@ -4159,6 +4223,8 @@ fn print_usage() {
     );
     eprintln!("  kernriftc policy --policy <policy.toml> --contracts <contracts.json>");
     eprintln!("  kernriftc policy --evidence --policy <policy.toml> --contracts <contracts.json>");
+    eprintln!("  kernriftc features --surface stable");
+    eprintln!("  kernriftc features --surface experimental");
     eprintln!("  kernriftc inspect --contracts <contracts.json>");
     eprintln!("  kernriftc inspect-report --report <verify-report.json>");
     eprintln!("  kernriftc verify --contracts <contracts.json> --hash <contracts.sha256>");

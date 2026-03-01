@@ -590,6 +590,138 @@ fn check_surface_experimental_rejects_deprecated_irq_legacy_alias() {
 }
 
 #[test]
+fn features_surface_stable_output_is_exact() {
+    let root = repo_root();
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("features")
+        .arg("--surface")
+        .arg("stable");
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        vec!["surface: stable", "features: 0"]
+    );
+}
+
+#[test]
+fn features_surface_experimental_output_is_exact() {
+    let root = repo_root();
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("features")
+        .arg("--surface")
+        .arg("experimental");
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        vec![
+            "surface: experimental",
+            "features: 3",
+            "feature: irq_handler_alias",
+            "status: experimental",
+            "surface_form: @irq_handler",
+            "lowering_target: @ctx(irq)",
+            "proposal_id: irq_handler_alias",
+            "migration_safe: true",
+            "canonical_replacement: @ctx(irq)",
+            "rewrite_intent: Replace the attribute token `@irq_handler` with `@ctx(irq)`.",
+            "feature: may_block_alias",
+            "status: experimental",
+            "surface_form: @may_block",
+            "lowering_target: @eff(block)",
+            "proposal_id: may_block_alias",
+            "migration_safe: true",
+            "canonical_replacement: @eff(block)",
+            "rewrite_intent: Replace the attribute token `@may_block` with `@eff(block)`.",
+            "feature: thread_entry_alias",
+            "status: experimental",
+            "surface_form: @thread_entry",
+            "lowering_target: @ctx(thread)",
+            "proposal_id: thread_entry_alias",
+            "migration_safe: true",
+            "canonical_replacement: @ctx(thread)",
+            "rewrite_intent: Replace the attribute token `@thread_entry` with `@ctx(thread)`.",
+        ]
+    );
+}
+
+#[test]
+fn features_surface_stable_and_experimental_differ_correctly() {
+    let root = repo_root();
+    let run = |surface: &str| {
+        let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+        cmd.current_dir(&root)
+            .arg("features")
+            .arg("--surface")
+            .arg(surface);
+        let assert = cmd.assert().success();
+        String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8")
+    };
+
+    let stable = run("stable");
+    let experimental = run("experimental");
+    assert_ne!(stable, experimental);
+    assert_eq!(stable.lines().nth(1), Some("features: 0"));
+    assert_eq!(experimental.lines().nth(1), Some("features: 3"));
+}
+
+#[test]
+fn features_surface_duplicate_flag_is_rejected_deterministically() {
+    let root = repo_root();
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("features")
+        .arg("--surface")
+        .arg("stable")
+        .arg("--surface")
+        .arg("experimental");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("invalid features mode: duplicate --surface")
+    );
+}
+
+#[test]
+fn features_surface_invalid_value_is_rejected_deterministically() {
+    let root = repo_root();
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("features")
+        .arg("--surface")
+        .arg("beta");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some(
+            "invalid features mode: invalid surface mode 'beta', expected 'stable' or 'experimental'"
+        )
+    );
+}
+
+#[test]
+fn features_surface_unexpected_arg_is_rejected_deterministically() {
+    let root = repo_root();
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("features")
+        .arg("--surface")
+        .arg("stable")
+        .arg("extra");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("invalid features mode: unexpected argument 'extra'")
+    );
+}
+
+#[test]
 fn check_yield_hidden_two_levels_exits_nonzero_with_lockgraph_message() {
     let root = repo_root();
     let fixture = root
