@@ -94,6 +94,14 @@ pub struct AdaptiveFeatureProposalSummary {
     pub proposal: &'static AdaptiveFeatureProposal,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdaptiveFeaturePromotionReadiness {
+    pub feature_id: &'static str,
+    pub current_status: AdaptiveFeatureStatus,
+    pub promotable_to_stable: bool,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AdaptiveLoweringRule {
     ContextAlias(&'static [Ctx]),
@@ -288,6 +296,95 @@ pub fn validate_adaptive_feature_governance() -> Vec<String> {
         &ADAPTIVE_SURFACE_FEATURES,
         &ADAPTIVE_FEATURE_PROPOSALS,
     )
+}
+
+pub fn adaptive_feature_promotion_readiness() -> Vec<AdaptiveFeaturePromotionReadiness> {
+    adaptive_feature_promotion_readiness_with(
+        &ADAPTIVE_SURFACE_FEATURES,
+        &ADAPTIVE_FEATURE_PROPOSALS,
+    )
+}
+
+fn adaptive_feature_promotion_readiness_with(
+    features: &[AdaptiveSurfaceFeature],
+    proposals: &[AdaptiveFeatureProposal],
+) -> Vec<AdaptiveFeaturePromotionReadiness> {
+    let governance_errors = validate_adaptive_feature_governance_with(features, proposals);
+    let mut readiness = features
+        .iter()
+        .map(|feature| {
+            let reason = promotion_readiness_reason(feature, proposals, &governance_errors);
+            AdaptiveFeaturePromotionReadiness {
+                feature_id: feature.id,
+                current_status: feature.status,
+                promotable_to_stable: reason.is_none(),
+                reason: reason.unwrap_or_else(|| {
+                    "proposal status aligns, migration metadata is complete, proposal linked exactly once".to_string()
+                }),
+            }
+        })
+        .collect::<Vec<_>>();
+    readiness.sort_by(|a, b| a.feature_id.cmp(b.feature_id));
+    readiness
+}
+
+fn promotion_readiness_reason(
+    feature: &AdaptiveSurfaceFeature,
+    proposals: &[AdaptiveFeatureProposal],
+    governance_errors: &[String],
+) -> Option<String> {
+    match feature.status {
+        AdaptiveFeatureStatus::Stable => return Some("already stable".to_string()),
+        AdaptiveFeatureStatus::Deprecated => {
+            return Some("deprecated features are not promotable".to_string());
+        }
+        AdaptiveFeatureStatus::Experimental => {}
+    }
+
+    let references = proposals
+        .iter()
+        .filter(|proposal| proposal.id == feature.proposal_id)
+        .count();
+    if references == 0 {
+        return Some("missing linked proposal".to_string());
+    }
+    if references != 1 {
+        return Some(format!(
+            "linked proposal '{}' is referenced {} times",
+            feature.proposal_id, references
+        ));
+    }
+
+    let Some(proposal) = proposals
+        .iter()
+        .find(|proposal| proposal.id == feature.proposal_id)
+    else {
+        return Some("missing linked proposal".to_string());
+    };
+
+    if proposal.status != AdaptiveFeatureStatus::Experimental {
+        return Some("proposal status mismatch".to_string());
+    }
+
+    if governance_errors
+        .iter()
+        .any(|err| err.contains(&format!("feature '{}'", feature.id)))
+    {
+        return Some("proposal linkage/consistency is invalid".to_string());
+    }
+
+    if feature.canonical_replacement.trim().is_empty()
+        || feature.rewrite_intent.trim().is_empty()
+        || !feature.migration_safe
+    {
+        return Some("migration metadata incomplete".to_string());
+    }
+
+    if !surface_profile_enables_feature(SurfaceProfile::Experimental, feature) {
+        return Some("feature is not enabled under experimental".to_string());
+    }
+
+    None
 }
 
 fn validate_adaptive_feature_governance_with(
@@ -757,9 +854,9 @@ fn parse_lock_budget(attr: &RawAttr) -> Result<u64, String> {
 mod tests {
     use super::{
         AdaptiveFeatureProposal, AdaptiveFeatureStatus, AdaptiveLoweringRule,
-        AdaptiveSurfaceFeature, SurfaceProfile, adaptive_feature_proposal,
-        adaptive_feature_proposals, adaptive_surface_features, lower_to_krir,
-        lower_to_krir_with_surface, surface_profile_enables_feature,
+        AdaptiveSurfaceFeature, SurfaceProfile, adaptive_feature_promotion_readiness_with,
+        adaptive_feature_proposal, adaptive_feature_proposals, adaptive_surface_features,
+        lower_to_krir, lower_to_krir_with_surface, surface_profile_enables_feature,
         validate_adaptive_feature_governance, validate_adaptive_feature_governance_with,
     };
     use parser::parse_module;
@@ -1121,5 +1218,40 @@ mod tests {
                 "proposal-validation: proposal 'shared_proposal' is unreferenced",
             ]
         );
+    }
+
+    #[test]
+    fn adaptive_feature_promotion_readiness_failure_reasons_are_deterministic() {
+        let bad_features = [AdaptiveSurfaceFeature {
+            id: "broken_alias",
+            proposal_id: "broken_alias",
+            surface_form: "broken",
+            status: AdaptiveFeatureStatus::Experimental,
+            lowering_target: "@ctx(thread)",
+            safety_notes: "test-only",
+            migration_supported: true,
+            migration_note: "test-only",
+            canonical_replacement: "@ctx(thread)",
+            migration_safe: false,
+            rewrite_intent: "Replace the attribute token `@broken` with `@ctx(thread)`.",
+            surface_profile_gate: SurfaceProfile::Experimental,
+            lowering_rule: AdaptiveLoweringRule::ContextAlias(&[super::Ctx::Thread]),
+        }];
+        let bad_proposals = [AdaptiveFeatureProposal {
+            id: "broken_alias",
+            title: "Broken proposal",
+            motivation: "test-only",
+            syntax_before: "@ctx(thread) fn worker() { }",
+            syntax_after: "@broken fn worker() { }",
+            lowering_description: "Lower @broken to the existing canonical @ctx(thread) representation during HIR lowering.",
+            compatibility_risk: "test-only",
+            migration_plan: "test-only",
+            status: AdaptiveFeatureStatus::Experimental,
+        }];
+
+        let readiness = adaptive_feature_promotion_readiness_with(&bad_features, &bad_proposals);
+        assert_eq!(readiness.len(), 1);
+        assert!(!readiness[0].promotable_to_stable);
+        assert_eq!(readiness[0].reason, "migration metadata incomplete");
     }
 }

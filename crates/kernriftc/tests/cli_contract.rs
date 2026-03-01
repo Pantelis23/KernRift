@@ -781,6 +781,39 @@ fn proposals_validate_output_is_exact() {
 }
 
 #[test]
+fn proposals_promotion_readiness_output_is_exact() {
+    let root = repo_root();
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("proposals")
+        .arg("--promotion-readiness");
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        vec![
+            "promotion-readiness: 4",
+            "feature: irq_handler_alias",
+            "current_status: experimental",
+            "promotable_to_stable: true",
+            "reason: proposal status aligns, migration metadata is complete, proposal linked exactly once",
+            "feature: irq_legacy_alias",
+            "current_status: deprecated",
+            "promotable_to_stable: false",
+            "reason: deprecated features are not promotable",
+            "feature: may_block_alias",
+            "current_status: experimental",
+            "promotable_to_stable: true",
+            "reason: proposal status aligns, migration metadata is complete, proposal linked exactly once",
+            "feature: thread_entry_alias",
+            "current_status: stable",
+            "promotable_to_stable: false",
+            "reason: already stable",
+        ]
+    );
+}
+
+#[test]
 fn proposals_duplicate_validate_flag_is_rejected_deterministically() {
     let root = repo_root();
     let mut cmd: Command = cargo_bin_cmd!("kernriftc");
@@ -793,6 +826,22 @@ fn proposals_duplicate_validate_flag_is_rejected_deterministically() {
     assert_eq!(
         stderr.lines().next(),
         Some("invalid proposals mode: duplicate --validate")
+    );
+}
+
+#[test]
+fn proposals_duplicate_promotion_readiness_flag_is_rejected_deterministically() {
+    let root = repo_root();
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("proposals")
+        .arg("--promotion-readiness")
+        .arg("--promotion-readiness");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("invalid proposals mode: duplicate --promotion-readiness")
     );
 }
 

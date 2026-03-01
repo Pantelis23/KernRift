@@ -13,9 +13,9 @@ use emit::{
 };
 use jsonschema::JSONSchema;
 use kernriftc::{
-    SurfaceProfile, adaptive_feature_proposal_summaries, adaptive_surface_features_for_profile,
-    analyze, check_file, check_file_with_surface, check_module, compile_file,
-    compile_file_with_surface, migrate_preview_file_with_surface,
+    SurfaceProfile, adaptive_feature_promotion_readiness, adaptive_feature_proposal_summaries,
+    adaptive_surface_features_for_profile, analyze, check_file, check_file_with_surface,
+    check_module, compile_file, compile_file_with_surface, migrate_preview_file_with_surface,
     validate_adaptive_feature_governance,
 };
 use serde::{Deserialize, Serialize};
@@ -742,6 +742,7 @@ struct FeaturesArgs {
 #[derive(Debug)]
 struct ProposalsArgs {
     validate: bool,
+    promotion_readiness: bool,
 }
 
 #[derive(Debug)]
@@ -1392,13 +1393,33 @@ fn parse_migrate_preview_args(args: &[String]) -> Result<MigratePreviewArgs, Str
 
 fn parse_proposals_args(args: &[String]) -> Result<ProposalsArgs, String> {
     let mut validate = false;
+    let mut promotion_readiness = false;
     for arg in args {
         match arg.as_str() {
             "--validate" => {
                 if validate {
                     return Err("invalid proposals mode: duplicate --validate".to_string());
                 }
+                if promotion_readiness {
+                    return Err(
+                        "invalid proposals mode: unexpected argument '--validate'".to_string()
+                    );
+                }
                 validate = true;
+            }
+            "--promotion-readiness" => {
+                if promotion_readiness {
+                    return Err(
+                        "invalid proposals mode: duplicate --promotion-readiness".to_string()
+                    );
+                }
+                if validate {
+                    return Err(
+                        "invalid proposals mode: unexpected argument '--promotion-readiness'"
+                            .to_string(),
+                    );
+                }
+                promotion_readiness = true;
             }
             other => {
                 return Err(format!(
@@ -1409,7 +1430,10 @@ fn parse_proposals_args(args: &[String]) -> Result<ProposalsArgs, String> {
         }
     }
 
-    Ok(ProposalsArgs { validate })
+    Ok(ProposalsArgs {
+        validate,
+        promotion_readiness,
+    })
 }
 
 fn parse_verify_args(args: &[String]) -> Result<VerifyArgs, String> {
@@ -2046,6 +2070,18 @@ fn run_proposals(args: &ProposalsArgs) -> ExitCode {
             println!("{}", err);
         }
         return ExitCode::from(1);
+    }
+
+    if args.promotion_readiness {
+        let readiness = adaptive_feature_promotion_readiness();
+        println!("promotion-readiness: {}", readiness.len());
+        for entry in readiness {
+            println!("feature: {}", entry.feature_id);
+            println!("current_status: {}", entry.current_status.as_str());
+            println!("promotable_to_stable: {}", entry.promotable_to_stable);
+            println!("reason: {}", entry.reason);
+        }
+        return ExitCode::SUCCESS;
     }
 
     let proposals = adaptive_feature_proposal_summaries();
@@ -4389,6 +4425,7 @@ fn print_usage() {
     eprintln!("  kernriftc features --surface experimental");
     eprintln!("  kernriftc proposals");
     eprintln!("  kernriftc proposals --validate");
+    eprintln!("  kernriftc proposals --promotion-readiness");
     eprintln!("  kernriftc migrate-preview --surface stable <file.kr>");
     eprintln!("  kernriftc migrate-preview --surface experimental <file.kr>");
     eprintln!("  kernriftc inspect --contracts <contracts.json>");
