@@ -1048,6 +1048,160 @@ fn proposals_promote_dry_run_is_deterministic_and_non_mutating() {
 }
 
 #[test]
+fn proposals_promote_diff_output_is_exact() {
+    let repo_dir = write_promotion_repo_fixture("irq_handler_alias");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&repo_dir)
+        .arg("proposals")
+        .arg("--promote")
+        .arg("irq_handler_alias")
+        .arg("--diff");
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        vec![
+            "promotion-diff: 9",
+            "feature: irq_handler_alias",
+            "proposal_id: irq_handler_alias",
+            "file: crates/hir/src/lib.rs",
+            "field: feature.status",
+            "before: experimental",
+            "after: stable",
+            "file: crates/hir/src/lib.rs",
+            "field: proposal.compatibility_risk",
+            "before: Low; stable mode rejects the alias and experimental mode lowers to existing canonical semantics.",
+            "after: Low; the alias is stable and lowers to existing canonical semantics in all supported surface profiles.",
+            "file: crates/hir/src/lib.rs",
+            "field: proposal.migration_plan",
+            "before: Keep the alias experimental until usage and diagnostics stabilize; projects can stay pinned to stable to avoid it.",
+            "after: No migration required; the alias is now stable and remains interchangeable with @ctx(irq).",
+            "file: crates/hir/src/lib.rs",
+            "field: proposal.status",
+            "before: experimental",
+            "after: stable",
+            "file: crates/hir/src/lib.rs",
+            "field: proposal.title",
+            "before: Experimental @irq_handler surface alias",
+            "after: Stable @irq_handler surface alias",
+            "file: docs/design/examples/irq_handler_alias.proposal.json",
+            "field: proposal.compatibility_risk",
+            "before: Low; stable mode rejects the alias and experimental mode lowers to existing canonical semantics.",
+            "after: Low; the alias is stable and lowers to existing canonical semantics in all supported surface profiles.",
+            "file: docs/design/examples/irq_handler_alias.proposal.json",
+            "field: proposal.migration_plan",
+            "before: Keep the alias experimental until usage and diagnostics stabilize; projects can stay pinned to stable to avoid it.",
+            "after: No migration required; the alias is now stable and remains interchangeable with @ctx(irq).",
+            "file: docs/design/examples/irq_handler_alias.proposal.json",
+            "field: proposal.status",
+            "before: experimental",
+            "after: stable",
+            "file: docs/design/examples/irq_handler_alias.proposal.json",
+            "field: proposal.title",
+            "before: Experimental @irq_handler surface alias",
+            "after: Stable @irq_handler surface alias",
+            "proposal-promotion: promoted feature 'irq_handler_alias' to stable",
+        ]
+    );
+}
+
+#[test]
+fn proposals_promote_dry_run_diff_output_is_exact_and_non_mutating() {
+    let repo_dir = write_promotion_repo_fixture("irq_handler_alias");
+    let before_hir = fs::read_to_string(
+        repo_dir
+            .join("crates")
+            .join("hir")
+            .join("src")
+            .join("lib.rs"),
+    )
+    .expect("read baseline hir");
+    let before_proposal = fs::read_to_string(
+        repo_dir
+            .join("docs")
+            .join("design")
+            .join("examples")
+            .join("irq_handler_alias.proposal.json"),
+    )
+    .expect("read baseline proposal");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&repo_dir)
+        .arg("proposals")
+        .arg("--promote")
+        .arg("irq_handler_alias")
+        .arg("--dry-run")
+        .arg("--diff");
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        vec![
+            "promotion-diff: 9",
+            "feature: irq_handler_alias",
+            "proposal_id: irq_handler_alias",
+            "file: crates/hir/src/lib.rs",
+            "field: feature.status",
+            "before: experimental",
+            "after: stable",
+            "file: crates/hir/src/lib.rs",
+            "field: proposal.compatibility_risk",
+            "before: Low; stable mode rejects the alias and experimental mode lowers to existing canonical semantics.",
+            "after: Low; the alias is stable and lowers to existing canonical semantics in all supported surface profiles.",
+            "file: crates/hir/src/lib.rs",
+            "field: proposal.migration_plan",
+            "before: Keep the alias experimental until usage and diagnostics stabilize; projects can stay pinned to stable to avoid it.",
+            "after: No migration required; the alias is now stable and remains interchangeable with @ctx(irq).",
+            "file: crates/hir/src/lib.rs",
+            "field: proposal.status",
+            "before: experimental",
+            "after: stable",
+            "file: crates/hir/src/lib.rs",
+            "field: proposal.title",
+            "before: Experimental @irq_handler surface alias",
+            "after: Stable @irq_handler surface alias",
+            "file: docs/design/examples/irq_handler_alias.proposal.json",
+            "field: proposal.compatibility_risk",
+            "before: Low; stable mode rejects the alias and experimental mode lowers to existing canonical semantics.",
+            "after: Low; the alias is stable and lowers to existing canonical semantics in all supported surface profiles.",
+            "file: docs/design/examples/irq_handler_alias.proposal.json",
+            "field: proposal.migration_plan",
+            "before: Keep the alias experimental until usage and diagnostics stabilize; projects can stay pinned to stable to avoid it.",
+            "after: No migration required; the alias is now stable and remains interchangeable with @ctx(irq).",
+            "file: docs/design/examples/irq_handler_alias.proposal.json",
+            "field: proposal.status",
+            "before: experimental",
+            "after: stable",
+            "file: docs/design/examples/irq_handler_alias.proposal.json",
+            "field: proposal.title",
+            "before: Experimental @irq_handler surface alias",
+            "after: Stable @irq_handler surface alias",
+            "proposal-promotion: dry-run promotion for feature 'irq_handler_alias' is valid",
+        ]
+    );
+
+    let after_hir = fs::read_to_string(
+        repo_dir
+            .join("crates")
+            .join("hir")
+            .join("src")
+            .join("lib.rs"),
+    )
+    .expect("read dry-run diff hir");
+    let after_proposal = fs::read_to_string(
+        repo_dir
+            .join("docs")
+            .join("design")
+            .join("examples")
+            .join("irq_handler_alias.proposal.json"),
+    )
+    .expect("read dry-run diff proposal");
+    assert_eq!(after_hir, before_hir);
+    assert_eq!(after_proposal, before_proposal);
+}
+
+#[test]
 fn proposals_promote_duplicate_flag_is_rejected_deterministically() {
     let root = repo_root();
     let mut cmd: Command = cargo_bin_cmd!("kernriftc");
@@ -1062,6 +1216,37 @@ fn proposals_promote_duplicate_flag_is_rejected_deterministically() {
     assert_eq!(
         stderr.lines().next(),
         Some("invalid proposals mode: duplicate --promote")
+    );
+}
+
+#[test]
+fn proposals_promote_duplicate_diff_flag_is_rejected_deterministically() {
+    let root = repo_root();
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("proposals")
+        .arg("--promote")
+        .arg("irq_handler_alias")
+        .arg("--diff")
+        .arg("--diff");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("invalid proposals mode: duplicate --diff")
+    );
+}
+
+#[test]
+fn proposals_diff_without_promote_is_rejected_deterministically() {
+    let root = repo_root();
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("proposals").arg("--diff");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("invalid proposals mode: --diff requires --promote <feature-id>")
     );
 }
 
@@ -1425,6 +1610,41 @@ fn proposals_promote_dry_run_fails_on_repo_drift_deterministically() {
         .arg("--dry-run");
     let assert = cmd.assert().failure().code(2);
     let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some(
+            "proposal-promotion: target repo feature 'irq_handler_alias' canonical replacement mismatch"
+        )
+    );
+}
+
+#[test]
+fn proposals_promote_diff_fails_on_repo_drift_before_preview_deterministically() {
+    let repo_dir = write_promotion_repo_fixture("irq_handler_alias");
+    let hir_path = repo_dir
+        .join("crates")
+        .join("hir")
+        .join("src")
+        .join("lib.rs");
+    replace_in_hir_entry(
+        &hir_path,
+        "const ADAPTIVE_SURFACE_FEATURES:",
+        "irq_handler_alias",
+        "canonical_replacement: \"@ctx(irq)\",",
+        "canonical_replacement: \"@ctx(thread)\",",
+    );
+    git_commit_all(&repo_dir, "drift canonical replacement for diff");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&repo_dir)
+        .arg("proposals")
+        .arg("--promote")
+        .arg("irq_handler_alias")
+        .arg("--diff");
+    let assert = cmd.assert().failure().code(2);
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(stdout.trim().is_empty());
     assert_eq!(
         stderr.lines().next(),
         Some(

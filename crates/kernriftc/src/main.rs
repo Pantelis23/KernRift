@@ -746,6 +746,7 @@ struct ProposalsArgs {
     promotion_readiness: bool,
     promote_feature: Option<String>,
     dry_run: bool,
+    diff: bool,
 }
 
 #[derive(Debug)]
@@ -759,6 +760,14 @@ struct PromotionFileUpdate {
     path: PathBuf,
     original: String,
     updated: String,
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct PromotionFieldDiff {
+    file: String,
+    field: &'static str,
+    before: String,
+    after: String,
 }
 
 #[derive(Debug)]
@@ -1445,6 +1454,7 @@ fn parse_proposals_args(args: &[String]) -> Result<ProposalsArgs, String> {
     let mut promotion_readiness = false;
     let mut promote_feature = None::<String>;
     let mut dry_run = false;
+    let mut diff = false;
     let mut idx = 0usize;
     while idx < args.len() {
         let arg = &args[idx];
@@ -1503,6 +1513,12 @@ fn parse_proposals_args(args: &[String]) -> Result<ProposalsArgs, String> {
                 }
                 dry_run = true;
             }
+            "--diff" => {
+                if diff {
+                    return Err("invalid proposals mode: duplicate --diff".to_string());
+                }
+                diff = true;
+            }
             other => {
                 return Err(format!(
                     "invalid proposals mode: unexpected argument '{}'",
@@ -1518,12 +1534,16 @@ fn parse_proposals_args(args: &[String]) -> Result<ProposalsArgs, String> {
             "invalid proposals mode: --dry-run requires --promote <feature-id>".to_string(),
         );
     }
+    if diff && promote_feature.is_none() {
+        return Err("invalid proposals mode: --diff requires --promote <feature-id>".to_string());
+    }
 
     Ok(ProposalsArgs {
         validate,
         promotion_readiness,
         promote_feature,
         dry_run,
+        diff,
     })
 }
 
@@ -2164,9 +2184,12 @@ fn run_proposals(args: &ProposalsArgs) -> ExitCode {
     }
 
     if let Some(feature_id) = args.promote_feature.as_deref() {
-        match apply_adaptive_feature_promotion(Path::new("."), feature_id, args.dry_run) {
-            Ok(line) => {
-                println!("{}", line);
+        match apply_adaptive_feature_promotion(Path::new("."), feature_id, args.dry_run, args.diff)
+        {
+            Ok(lines) => {
+                for line in lines {
+                    println!("{}", line);
+                }
                 return ExitCode::SUCCESS;
             }
             Err(err) => {
@@ -2209,7 +2232,8 @@ fn apply_adaptive_feature_promotion(
     repo_root: &Path,
     feature_id: &str,
     dry_run: bool,
-) -> Result<String, String> {
+    diff: bool,
+) -> Result<Vec<String>, String> {
     validate_governance_repo_root(repo_root)?;
     ensure_clean_governance_worktree(repo_root)?;
 
@@ -2219,12 +2243,18 @@ fn apply_adaptive_feature_promotion(
     validate_repo_promotion_state(&compiled_state, &repo_state)?;
     let paths = promotion_target_files(repo_root, &plan);
     let updates = build_promotion_target_updates(&paths, &plan)?;
+    let mut lines = Vec::<String>::new();
+
+    if diff {
+        lines.extend(render_promotion_diff_preview(&plan, &updates)?);
+    }
 
     if dry_run {
-        return Ok(format!(
+        lines.push(format!(
             "proposal-promotion: dry-run promotion for feature '{}' is valid",
             feature_id
         ));
+        return Ok(lines);
     }
 
     write_files_atomically(&updates)?;
@@ -2233,10 +2263,11 @@ fn apply_adaptive_feature_promotion(
         return Err(err);
     }
 
-    Ok(format!(
+    lines.push(format!(
         "proposal-promotion: promoted feature '{}' to stable",
         feature_id
-    ))
+    ));
+    Ok(lines)
 }
 
 fn compiled_promotion_state(feature_id: &str) -> Result<CompiledPromotionState, String> {
@@ -2604,6 +2635,168 @@ fn build_promotion_target_updates(
             updated: proposal_updated,
         },
     ])
+}
+
+fn render_promotion_diff_preview(
+    plan: &AdaptiveFeaturePromotionPlan,
+    updates: &[PromotionFileUpdate],
+) -> Result<Vec<String>, String> {
+    let diffs = build_promotion_field_diffs(plan, updates)?;
+    let mut lines = Vec::with_capacity(3 + diffs.len() * 4);
+    lines.push(format!("promotion-diff: {}", diffs.len()));
+    lines.push(format!("feature: {}", plan.feature_id));
+    lines.push(format!("proposal_id: {}", plan.proposal_id));
+    for diff in diffs {
+        lines.push(format!("file: {}", diff.file));
+        lines.push(format!("field: {}", diff.field));
+        lines.push(format!("before: {}", diff.before));
+        lines.push(format!("after: {}", diff.after));
+    }
+    Ok(lines)
+}
+
+fn build_promotion_field_diffs(
+    plan: &AdaptiveFeaturePromotionPlan,
+    updates: &[PromotionFileUpdate],
+) -> Result<Vec<PromotionFieldDiff>, String> {
+    let hir_update = updates
+        .iter()
+        .find(|update| update.path.ends_with("crates/hir/src/lib.rs"))
+        .ok_or_else(|| "proposal-promotion: missing HIR update target".to_string())?;
+    let proposal_update = updates
+        .iter()
+        .find(|update| {
+            update
+                .path
+                .ends_with(format!("{}.proposal.json", plan.proposal_id))
+        })
+        .ok_or_else(|| "proposal-promotion: missing proposal update target".to_string())?;
+
+    let original_feature_entry = extract_hir_entry(
+        &hir_update.original,
+        "const ADAPTIVE_SURFACE_FEATURES:",
+        plan.feature_id,
+    )?;
+    let updated_feature_entry = extract_hir_entry(
+        &hir_update.updated,
+        "const ADAPTIVE_SURFACE_FEATURES:",
+        plan.feature_id,
+    )?;
+    let original_proposal_entry = extract_hir_entry(
+        &hir_update.original,
+        "const ADAPTIVE_FEATURE_PROPOSALS:",
+        plan.proposal_id,
+    )?;
+    let updated_proposal_entry = extract_hir_entry(
+        &hir_update.updated,
+        "const ADAPTIVE_FEATURE_PROPOSALS:",
+        plan.proposal_id,
+    )?;
+
+    let mut diffs = vec![
+        PromotionFieldDiff {
+            file: "crates/hir/src/lib.rs".to_string(),
+            field: "feature.status",
+            before: extract_rust_status_field(&original_feature_entry)?,
+            after: extract_rust_status_field(&updated_feature_entry)?,
+        },
+        PromotionFieldDiff {
+            file: "crates/hir/src/lib.rs".to_string(),
+            field: "proposal.status",
+            before: extract_rust_status_field(&original_proposal_entry)?,
+            after: extract_rust_status_field(&updated_proposal_entry)?,
+        },
+        PromotionFieldDiff {
+            file: "crates/hir/src/lib.rs".to_string(),
+            field: "proposal.title",
+            before: extract_rust_string_field(&original_proposal_entry, "title")?,
+            after: extract_rust_string_field(&updated_proposal_entry, "title")?,
+        },
+        PromotionFieldDiff {
+            file: "crates/hir/src/lib.rs".to_string(),
+            field: "proposal.compatibility_risk",
+            before: extract_rust_string_field(&original_proposal_entry, "compatibility_risk")?,
+            after: extract_rust_string_field(&updated_proposal_entry, "compatibility_risk")?,
+        },
+        PromotionFieldDiff {
+            file: "crates/hir/src/lib.rs".to_string(),
+            field: "proposal.migration_plan",
+            before: extract_rust_string_field(&original_proposal_entry, "migration_plan")?,
+            after: extract_rust_string_field(&updated_proposal_entry, "migration_plan")?,
+        },
+    ];
+
+    let original_json = parse_proposal_json_fields(&proposal_update.original)?;
+    let updated_json = parse_proposal_json_fields(&proposal_update.updated)?;
+    let proposal_path = format!("docs/design/examples/{}.proposal.json", plan.proposal_id);
+    diffs.extend([
+        PromotionFieldDiff {
+            file: proposal_path.clone(),
+            field: "proposal.status",
+            before: original_json.status,
+            after: updated_json.status,
+        },
+        PromotionFieldDiff {
+            file: proposal_path.clone(),
+            field: "proposal.title",
+            before: original_json.title,
+            after: updated_json.title,
+        },
+        PromotionFieldDiff {
+            file: proposal_path.clone(),
+            field: "proposal.compatibility_risk",
+            before: original_json.compatibility_risk,
+            after: updated_json.compatibility_risk,
+        },
+        PromotionFieldDiff {
+            file: proposal_path,
+            field: "proposal.migration_plan",
+            before: original_json.migration_plan,
+            after: updated_json.migration_plan,
+        },
+    ]);
+
+    diffs.sort_by(|a, b| a.file.cmp(&b.file).then(a.field.cmp(b.field)));
+    Ok(diffs)
+}
+
+fn parse_proposal_json_fields(src: &str) -> Result<RepoProposalState, String> {
+    let proposal_json_value: Value = serde_json::from_str(src)
+        .map_err(|err| format!("proposal-promotion: failed to parse proposal JSON: {}", err))?;
+    let proposal_json_obj = proposal_json_value
+        .as_object()
+        .ok_or_else(|| "proposal-promotion: proposal JSON must be an object".to_string())?;
+    Ok(RepoProposalState {
+        id: proposal_json_obj
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "proposal-promotion: missing proposal JSON field 'id'".to_string())?
+            .to_string(),
+        status: proposal_json_obj
+            .get("status")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "proposal-promotion: missing proposal JSON field 'status'".to_string())?
+            .to_string(),
+        title: proposal_json_obj
+            .get("title")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "proposal-promotion: missing proposal JSON field 'title'".to_string())?
+            .to_string(),
+        compatibility_risk: proposal_json_obj
+            .get("compatibility_risk")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                "proposal-promotion: missing proposal JSON field 'compatibility_risk'".to_string()
+            })?
+            .to_string(),
+        migration_plan: proposal_json_obj
+            .get("migration_plan")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                "proposal-promotion: missing proposal JSON field 'migration_plan'".to_string()
+            })?
+            .to_string(),
+    })
 }
 
 fn promote_status_in_hir_source(
@@ -5357,6 +5550,8 @@ fn print_usage() {
     eprintln!("  kernriftc proposals --promotion-readiness");
     eprintln!("  kernriftc proposals --promote <feature-id>");
     eprintln!("  kernriftc proposals --promote <feature-id> --dry-run");
+    eprintln!("  kernriftc proposals --promote <feature-id> --diff");
+    eprintln!("  kernriftc proposals --promote <feature-id> --dry-run --diff");
     eprintln!("  kernriftc migrate-preview --surface stable <file.kr>");
     eprintln!("  kernriftc migrate-preview --surface experimental <file.kr>");
     eprintln!("  kernriftc inspect --contracts <contracts.json>");
