@@ -112,6 +112,19 @@ fn adaptive_surface_feature(attr_name: &str) -> Option<&'static AdaptiveSurfaceF
         .find(|feature| feature.surface_form == attr_name)
 }
 
+fn surface_profile_enables_feature(
+    surface_profile: SurfaceProfile,
+    feature: &AdaptiveSurfaceFeature,
+) -> bool {
+    match surface_profile {
+        SurfaceProfile::Stable => matches!(feature.status, AdaptiveFeatureStatus::Stable),
+        SurfaceProfile::Experimental => matches!(
+            feature.status,
+            AdaptiveFeatureStatus::Stable | AdaptiveFeatureStatus::Experimental
+        ),
+    }
+}
+
 pub fn irq_handler_alias_proposal() -> AdaptiveFeatureProposal {
     AdaptiveFeatureProposal {
         id: "irq_handler_alias",
@@ -254,7 +267,7 @@ fn lower_function(item: &FnAst, surface_profile: SurfaceProfile) -> Result<Funct
             "module_caps" => {}
             other => {
                 if let Some(feature) = adaptive_surface_feature(other) {
-                    if surface_profile != feature.surface_profile_gate {
+                    if !surface_profile_enables_feature(surface_profile, feature) {
                         errors.push(format!(
                             "surface feature '@{}' requires --surface experimental for '{}'",
                             feature.surface_form, item.name
@@ -430,8 +443,9 @@ fn parse_lock_budget(attr: &RawAttr) -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        SurfaceProfile, adaptive_surface_features, irq_handler_alias_proposal, lower_to_krir,
-        lower_to_krir_with_surface,
+        AdaptiveFeatureStatus, SurfaceProfile, adaptive_surface_features,
+        irq_handler_alias_proposal, lower_to_krir, lower_to_krir_with_surface,
+        surface_profile_enables_feature,
     };
     use parser::parse_module;
     use proptest::prelude::*;
@@ -568,6 +582,47 @@ mod tests {
                 "status": "experimental"
             })
         );
+    }
+
+    #[test]
+    fn surface_profiles_resolve_feature_sets_centrally() {
+        let features = adaptive_surface_features();
+        assert!(
+            features
+                .iter()
+                .all(|feature| !surface_profile_enables_feature(SurfaceProfile::Stable, feature)),
+            "stable must not enable experimental-only features"
+        );
+        assert!(
+            features
+                .iter()
+                .all(|feature| surface_profile_enables_feature(
+                    SurfaceProfile::Experimental,
+                    feature
+                )),
+            "experimental must enable all current adaptive features"
+        );
+
+        let stable_feature = super::AdaptiveSurfaceFeature {
+            id: "stable_alias",
+            surface_form: "stable_alias",
+            status: AdaptiveFeatureStatus::Stable,
+            lowering_target: "@ctx(thread)",
+            safety_notes: "test-only stable feature",
+            migration_supported: true,
+            migration_note: "none",
+            surface_profile_gate: SurfaceProfile::Stable,
+            lowering_rule: super::AdaptiveLoweringRule::ContextAlias(&[krir::Ctx::Thread]),
+        };
+
+        assert!(surface_profile_enables_feature(
+            SurfaceProfile::Stable,
+            &stable_feature
+        ));
+        assert!(surface_profile_enables_feature(
+            SurfaceProfile::Experimental,
+            &stable_feature
+        ));
     }
 
     #[test]
