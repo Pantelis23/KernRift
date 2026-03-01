@@ -43,6 +43,9 @@ pub struct AdaptiveSurfaceFeature {
     pub safety_notes: &'static str,
     pub migration_supported: bool,
     pub migration_note: &'static str,
+    pub canonical_replacement: &'static str,
+    pub migration_safe: bool,
+    pub rewrite_intent: &'static str,
     pub surface_profile_gate: SurfaceProfile,
     #[serde(skip_serializing)]
     lowering_rule: AdaptiveLoweringRule,
@@ -77,6 +80,9 @@ const ADAPTIVE_SURFACE_FEATURES: [AdaptiveSurfaceFeature; 4] = [
         safety_notes: "Pure surface alias; lowers to the existing irq context declaration.",
         migration_supported: true,
         migration_note: "Replace with @ctx(irq) when pinning code back to stable.",
+        canonical_replacement: "@ctx(irq)",
+        migration_safe: true,
+        rewrite_intent: "Replace the attribute token `@irq_handler` with `@ctx(irq)`.",
         surface_profile_gate: SurfaceProfile::Experimental,
         lowering_rule: AdaptiveLoweringRule::ContextAlias(&[Ctx::Irq]),
     },
@@ -89,6 +95,9 @@ const ADAPTIVE_SURFACE_FEATURES: [AdaptiveSurfaceFeature; 4] = [
         safety_notes: "Pure surface alias; lowers to the existing thread context declaration.",
         migration_supported: true,
         migration_note: "Replace with @ctx(thread) when pinning code back to stable.",
+        canonical_replacement: "@ctx(thread)",
+        migration_safe: true,
+        rewrite_intent: "Replace the attribute token `@thread_entry` with `@ctx(thread)`.",
         surface_profile_gate: SurfaceProfile::Experimental,
         lowering_rule: AdaptiveLoweringRule::ContextAlias(&[Ctx::Thread]),
     },
@@ -101,6 +110,9 @@ const ADAPTIVE_SURFACE_FEATURES: [AdaptiveSurfaceFeature; 4] = [
         safety_notes: "Pure surface alias; lowers to the existing block effect declaration.",
         migration_supported: true,
         migration_note: "Replace with @eff(block) when pinning code back to stable.",
+        canonical_replacement: "@eff(block)",
+        migration_safe: true,
+        rewrite_intent: "Replace the attribute token `@may_block` with `@eff(block)`.",
         surface_profile_gate: SurfaceProfile::Experimental,
         lowering_rule: AdaptiveLoweringRule::EffectAlias(&[Eff::Block]),
     },
@@ -113,6 +125,9 @@ const ADAPTIVE_SURFACE_FEATURES: [AdaptiveSurfaceFeature; 4] = [
         safety_notes: "Deprecated surface alias kept only to prove centralized lifecycle gating.",
         migration_supported: true,
         migration_note: "Replace with @ctx(irq) or @irq_handler depending on the chosen profile policy.",
+        canonical_replacement: "@ctx(irq)",
+        migration_safe: true,
+        rewrite_intent: "Replace the attribute token `@irq_legacy` with `@ctx(irq)`.",
         surface_profile_gate: SurfaceProfile::Stable,
         lowering_rule: AdaptiveLoweringRule::ContextAlias(&[Ctx::Irq]),
     },
@@ -664,6 +679,9 @@ mod tests {
                     "safety_notes": "Pure surface alias; lowers to the existing irq context declaration.",
                     "migration_supported": true,
                     "migration_note": "Replace with @ctx(irq) when pinning code back to stable.",
+                    "canonical_replacement": "@ctx(irq)",
+                    "migration_safe": true,
+                    "rewrite_intent": "Replace the attribute token `@irq_handler` with `@ctx(irq)`.",
                     "surface_profile_gate": "experimental"
                 },
                 {
@@ -675,6 +693,9 @@ mod tests {
                     "safety_notes": "Pure surface alias; lowers to the existing thread context declaration.",
                     "migration_supported": true,
                     "migration_note": "Replace with @ctx(thread) when pinning code back to stable.",
+                    "canonical_replacement": "@ctx(thread)",
+                    "migration_safe": true,
+                    "rewrite_intent": "Replace the attribute token `@thread_entry` with `@ctx(thread)`.",
                     "surface_profile_gate": "experimental"
                 },
                 {
@@ -686,6 +707,9 @@ mod tests {
                     "safety_notes": "Pure surface alias; lowers to the existing block effect declaration.",
                     "migration_supported": true,
                     "migration_note": "Replace with @eff(block) when pinning code back to stable.",
+                    "canonical_replacement": "@eff(block)",
+                    "migration_safe": true,
+                    "rewrite_intent": "Replace the attribute token `@may_block` with `@eff(block)`.",
                     "surface_profile_gate": "experimental"
                 },
                 {
@@ -697,6 +721,9 @@ mod tests {
                     "safety_notes": "Deprecated surface alias kept only to prove centralized lifecycle gating.",
                     "migration_supported": true,
                     "migration_note": "Replace with @ctx(irq) or @irq_handler depending on the chosen profile policy.",
+                    "canonical_replacement": "@ctx(irq)",
+                    "migration_safe": true,
+                    "rewrite_intent": "Replace the attribute token `@irq_legacy` with `@ctx(irq)`.",
                     "surface_profile_gate": "stable"
                 }
             ])
@@ -801,6 +828,9 @@ mod tests {
             safety_notes: "test-only stable feature",
             migration_supported: true,
             migration_note: "none",
+            canonical_replacement: "@ctx(thread)",
+            migration_safe: true,
+            rewrite_intent: "Replace the attribute token `@stable_alias` with `@ctx(thread)`.",
             surface_profile_gate: SurfaceProfile::Stable,
             lowering_rule: super::AdaptiveLoweringRule::ContextAlias(&[krir::Ctx::Thread]),
         };
