@@ -1819,17 +1819,17 @@ mod tests {
 
     static ELF_SMOKE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-    struct TempElfFile {
+    struct TempPath {
         path: PathBuf,
     }
 
-    impl TempElfFile {
+    impl TempPath {
         fn path(&self) -> &Path {
             &self.path
         }
     }
 
-    impl Drop for TempElfFile {
+    impl Drop for TempPath {
         fn drop(&mut self) {
             let _ = fs::remove_file(&self.path);
         }
@@ -1846,16 +1846,21 @@ mod tests {
         })
     }
 
-    fn write_temp_elf_file(prefix: &str, bytes: &[u8]) -> TempElfFile {
+    fn write_temp_file(prefix: &str, suffix: &str, bytes: &[u8]) -> TempPath {
         let unique = ELF_SMOKE_COUNTER.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "kernrift-{}-{}-{}.o",
+            "kernrift-{}-{}-{}{}",
             prefix,
             std::process::id(),
-            unique
+            unique,
+            suffix
         ));
         fs::write(&path, bytes).expect("write temporary ELF object");
-        TempElfFile { path }
+        TempPath { path }
+    }
+
+    fn write_temp_elf_file(prefix: &str, bytes: &[u8]) -> TempPath {
+        write_temp_file(prefix, ".o", bytes)
     }
 
     fn run_tool_capture(tool: &str, args: &[&str], path: &Path) -> String {
@@ -1892,6 +1897,10 @@ mod tests {
         find_optional_tool(&["ld", "ld.lld"])
     }
 
+    fn find_optional_asm_compiler() -> Option<String> {
+        find_optional_tool(&["cc", "clang", "gcc"])
+    }
+
     fn temp_output_path(prefix: &str, suffix: &str) -> PathBuf {
         let unique = ELF_SMOKE_COUNTER.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir().join(format!(
@@ -1920,6 +1929,46 @@ mod tests {
 
     fn linked_output_bytes(path: &Path) -> Vec<u8> {
         fs::read(path).expect("read linked ELF output")
+    }
+
+    fn compile_asm_source_to_object(compiler: &str, prefix: &str, source: &str) -> TempPath {
+        let source_file = write_temp_file(prefix, ".s", source.as_bytes());
+        let object_path = temp_output_path(prefix, ".o");
+        let output = Command::new(compiler)
+            .arg("-c")
+            .arg(source_file.path())
+            .arg("-o")
+            .arg(&object_path)
+            .output()
+            .expect("run assembly compiler");
+        assert!(
+            output.status.success(),
+            "compiler '{}' failed to assemble {}\nstdout:\n{}\nstderr:\n{}",
+            compiler,
+            source_file.path().display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        TempPath { path: object_path }
+    }
+
+    fn assert_is_elf64_executable(bytes: &[u8]) {
+        assert!(
+            bytes.len() >= 64,
+            "linked artifact is too small to be ELF64"
+        );
+        assert_eq!(&bytes[0..4], b"\x7fELF");
+        assert_eq!(bytes[4], 2, "expected ELF64");
+        assert_eq!(bytes[5], 1, "expected little-endian ELF");
+        assert_eq!(bytes[6], 1, "expected ELF version 1");
+        assert_eq!(read_u16(bytes, 18), 62, "expected x86_64 machine");
+        let elf_type = read_u16(bytes, 16);
+        assert!(
+            elf_type == 2 || elf_type == 3,
+            "expected ET_EXEC or ET_DYN, got {}",
+            elf_type
+        );
+        assert_ne!(read_u64(bytes, 24), 0, "expected non-zero ELF entry");
     }
 
     #[derive(Debug, PartialEq, Eq)]
@@ -3995,6 +4044,270 @@ mod tests {
         assert!(
             !output.status.success(),
             "linker '{}' unexpectedly accepted unresolved external object",
+            linker
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
+        assert!(
+            stderr.contains("undefined") || stderr.contains("unresolved"),
+            "expected unresolved-symbol failure from linker '{}', stderr was:\n{}",
+            linker,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let _ = fs::remove_file(&output_path);
+    }
+
+    #[test]
+    fn x86_64_elf_internal_only_object_is_accepted_by_final_link_smoke() {
+        let Some(linker) = find_optional_linker() else {
+            return;
+        };
+        let Some(compiler) = find_optional_asm_compiler() else {
+            return;
+        };
+
+        let module = ExecutableKrirModule {
+            module_caps: vec![],
+            functions: vec![
+                ExecutableFunction {
+                    name: "entry".to_string(),
+                    blocks: vec![ExecutableBlock {
+                        label: "entry".to_string(),
+                        ops: vec![ExecutableOp::Call {
+                            callee: "alpha".to_string(),
+                        }],
+                        terminator: ExecutableTerminator::Return {
+                            value: ExecutableValue::Unit,
+                        },
+                    }],
+                    ..executable_function("entry")
+                },
+                ExecutableFunction {
+                    name: "alpha".to_string(),
+                    ..unit_return_function("alpha")
+                },
+            ],
+            call_edges: vec![],
+        };
+
+        let startup = compile_asm_source_to_object(
+            &compiler,
+            "final-link-start",
+            ".globl _start\n.text\n_start:\n    call entry\n    mov $60, %rax\n    xor %rdi, %rdi\n    syscall\n",
+        );
+        let object =
+            lower_executable_krir_to_x86_64_object(&module, &BackendTargetContract::x86_64_sysv())
+                .expect("lower x86_64 object");
+        let input = write_temp_elf_file("final-link-internal", &emit_x86_64_object_bytes(&object));
+        let output_path = temp_output_path("final-link-internal", ".out");
+        let output = run_linker_capture(
+            &linker,
+            &["-e", "_start"],
+            &[startup.path(), input.path()],
+            &output_path,
+        );
+        assert!(
+            output.status.success(),
+            "linker '{}' rejected final link for internal-only object\nstdout:\n{}\nstderr:\n{}",
+            linker,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let linked_bytes = linked_output_bytes(&output_path);
+        assert_is_elf64_executable(&linked_bytes);
+        let _ = fs::remove_file(&output_path);
+    }
+
+    #[test]
+    fn x86_64_elf_unresolved_external_with_resolver_is_accepted_by_final_link_smoke() {
+        let Some(linker) = find_optional_linker() else {
+            return;
+        };
+        let Some(compiler) = find_optional_asm_compiler() else {
+            return;
+        };
+
+        let unresolved = ExecutableKrirModule {
+            module_caps: vec![],
+            functions: vec![ExecutableFunction {
+                name: "entry".to_string(),
+                blocks: vec![ExecutableBlock {
+                    label: "entry".to_string(),
+                    ops: vec![ExecutableOp::Call {
+                        callee: "ext".to_string(),
+                    }],
+                    terminator: ExecutableTerminator::Return {
+                        value: ExecutableValue::Unit,
+                    },
+                }],
+                ..executable_function("entry")
+            }],
+            call_edges: vec![],
+        };
+
+        let startup = compile_asm_source_to_object(
+            &compiler,
+            "final-link-start-unresolved",
+            ".globl _start\n.text\n_start:\n    call entry\n    mov $60, %rax\n    xor %rdi, %rdi\n    syscall\n",
+        );
+        let resolver = compile_asm_source_to_object(
+            &compiler,
+            "final-link-resolver",
+            ".globl ext\n.text\next:\n    ret\n",
+        );
+        let unresolved_obj = lower_executable_krir_to_x86_64_object(
+            &unresolved,
+            &BackendTargetContract::x86_64_sysv(),
+        )
+        .expect("lower unresolved object");
+        let unresolved_path = write_temp_elf_file(
+            "final-link-unresolved",
+            &emit_x86_64_object_bytes(&unresolved_obj),
+        );
+        let output_path = temp_output_path("final-link-unresolved", ".out");
+        let output = run_linker_capture(
+            &linker,
+            &["-e", "_start"],
+            &[startup.path(), unresolved_path.path(), resolver.path()],
+            &output_path,
+        );
+        assert!(
+            output.status.success(),
+            "linker '{}' failed final link with external resolver\nstdout:\n{}\nstderr:\n{}",
+            linker,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let linked_bytes = linked_output_bytes(&output_path);
+        assert_is_elf64_executable(&linked_bytes);
+        let _ = fs::remove_file(&output_path);
+    }
+
+    #[test]
+    fn x86_64_elf_mixed_internal_external_object_is_accepted_by_final_link_smoke() {
+        let Some(linker) = find_optional_linker() else {
+            return;
+        };
+        let Some(compiler) = find_optional_asm_compiler() else {
+            return;
+        };
+
+        let mixed = ExecutableKrirModule {
+            module_caps: vec![],
+            functions: vec![
+                ExecutableFunction {
+                    name: "entry".to_string(),
+                    blocks: vec![ExecutableBlock {
+                        label: "entry".to_string(),
+                        ops: vec![
+                            ExecutableOp::Call {
+                                callee: "alpha".to_string(),
+                            },
+                            ExecutableOp::Call {
+                                callee: "ext".to_string(),
+                            },
+                        ],
+                        terminator: ExecutableTerminator::Return {
+                            value: ExecutableValue::Unit,
+                        },
+                    }],
+                    ..executable_function("entry")
+                },
+                ExecutableFunction {
+                    name: "alpha".to_string(),
+                    ..unit_return_function("alpha")
+                },
+            ],
+            call_edges: vec![],
+        };
+
+        let startup = compile_asm_source_to_object(
+            &compiler,
+            "final-link-start-mixed",
+            ".globl _start\n.text\n_start:\n    call entry\n    mov $60, %rax\n    xor %rdi, %rdi\n    syscall\n",
+        );
+        let resolver = compile_asm_source_to_object(
+            &compiler,
+            "final-link-resolver-mixed",
+            ".globl ext\n.text\next:\n    ret\n",
+        );
+        let mixed_obj =
+            lower_executable_krir_to_x86_64_object(&mixed, &BackendTargetContract::x86_64_sysv())
+                .expect("lower mixed object");
+        let mixed_path =
+            write_temp_elf_file("final-link-mixed", &emit_x86_64_object_bytes(&mixed_obj));
+        let output_path = temp_output_path("final-link-mixed", ".out");
+        let output = run_linker_capture(
+            &linker,
+            &["-e", "_start"],
+            &[startup.path(), mixed_path.path(), resolver.path()],
+            &output_path,
+        );
+        assert!(
+            output.status.success(),
+            "linker '{}' failed final link for mixed internal/external object\nstdout:\n{}\nstderr:\n{}",
+            linker,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let linked_bytes = linked_output_bytes(&output_path);
+        assert_is_elf64_executable(&linked_bytes);
+        let _ = fs::remove_file(&output_path);
+    }
+
+    #[test]
+    fn x86_64_elf_unresolved_external_without_resolver_fails_final_link_smoke() {
+        let Some(linker) = find_optional_linker() else {
+            return;
+        };
+        let Some(compiler) = find_optional_asm_compiler() else {
+            return;
+        };
+
+        let unresolved = ExecutableKrirModule {
+            module_caps: vec![],
+            functions: vec![ExecutableFunction {
+                name: "entry".to_string(),
+                blocks: vec![ExecutableBlock {
+                    label: "entry".to_string(),
+                    ops: vec![ExecutableOp::Call {
+                        callee: "ext".to_string(),
+                    }],
+                    terminator: ExecutableTerminator::Return {
+                        value: ExecutableValue::Unit,
+                    },
+                }],
+                ..executable_function("entry")
+            }],
+            call_edges: vec![],
+        };
+
+        let startup = compile_asm_source_to_object(
+            &compiler,
+            "final-link-start-fail",
+            ".globl _start\n.text\n_start:\n    call entry\n    mov $60, %rax\n    xor %rdi, %rdi\n    syscall\n",
+        );
+        let unresolved_obj = lower_executable_krir_to_x86_64_object(
+            &unresolved,
+            &BackendTargetContract::x86_64_sysv(),
+        )
+        .expect("lower unresolved object");
+        let unresolved_path = write_temp_elf_file(
+            "final-link-fail-unresolved",
+            &emit_x86_64_object_bytes(&unresolved_obj),
+        );
+        let output_path = temp_output_path("final-link-fail-unresolved", ".out");
+        let output = run_linker_capture(
+            &linker,
+            &["-e", "_start"],
+            &[startup.path(), unresolved_path.path()],
+            &output_path,
+        );
+        assert!(
+            !output.status.success(),
+            "linker '{}' unexpectedly accepted unresolved final link",
             linker
         );
         let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();

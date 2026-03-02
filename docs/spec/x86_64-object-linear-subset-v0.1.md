@@ -10,7 +10,7 @@ This document defines the first x86_64 ELF compatibility/export path emitted by 
 
 This is intentionally downstream of the compiler-owned binary object format defined in `docs/spec/compiler-owned-object-linear-subset-v0.1.md`.
 It remains intentionally tiny.
-It is additionally smoke-checked against standard ELF inspection tools and the smallest practical linker flows for compatibility only; those tools do not become compiler truth.
+It is additionally smoke-checked against standard ELF inspection tools, relocatable linker flows, and the smallest practical final-link flows for compatibility only; those tools do not become compiler truth.
 
 ## Layer boundary
 
@@ -123,7 +123,7 @@ The compiler-owned object format is primary for internal backend work because it
 - binary-first deterministic serialization
 
 This ELF subset exists for downstream compatibility/export. It must not replace the compiler-owned object format as the internal backend boundary.
-Compatibility smoke checks confirm that standard ELF inspection tools accept the emitted bytes for the supported subset and that the smallest linker flows accept the resulting relocatable objects, but those tools remain downstream observers.
+Compatibility smoke checks confirm that standard ELF inspection tools accept the emitted bytes for the supported subset, that the smallest relocatable linker flows accept the resulting objects, and that the narrowest practical final-link flows accept them when paired with a tiny startup shim and resolver where needed. Those tools remain downstream observers only and do not become compiler truth.
 
 ## Explicit non-goals
 
