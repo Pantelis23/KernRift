@@ -810,6 +810,12 @@ struct MigratePreviewArgs {
     input_path: String,
 }
 
+#[derive(Debug)]
+struct VerifyArtifactMetaArgs {
+    artifact_path: String,
+    metadata_path: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BackendEmitArgs {
     surface: SurfaceProfile,
@@ -834,6 +840,25 @@ struct BackendArtifactMetadata {
     elfobj: Option<ElfObjectArtifactMetadata>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct BackendArtifactMetadataInput {
+    #[serde(rename = "schema_version")]
+    _schema_version: String,
+    emit_kind: String,
+    #[serde(rename = "surface")]
+    _surface: String,
+    byte_len: usize,
+    sha256: String,
+    #[serde(rename = "input_path")]
+    _input_path: String,
+    #[serde(rename = "input_path_kind")]
+    _input_path_kind: String,
+    #[serde(default)]
+    krbo: Option<KrboArtifactMetadataInput>,
+    #[serde(default)]
+    elfobj: Option<ElfObjectArtifactMetadataInput>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct KrboArtifactMetadata {
     magic: String,
@@ -844,6 +869,16 @@ struct KrboArtifactMetadata {
     target_name: &'static str,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct KrboArtifactMetadataInput {
+    magic: String,
+    version_major: u8,
+    version_minor: u8,
+    format_revision: u16,
+    target_tag: u8,
+    target_name: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct ElfObjectArtifactMetadata {
     magic: String,
@@ -851,6 +886,20 @@ struct ElfObjectArtifactMetadata {
     endianness: &'static str,
     elf_type: &'static str,
     machine: &'static str,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ElfObjectArtifactMetadataInput {
+    magic: String,
+    class: String,
+    endianness: String,
+    elf_type: String,
+    machine: String,
+}
+
+enum VerifyArtifactMetaError {
+    InvalidInput(String),
+    Mismatch(String),
 }
 
 impl PartialOrd for PolicyViolation {
@@ -1078,6 +1127,14 @@ fn main() -> ExitCode {
         },
         "verify" => match parse_verify_args(&args[2..]) {
             Ok(parsed) => run_verify(&parsed),
+            Err(err) => {
+                eprintln!("{}", err);
+                print_usage();
+                ExitCode::from(EXIT_INVALID_INPUT)
+            }
+        },
+        "verify-artifact-meta" => match parse_verify_artifact_meta_args(&args[2..]) {
+            Ok(parsed) => run_verify_artifact_meta(&parsed),
             Err(err) => {
                 eprintln!("{}", err);
                 print_usage();
@@ -1597,6 +1654,31 @@ fn parse_backend_emit_args(
     })
 }
 
+fn parse_verify_artifact_meta_args(args: &[String]) -> Result<VerifyArtifactMetaArgs, String> {
+    let mut positionals = Vec::<String>::new();
+
+    for arg in args {
+        if arg.starts_with('-') {
+            return Err(format!(
+                "invalid verify-artifact-meta mode: unexpected argument '{}'",
+                arg
+            ));
+        }
+        positionals.push(arg.clone());
+    }
+
+    if positionals.len() != 2 {
+        return Err(
+            "invalid verify-artifact-meta mode: expected <artifact> <meta.json>".to_string(),
+        );
+    }
+
+    Ok(VerifyArtifactMetaArgs {
+        artifact_path: positionals.remove(0),
+        metadata_path: positionals.remove(0),
+    })
+}
+
 fn parse_proposals_args(args: &[String]) -> Result<ProposalsArgs, String> {
     let mut validate = false;
     let mut promotion_readiness = false;
@@ -2088,6 +2170,50 @@ fn resolve_contracts_schema(
     Ok(requested.unwrap_or(ContractsSchemaArg::V1).to_emit_schema())
 }
 
+fn run_verify_artifact_meta(args: &VerifyArtifactMetaArgs) -> ExitCode {
+    let artifact_bytes = match fs::read(Path::new(&args.artifact_path)) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            eprintln!("failed to read artifact '{}': {}", args.artifact_path, err);
+            return ExitCode::from(EXIT_INVALID_INPUT);
+        }
+    };
+
+    let metadata_bytes = match fs::read(Path::new(&args.metadata_path)) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            eprintln!(
+                "failed to read artifact metadata '{}': {}",
+                args.metadata_path, err
+            );
+            return ExitCode::from(EXIT_INVALID_INPUT);
+        }
+    };
+
+    let metadata = match decode_backend_artifact_metadata(&metadata_bytes, &args.metadata_path) {
+        Ok(metadata) => metadata,
+        Err(err) => {
+            eprintln!("{}", err);
+            return ExitCode::from(EXIT_INVALID_INPUT);
+        }
+    };
+
+    match verify_backend_artifact_metadata(&artifact_bytes, &metadata) {
+        Ok(()) => {
+            println!("verify-artifact-meta: PASS");
+            ExitCode::SUCCESS
+        }
+        Err(VerifyArtifactMetaError::InvalidInput(err)) => {
+            eprintln!("{}", err);
+            ExitCode::from(EXIT_INVALID_INPUT)
+        }
+        Err(VerifyArtifactMetaError::Mismatch(err)) => {
+            eprintln!("{}", err);
+            ExitCode::from(EXIT_POLICY_VIOLATION)
+        }
+    }
+}
+
 fn new_verify_report(args: &VerifyArgs) -> VerifyReport {
     VerifyReport {
         schema_version: VERIFY_REPORT_SCHEMA_VERSION,
@@ -2114,6 +2240,31 @@ fn new_verify_report(args: &VerifyArgs) -> VerifyReport {
         },
         diagnostics: Vec::new(),
     }
+}
+
+fn decode_backend_artifact_metadata(
+    bytes: &[u8],
+    path: &str,
+) -> Result<BackendArtifactMetadataInput, String> {
+    let metadata_json: Value = serde_json::from_slice(bytes)
+        .map_err(|err| format!("failed to decode artifact metadata '{}': {}", path, err))?;
+    let schema_version = metadata_json
+        .get("schema_version")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            format!(
+                "failed to decode artifact metadata '{}': missing string field 'schema_version'",
+                path
+            )
+        })?;
+    if schema_version != "kernrift_artifact_meta_v1" {
+        return Err(format!(
+            "unsupported artifact metadata schema_version '{}', expected 'kernrift_artifact_meta_v1'",
+            schema_version
+        ));
+    }
+    serde_json::from_value(metadata_json)
+        .map_err(|err| format!("failed to decode artifact metadata '{}': {}", path, err))
 }
 
 fn emit_verify_report_json(report: &VerifyReport) -> Result<String, String> {
@@ -3623,6 +3774,160 @@ fn build_backend_artifact_metadata(
         krbo,
         elfobj,
     })
+}
+
+fn infer_backend_artifact_kind(
+    bytes: &[u8],
+) -> Result<BackendArtifactKind, VerifyArtifactMetaError> {
+    if bytes.len() >= 4 && &bytes[0..4] == b"KRBO" {
+        Ok(BackendArtifactKind::Krbo)
+    } else if bytes.len() >= 4 && &bytes[0..4] == b"\x7fELF" {
+        Ok(BackendArtifactKind::ElfObject)
+    } else {
+        Err(VerifyArtifactMetaError::InvalidInput(
+            "verify-artifact-meta: unsupported artifact bytes".to_string(),
+        ))
+    }
+}
+
+fn verify_backend_artifact_metadata(
+    bytes: &[u8],
+    metadata: &BackendArtifactMetadataInput,
+) -> Result<(), VerifyArtifactMetaError> {
+    let kind = infer_backend_artifact_kind(bytes)?;
+    if metadata.emit_kind != kind.as_str() {
+        return Err(VerifyArtifactMetaError::Mismatch(format!(
+            "verify-artifact-meta: emit_kind mismatch: metadata '{}', artifact '{}'",
+            metadata.emit_kind,
+            kind.as_str()
+        )));
+    }
+    if metadata.byte_len != bytes.len() {
+        return Err(VerifyArtifactMetaError::Mismatch(format!(
+            "verify-artifact-meta: byte_len mismatch: metadata {}, artifact {}",
+            metadata.byte_len,
+            bytes.len()
+        )));
+    }
+
+    let actual_sha256 = sha256_hex(bytes);
+    if metadata.sha256 != actual_sha256 {
+        return Err(VerifyArtifactMetaError::Mismatch(format!(
+            "verify-artifact-meta: sha256 mismatch: metadata {}, artifact {}",
+            metadata.sha256, actual_sha256
+        )));
+    }
+
+    match kind {
+        BackendArtifactKind::Krbo => {
+            let expected = metadata.krbo.as_ref().ok_or_else(|| {
+                VerifyArtifactMetaError::InvalidInput(
+                    "verify-artifact-meta: metadata missing krbo block".to_string(),
+                )
+            })?;
+            let actual = parse_krbo_artifact_metadata(bytes).map_err(|err| {
+                VerifyArtifactMetaError::InvalidInput(format!("verify-artifact-meta: {}", err))
+            })?;
+            verify_krbo_artifact_metadata(expected, &actual)
+        }
+        BackendArtifactKind::ElfObject => {
+            let expected = metadata.elfobj.as_ref().ok_or_else(|| {
+                VerifyArtifactMetaError::InvalidInput(
+                    "verify-artifact-meta: metadata missing elfobj block".to_string(),
+                )
+            })?;
+            let actual = parse_elf_object_artifact_metadata(bytes).map_err(|err| {
+                VerifyArtifactMetaError::InvalidInput(format!("verify-artifact-meta: {}", err))
+            })?;
+            verify_elf_object_artifact_metadata(expected, &actual)
+        }
+    }
+}
+
+fn verify_krbo_artifact_metadata(
+    expected: &KrboArtifactMetadataInput,
+    actual: &KrboArtifactMetadata,
+) -> Result<(), VerifyArtifactMetaError> {
+    verify_string_artifact_field("krbo.magic", &expected.magic, &actual.magic)?;
+    verify_u8_artifact_field(
+        "krbo.version_major",
+        expected.version_major,
+        actual.version_major,
+    )?;
+    verify_u8_artifact_field(
+        "krbo.version_minor",
+        expected.version_minor,
+        actual.version_minor,
+    )?;
+    verify_u16_artifact_field(
+        "krbo.format_revision",
+        expected.format_revision,
+        actual.format_revision,
+    )?;
+    verify_u8_artifact_field("krbo.target_tag", expected.target_tag, actual.target_tag)?;
+    verify_string_artifact_field(
+        "krbo.target_name",
+        &expected.target_name,
+        actual.target_name,
+    )?;
+    Ok(())
+}
+
+fn verify_elf_object_artifact_metadata(
+    expected: &ElfObjectArtifactMetadataInput,
+    actual: &ElfObjectArtifactMetadata,
+) -> Result<(), VerifyArtifactMetaError> {
+    verify_string_artifact_field("elfobj.magic", &expected.magic, &actual.magic)?;
+    verify_string_artifact_field("elfobj.class", &expected.class, actual.class)?;
+    verify_string_artifact_field("elfobj.endianness", &expected.endianness, actual.endianness)?;
+    verify_string_artifact_field("elfobj.elf_type", &expected.elf_type, actual.elf_type)?;
+    verify_string_artifact_field("elfobj.machine", &expected.machine, actual.machine)?;
+    Ok(())
+}
+
+fn verify_string_artifact_field(
+    field: &str,
+    expected: &str,
+    actual: &str,
+) -> Result<(), VerifyArtifactMetaError> {
+    if expected == actual {
+        Ok(())
+    } else {
+        Err(VerifyArtifactMetaError::Mismatch(format!(
+            "verify-artifact-meta: {} mismatch: metadata '{}', artifact '{}'",
+            field, expected, actual
+        )))
+    }
+}
+
+fn verify_u8_artifact_field(
+    field: &str,
+    expected: u8,
+    actual: u8,
+) -> Result<(), VerifyArtifactMetaError> {
+    if expected == actual {
+        Ok(())
+    } else {
+        Err(VerifyArtifactMetaError::Mismatch(format!(
+            "verify-artifact-meta: {} mismatch: metadata {}, artifact {}",
+            field, expected, actual
+        )))
+    }
+}
+
+fn verify_u16_artifact_field(
+    field: &str,
+    expected: u16,
+    actual: u16,
+) -> Result<(), VerifyArtifactMetaError> {
+    if expected == actual {
+        Ok(())
+    } else {
+        Err(VerifyArtifactMetaError::Mismatch(format!(
+            "verify-artifact-meta: {} mismatch: metadata {}, artifact {}",
+            field, expected, actual
+        )))
+    }
 }
 
 fn normalize_backend_artifact_input_path(input_path: &str) -> (String, &'static str) {
@@ -5986,6 +6291,7 @@ fn print_usage() {
     eprintln!(
         "  kernriftc verify --contracts <contracts.json> --hash <contracts.sha256> --report <verify-report.json>"
     );
+    eprintln!("  kernriftc verify-artifact-meta <artifact> <meta.json>");
     eprintln!("  kernriftc --selftest");
     eprintln!(
         "  kernriftc --surface stable --emit=krbo -o <output.krbo> --meta-out <output.json> <file.kr>"
