@@ -9,8 +9,9 @@ KRIR currently has two distinct roles:
 - `KrirModule`: the existing analysis-first contract used for checks and deterministic artifact emission.
 - `ExecutableKrirModule`: the minimal executable subset contract that future backend work must lower from.
 - `BackendTargetContract`: the explicit target-machine contract that future executable KRIR lowering must target.
-- `X86_64AsmModule`: the first target-specific linear assembly model, derived from executable KRIR plus a target contract.
-- `X86_64ElfRelocatableObject`: the first machine-facing object artifact, derived from executable KRIR plus a target contract.
+- `CompilerOwnedObject`: the primary internal machine-facing binary object artifact, derived from executable KRIR plus a target contract.
+- `X86_64AsmModule`: a target-specific assembly/debug/reference model, derived from executable KRIR plus a target contract.
+- `X86_64ElfRelocatableObject`: a downstream x86_64 ELF compatibility/export artifact, not the primary internal object model.
 
 Between surface KernRift and executable KRIR, the compiler owns a separate canonical executable semantics boundary in HIR. Governed surface forms normalize there before any lowering to executable KRIR begins.
 
@@ -18,9 +19,11 @@ The executable subset is intentionally narrow. It is specified separately so bac
 
 The first target contract is specified separately in `docs/spec/backend-target-model-x86_64-sysv-v0.1.md`. It defines target facts only; the contract itself still does not perform instruction selection, register allocation, or stack-frame lowering.
 
-The first target-specific lowering subset is specified separately in `docs/spec/x86_64-asm-linear-subset-v0.1.md`. It lowers only the current tiny executable subset to deterministic textual x86_64 SysV-flavored assembly.
+The first compiler-owned object subset is specified separately in `docs/spec/compiler-owned-object-linear-subset-v0.1.md`. It lowers only the current tiny executable subset to a deterministic compiler-owned binary object format with explicit symbols and fixups.
 
-The first machine-facing object subset is specified separately in `docs/spec/x86_64-object-linear-subset-v0.1.md`. It lowers only the current tiny executable subset to a deterministic ELF64 relocatable object subset.
+The first target-specific lowering subset is specified separately in `docs/spec/x86_64-asm-linear-subset-v0.1.md`. It lowers only the current tiny executable subset to deterministic textual x86_64 SysV-flavored assembly and is not the primary backend artifact.
+
+The first ELF machine-facing compatibility/export subset is specified separately in `docs/spec/x86_64-object-linear-subset-v0.1.md`. It lowers only the current tiny executable subset to a deterministic ELF64 relocatable object subset and is not the primary internal object contract.
 
 ## Data Model
 

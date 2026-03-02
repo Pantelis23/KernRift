@@ -15,10 +15,11 @@ Executable KRIR v0.1 is still target-independent. A separate backend target cont
 
 For KR0.x, target-specific lowering from executable KRIR is defined separately in:
 
+- `docs/spec/compiler-owned-object-linear-subset-v0.1.md`
 - `docs/spec/x86_64-asm-linear-subset-v0.1.md`
 - `docs/spec/x86_64-object-linear-subset-v0.1.md`
 
-Those lowerings remain downstream of executable KRIR and do not make target assembly or object format the semantic authority.
+Those lowerings remain downstream of executable KRIR and do not make target assembly or object format the semantic authority. The compiler-owned binary object format is the primary internal machine-facing artifact; assembly and ELF remain downstream views/export forms.
 
 This subset is intentionally narrow:
 
@@ -182,7 +183,7 @@ Backend target contracts define:
 - section naming assumptions,
 - freestanding toolchain assumptions.
 
-Executable KRIR v0.1 does not lower to those targets in this branch. The contract exists so later lowering can target an explicit machine model without making that machine model the semantic truth.
+Executable KRIR v0.1 lowers first to a compiler-owned binary object format. Target-specific assembly and ELF compatibility/export remain downstream of that internal object boundary and do not become semantic truth.
 
 ## Validation rules
 

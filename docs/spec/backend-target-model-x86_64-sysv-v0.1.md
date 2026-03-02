@@ -15,8 +15,9 @@ This branch defines the target contract only. The target contract itself does no
 - object emission by the target contract itself,
 - linker integration.
 
+The first compiler-owned object subset is defined separately in `docs/spec/compiler-owned-object-linear-subset-v0.1.md`.
 The first assembly lowering subset is defined separately in `docs/spec/x86_64-asm-linear-subset-v0.1.md`.
-The first object-emission subset is defined separately in `docs/spec/x86_64-object-linear-subset-v0.1.md`.
+The first ELF compatibility/export subset is defined separately in `docs/spec/x86_64-object-linear-subset-v0.1.md`.
 Those lowerings consume this target contract but do not expand the target contract into semantic authority.
 
 ## Layer boundary
@@ -27,9 +28,11 @@ The intended pipeline remains:
 - canonical executable semantics
 - executable KRIR
 - backend target contract
-- backend/codegen later
+- compiler-owned object format
+- backend/codegen/export later
 
 The target contract is downstream of executable KRIR. It is not semantic truth.
+The compiler-owned object format is the first primary machine-facing artifact that consumes this contract. Assembly text and ELF remain downstream forms and do not become the internal object truth.
 
 ## Target identity
 

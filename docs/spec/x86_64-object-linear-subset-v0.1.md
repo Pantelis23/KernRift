@@ -2,13 +2,14 @@
 
 ## Purpose
 
-This document defines the first machine-facing binary artifact emitted by KernRift:
+This document defines the first x86_64 ELF compatibility/export path emitted by KernRift:
 
 - executable KRIR
 - plus the `x86_64-sysv` backend target contract
 - to a deterministic ELF64 relocatable object subset
 
-This is the first real object-emission step. It is still intentionally tiny.
+This is intentionally downstream of the compiler-owned binary object format defined in `docs/spec/compiler-owned-object-linear-subset-v0.1.md`.
+It remains intentionally tiny.
 
 ## Layer boundary
 
@@ -18,9 +19,10 @@ The intended pipeline for the supported subset is:
 - canonical executable semantics
 - executable KRIR
 - backend target contract
+- compiler-owned object format
 - x86_64 object linear subset
 
-The emitted object is downstream of executable KRIR. It is not the semantic truth of the language.
+The emitted ELF object is downstream of executable KRIR and downstream of the compiler-owned object format. It is not the semantic truth of the language and is not the primary internal object contract.
 
 ## Supported lowering subset
 
@@ -52,6 +54,7 @@ The emitted artifact is:
 - one `.shstrtab`
 
 This subset does not emit relocation sections in v0.1.
+Current implementation still lowers directly from executable KRIR for this compatibility path. Future work should export ELF from the compiler-owned object format rather than treating ELF as the primary internal object model.
 
 ## Text section encoding
 
@@ -80,6 +83,16 @@ For the current subset:
 - direct call order is executable-op order
 - emitted ELF header, section order, symbol order, and bytes are deterministic
 - same executable KRIR input produces byte-identical object bytes
+
+## Relationship to the compiler-owned object format
+
+The compiler-owned object format is primary for internal backend work because it preserves:
+
+- explicit symbols
+- explicit fixups
+- binary-first deterministic serialization
+
+This ELF subset exists for downstream compatibility/export. It must not replace the compiler-owned object format as the internal backend boundary.
 
 ## Explicit non-goals
 

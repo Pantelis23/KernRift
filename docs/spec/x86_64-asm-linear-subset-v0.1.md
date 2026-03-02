@@ -8,7 +8,7 @@ This document defines the first real target-specific lowering step for KernRift:
 - plus the `x86_64-sysv` backend target contract
 - to deterministic textual x86_64 SysV assembly
 
-This is still a tiny subset. It does not add general codegen machinery.
+This is still a tiny subset. It does not add general codegen machinery, and it is not the primary internal backend artifact. The compiler-owned binary object format remains the primary internal machine-facing boundary.
 
 ## Layer boundary
 
@@ -18,9 +18,10 @@ The intended pipeline for the supported subset is:
 - canonical executable semantics
 - executable KRIR
 - backend target contract
+- compiler-owned object format
 - x86_64 linear assembly subset
 
-The assembly model is downstream of executable KRIR. It is not the semantic truth of the language.
+The assembly model is downstream of executable KRIR and downstream of the compiler-owned object format. It is not the semantic truth of the language and is not the primary backend artifact.
 
 ## Supported lowering subset
 
