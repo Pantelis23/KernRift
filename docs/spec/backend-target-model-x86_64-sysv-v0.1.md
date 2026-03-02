@@ -6,16 +6,18 @@ This document defines the first explicit backend target contract for KernRift.
 
 It exists to make future executable-KRIR lowering target a compiler-owned machine model rather than relying on Rust, C, LLVM, or any host-language/compiler semantics.
 
-This branch defines the target contract only. It does not perform:
+This branch defines the target contract only. The target contract itself does not perform:
 
 - instruction selection,
 - register allocation,
 - stack-frame lowering,
 - assembly emission,
-- object emission,
+- object emission by the target contract itself,
 - linker integration.
 
-The first assembly lowering subset is defined separately in `docs/spec/x86_64-asm-linear-subset-v0.1.md`. That lowering consumes this target contract but does not expand the target contract into semantic authority.
+The first assembly lowering subset is defined separately in `docs/spec/x86_64-asm-linear-subset-v0.1.md`.
+The first object-emission subset is defined separately in `docs/spec/x86_64-object-linear-subset-v0.1.md`.
+Those lowerings consume this target contract but do not expand the target contract into semantic authority.
 
 ## Layer boundary
 
@@ -169,7 +171,7 @@ This target contract does not:
 - define prologue/epilogue rules,
 - allocate registers,
 - allocate stack slots,
-- emit assembly,
-- emit objects,
+- emit assembly directly from the contract alone,
+- emit objects directly from the contract alone,
 - define linker scripts,
 - make LLVM or another host compiler the semantic authority.
