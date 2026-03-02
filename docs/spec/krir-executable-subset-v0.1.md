@@ -13,6 +13,8 @@ For the supported subset, canonical executable semantics lowers deterministicall
 
 Executable KRIR v0.1 is still target-independent. A separate backend target contract defines machine-facing facts such as register sets, ABI, stack alignment, symbol naming, and section naming. Only a tiny part of that target contract is exercised by the current executable subset.
 
+For KR0.x, target-specific lowering from executable KRIR is defined separately in `docs/spec/x86_64-asm-linear-subset-v0.1.md`. That lowering remains downstream of executable KRIR and does not make target assembly the semantic authority.
+
 This subset is intentionally narrow:
 
 - linear function bodies only,

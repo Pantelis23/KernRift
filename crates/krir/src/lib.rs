@@ -591,13 +591,145 @@ impl BackendTargetContract {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct X86_64AsmModule {
+    pub section: &'static str,
+    pub functions: Vec<X86_64AsmFunction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct X86_64AsmFunction {
+    pub symbol: String,
+    pub instructions: Vec<X86_64AsmInstruction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum X86_64AsmInstruction {
+    Call { symbol: String },
+    Ret,
+}
+
+pub fn validate_x86_64_linear_subset(
+    module: &ExecutableKrirModule,
+    target: &BackendTargetContract,
+) -> Result<(), String> {
+    target.validate()?;
+    if target.target_id != BackendTargetId::X86_64Sysv
+        || target.arch != TargetArch::X86_64
+        || target.abi != TargetAbi::Sysv
+    {
+        return Err("x86_64 asm lowering requires x86_64-sysv target contract".to_string());
+    }
+
+    module.validate()?;
+    let function_names = module
+        .functions
+        .iter()
+        .map(|function| function.name.as_str())
+        .collect::<BTreeSet<_>>();
+
+    for function in &module.functions {
+        if function.blocks.len() != 1 {
+            return Err(format!(
+                "x86_64 asm lowering requires exactly one block in function '{}'",
+                function.name
+            ));
+        }
+        let entry = &function.blocks[0];
+        if entry.label != function.entry_block {
+            return Err(format!(
+                "x86_64 asm lowering requires entry block '{}' to be first in function '{}'",
+                function.entry_block, function.name
+            ));
+        }
+        for op in &entry.ops {
+            match op {
+                ExecutableOp::Call { callee } => {
+                    if !function_names.contains(callee.as_str()) {
+                        return Err(format!(
+                            "x86_64 asm lowering requires defined direct call target '{}' in function '{}'",
+                            callee, function.name
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub fn lower_executable_krir_to_x86_64_asm(
+    module: &ExecutableKrirModule,
+    target: &BackendTargetContract,
+) -> Result<X86_64AsmModule, String> {
+    validate_x86_64_linear_subset(module, target)?;
+
+    let mut canonical = module.clone();
+    canonical.canonicalize();
+
+    let functions = canonical
+        .functions
+        .into_iter()
+        .map(|function| {
+            let block = &function.blocks[0];
+            let mut instructions = block
+                .ops
+                .iter()
+                .map(|op| match op {
+                    ExecutableOp::Call { callee } => X86_64AsmInstruction::Call {
+                        symbol: callee.clone(),
+                    },
+                })
+                .collect::<Vec<_>>();
+            instructions.push(X86_64AsmInstruction::Ret);
+
+            X86_64AsmFunction {
+                symbol: function.name,
+                instructions,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    Ok(X86_64AsmModule {
+        section: target.sections.text,
+        functions,
+    })
+}
+
+pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
+    let mut out = String::new();
+    out.push_str(module.section);
+    out.push('\n');
+    for function in &module.functions {
+        out.push('\n');
+        out.push_str(&function.symbol);
+        out.push_str(":\n");
+        for instruction in &function.instructions {
+            match instruction {
+                X86_64AsmInstruction::Call { symbol } => {
+                    out.push_str("    call ");
+                    out.push_str(symbol);
+                    out.push('\n');
+                }
+                X86_64AsmInstruction::Ret => {
+                    out.push_str("    ret\n");
+                }
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         BackendTargetContract, CallEdge, Ctx, Eff, ExecutableBlock, ExecutableFacts,
         ExecutableFunction, ExecutableKrirModule, ExecutableOp, ExecutableSignature,
         ExecutableTerminator, ExecutableValue, ExecutableValueType, FunctionAttrs,
-        FutureScalarReturnConvention, X86_64IntegerRegister,
+        FutureScalarReturnConvention, X86_64IntegerRegister, emit_x86_64_asm_text,
+        lower_executable_krir_to_x86_64_asm, validate_x86_64_linear_subset,
     };
     use serde_json::json;
     use std::collections::BTreeSet;
@@ -626,6 +758,19 @@ mod tests {
                     value: ExecutableValue::Unit,
                 },
             }],
+        }
+    }
+
+    fn unit_return_function(name: &str) -> ExecutableFunction {
+        ExecutableFunction {
+            blocks: vec![ExecutableBlock {
+                label: "entry".to_string(),
+                ops: vec![],
+                terminator: ExecutableTerminator::Return {
+                    value: ExecutableValue::Unit,
+                },
+            }],
+            ..executable_function(name)
         }
     }
 
@@ -911,6 +1056,162 @@ mod tests {
             contract.validate(),
             Err(
                 "backend target contract future_scalar_return must resolve to integer_registers"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn executable_krir_lowers_empty_function_to_x86_64_asm_text() {
+        let mut module = ExecutableKrirModule {
+            module_caps: vec![],
+            functions: vec![ExecutableFunction {
+                facts: ExecutableFacts {
+                    eff_used: vec![],
+                    caps_req: vec![],
+                    ..executable_function("entry").facts
+                },
+                blocks: vec![ExecutableBlock {
+                    label: "entry".to_string(),
+                    ops: vec![],
+                    terminator: ExecutableTerminator::Return {
+                        value: ExecutableValue::Unit,
+                    },
+                }],
+                ..executable_function("entry")
+            }],
+            call_edges: vec![],
+        };
+        module.canonicalize();
+
+        let asm =
+            lower_executable_krir_to_x86_64_asm(&module, &BackendTargetContract::x86_64_sysv())
+                .expect("lower x86_64 asm");
+
+        assert_eq!(emit_x86_64_asm_text(&asm), ".text\n\nentry:\n    ret\n");
+    }
+
+    #[test]
+    fn executable_krir_lowers_ordered_direct_calls_to_ordered_call_instructions() {
+        let module = ExecutableKrirModule {
+            module_caps: vec![],
+            functions: vec![
+                ExecutableFunction {
+                    name: "entry".to_string(),
+                    blocks: vec![ExecutableBlock {
+                        label: "entry".to_string(),
+                        ops: vec![
+                            ExecutableOp::Call {
+                                callee: "alpha".to_string(),
+                            },
+                            ExecutableOp::Call {
+                                callee: "beta".to_string(),
+                            },
+                        ],
+                        terminator: ExecutableTerminator::Return {
+                            value: ExecutableValue::Unit,
+                        },
+                    }],
+                    ..executable_function("entry")
+                },
+                ExecutableFunction {
+                    name: "alpha".to_string(),
+                    ..unit_return_function("alpha")
+                },
+                ExecutableFunction {
+                    name: "beta".to_string(),
+                    ..unit_return_function("beta")
+                },
+            ],
+            call_edges: vec![],
+        };
+
+        let asm =
+            lower_executable_krir_to_x86_64_asm(&module, &BackendTargetContract::x86_64_sysv())
+                .expect("lower x86_64 asm");
+
+        assert_eq!(
+            emit_x86_64_asm_text(&asm),
+            ".text\n\nalpha:\n    ret\n\nbeta:\n    ret\n\nentry:\n    call alpha\n    call beta\n    ret\n"
+        );
+    }
+
+    #[test]
+    fn executable_krir_lowers_functions_in_deterministic_symbol_order() {
+        let module = ExecutableKrirModule {
+            module_caps: vec![],
+            functions: vec![unit_return_function("zeta"), unit_return_function("alpha")],
+            call_edges: vec![],
+        };
+
+        let asm =
+            lower_executable_krir_to_x86_64_asm(&module, &BackendTargetContract::x86_64_sysv())
+                .expect("lower x86_64 asm");
+
+        assert_eq!(
+            asm.functions
+                .iter()
+                .map(|function| function.symbol.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "zeta"]
+        );
+    }
+
+    #[test]
+    fn executable_krir_x86_64_lowering_rejects_multiple_blocks() {
+        let module = ExecutableKrirModule {
+            module_caps: vec![],
+            functions: vec![ExecutableFunction {
+                blocks: vec![
+                    ExecutableBlock {
+                        label: "entry".to_string(),
+                        ops: vec![],
+                        terminator: ExecutableTerminator::Return {
+                            value: ExecutableValue::Unit,
+                        },
+                    },
+                    ExecutableBlock {
+                        label: "late".to_string(),
+                        ops: vec![],
+                        terminator: ExecutableTerminator::Return {
+                            value: ExecutableValue::Unit,
+                        },
+                    },
+                ],
+                ..executable_function("entry")
+            }],
+            call_edges: vec![],
+        };
+
+        assert_eq!(
+            validate_x86_64_linear_subset(&module, &BackendTargetContract::x86_64_sysv()),
+            Err("x86_64 asm lowering requires exactly one block in function 'entry'".to_string())
+        );
+    }
+
+    #[test]
+    fn executable_krir_x86_64_lowering_rejects_undefined_direct_call_target() {
+        let module = ExecutableKrirModule {
+            module_caps: vec![],
+            functions: vec![ExecutableFunction {
+                blocks: vec![ExecutableBlock {
+                    label: "entry".to_string(),
+                    ops: vec![ExecutableOp::Call {
+                        callee: "missing".to_string(),
+                    }],
+                    terminator: ExecutableTerminator::Return {
+                        value: ExecutableValue::Unit,
+                    },
+                }],
+                ..executable_function("entry")
+            }],
+            call_edges: vec![],
+        };
+
+        assert_eq!(
+            validate_x86_64_linear_subset(&module, &BackendTargetContract::x86_64_sysv()),
+            Err(
+                "x86_64 asm lowering requires defined direct call target 'missing' in function 'entry'"
                     .to_string()
             )
         );

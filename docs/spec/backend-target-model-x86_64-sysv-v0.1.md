@@ -15,6 +15,8 @@ This branch defines the target contract only. It does not perform:
 - object emission,
 - linker integration.
 
+The first assembly lowering subset is defined separately in `docs/spec/x86_64-asm-linear-subset-v0.1.md`. That lowering consumes this target contract but does not expand the target contract into semantic authority.
+
 ## Layer boundary
 
 The intended pipeline remains:

@@ -9,12 +9,15 @@ KRIR currently has two distinct roles:
 - `KrirModule`: the existing analysis-first contract used for checks and deterministic artifact emission.
 - `ExecutableKrirModule`: the minimal executable subset contract that future backend work must lower from.
 - `BackendTargetContract`: the explicit target-machine contract that future executable KRIR lowering must target.
+- `X86_64AsmModule`: the first target-specific linear assembly model, derived from executable KRIR plus a target contract.
 
 Between surface KernRift and executable KRIR, the compiler owns a separate canonical executable semantics boundary in HIR. Governed surface forms normalize there before any lowering to executable KRIR begins.
 
 The executable subset is intentionally narrow. It is specified separately so backend work does not pretend the current fact-heavy analysis IR is already codegen-ready.
 
 The first target contract is specified separately in `docs/spec/backend-target-model-x86_64-sysv-v0.1.md`. It defines target facts only; this branch still does not perform instruction selection, register allocation, stack-frame lowering, or assembly/object emission.
+
+The first target-specific lowering subset is specified separately in `docs/spec/x86_64-asm-linear-subset-v0.1.md`. It lowers only the current tiny executable subset to deterministic textual x86_64 SysV-flavored assembly.
 
 ## Data Model
 
@@ -208,3 +211,22 @@ Future backend/codegen work must lower:
 - against an explicit backend target contract
 
 The backend target contract is not executable KRIR and is not semantic authority. It records machine-facing constraints such as register sets, ABI, stack alignment, symbol naming, and section naming for a chosen target. In KR0.x the first defined contract is `x86_64-sysv`, but this branch still does not emit machine code.
+
+## Target-Specific Assembly Boundary
+
+Target-specific assembly is downstream of executable KRIR and downstream of the backend target contract:
+
+- canonical executable semantics
+- executable KRIR
+- backend target contract
+- target-specific assembly model
+
+For KR0.x the first target-specific assembly model is intentionally tiny:
+
+- `.text` section only,
+- source symbol labels,
+- ordered direct `call` instructions,
+- terminal `ret`,
+- no prologue/epilogue,
+- no stack-slot allocation,
+- no object emission.
