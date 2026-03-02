@@ -127,4 +127,4 @@ This subset does not define:
 
 ELF is a downstream compatibility/export form, not the primary internal backend boundary.
 
-Future work may translate this compiler-owned object format into ELF relocatable objects. That export step must not make ELF the semantic authority or the internal truth of the compiler.
+The current repository exports ELF relocatable objects from this compiler-owned object format through a compatibility wrapper. That export step must not make ELF the semantic authority or the internal truth of the compiler.

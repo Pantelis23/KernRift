@@ -1000,12 +1000,123 @@ pub struct X86_64ElfFunctionSymbol {
     pub size: u64,
 }
 
+pub fn validate_compiler_owned_object_for_x86_64_elf_export(
+    object: &CompilerOwnedObject,
+    target: &BackendTargetContract,
+) -> Result<(), String> {
+    target.validate()?;
+    if target.target_id != BackendTargetId::X86_64Sysv
+        || target.arch != TargetArch::X86_64
+        || target.abi != TargetAbi::Sysv
+    {
+        return Err("x86_64 ELF export requires x86_64-sysv target contract".to_string());
+    }
+
+    object.validate()?;
+    if object.header.target_id != target.target_id {
+        return Err(
+            "x86_64 ELF export requires compiler-owned object target_id to match target contract"
+                .to_string(),
+        );
+    }
+    if object.header.endian != target.endian {
+        return Err(
+            "x86_64 ELF export requires compiler-owned object endian to match target contract"
+                .to_string(),
+        );
+    }
+    if object.header.pointer_bits != target.pointer_bits {
+        return Err("x86_64 ELF export requires compiler-owned object pointer_bits to match target contract".to_string());
+    }
+    if object.code.name != target.sections.text {
+        return Err("x86_64 ELF export requires compiler-owned object code section to match target text section".to_string());
+    }
+
+    Ok(())
+}
+
 pub fn validate_x86_64_object_linear_subset(
     module: &ExecutableKrirModule,
     target: &BackendTargetContract,
 ) -> Result<(), String> {
-    validate_x86_64_linear_subset(module, target)
-        .map_err(|err| err.replace("x86_64 asm lowering", "x86_64 object emission"))
+    validate_compiler_owned_object_linear_subset(module, target)
+        .map_err(|err| err.replace("compiler-owned object emission", "x86_64 object emission"))
+}
+
+pub fn export_compiler_owned_object_to_x86_64_elf(
+    object: &CompilerOwnedObject,
+    target: &BackendTargetContract,
+) -> Result<X86_64ElfRelocatableObject, String> {
+    validate_compiler_owned_object_for_x86_64_elf_export(object, target)?;
+
+    let symbol_offsets = object
+        .symbols
+        .iter()
+        .map(|symbol| (symbol.name.as_str(), symbol.offset))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut text_bytes = object.code.bytes.clone();
+    for fixup in &object.fixups {
+        let source_offset = object
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == fixup.source_symbol)
+            .map(|symbol| symbol.offset)
+            .ok_or_else(|| {
+                format!(
+                    "x86_64 ELF export requires source symbol '{}' for fixup",
+                    fixup.source_symbol
+                )
+            })?;
+        let target_offset = *symbol_offsets
+            .get(fixup.target_symbol.as_str())
+            .ok_or_else(|| {
+                format!(
+                    "x86_64 ELF export requires target symbol '{}' for fixup",
+                    fixup.target_symbol
+                )
+            })?;
+
+        match fixup.kind {
+            CompilerOwnedFixupKind::X86_64CallRel32 => {
+                if fixup.width_bytes != 4 {
+                    return Err(format!(
+                        "x86_64 ELF export requires rel32 fixup width 4 for target '{}'",
+                        fixup.target_symbol
+                    ));
+                }
+                let next_ip = fixup.patch_offset + u64::from(fixup.width_bytes);
+                let displacement = (target_offset as i64) - (next_ip as i64);
+                let rel32 = i32::try_from(displacement).map_err(|_| {
+                    format!(
+                        "x86_64 ELF export call displacement to '{}' from '{}' does not fit rel32",
+                        fixup.target_symbol, fixup.source_symbol
+                    )
+                })?;
+                let patch_offset =
+                    usize::try_from(fixup.patch_offset).expect("patch offset must fit usize");
+                text_bytes[patch_offset..patch_offset + 4].copy_from_slice(&rel32.to_le_bytes());
+            }
+        }
+        let _ = source_offset;
+    }
+
+    let function_symbols = object
+        .symbols
+        .iter()
+        .map(|symbol| X86_64ElfFunctionSymbol {
+            name: symbol.name.clone(),
+            offset: symbol.offset,
+            size: symbol.size,
+        })
+        .collect::<Vec<_>>();
+
+    Ok(X86_64ElfRelocatableObject {
+        format: "elf64-relocatable",
+        text_section: object.code.name,
+        text_bytes,
+        function_symbols,
+    })
 }
 
 pub fn lower_executable_krir_to_x86_64_object(
@@ -1013,69 +1124,8 @@ pub fn lower_executable_krir_to_x86_64_object(
     target: &BackendTargetContract,
 ) -> Result<X86_64ElfRelocatableObject, String> {
     validate_x86_64_object_linear_subset(module, target)?;
-
-    let mut canonical = module.clone();
-    canonical.canonicalize();
-
-    let mut function_offsets = BTreeMap::new();
-    let mut function_sizes = BTreeMap::new();
-    let mut cursor = 0u64;
-    for function in &canonical.functions {
-        let block = &function.blocks[0];
-        let size = (block.ops.len() as u64) * 5 + 1;
-        function_offsets.insert(function.name.clone(), cursor);
-        function_sizes.insert(function.name.clone(), size);
-        cursor += size;
-    }
-
-    let mut text_bytes = Vec::with_capacity(cursor as usize);
-    let mut function_symbols = Vec::with_capacity(canonical.functions.len());
-    for function in &canonical.functions {
-        let block = &function.blocks[0];
-        let function_offset = *function_offsets
-            .get(&function.name)
-            .expect("function offset must exist");
-        let function_size = *function_sizes
-            .get(&function.name)
-            .expect("function size must exist");
-        let mut local_offset = 0u64;
-        for op in &block.ops {
-            match op {
-                ExecutableOp::Call { callee } => {
-                    let callee_offset = *function_offsets.get(callee).ok_or_else(|| {
-                        format!(
-                            "x86_64 object emission requires defined direct call target '{}' in function '{}'",
-                            callee, function.name
-                        )
-                    })?;
-                    let next_ip = function_offset + local_offset + 5;
-                    let displacement = (callee_offset as i64) - (next_ip as i64);
-                    let rel32 = i32::try_from(displacement).map_err(|_| {
-                        format!(
-                            "x86_64 object emission call displacement to '{}' in function '{}' does not fit rel32",
-                            callee, function.name
-                        )
-                    })?;
-                    text_bytes.push(0xE8);
-                    text_bytes.extend_from_slice(&rel32.to_le_bytes());
-                    local_offset += 5;
-                }
-            }
-        }
-        text_bytes.push(0xC3);
-        function_symbols.push(X86_64ElfFunctionSymbol {
-            name: function.name.clone(),
-            offset: function_offset,
-            size: function_size,
-        });
-    }
-
-    Ok(X86_64ElfRelocatableObject {
-        format: "elf64-relocatable",
-        text_section: target.sections.text,
-        text_bytes,
-        function_symbols,
-    })
+    let object = lower_executable_krir_to_compiler_owned_object(module, target)?;
+    export_compiler_owned_object_to_x86_64_elf(&object, target)
 }
 
 fn push_u16_into(dst: &mut [u8], value: u16) {
@@ -1375,9 +1425,10 @@ mod tests {
         ExecutableOp, ExecutableSignature, ExecutableTerminator, ExecutableValue,
         ExecutableValueType, FunctionAttrs, FutureScalarReturnConvention, X86_64IntegerRegister,
         emit_compiler_owned_object_bytes, emit_x86_64_asm_text, emit_x86_64_object_bytes,
-        lower_executable_krir_to_compiler_owned_object, lower_executable_krir_to_x86_64_asm,
-        lower_executable_krir_to_x86_64_object, validate_compiler_owned_object_linear_subset,
-        validate_x86_64_linear_subset, validate_x86_64_object_linear_subset,
+        export_compiler_owned_object_to_x86_64_elf, lower_executable_krir_to_compiler_owned_object,
+        lower_executable_krir_to_x86_64_asm, lower_executable_krir_to_x86_64_object,
+        validate_compiler_owned_object_linear_subset, validate_x86_64_linear_subset,
+        validate_x86_64_object_linear_subset,
     };
     use serde_json::json;
     use std::collections::BTreeSet;
@@ -2528,6 +2579,47 @@ mod tests {
                 .map(|symbol| symbol.name.as_str())
                 .collect::<Vec<_>>(),
             vec!["alpha", "zeta"]
+        );
+    }
+
+    #[test]
+    fn x86_64_elf_export_is_derived_from_compiler_owned_object() {
+        let module = ExecutableKrirModule {
+            module_caps: vec![],
+            functions: vec![
+                ExecutableFunction {
+                    name: "entry".to_string(),
+                    blocks: vec![ExecutableBlock {
+                        label: "entry".to_string(),
+                        ops: vec![ExecutableOp::Call {
+                            callee: "alpha".to_string(),
+                        }],
+                        terminator: ExecutableTerminator::Return {
+                            value: ExecutableValue::Unit,
+                        },
+                    }],
+                    ..executable_function("entry")
+                },
+                ExecutableFunction {
+                    name: "alpha".to_string(),
+                    ..unit_return_function("alpha")
+                },
+            ],
+            call_edges: vec![],
+        };
+
+        let target = BackendTargetContract::x86_64_sysv();
+        let compiler_owned = lower_executable_krir_to_compiler_owned_object(&module, &target)
+            .expect("lower compiler-owned object");
+        let exported = export_compiler_owned_object_to_x86_64_elf(&compiler_owned, &target)
+            .expect("export compiler-owned object");
+        let wrapped = lower_executable_krir_to_x86_64_object(&module, &target)
+            .expect("compatibility wrapper");
+
+        assert_eq!(wrapped, exported);
+        assert_eq!(
+            exported.text_bytes,
+            vec![0xC3, 0xE8, 0xFA, 0xFF, 0xFF, 0xFF, 0xC3]
         );
     }
 

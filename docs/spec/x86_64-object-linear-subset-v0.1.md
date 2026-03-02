@@ -4,7 +4,7 @@
 
 This document defines the first x86_64 ELF compatibility/export path emitted by KernRift:
 
-- executable KRIR
+- compiler-owned object format
 - plus the `x86_64-sysv` backend target contract
 - to a deterministic ELF64 relocatable object subset
 
@@ -22,7 +22,7 @@ The intended pipeline for the supported subset is:
 - compiler-owned object format
 - x86_64 object linear subset
 
-The emitted ELF object is downstream of executable KRIR and downstream of the compiler-owned object format. It is not the semantic truth of the language and is not the primary internal object contract.
+The emitted ELF object is downstream of executable KRIR and is exported from the compiler-owned object format. It is not the semantic truth of the language and is not the primary internal object contract.
 
 ## Supported lowering subset
 
@@ -54,7 +54,7 @@ The emitted artifact is:
 - one `.shstrtab`
 
 This subset does not emit relocation sections in v0.1.
-Current implementation still lowers directly from executable KRIR for this compatibility path. Future work should export ELF from the compiler-owned object format rather than treating ELF as the primary internal object model.
+Current implementation exports ELF from the compiler-owned object format for this compatibility path. ELF remains downstream of the compiler-owned object model rather than a peer lowering boundary.
 
 ## Text section encoding
 

@@ -19,7 +19,7 @@ For KR0.x, target-specific lowering from executable KRIR is defined separately i
 - `docs/spec/x86_64-asm-linear-subset-v0.1.md`
 - `docs/spec/x86_64-object-linear-subset-v0.1.md`
 
-Those lowerings remain downstream of executable KRIR and do not make target assembly or object format the semantic authority. The compiler-owned binary object format is the primary internal machine-facing artifact; assembly and ELF remain downstream views/export forms.
+Those lowerings remain downstream of executable KRIR and do not make target assembly or object format the semantic authority. The compiler-owned binary object format is the primary internal machine-facing artifact; assembly remains a downstream reference form and ELF is exported from the compiler-owned object format as a downstream compatibility form.
 
 This subset is intentionally narrow:
 
