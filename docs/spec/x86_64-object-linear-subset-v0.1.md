@@ -33,12 +33,13 @@ Supported executable KRIR inputs:
 - exactly one explicit `entry` block per function
 - ordered direct `Call` ops
 - terminal `Return { value: Unit }`
-- direct calls only to defined non-extern functions in the same executable KRIR module
+- direct calls to:
+  - defined non-extern functions in the same executable KRIR module, or
+  - unresolved external function targets preserved in the compiler-owned object format
 
 Rejected at this lowering boundary:
 
 - multiple blocks
-- missing defined direct call targets
 - any executable KRIR shape outside the current linear subset
 
 ## Emitted artifact kind
@@ -52,8 +53,8 @@ The emitted artifact is:
 - one `.symtab`
 - one `.strtab`
 - one `.shstrtab`
+- `.rela.text` when unresolved external call relocations are present
 
-This subset does not emit relocation sections in v0.1.
 Current implementation exports ELF from the compiler-owned object format for this compatibility path. ELF remains downstream of the compiler-owned object model rather than a peer lowering boundary.
 
 ## Text section encoding
@@ -65,17 +66,24 @@ Per function:
 
 For the current subset:
 
-- all direct call targets are internal to the same object
-- all `rel32` displacements are resolved directly during emission
+- internal direct call targets are resolved directly during emission
+- unresolved external direct call targets remain zero-displacement `call` sites plus explicit relocations derived from compiler-owned fixups
 - no stack frame is emitted
 - no prologue/epilogue is emitted beyond terminal `ret`
 
 ## Symbol policy
 
 - one function symbol per lowered executable KRIR function
+- zero or more undefined external function symbols derived from the compiler-owned object format
 - function symbol names preserve source symbol names
 - symbol order is deterministic and follows canonical executable KRIR function order
 - symbol offsets and sizes are recorded relative to `.text`
+
+Relocations:
+
+- are derived from compiler-owned object fixups
+- currently use `R_X86_64_PLT32` for unresolved external direct calls
+- target `.rela.text`
 
 ## Determinism rules
 
@@ -98,7 +106,6 @@ This ELF subset exists for downstream compatibility/export. It must not replace 
 
 This subset does not define:
 
-- relocation sections for unresolved externs
 - argument passing
 - non-unit return lowering
 - stack frames

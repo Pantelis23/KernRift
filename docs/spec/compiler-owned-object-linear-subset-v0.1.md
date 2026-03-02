@@ -31,12 +31,13 @@ Supported executable KRIR inputs:
 - exactly one explicit `entry` block per function
 - ordered direct `Call` ops
 - terminal `Return { value: Unit }`
-- direct calls only to defined non-extern functions in the same executable KRIR module
+- direct calls to:
+  - defined non-extern functions in the same executable KRIR module, or
+  - unresolved external function targets preserved explicitly in the object format
 
 Rejected at this lowering boundary:
 
 - multiple blocks
-- missing defined direct call targets
 - any executable KRIR shape outside the current linear subset
 
 ## Object identity
@@ -73,6 +74,11 @@ The format records one function symbol per lowered executable KRIR function:
 - offset
 - size
 
+Symbols also record whether they are:
+
+- defined in the code payload, or
+- unresolved external declarations carried for downstream export
+
 Symbol names currently preserve executable KRIR function names directly.
 
 Symbol ordering is deterministic and follows canonical executable KRIR function order.
@@ -100,6 +106,12 @@ For this subset:
 
 This preserves compiler-owned relocation intent for later export or patching work.
 
+When the target symbol is unresolved external:
+
+- the object still emits `E8 00 00 00 00`
+- the fixup still records the target symbol
+- the unresolved target is preserved as an explicit symbol entry rather than being erased
+
 ## Determinism rules
 
 - function order is canonical executable KRIR order
@@ -114,7 +126,6 @@ This subset does not define:
 
 - linker integration
 - executable generation
-- extern relocations
 - argument passing
 - non-unit return lowering
 - stack frames

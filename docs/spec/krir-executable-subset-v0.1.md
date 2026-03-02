@@ -183,7 +183,7 @@ Backend target contracts define:
 - section naming assumptions,
 - freestanding toolchain assumptions.
 
-Executable KRIR v0.1 lowers first to a compiler-owned binary object format. Target-specific assembly and ELF compatibility/export remain downstream of that internal object boundary and do not become semantic truth.
+Executable KRIR v0.1 lowers first to a compiler-owned binary object format. That object format preserves explicit symbols and fixups, including unresolved external call intent for downstream export. Target-specific assembly and ELF compatibility/export remain downstream of that internal object boundary and do not become semantic truth.
 
 ## Validation rules
 
