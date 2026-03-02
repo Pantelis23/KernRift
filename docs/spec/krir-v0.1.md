@@ -21,6 +21,8 @@ KRIR v0.1 explicitly does not cover:
 - backend machine code generation,
 - kernel integration/runtime loading.
 
+KRIR v0.1 in this document remains the analysis-first contract used by `check`, `analyze`, and artifact emit. The executable subset contract is defined separately in `docs/spec/krir-executable-subset-v0.1.md` so backend work does not treat this full fact-oriented representation as already codegen-ready.
+
 ## Surface Grammar (KR0.x accepted language)
 
 The parser currently accepts the following minimal surface form.

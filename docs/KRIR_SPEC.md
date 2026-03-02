@@ -4,6 +4,13 @@
 
 KRIR is the kernel-aware IR for KernRift. It carries semantic facts that must remain enforceable through optimization and lowering.
 
+KRIR currently has two distinct roles:
+
+- `KrirModule`: the existing analysis-first contract used for checks and deterministic artifact emission.
+- `ExecutableKrirModule`: the minimal executable subset contract that future backend work must lower from.
+
+The executable subset is intentionally narrow. It is specified separately so backend work does not pretend the current fact-heavy analysis IR is already codegen-ready.
+
 ## Data Model
 
 ### Sets
@@ -174,3 +181,15 @@ Contracts schema:
 - symbol linkage and visibility semantics
 - MMIO ordering semantics
 - lock-class identity references
+
+## Executable KRIR Boundary
+
+Executable KRIR is the future backend-facing contract. In KR0.x it is intentionally tiny:
+
+- linear function bodies only,
+- direct calls only,
+- unit result only,
+- explicit block/terminator form,
+- semantic facts remain attached but separate from executable ops.
+
+Executable KRIR is not yet used by codegen in this branch. This branch only makes the contract explicit so later backend work has a deterministic, compiler-owned boundary.
