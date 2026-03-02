@@ -151,6 +151,19 @@ fn replace_once_in_file(path: &Path, from: &str, to: &str) {
     fs::write(path, updated).expect("write file");
 }
 
+fn replace_json_string_field(path: &Path, field: &str, value: &str) {
+    let src = fs::read_to_string(path).expect("read json file");
+    let mut json: serde_json::Value = serde_json::from_str(&src).expect("parse json");
+    let obj = json.as_object_mut().expect("json object");
+    obj.insert(
+        field.to_string(),
+        serde_json::Value::String(value.to_string()),
+    );
+    let mut text = serde_json::to_string_pretty(&json).expect("serialize json");
+    text.push('\n');
+    fs::write(path, text).expect("write json file");
+}
+
 fn hir_entry_slice(src: &str, section_marker: &str, entry_id: &str) -> String {
     let section_start = src.find(section_marker).expect("section marker");
     let id_marker = format!("        id: \"{}\",", entry_id);
@@ -992,6 +1005,81 @@ fn proposals_promote_irq_handler_alias_updates_statuses_deterministically() {
     assert!(proposal_json.contains("  \"compatibility_risk\": \"Low; the alias is stable and lowers to existing canonical semantics in all supported surface profiles.\""));
     assert!(proposal_json.contains("  \"migration_plan\": \"No migration required; the alias is now stable and remains interchangeable with @ctx(irq).\""));
     assert!(!proposal_json.contains("  \"status\": \"experimental\""));
+}
+
+#[test]
+fn proposals_promote_handles_escaped_hir_proposal_text_deterministically() {
+    let repo_dir = write_promotion_repo_fixture("irq_handler_alias");
+    let hir_path = repo_dir
+        .join("crates")
+        .join("hir")
+        .join("src")
+        .join("lib.rs");
+    let json_path = repo_dir
+        .join("docs")
+        .join("design")
+        .join("examples")
+        .join("irq_handler_alias.proposal.json");
+
+    let title = "Experimental @irq_handler \\\"quoted\\\" alias";
+    let compatibility =
+        "Low; alias path C:\\\\irq remains experimental and lowers to \\\"@ctx(irq)\\\".";
+    let migration = "Keep experimental for now; rewrite to @ctx(irq) if needed.\\nStill pinned.";
+
+    replace_in_hir_entry(
+        &hir_path,
+        "const ADAPTIVE_FEATURE_PROPOSALS:",
+        "irq_handler_alias",
+        "title: \"Experimental @irq_handler surface alias\",",
+        "title: \"Experimental @irq_handler \\\\\\\"quoted\\\\\\\" alias\",",
+    );
+    replace_in_hir_entry(
+        &hir_path,
+        "const ADAPTIVE_FEATURE_PROPOSALS:",
+        "irq_handler_alias",
+        "compatibility_risk: \"Low; stable mode rejects the alias and experimental mode lowers to existing canonical semantics.\",",
+        "compatibility_risk: \"Low; alias path C:\\\\\\\\irq remains experimental and lowers to \\\\\\\"@ctx(irq)\\\\\\\".\",",
+    );
+    replace_in_hir_entry(
+        &hir_path,
+        "const ADAPTIVE_FEATURE_PROPOSALS:",
+        "irq_handler_alias",
+        "migration_plan: \"Keep the alias experimental until usage and diagnostics stabilize; projects can stay pinned to stable to avoid it.\",",
+        "migration_plan: \"Keep experimental for now; rewrite to @ctx(irq) if needed.\\\\nStill pinned.\",",
+    );
+    replace_json_string_field(&json_path, "title", title);
+    replace_json_string_field(&json_path, "compatibility_risk", compatibility);
+    replace_json_string_field(&json_path, "migration_plan", migration);
+    git_commit_all(&repo_dir, "escaped proposal text");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&repo_dir)
+        .arg("proposals")
+        .arg("--promote")
+        .arg("irq_handler_alias");
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        vec!["proposal-promotion: promoted feature 'irq_handler_alias' to stable"]
+    );
+
+    let hir_src = fs::read_to_string(&hir_path).expect("read updated escaped hir");
+    let proposal_entry = hir_entry_slice(
+        &hir_src,
+        "const ADAPTIVE_FEATURE_PROPOSALS:",
+        "irq_handler_alias",
+    );
+    assert!(proposal_entry.contains("status: AdaptiveFeatureStatus::Stable,"));
+    assert!(proposal_entry.contains("title: \"Stable @irq_handler surface alias\","));
+    assert!(proposal_entry.contains("compatibility_risk: \"Low; the alias is stable and lowers to existing canonical semantics in all supported surface profiles.\","));
+    assert!(proposal_entry.contains("migration_plan: \"No migration required; the alias is now stable and remains interchangeable with @ctx(irq).\","));
+
+    let proposal_json = fs::read_to_string(&json_path).expect("read updated escaped json");
+    assert!(proposal_json.contains("\"status\": \"stable\""));
+    assert!(proposal_json.contains("\"title\": \"Stable @irq_handler surface alias\""));
+    assert!(proposal_json.contains("\"compatibility_risk\": \"Low; the alias is stable and lowers to existing canonical semantics in all supported surface profiles.\""));
+    assert!(proposal_json.contains("\"migration_plan\": \"No migration required; the alias is now stable and remains interchangeable with @ctx(irq).\""));
 }
 
 #[test]

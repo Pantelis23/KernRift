@@ -2919,18 +2919,17 @@ fn replace_rust_string_field(
         )
     })?;
     let value_start = field_start + field_marker.len();
-    let value_end = src[value_start..]
-        .find("\",")
-        .map(|idx| value_start + idx)
-        .ok_or_else(|| {
-            format!(
-                "proposal-promotion: failed to locate end of field '{}' in proposal entry",
-                field_name
-            )
-        })?;
-    let mut out = String::with_capacity(src.len() - (value_end - value_start) + new_value.len());
+    let value_end = rust_string_literal_end(src, value_start).ok_or_else(|| {
+        format!(
+            "proposal-promotion: failed to locate end of field '{}' in proposal entry",
+            field_name
+        )
+    })?;
+    let escaped_value = escape_rust_string_literal(new_value);
+    let mut out =
+        String::with_capacity(src.len() - (value_end - value_start) + escaped_value.len());
     out.push_str(&src[..value_start]);
-    out.push_str(new_value);
+    out.push_str(&escaped_value);
     out.push_str(&src[value_end..]);
     Ok(out)
 }
@@ -2941,11 +2940,106 @@ fn extract_rust_string_field(src: &str, field_name: &str) -> Result<String, Stri
         .find(&field_marker)
         .ok_or_else(|| format!("missing rust string field '{}'", field_name))?;
     let value_start = field_start + field_marker.len();
-    let value_end = src[value_start..]
-        .find("\",")
-        .map(|idx| value_start + idx)
+    let value_end = rust_string_literal_end(src, value_start)
         .ok_or_else(|| format!("missing rust string field end '{}'", field_name))?;
-    Ok(src[value_start..value_end].to_string())
+    unescape_rust_string_literal(&src[value_start..value_end])
+}
+
+fn rust_string_literal_end(src: &str, value_start: usize) -> Option<usize> {
+    let bytes = src.as_bytes();
+    let mut idx = value_start;
+    let mut escaped = false;
+    while idx < bytes.len() {
+        let byte = bytes[idx];
+        if escaped {
+            escaped = false;
+            idx += 1;
+            continue;
+        }
+        match byte {
+            b'\\' => {
+                escaped = true;
+                idx += 1;
+            }
+            b'"' => return Some(idx),
+            _ => idx += 1,
+        }
+    }
+    None
+}
+
+fn escape_rust_string_literal(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            '\0' => escaped.push_str("\\0"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
+fn unescape_rust_string_literal(value: &str) -> Result<String, String> {
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+        let Some(next) = chars.next() else {
+            return Err("unterminated rust string escape".to_string());
+        };
+        match next {
+            '\\' => out.push('\\'),
+            '"' => out.push('"'),
+            'n' => out.push('\n'),
+            'r' => out.push('\r'),
+            't' => out.push('\t'),
+            '0' => out.push('\0'),
+            'x' => {
+                let hi = chars
+                    .next()
+                    .ok_or_else(|| "invalid rust hex escape".to_string())?;
+                let lo = chars
+                    .next()
+                    .ok_or_else(|| "invalid rust hex escape".to_string())?;
+                let hex = [hi, lo].iter().collect::<String>();
+                let byte = u8::from_str_radix(&hex, 16)
+                    .map_err(|_| "invalid rust hex escape".to_string())?;
+                out.push(byte as char);
+            }
+            'u' => {
+                if chars.next() != Some('{') {
+                    return Err("invalid rust unicode escape".to_string());
+                }
+                let mut hex = String::new();
+                loop {
+                    let ch = chars
+                        .next()
+                        .ok_or_else(|| "invalid rust unicode escape".to_string())?;
+                    if ch == '}' {
+                        break;
+                    }
+                    hex.push(ch);
+                }
+                let code = u32::from_str_radix(&hex, 16)
+                    .map_err(|_| "invalid rust unicode escape".to_string())?;
+                let scalar = char::from_u32(code)
+                    .ok_or_else(|| "invalid rust unicode scalar".to_string())?;
+                out.push(scalar);
+            }
+            other => {
+                return Err(format!("unsupported rust string escape '{}'", other));
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn extract_rust_status_field(src: &str) -> Result<String, String> {
