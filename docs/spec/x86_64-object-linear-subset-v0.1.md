@@ -81,16 +81,34 @@ For the current subset:
 
 Relocations:
 
-- are derived from compiler-owned object fixups
+- are derived from compiler-owned object fixups only
 - currently use `R_X86_64_PLT32` for unresolved external direct calls
 - target `.rela.text`
+
+Symbol ordering and indices are explicit for this subset:
+
+- symbol table entry 0 is the null symbol
+- symbol table entry 1 is the `.text` section symbol
+- defined function symbols follow in deterministic name order
+- undefined external function symbols follow in deterministic name order
+- relocation symbol indices must refer to those emitted symbol-table entries directly
 
 ## Determinism rules
 
 - function order is canonical executable KRIR order
 - direct call order is executable-op order
-- emitted ELF header, section order, symbol order, and bytes are deterministic
+- relocation order follows compiler-owned fixup patch-offset order
+- emitted ELF header, section order, symbol order, symbol indices, relocation order, and bytes are deterministic
 - same executable KRIR input produces byte-identical object bytes
+
+`.rela.text` rules for the current subset:
+
+- `.rela.text` is absent when there are no unresolved external call relocations
+- `.rela.text` is present when unresolved external call relocations exist
+- `.rela.text.sh_link` points to `.symtab`
+- `.rela.text.sh_info` points to `.text`
+- `.rela.text.sh_entsize = 24`
+- undefined external symbols are invalid unless at least one relocation references them
 
 ## Relationship to the compiler-owned object format
 

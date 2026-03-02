@@ -17,7 +17,7 @@ This branch defines the target contract only. The target contract itself does no
 
 The first compiler-owned object subset is defined separately in `docs/spec/compiler-owned-object-linear-subset-v0.1.md`.
 The first assembly lowering subset is defined separately in `docs/spec/x86_64-asm-linear-subset-v0.1.md`.
-The first ELF compatibility/export subset is defined separately in `docs/spec/x86_64-object-linear-subset-v0.1.md` and is derived from the compiler-owned object format rather than directly from executable KRIR. Unresolved external call targets are preserved first in the compiler-owned object fixup/symbol model and only then translated into ELF relocation/export structures.
+The first ELF compatibility/export subset is defined separately in `docs/spec/x86_64-object-linear-subset-v0.1.md` and is derived from the compiler-owned object format rather than directly from executable KRIR. Unresolved external call targets are preserved first in the compiler-owned object fixup/symbol model and only then translated into deterministic ELF symbol/relocation structures.
 Those lowerings consume this target contract but do not expand the target contract into semantic authority.
 
 ## Layer boundary
