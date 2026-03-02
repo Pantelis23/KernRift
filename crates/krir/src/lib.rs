@@ -1773,7 +1773,13 @@ mod tests {
         validate_x86_64_linear_subset, validate_x86_64_object_linear_subset,
     };
     use serde_json::json;
-    use std::collections::BTreeSet;
+    use std::{
+        collections::BTreeSet,
+        fs,
+        path::{Path, PathBuf},
+        process::Command,
+        sync::atomic::{AtomicU64, Ordering},
+    };
 
     fn hex_encode(bytes: &[u8]) -> String {
         const HEX: &[u8; 16] = b"0123456789abcdef";
@@ -1809,6 +1815,77 @@ mod tests {
             bytes[offset + 6],
             bytes[offset + 7],
         ])
+    }
+
+    static ELF_SMOKE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    struct TempElfFile {
+        path: PathBuf,
+    }
+
+    impl TempElfFile {
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempElfFile {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+
+    fn find_optional_tool(candidates: &[&str]) -> Option<String> {
+        candidates.iter().find_map(|candidate| {
+            Command::new(candidate)
+                .arg("--version")
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|_| (*candidate).to_string())
+        })
+    }
+
+    fn write_temp_elf_file(prefix: &str, bytes: &[u8]) -> TempElfFile {
+        let unique = ELF_SMOKE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "kernrift-{}-{}-{}.o",
+            prefix,
+            std::process::id(),
+            unique
+        ));
+        fs::write(&path, bytes).expect("write temporary ELF object");
+        TempElfFile { path }
+    }
+
+    fn run_tool_capture(tool: &str, args: &[&str], path: &Path) -> String {
+        let output = Command::new(tool)
+            .args(args)
+            .arg(path)
+            .output()
+            .expect("run ELF compatibility tool");
+        assert!(
+            output.status.success(),
+            "tool '{}' failed with status {:?}\nstdout:\n{}\nstderr:\n{}",
+            tool,
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).expect("tool output must be utf8")
+    }
+
+    fn readelf_smoke_output(path: &Path) -> Option<String> {
+        let tool = find_optional_tool(&["readelf", "llvm-readelf"])?;
+        Some(run_tool_capture(&tool, &["-h", "-S", "-s", "-r"], path))
+    }
+
+    fn objdump_smoke_check(path: &Path) -> bool {
+        let Some(tool) = find_optional_tool(&["objdump", "llvm-objdump"]) else {
+            return false;
+        };
+        let _ = run_tool_capture(&tool, &["-d", "-r"], path);
+        true
     }
 
     #[derive(Debug, PartialEq, Eq)]
@@ -3460,6 +3537,149 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn x86_64_elf_internal_only_export_is_accepted_by_external_tools() {
+        let module = ExecutableKrirModule {
+            module_caps: vec![],
+            functions: vec![
+                ExecutableFunction {
+                    name: "entry".to_string(),
+                    blocks: vec![ExecutableBlock {
+                        label: "entry".to_string(),
+                        ops: vec![
+                            ExecutableOp::Call {
+                                callee: "alpha".to_string(),
+                            },
+                            ExecutableOp::Call {
+                                callee: "beta".to_string(),
+                            },
+                        ],
+                        terminator: ExecutableTerminator::Return {
+                            value: ExecutableValue::Unit,
+                        },
+                    }],
+                    ..executable_function("entry")
+                },
+                ExecutableFunction {
+                    name: "alpha".to_string(),
+                    ..unit_return_function("alpha")
+                },
+                ExecutableFunction {
+                    name: "beta".to_string(),
+                    ..unit_return_function("beta")
+                },
+            ],
+            call_edges: vec![],
+        };
+
+        let object =
+            lower_executable_krir_to_x86_64_object(&module, &BackendTargetContract::x86_64_sysv())
+                .expect("lower x86_64 object");
+        let bytes = emit_x86_64_object_bytes(&object);
+        let file = write_temp_elf_file("internal-only", &bytes);
+        let Some(readelf_output) = readelf_smoke_output(file.path()) else {
+            return;
+        };
+
+        let second_output = readelf_smoke_output(file.path()).expect("readelf still available");
+        assert_eq!(readelf_output, second_output);
+        assert!(readelf_output.contains(".text"));
+        assert!(readelf_output.contains(".symtab"));
+        assert!(readelf_output.contains("alpha"));
+        assert!(readelf_output.contains("beta"));
+        assert!(readelf_output.contains("entry"));
+        assert!(!readelf_output.contains(".rela.text"));
+        let _ = objdump_smoke_check(file.path());
+    }
+
+    #[test]
+    fn x86_64_elf_external_only_export_is_accepted_by_external_tools() {
+        let module = ExecutableKrirModule {
+            module_caps: vec![],
+            functions: vec![ExecutableFunction {
+                blocks: vec![ExecutableBlock {
+                    label: "entry".to_string(),
+                    ops: vec![ExecutableOp::Call {
+                        callee: "ext".to_string(),
+                    }],
+                    terminator: ExecutableTerminator::Return {
+                        value: ExecutableValue::Unit,
+                    },
+                }],
+                ..executable_function("entry")
+            }],
+            call_edges: vec![],
+        };
+
+        let object =
+            lower_executable_krir_to_x86_64_object(&module, &BackendTargetContract::x86_64_sysv())
+                .expect("lower x86_64 object");
+        let bytes = emit_x86_64_object_bytes(&object);
+        let file = write_temp_elf_file("external-only", &bytes);
+        let Some(readelf_output) = readelf_smoke_output(file.path()) else {
+            return;
+        };
+
+        assert!(readelf_output.contains(".rela.text"));
+        assert!(readelf_output.contains("R_X86_64_PLT32"));
+        assert!(readelf_output.contains(" ext"));
+        let _ = objdump_smoke_check(file.path());
+    }
+
+    #[test]
+    fn x86_64_elf_mixed_internal_external_export_is_accepted_by_external_tools() {
+        let module = ExecutableKrirModule {
+            module_caps: vec![],
+            functions: vec![
+                ExecutableFunction {
+                    name: "entry".to_string(),
+                    blocks: vec![ExecutableBlock {
+                        label: "entry".to_string(),
+                        ops: vec![
+                            ExecutableOp::Call {
+                                callee: "alpha".to_string(),
+                            },
+                            ExecutableOp::Call {
+                                callee: "ext_b".to_string(),
+                            },
+                            ExecutableOp::Call {
+                                callee: "ext_a".to_string(),
+                            },
+                        ],
+                        terminator: ExecutableTerminator::Return {
+                            value: ExecutableValue::Unit,
+                        },
+                    }],
+                    ..executable_function("entry")
+                },
+                ExecutableFunction {
+                    name: "alpha".to_string(),
+                    ..unit_return_function("alpha")
+                },
+            ],
+            call_edges: vec![],
+        };
+
+        let object =
+            lower_executable_krir_to_x86_64_object(&module, &BackendTargetContract::x86_64_sysv())
+                .expect("lower x86_64 object");
+        let bytes = emit_x86_64_object_bytes(&object);
+        let file = write_temp_elf_file("mixed-internal-external", &bytes);
+        let Some(readelf_output) = readelf_smoke_output(file.path()) else {
+            return;
+        };
+
+        assert!(readelf_output.contains(".text"));
+        assert!(readelf_output.contains(".symtab"));
+        assert!(readelf_output.contains(".rela.text"));
+        assert!(readelf_output.contains("alpha"));
+        assert!(readelf_output.contains("entry"));
+        assert!(readelf_output.contains("ext_a"));
+        assert!(readelf_output.contains("ext_b"));
+        assert!(readelf_output.contains("R_X86_64_PLT32"));
+        let _ = objdump_smoke_check(file.path());
     }
 
     #[test]
