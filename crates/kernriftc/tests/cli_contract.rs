@@ -969,6 +969,286 @@ fn verify_artifact_meta_rejects_krbo_header_mismatch() {
 }
 
 #[test]
+fn verify_artifact_meta_rejects_elf_header_mismatch() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let artifact_path = unique_temp_output_path("verify-meta-bad-elf-header", "o");
+    let meta_path = unique_temp_output_path("verify-meta-bad-elf-header", "json");
+    emit_backend_artifact_with_sidecar(
+        &root,
+        "elfobj",
+        &fixture,
+        &artifact_path,
+        &meta_path,
+        false,
+    );
+
+    let mut metadata: Value =
+        serde_json::from_slice(&fs::read(&meta_path).expect("read metadata")).expect("parse json");
+    metadata["elfobj"]["machine"] = json!("arm64");
+    fs::write(
+        &meta_path,
+        serde_json::to_vec_pretty(&metadata).expect("serialize metadata"),
+    )
+    .expect("write metadata");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("verify-artifact-meta")
+        .arg(artifact_path.as_os_str())
+        .arg(meta_path.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("verify-artifact-meta: elfobj.machine mismatch: metadata 'arm64', artifact 'x86_64'")
+    );
+
+    fs::remove_file(&artifact_path).ok();
+    fs::remove_file(&meta_path).ok();
+}
+
+#[test]
+fn verify_artifact_meta_rejects_missing_krbo_block() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let artifact_path = unique_temp_output_path("verify-meta-missing-krbo", "krbo");
+    let meta_path = unique_temp_output_path("verify-meta-missing-krbo", "json");
+    emit_backend_artifact_with_sidecar(&root, "krbo", &fixture, &artifact_path, &meta_path, false);
+
+    let mut metadata: Value =
+        serde_json::from_slice(&fs::read(&meta_path).expect("read metadata")).expect("parse json");
+    metadata["krbo"] = Value::Null;
+    fs::write(
+        &meta_path,
+        serde_json::to_vec_pretty(&metadata).expect("serialize metadata"),
+    )
+    .expect("write metadata");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("verify-artifact-meta")
+        .arg(artifact_path.as_os_str())
+        .arg(meta_path.as_os_str());
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("verify-artifact-meta: metadata missing krbo block")
+    );
+
+    fs::remove_file(&artifact_path).ok();
+    fs::remove_file(&meta_path).ok();
+}
+
+#[test]
+fn verify_artifact_meta_rejects_missing_elf_block() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let artifact_path = unique_temp_output_path("verify-meta-missing-elf", "o");
+    let meta_path = unique_temp_output_path("verify-meta-missing-elf", "json");
+    emit_backend_artifact_with_sidecar(
+        &root,
+        "elfobj",
+        &fixture,
+        &artifact_path,
+        &meta_path,
+        false,
+    );
+
+    let mut metadata: Value =
+        serde_json::from_slice(&fs::read(&meta_path).expect("read metadata")).expect("parse json");
+    metadata["elfobj"] = Value::Null;
+    fs::write(
+        &meta_path,
+        serde_json::to_vec_pretty(&metadata).expect("serialize metadata"),
+    )
+    .expect("write metadata");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("verify-artifact-meta")
+        .arg(artifact_path.as_os_str())
+        .arg(meta_path.as_os_str());
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("verify-artifact-meta: metadata missing elfobj block")
+    );
+
+    fs::remove_file(&artifact_path).ok();
+    fs::remove_file(&meta_path).ok();
+}
+
+#[test]
+fn verify_artifact_meta_rejects_unsupported_artifact_bytes() {
+    let root = repo_root();
+    let artifact_path = unique_temp_output_path("verify-meta-unsupported-artifact", "bin");
+    let meta_path = unique_temp_output_path("verify-meta-unsupported-artifact", "json");
+    fs::write(&artifact_path, b"NOTANARTIFACT").expect("write bad artifact");
+    fs::write(
+        &meta_path,
+        serde_json::to_vec_pretty(&json!({
+            "schema_version": "kernrift_artifact_meta_v1",
+            "emit_kind": "krbo",
+            "surface": "stable",
+            "byte_len": 13,
+            "sha256": format!("{:x}", Sha256::digest(b"NOTANARTIFACT")),
+            "input_path": "tests/must_pass/basic.kr",
+            "input_path_kind": "repo-relative",
+            "krbo": {
+                "magic": "KRBO",
+                "version_major": 0,
+                "version_minor": 1,
+                "format_revision": 2,
+                "target_tag": 1,
+                "target_name": "x86_64-sysv"
+            }
+        }))
+        .expect("serialize metadata"),
+    )
+    .expect("write metadata");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("verify-artifact-meta")
+        .arg(artifact_path.as_os_str())
+        .arg(meta_path.as_os_str());
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("verify-artifact-meta: unsupported artifact bytes")
+    );
+
+    fs::remove_file(&artifact_path).ok();
+    fs::remove_file(&meta_path).ok();
+}
+
+#[test]
+fn verify_artifact_meta_rejects_unreadable_artifact_path() {
+    let root = repo_root();
+    let artifact_path = unique_temp_output_path("verify-meta-missing-artifact", "krbo");
+    let meta_path = unique_temp_output_path("verify-meta-missing-artifact", "json");
+    fs::remove_file(&artifact_path).ok();
+    fs::write(
+        &meta_path,
+        serde_json::to_vec_pretty(&json!({
+            "schema_version": "kernrift_artifact_meta_v1",
+            "emit_kind": "krbo",
+            "surface": "stable",
+            "byte_len": 0,
+            "sha256": "",
+            "input_path": "tests/must_pass/basic.kr",
+            "input_path_kind": "repo-relative",
+            "krbo": {
+                "magic": "KRBO",
+                "version_major": 0,
+                "version_minor": 1,
+                "format_revision": 2,
+                "target_tag": 1,
+                "target_name": "x86_64-sysv"
+            }
+        }))
+        .expect("serialize metadata"),
+    )
+    .expect("write metadata");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("verify-artifact-meta")
+        .arg(artifact_path.as_os_str())
+        .arg(meta_path.as_os_str());
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr
+            .lines()
+            .next()
+            .expect("stderr line")
+            .starts_with(&format!(
+                "failed to read artifact '{}':",
+                artifact_path.display()
+            )),
+        "unexpected stderr: {stderr}"
+    );
+
+    fs::remove_file(&meta_path).ok();
+}
+
+#[test]
+fn verify_artifact_meta_rejects_unreadable_metadata_path() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let artifact_path = unique_temp_output_path("verify-meta-missing-meta", "krbo");
+    let meta_path = unique_temp_output_path("verify-meta-missing-meta", "json");
+    emit_backend_artifact_with_sidecar(&root, "krbo", &fixture, &artifact_path, &meta_path, false);
+    fs::remove_file(&meta_path).ok();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("verify-artifact-meta")
+        .arg(artifact_path.as_os_str())
+        .arg(meta_path.as_os_str());
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr
+            .lines()
+            .next()
+            .expect("stderr line")
+            .starts_with(&format!(
+                "failed to read artifact metadata '{}':",
+                meta_path.display()
+            )),
+        "unexpected stderr: {stderr}"
+    );
+
+    fs::remove_file(&artifact_path).ok();
+}
+
+#[test]
+fn verify_artifact_meta_rejects_wrong_json_field_types() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let artifact_path = unique_temp_output_path("verify-meta-bad-types", "krbo");
+    let meta_path = unique_temp_output_path("verify-meta-bad-types", "json");
+    emit_backend_artifact_with_sidecar(&root, "krbo", &fixture, &artifact_path, &meta_path, false);
+
+    let mut metadata: Value =
+        serde_json::from_slice(&fs::read(&meta_path).expect("read metadata")).expect("parse json");
+    metadata["byte_len"] = json!("123");
+    fs::write(
+        &meta_path,
+        serde_json::to_vec_pretty(&metadata).expect("serialize metadata"),
+    )
+    .expect("write metadata");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("verify-artifact-meta")
+        .arg(artifact_path.as_os_str())
+        .arg(meta_path.as_os_str());
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr
+            .lines()
+            .next()
+            .expect("stderr line")
+            .starts_with(&format!(
+                "failed to decode artifact metadata '{}': invalid type:",
+                meta_path.display()
+            )),
+        "unexpected stderr: {stderr}"
+    );
+
+    fs::remove_file(&artifact_path).ok();
+    fs::remove_file(&meta_path).ok();
+}
+
+#[test]
 fn emit_backend_artifact_rejects_unsupported_current_subset() {
     let root = repo_root();
     let fixture = root
