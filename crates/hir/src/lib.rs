@@ -1,6 +1,10 @@
 use std::collections::BTreeSet;
 
-use krir::{CallEdge, Ctx, Eff, Function, FunctionAttrs, KrirModule, KrirOp};
+use krir::{
+    CallEdge, Ctx, Eff, ExecutableBlock, ExecutableFacts, ExecutableFunction, ExecutableKrirModule,
+    ExecutableOp as KrExecutableOp, ExecutableSignature, ExecutableTerminator, ExecutableValue,
+    ExecutableValueType, Function, FunctionAttrs, KrirModule, KrirOp,
+};
 use parser::{FnAst, ModuleAst, RawAttr, Stmt, split_csv};
 use serde::Serialize;
 
@@ -781,6 +785,121 @@ pub fn lower_to_canonical_executable_with_surface(
     Ok(module)
 }
 
+pub fn lower_canonical_executable_to_krir(
+    module: &CanonicalExecutableModule,
+) -> Result<ExecutableKrirModule, Vec<String>> {
+    let errors = validate_canonical_executable_module(module);
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
+    let mut call_edges = Vec::new();
+    let mut functions = Vec::new();
+
+    for function in &module.functions {
+        for op in &function.body.ops {
+            match op {
+                CanonicalExecutableOp::Call { callee } => call_edges.push(CallEdge {
+                    caller: function.name.clone(),
+                    callee: callee.clone(),
+                }),
+            }
+        }
+
+        functions.push(ExecutableFunction {
+            name: function.name.clone(),
+            is_extern: false,
+            signature: ExecutableSignature {
+                params: function
+                    .signature
+                    .params
+                    .iter()
+                    .map(|param| match param {
+                        CanonicalExecutableValueType::Unit => ExecutableValueType::Unit,
+                    })
+                    .collect(),
+                result: match function.signature.result {
+                    CanonicalExecutableValueType::Unit => ExecutableValueType::Unit,
+                },
+            },
+            facts: ExecutableFacts {
+                ctx_ok: function.facts.ctx_ok.clone(),
+                eff_used: function.facts.eff_used.clone(),
+                caps_req: function.facts.caps_req.clone(),
+                attrs: function.facts.attrs.clone(),
+            },
+            entry_block: "entry".to_string(),
+            blocks: vec![ExecutableBlock {
+                label: "entry".to_string(),
+                ops: function
+                    .body
+                    .ops
+                    .iter()
+                    .map(|op| match op {
+                        CanonicalExecutableOp::Call { callee } => KrExecutableOp::Call {
+                            callee: callee.clone(),
+                        },
+                    })
+                    .collect(),
+                terminator: match function.body.terminator {
+                    CanonicalExecutableTerminator::ReturnUnit => ExecutableTerminator::Return {
+                        value: ExecutableValue::Unit,
+                    },
+                },
+            }],
+        });
+    }
+
+    let mut lowered = ExecutableKrirModule {
+        module_caps: module.module_caps.clone(),
+        functions,
+        call_edges,
+    };
+    lowered.canonicalize();
+    lowered
+        .validate()
+        .map_err(|err| vec![format!("canonical-exec->krir: {}", err)])?;
+    Ok(lowered)
+}
+
+fn validate_canonical_executable_module(module: &CanonicalExecutableModule) -> Vec<String> {
+    let mut errors = Vec::new();
+    let mut names = BTreeSet::new();
+
+    for function in &module.functions {
+        if !names.insert(function.name.as_str()) {
+            errors.push(format!(
+                "canonical-exec->krir: duplicate canonical executable function '{}'",
+                function.name
+            ));
+        }
+
+        if !function.signature.params.is_empty() {
+            errors.push(format!(
+                "canonical-exec->krir: canonical executable function '{}' must not declare parameters in v0.1",
+                function.name
+            ));
+        }
+    }
+
+    for function in &module.functions {
+        for op in &function.body.ops {
+            match op {
+                CanonicalExecutableOp::Call { callee } => {
+                    if !names.contains(callee.as_str()) {
+                        errors.push(format!(
+                            "canonical-exec->krir: canonical executable function '{}' calls undefined function '{}'",
+                            function.name, callee
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    errors
+}
+
 pub fn lower_to_krir(ast: &ModuleAst) -> Result<KrirModule, Vec<String>> {
     lower_to_krir_with_surface(ast, SurfaceProfile::Stable)
 }
@@ -1210,9 +1329,9 @@ mod tests {
         AdaptiveSurfaceFeature, CanonicalExecutableTerminator, SurfaceProfile,
         adaptive_feature_promotion_plan_with, adaptive_feature_promotion_readiness_with,
         adaptive_feature_proposal, adaptive_feature_proposals, adaptive_surface_features,
-        lower_to_canonical_executable_with_surface, lower_to_krir, lower_to_krir_with_surface,
-        surface_profile_enables_feature, validate_adaptive_feature_governance,
-        validate_adaptive_feature_governance_with,
+        lower_canonical_executable_to_krir, lower_to_canonical_executable_with_surface,
+        lower_to_krir, lower_to_krir_with_surface, surface_profile_enables_feature,
+        validate_adaptive_feature_governance, validate_adaptive_feature_governance_with,
     };
     use parser::parse_module;
     use proptest::prelude::*;
@@ -1378,6 +1497,131 @@ mod tests {
         assert_ne!(
             serde_json::to_value(canonical_entry).expect("canonical"),
             serde_json::to_value(analysis_entry).expect("analysis")
+        );
+    }
+
+    #[test]
+    fn canonical_executable_lowers_simple_function_to_executable_krir() {
+        let ast = parse_module("fn entry() { }").expect("parse");
+        let canonical = lower_to_canonical_executable_with_surface(&ast, SurfaceProfile::Stable)
+            .expect("canonical");
+        let lowered =
+            lower_canonical_executable_to_krir(&canonical).expect("lower executable krir");
+
+        assert_eq!(
+            serde_json::to_value(&lowered).expect("serialize"),
+            json!({
+                "module_caps": [],
+                "functions": [{
+                    "name": "entry",
+                    "is_extern": false,
+                    "signature": {
+                        "params": [],
+                        "result": "unit"
+                    },
+                    "facts": {
+                        "ctx_ok": ["boot", "thread"],
+                        "eff_used": [],
+                        "caps_req": [],
+                        "attrs": {
+                            "noyield": false,
+                            "critical": false,
+                            "leaf": false,
+                            "hotpath": false,
+                            "lock_budget": null
+                        }
+                    },
+                    "entry_block": "entry",
+                    "blocks": [{
+                        "label": "entry",
+                        "ops": [],
+                        "terminator": {
+                            "terminator": "return",
+                            "value": {
+                                "kind": "unit"
+                            }
+                        }
+                    }]
+                }],
+                "call_edges": []
+            })
+        );
+    }
+
+    #[test]
+    fn canonical_executable_lowers_direct_call_to_entry_block_ops() {
+        let ast = parse_module("fn entry() { helper(); }\nfn helper() { }").expect("parse");
+        let canonical = lower_to_canonical_executable_with_surface(&ast, SurfaceProfile::Stable)
+            .expect("canonical");
+        let lowered =
+            lower_canonical_executable_to_krir(&canonical).expect("lower executable krir");
+
+        let entry = lowered
+            .functions
+            .iter()
+            .find(|function| function.name == "entry")
+            .expect("entry");
+        assert_eq!(entry.entry_block, "entry");
+        assert_eq!(
+            serde_json::to_value(&entry.blocks[0].ops).expect("serialize ops"),
+            json!([{"op": "call", "callee": "helper"}])
+        );
+        assert_eq!(
+            lowered.call_edges,
+            vec![krir::CallEdge {
+                caller: "entry".to_string(),
+                callee: "helper".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn canonical_executable_lowering_keeps_function_order_deterministic() {
+        let ast = parse_module("fn zeta() { }\nfn alpha() { }").expect("parse");
+        let canonical = lower_to_canonical_executable_with_surface(&ast, SurfaceProfile::Stable)
+            .expect("canonical");
+        let lowered =
+            lower_canonical_executable_to_krir(&canonical).expect("lower executable krir");
+
+        assert_eq!(
+            lowered
+                .functions
+                .iter()
+                .map(|function| function.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "zeta"]
+        );
+    }
+
+    #[test]
+    fn canonical_executable_lowering_rejects_unsupported_param_shape_deterministically() {
+        let module = super::CanonicalExecutableModule {
+            module_caps: vec![],
+            functions: vec![super::CanonicalExecutableFunction {
+                name: "entry".to_string(),
+                signature: super::CanonicalExecutableSignature {
+                    params: vec![super::CanonicalExecutableValueType::Unit],
+                    result: super::CanonicalExecutableValueType::Unit,
+                },
+                facts: super::CanonicalExecutableFacts {
+                    ctx_ok: vec![krir::Ctx::Thread],
+                    eff_used: vec![],
+                    caps_req: vec![],
+                    attrs: krir::FunctionAttrs::default(),
+                },
+                body: super::CanonicalExecutableBody {
+                    ops: vec![],
+                    terminator: CanonicalExecutableTerminator::ReturnUnit,
+                },
+            }],
+        };
+
+        assert_eq!(
+            lower_canonical_executable_to_krir(&module),
+            Err(vec![
+                "canonical-exec->krir: canonical executable function 'entry' must not declare parameters in v0.1"
+                    .to_string()
+            ])
         );
     }
 
