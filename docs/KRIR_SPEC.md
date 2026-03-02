@@ -25,6 +25,13 @@ The first target-specific lowering subset is specified separately in `docs/spec/
 
 The first ELF machine-facing compatibility/export subset is specified separately in `docs/spec/x86_64-object-linear-subset-v0.1.md`. It exports the current tiny compiler-owned object subset to a deterministic ELF64 relocatable object subset with explicit symbol-order, symbol-index, relocation-order, and `.rela.text` metadata guarantees. It is not the primary internal object contract. Compatibility smoke checks against standard ELF inspection tools, relocatable linker flows, the smallest practical final-link flows, and narrow runtime execution smoke verify acceptance of the emitted bytes without making those tools a second semantic source.
 
+`kernriftc` can export the current backend artifacts directly:
+
+- `kernriftc --emit=krbo -o <output.krbo> <file.kr>`
+- `kernriftc --emit=elfobj -o <output.o> <file.kr>`
+
+These are artifact-export paths only. Linking and execution remain downstream tooling concerns rather than compiler truth.
+
 ## Data Model
 
 ### Sets
@@ -171,6 +178,8 @@ Any violation is a compile error.
 ## Artifact Outputs (MVP)
 
 - `kernriftc --emit krir <file.kr>`
+- `kernriftc --emit=krbo -o <output.krbo> <file.kr>`
+- `kernriftc --emit=elfobj -o <output.o> <file.kr>`
 - `kernriftc --emit lockgraph <file.kr>`
 - `kernriftc --emit caps <file.kr>`
 - `kernriftc --emit contracts <file.kr>`

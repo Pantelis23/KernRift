@@ -13,10 +13,11 @@ use emit::{
 };
 use jsonschema::JSONSchema;
 use kernriftc::{
-    AdaptiveFeaturePromotionPlan, SurfaceProfile, adaptive_feature_promotion_plan,
-    adaptive_feature_promotion_readiness, adaptive_feature_proposal_summaries,
-    adaptive_surface_features_for_profile, analyze, check_file, check_file_with_surface,
-    check_module, compile_file, compile_file_with_surface, migrate_preview_file_with_surface,
+    AdaptiveFeaturePromotionPlan, BackendArtifactKind, SurfaceProfile,
+    adaptive_feature_promotion_plan, adaptive_feature_promotion_readiness,
+    adaptive_feature_proposal_summaries, adaptive_surface_features_for_profile, analyze,
+    check_file, check_file_with_surface, check_module, compile_file, compile_file_with_surface,
+    emit_backend_artifact_file_with_surface, migrate_preview_file_with_surface,
     validate_adaptive_feature_governance,
 };
 use serde::{Deserialize, Serialize};
@@ -809,6 +810,13 @@ struct MigratePreviewArgs {
     input_path: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BackendEmitArgs {
+    kind: BackendArtifactKind,
+    output_path: String,
+    input_path: String,
+}
+
 impl PartialOrd for PolicyViolation {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
@@ -1065,6 +1073,16 @@ fn main() -> ExitCode {
                 return ExitCode::from(EXIT_INVALID_INPUT);
             }
             run_selftest()
+        }
+        arg if arg.starts_with("--emit=") => {
+            match parse_backend_emit_args(&arg["--emit=".len()..], &args[2..]) {
+                Ok(parsed) => run_backend_emit(&parsed),
+                Err(err) => {
+                    eprintln!("{}", err);
+                    print_usage();
+                    ExitCode::from(EXIT_INVALID_INPUT)
+                }
+            }
         }
         "--emit" => {
             if args.len() >= 3 && args[2] == "report" {
@@ -1446,6 +1464,50 @@ fn parse_migrate_preview_args(args: &[String]) -> Result<MigratePreviewArgs, Str
     Ok(MigratePreviewArgs {
         surface,
         input_path,
+    })
+}
+
+fn parse_backend_emit_args(kind: &str, args: &[String]) -> Result<BackendEmitArgs, String> {
+    let kind =
+        BackendArtifactKind::parse(kind).map_err(|err| format!("invalid emit mode: {}", err))?;
+    let mut output_path = None::<String>;
+    let mut positionals = Vec::<String>::new();
+
+    let mut idx = 0usize;
+    while idx < args.len() {
+        match args[idx].as_str() {
+            "-o" => {
+                if output_path.is_some() {
+                    return Err("invalid emit mode: duplicate -o".to_string());
+                }
+                let Some(value) = args.get(idx + 1) else {
+                    return Err("invalid emit mode: -o requires a file path".to_string());
+                };
+                output_path = Some(value.clone());
+                idx += 2;
+            }
+            other if other.starts_with('-') => {
+                return Err(format!("invalid emit mode: unknown flag '{}'", other));
+            }
+            other => {
+                positionals.push(other.to_string());
+                idx += 1;
+            }
+        }
+    }
+
+    let Some(output_path) = output_path else {
+        return Err("invalid emit mode: missing -o <output-path>".to_string());
+    };
+
+    if positionals.len() != 1 {
+        return Err("invalid emit mode: expected exactly one <file.kr> input".to_string());
+    }
+
+    Ok(BackendEmitArgs {
+        kind,
+        output_path,
+        input_path: positionals.pop().expect("exactly one positional"),
     })
 }
 
@@ -3409,6 +3471,27 @@ fn run_emit(kind: &str, path: &str) -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+fn run_backend_emit(args: &BackendEmitArgs) -> ExitCode {
+    let bytes = match emit_backend_artifact_file_with_surface(
+        Path::new(&args.input_path),
+        SurfaceProfile::Stable,
+        args.kind,
+    ) {
+        Ok(bytes) => bytes,
+        Err(errs) => {
+            print_errors(&errs);
+            return ExitCode::from(1);
+        }
+    };
+
+    if let Err(err) = fs::write(&args.output_path, &bytes) {
+        eprintln!("failed to write '{}': {}", args.output_path, err);
+        return ExitCode::from(1);
+    }
+
+    ExitCode::SUCCESS
 }
 
 fn run_report(metrics_csv: &str, path: &str) -> ExitCode {
@@ -5658,6 +5741,8 @@ fn print_usage() {
         "  kernriftc verify --contracts <contracts.json> --hash <contracts.sha256> --report <verify-report.json>"
     );
     eprintln!("  kernriftc --selftest");
+    eprintln!("  kernriftc --emit=krbo -o <output.krbo> <file.kr>");
+    eprintln!("  kernriftc --emit=elfobj -o <output.o> <file.kr>");
     eprintln!("  kernriftc --emit krir <file.kr>");
     eprintln!("  kernriftc --emit lockgraph <file.kr>");
     eprintln!("  kernriftc --emit caps <file.kr>");

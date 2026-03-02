@@ -1,6 +1,5 @@
 use std::path::Path;
 
-use hir::lower_to_krir_with_surface;
 pub use hir::{
     AdaptiveFeaturePromotionPlan, AdaptiveFeaturePromotionReadiness, AdaptiveFeatureProposal,
     AdaptiveFeatureProposalSummary, AdaptiveFeatureStatus, AdaptiveMigrationPreviewEntry,
@@ -10,10 +9,43 @@ pub use hir::{
     adaptive_surface_features_for_profile, adaptive_surface_migration_preview,
     irq_handler_alias_proposal, validate_adaptive_feature_governance,
 };
-use krir::KrirModule;
+use hir::{
+    lower_canonical_executable_to_krir, lower_to_canonical_executable_with_surface,
+    lower_to_krir_with_surface,
+};
+use krir::{
+    BackendTargetContract, KrirModule, emit_compiler_owned_object_bytes, emit_x86_64_object_bytes,
+    lower_executable_krir_to_compiler_owned_object, lower_executable_krir_to_x86_64_object,
+};
 use parser::parse_module;
 pub use passes::{AnalysisReport, NoYieldSpan};
 use passes::{CheckError, analyze_module, run_checks};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendArtifactKind {
+    Krbo,
+    ElfObject,
+}
+
+impl BackendArtifactKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Krbo => "krbo",
+            Self::ElfObject => "elfobj",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "krbo" => Ok(Self::Krbo),
+            "elfobj" => Ok(Self::ElfObject),
+            _ => Err(format!(
+                "unsupported emit target '{}'; expected 'krbo' or 'elfobj'",
+                value
+            )),
+        }
+    }
+}
 
 pub fn compile_source(src: &str) -> Result<KrirModule, Vec<String>> {
     compile_source_with_surface(src, SurfaceProfile::Stable)
@@ -38,6 +70,32 @@ pub fn compile_file_with_surface(
     let src = std::fs::read_to_string(path)
         .map_err(|e| vec![format!("failed to read '{}': {}", path.display(), e)])?;
     compile_source_with_surface(&src, surface_profile)
+}
+
+pub fn emit_backend_artifact_file_with_surface(
+    path: &Path,
+    surface_profile: SurfaceProfile,
+    kind: BackendArtifactKind,
+) -> Result<Vec<u8>, Vec<String>> {
+    let src = std::fs::read_to_string(path)
+        .map_err(|e| vec![format!("failed to read '{}': {}", path.display(), e)])?;
+    let ast = parse_module(&src)?;
+    let canonical = lower_to_canonical_executable_with_surface(&ast, surface_profile)?;
+    let executable = lower_canonical_executable_to_krir(&canonical)?;
+    let target = BackendTargetContract::x86_64_sysv();
+
+    match kind {
+        BackendArtifactKind::Krbo => {
+            let object = lower_executable_krir_to_compiler_owned_object(&executable, &target)
+                .map_err(|err| vec![err])?;
+            Ok(emit_compiler_owned_object_bytes(&object))
+        }
+        BackendArtifactKind::ElfObject => {
+            let object = lower_executable_krir_to_x86_64_object(&executable, &target)
+                .map_err(|err| vec![err])?;
+            Ok(emit_x86_64_object_bytes(&object))
+        }
+    }
 }
 
 pub fn check_module(module: &KrirModule) -> Result<(), Vec<String>> {
