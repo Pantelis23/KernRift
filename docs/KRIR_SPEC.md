@@ -27,12 +27,16 @@ The first ELF machine-facing compatibility/export subset is specified separately
 
 `kernriftc` can export the current backend artifacts directly:
 
+- `kernriftc --surface stable --emit=krbo -o <output.krbo> --meta-out <output.json> <file.kr>`
+- `kernriftc --surface stable --emit=elfobj -o <output.o> --meta-out <output.json> <file.kr>`
 - `kernriftc --surface stable --emit=krbo -o <output.krbo> <file.kr>`
 - `kernriftc --surface stable --emit=elfobj -o <output.o> <file.kr>`
+- `kernriftc --emit=krbo -o <output.krbo> --meta-out <output.json> <file.kr>`
+- `kernriftc --emit=elfobj -o <output.o> --meta-out <output.json> <file.kr>`
 - `kernriftc --emit=krbo -o <output.krbo> <file.kr>`
 - `kernriftc --emit=elfobj -o <output.o> <file.kr>`
 
-These are artifact-export paths only. They participate in the same surface-aware CLI contract as the rest of `kernriftc`, while preserving stable-default behavior. Linking and execution remain downstream tooling concerns rather than compiler truth.
+These are artifact-export paths only. They participate in the same surface-aware CLI contract as the rest of `kernriftc`, while preserving stable-default behavior. Optional `--meta-out` writes deterministic automation/CI metadata derived from the emitted bytes and CLI inputs; it does not create a second backend truth path. Linking and execution remain downstream tooling concerns rather than compiler truth.
 
 ## Data Model
 
@@ -180,8 +184,12 @@ Any violation is a compile error.
 ## Artifact Outputs (MVP)
 
 - `kernriftc --emit krir <file.kr>`
+- `kernriftc --surface stable --emit=krbo -o <output.krbo> --meta-out <output.json> <file.kr>`
+- `kernriftc --surface stable --emit=elfobj -o <output.o> --meta-out <output.json> <file.kr>`
 - `kernriftc --surface stable --emit=krbo -o <output.krbo> <file.kr>`
 - `kernriftc --surface stable --emit=elfobj -o <output.o> <file.kr>`
+- `kernriftc --emit=krbo -o <output.krbo> --meta-out <output.json> <file.kr>`
+- `kernriftc --emit=elfobj -o <output.o> --meta-out <output.json> <file.kr>`
 - `kernriftc --emit=krbo -o <output.krbo> <file.kr>`
 - `kernriftc --emit=elfobj -o <output.o> <file.kr>`
 - `kernriftc --emit lockgraph <file.kr>`

@@ -310,6 +310,100 @@ fn emit_backend_artifacts_are_deterministic_for_supported_subset() {
 }
 
 #[test]
+fn emit_krbo_sidecar_is_written_and_contains_expected_metadata() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let artifact_path = unique_temp_output_path("emit-krbo-sidecar", "krbo");
+    let meta_path = unique_temp_output_path("emit-krbo-sidecar", "json");
+    fs::remove_file(&artifact_path).ok();
+    fs::remove_file(&meta_path).ok();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("--emit=krbo")
+        .arg("-o")
+        .arg(artifact_path.as_os_str())
+        .arg("--meta-out")
+        .arg(meta_path.as_os_str())
+        .arg(fixture.as_os_str());
+    cmd.assert().success();
+
+    let artifact_bytes = fs::read(&artifact_path).expect("read krbo output");
+    let metadata: Value =
+        serde_json::from_slice(&fs::read(&meta_path).expect("read krbo metadata"))
+            .expect("parse krbo metadata");
+
+    assert_eq!(
+        metadata,
+        json!({
+            "schema_version": "kernrift_artifact_meta_v0",
+            "emit_kind": "krbo",
+            "surface": "stable",
+            "byte_len": artifact_bytes.len(),
+            "sha256": format!("{:x}", Sha256::digest(&artifact_bytes)),
+            "input_file": fixture.to_string_lossy().to_string(),
+            "krbo": {
+                "magic": "KRBO",
+                "version_major": 0,
+                "version_minor": 1,
+                "format_revision": 2,
+                "target_tag": 1,
+                "target_name": "x86_64-sysv"
+            }
+        })
+    );
+
+    fs::remove_file(&artifact_path).ok();
+    fs::remove_file(&meta_path).ok();
+}
+
+#[test]
+fn emit_elfobj_sidecar_is_written_and_contains_expected_metadata() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let artifact_path = unique_temp_output_path("emit-elf-sidecar", "o");
+    let meta_path = unique_temp_output_path("emit-elf-sidecar", "json");
+    fs::remove_file(&artifact_path).ok();
+    fs::remove_file(&meta_path).ok();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("--emit=elfobj")
+        .arg("-o")
+        .arg(artifact_path.as_os_str())
+        .arg("--meta-out")
+        .arg(meta_path.as_os_str())
+        .arg(fixture.as_os_str());
+    cmd.assert().success();
+
+    let artifact_bytes = fs::read(&artifact_path).expect("read elf output");
+    let metadata: Value = serde_json::from_slice(&fs::read(&meta_path).expect("read elf metadata"))
+        .expect("parse elf metadata");
+
+    assert_eq!(
+        metadata,
+        json!({
+            "schema_version": "kernrift_artifact_meta_v0",
+            "emit_kind": "elfobj",
+            "surface": "stable",
+            "byte_len": artifact_bytes.len(),
+            "sha256": format!("{:x}", Sha256::digest(&artifact_bytes)),
+            "input_file": fixture.to_string_lossy().to_string(),
+            "elfobj": {
+                "magic": "7f454c46",
+                "class": "elf64",
+                "endianness": "little",
+                "elf_type": "relocatable",
+                "machine": "x86_64"
+            }
+        })
+    );
+
+    fs::remove_file(&artifact_path).ok();
+    fs::remove_file(&meta_path).ok();
+}
+
+#[test]
 fn emit_backend_artifacts_with_explicit_stable_surface_match_default() {
     let root = repo_root();
     let fixture = root.join("tests").join("must_pass").join("basic.kr");
@@ -317,13 +411,31 @@ fn emit_backend_artifacts_with_explicit_stable_surface_match_default() {
     let krbo_stable = unique_temp_output_path("emit-krbo-stable", "krbo");
     let elf_default = unique_temp_output_path("emit-elf-default", "o");
     let elf_stable = unique_temp_output_path("emit-elf-stable", "o");
+    let krbo_default_meta = unique_temp_output_path("emit-krbo-default", "json");
+    let krbo_stable_meta = unique_temp_output_path("emit-krbo-stable", "json");
+    let elf_default_meta = unique_temp_output_path("emit-elf-default", "json");
+    let elf_stable_meta = unique_temp_output_path("emit-elf-stable", "json");
 
-    for (kind, default_path, stable_path) in [
-        ("krbo", &krbo_default, &krbo_stable),
-        ("elfobj", &elf_default, &elf_stable),
+    for (kind, default_path, stable_path, default_meta_path, stable_meta_path) in [
+        (
+            "krbo",
+            &krbo_default,
+            &krbo_stable,
+            &krbo_default_meta,
+            &krbo_stable_meta,
+        ),
+        (
+            "elfobj",
+            &elf_default,
+            &elf_stable,
+            &elf_default_meta,
+            &elf_stable_meta,
+        ),
     ] {
         fs::remove_file(default_path).ok();
         fs::remove_file(stable_path).ok();
+        fs::remove_file(default_meta_path).ok();
+        fs::remove_file(stable_meta_path).ok();
 
         let mut default_cmd: Command = cargo_bin_cmd!("kernriftc");
         default_cmd
@@ -331,6 +443,8 @@ fn emit_backend_artifacts_with_explicit_stable_surface_match_default() {
             .arg(format!("--emit={kind}"))
             .arg("-o")
             .arg(default_path.as_os_str())
+            .arg("--meta-out")
+            .arg(default_meta_path.as_os_str())
             .arg(fixture.as_os_str());
         default_cmd.assert().success();
 
@@ -342,6 +456,8 @@ fn emit_backend_artifacts_with_explicit_stable_surface_match_default() {
             .arg(format!("--emit={kind}"))
             .arg("-o")
             .arg(stable_path.as_os_str())
+            .arg("--meta-out")
+            .arg(stable_meta_path.as_os_str())
             .arg(fixture.as_os_str());
         stable_cmd.assert().success();
 
@@ -351,9 +467,25 @@ fn emit_backend_artifacts_with_explicit_stable_surface_match_default() {
             default_bytes, stable_bytes,
             "explicit stable surface must match default {kind} output"
         );
+
+        let default_meta = fs::read(default_meta_path).expect("read default metadata");
+        let stable_meta = fs::read(stable_meta_path).expect("read stable metadata");
+        assert_eq!(
+            default_meta, stable_meta,
+            "explicit stable surface must match default {kind} metadata"
+        );
     }
 
-    for path in [&krbo_default, &krbo_stable, &elf_default, &elf_stable] {
+    for path in [
+        &krbo_default,
+        &krbo_stable,
+        &elf_default,
+        &elf_stable,
+        &krbo_default_meta,
+        &krbo_stable_meta,
+        &elf_default_meta,
+        &elf_stable_meta,
+    ] {
         fs::remove_file(path).ok();
     }
 }
@@ -397,6 +529,29 @@ fn emit_backend_artifact_rejects_invalid_surface_value() {
     );
 
     fs::remove_file(&output_path).ok();
+}
+
+#[test]
+fn emit_backend_artifact_meta_out_requires_output_path() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let artifact_path = unique_temp_output_path("emit-meta-missing-path", "krbo");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("--emit=krbo")
+        .arg("-o")
+        .arg(artifact_path.as_os_str())
+        .arg(fixture.as_os_str())
+        .arg("--meta-out");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("invalid emit mode: --meta-out requires a file path")
+    );
+
+    fs::remove_file(&artifact_path).ok();
 }
 
 #[test]
