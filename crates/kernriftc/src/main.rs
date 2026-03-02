@@ -3631,15 +3631,6 @@ fn normalize_backend_artifact_input_path(input_path: &str) -> (String, &'static 
         Ok(cwd) => cwd,
         Err(_) => return (raw, "raw"),
     };
-    let repo_root = match find_kernrift_repo_root_from(&cwd) {
-        Some(repo_root) => repo_root,
-        None => return (raw, "raw"),
-    };
-    let repo_root = match fs::canonicalize(repo_root) {
-        Ok(repo_root) => repo_root,
-        Err(_) => return (raw, "raw"),
-    };
-
     let input_abs = Path::new(input_path);
     let input_abs = if input_abs.is_absolute() {
         input_abs.to_path_buf()
@@ -3648,6 +3639,14 @@ fn normalize_backend_artifact_input_path(input_path: &str) -> (String, &'static 
     };
     let input_abs = match fs::canonicalize(input_abs) {
         Ok(input_abs) => input_abs,
+        Err(_) => return (raw, "raw"),
+    };
+    let repo_root = match find_kernrift_repo_root_from(&input_abs) {
+        Some(repo_root) => repo_root,
+        None => return (raw, "raw"),
+    };
+    let repo_root = match fs::canonicalize(repo_root) {
+        Ok(repo_root) => repo_root,
         Err(_) => return (raw, "raw"),
     };
 
