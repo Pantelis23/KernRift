@@ -11,7 +11,7 @@ KRIR currently has two distinct roles:
 - `BackendTargetContract`: the explicit target-machine contract that future executable KRIR lowering must target.
 - `CompilerOwnedObject`: the primary internal machine-facing binary object artifact, derived from executable KRIR plus a target contract and preserving explicit symbols and fixups, including unresolved external call intent.
 - `X86_64AsmModule`: a target-specific assembly/debug/reference model, derived from executable KRIR plus a target contract.
-- `X86_64ElfRelocatableObject`: a downstream x86_64 ELF compatibility/export artifact derived from `CompilerOwnedObject`, including relocation/export data derived only from compiler-owned symbols and fixups rather than from direct KRIR lowering.
+- `X86_64ElfRelocatableObject`: a downstream x86_64 ELF compatibility/export artifact derived from `CompilerOwnedObject`, including relocation/export data derived only from compiler-owned symbols and fixups rather than from direct KRIR lowering. Its symbol ordering, symbol indices, relocation ordering, and `.rela.text` metadata are deterministic compatibility facts, not hidden emitter accidents.
 
 Between surface KernRift and executable KRIR, the compiler owns a separate canonical executable semantics boundary in HIR. Governed surface forms normalize there before any lowering to executable KRIR begins.
 

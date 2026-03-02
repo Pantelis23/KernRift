@@ -1068,6 +1068,7 @@ impl X86_64ElfRelocatableObject {
 
         let mut last_defined_name: Option<&str> = None;
         let mut defined_names = BTreeSet::new();
+        let mut defined_ranges = Vec::new();
         for symbol in &self.function_symbols {
             if symbol.name.is_empty() {
                 return Err("x86_64 ELF function symbol name must not be empty".to_string());
@@ -1088,6 +1089,23 @@ impl X86_64ElfRelocatableObject {
                 return Err(format!(
                     "x86_64 ELF function symbol '{}' exceeds .text bounds",
                     symbol.name
+                ));
+            }
+            defined_ranges.push((
+                symbol.offset,
+                symbol.offset + symbol.size,
+                symbol.name.as_str(),
+            ));
+        }
+
+        defined_ranges.sort_by_key(|(offset, _, _)| *offset);
+        for pair in defined_ranges.windows(2) {
+            let (_, prev_end, prev_name) = pair[0];
+            let (next_offset, _, next_name) = pair[1];
+            if next_offset < prev_end {
+                return Err(format!(
+                    "x86_64 ELF function symbols '{}' and '{}' must not overlap in .text",
+                    prev_name, next_name
                 ));
             }
         }
@@ -1124,6 +1142,7 @@ impl X86_64ElfRelocatableObject {
 
         let mut last_relocation_key: Option<(u64, &str)> = None;
         let mut referenced_undefined = BTreeSet::new();
+        let mut relocation_offsets = BTreeSet::new();
         for relocation in &self.relocations {
             if relocation.offset + 4 > self.text_bytes.len() as u64 {
                 return Err(format!(
@@ -1150,6 +1169,12 @@ impl X86_64ElfRelocatableObject {
                 return Err(
                     "x86_64 ELF relocations must be sorted by offset and target symbol".to_string(),
                 );
+            }
+            if !relocation_offsets.insert(relocation.offset) {
+                return Err(format!(
+                    "x86_64 ELF relocation patch offset {} must be unique",
+                    relocation.offset
+                ));
             }
             last_relocation_key = Some(key);
             referenced_undefined.insert(relocation.target_symbol.as_str());
@@ -2929,6 +2954,7 @@ mod tests {
                 .expect("lower x86_64 object");
         let bytes = emit_x86_64_object_bytes(&object);
         let sections = parse_elf64_sections(&bytes);
+        let symbols = parse_elf64_symbols(&bytes, &sections);
 
         assert_eq!(
             object.text_bytes,
@@ -2949,6 +2975,46 @@ mod tests {
         assert!(
             !sections.iter().any(|section| section.name == ".rela.text"),
             "internal-only export must not emit .rela.text"
+        );
+        assert_eq!(
+            symbols,
+            vec![
+                ParsedElfSymbol {
+                    name: String::new(),
+                    info: 0,
+                    shndx: 0,
+                    value: 0,
+                    size: 0,
+                },
+                ParsedElfSymbol {
+                    name: String::new(),
+                    info: 0x03,
+                    shndx: 1,
+                    value: 0,
+                    size: 0,
+                },
+                ParsedElfSymbol {
+                    name: "alpha".to_string(),
+                    info: 0x12,
+                    shndx: 1,
+                    value: 0,
+                    size: 1,
+                },
+                ParsedElfSymbol {
+                    name: "beta".to_string(),
+                    info: 0x12,
+                    shndx: 1,
+                    value: 1,
+                    size: 1,
+                },
+                ParsedElfSymbol {
+                    name: "entry".to_string(),
+                    info: 0x12,
+                    shndx: 1,
+                    value: 2,
+                    size: 11,
+                },
+            ]
         );
     }
 
@@ -3311,6 +3377,92 @@ mod tests {
     }
 
     #[test]
+    fn executable_krir_x86_64_object_export_repeated_external_calls_share_symbol_index() {
+        let module = ExecutableKrirModule {
+            module_caps: vec![],
+            functions: vec![ExecutableFunction {
+                name: "entry".to_string(),
+                blocks: vec![ExecutableBlock {
+                    label: "entry".to_string(),
+                    ops: vec![
+                        ExecutableOp::Call {
+                            callee: "ext".to_string(),
+                        },
+                        ExecutableOp::Call {
+                            callee: "ext".to_string(),
+                        },
+                    ],
+                    terminator: ExecutableTerminator::Return {
+                        value: ExecutableValue::Unit,
+                    },
+                }],
+                ..executable_function("entry")
+            }],
+            call_edges: vec![],
+        };
+
+        let object =
+            lower_executable_krir_to_x86_64_object(&module, &BackendTargetContract::x86_64_sysv())
+                .expect("lower x86_64 object");
+        let bytes = emit_x86_64_object_bytes(&object);
+        let sections = parse_elf64_sections(&bytes);
+        let symbols = parse_elf64_symbols(&bytes, &sections);
+        let relocations = parse_elf64_relocations(&bytes, &sections);
+
+        assert_eq!(object.undefined_function_symbols, vec!["ext".to_string()]);
+        assert_eq!(
+            symbols,
+            vec![
+                ParsedElfSymbol {
+                    name: String::new(),
+                    info: 0,
+                    shndx: 0,
+                    value: 0,
+                    size: 0,
+                },
+                ParsedElfSymbol {
+                    name: String::new(),
+                    info: 0x03,
+                    shndx: 1,
+                    value: 0,
+                    size: 0,
+                },
+                ParsedElfSymbol {
+                    name: "entry".to_string(),
+                    info: 0x12,
+                    shndx: 1,
+                    value: 0,
+                    size: 11,
+                },
+                ParsedElfSymbol {
+                    name: "ext".to_string(),
+                    info: 0x12,
+                    shndx: 0,
+                    value: 0,
+                    size: 0,
+                },
+            ]
+        );
+        assert_eq!(
+            relocations,
+            vec![
+                ParsedElfRelocation {
+                    offset: 1,
+                    sym: 3,
+                    kind: 4,
+                    addend: -4,
+                },
+                ParsedElfRelocation {
+                    offset: 6,
+                    sym: 3,
+                    kind: 4,
+                    addend: -4,
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn x86_64_elf_validation_rejects_undefined_symbols_without_relocations() {
         let object = super::X86_64ElfRelocatableObject {
             format: "elf64-relocatable",
@@ -3328,6 +3480,69 @@ mod tests {
         assert_eq!(
             object.validate(),
             Err("x86_64 ELF undefined function symbols require .rela.text relocations".to_string())
+        );
+    }
+
+    #[test]
+    fn x86_64_elf_validation_rejects_relocations_targeting_defined_symbols() {
+        let object = super::X86_64ElfRelocatableObject {
+            format: "elf64-relocatable",
+            text_section: ".text",
+            text_bytes: vec![0xE8, 0x00, 0x00, 0x00, 0x00, 0xC3],
+            function_symbols: vec![super::X86_64ElfFunctionSymbol {
+                name: "entry".to_string(),
+                offset: 0,
+                size: 6,
+            }],
+            undefined_function_symbols: vec![],
+            relocations: vec![super::X86_64ElfRelocation {
+                offset: 1,
+                kind: super::X86_64ElfRelocationKind::X86_64Plt32,
+                target_symbol: "entry".to_string(),
+                addend: -4,
+            }],
+        };
+
+        assert_eq!(
+            object.validate(),
+            Err(
+                "x86_64 ELF relocation target 'entry' must be an undefined function symbol"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn x86_64_elf_validation_rejects_duplicate_relocation_patch_offsets() {
+        let object = super::X86_64ElfRelocatableObject {
+            format: "elf64-relocatable",
+            text_section: ".text",
+            text_bytes: vec![0xE8, 0x00, 0x00, 0x00, 0x00, 0xC3],
+            function_symbols: vec![super::X86_64ElfFunctionSymbol {
+                name: "entry".to_string(),
+                offset: 0,
+                size: 6,
+            }],
+            undefined_function_symbols: vec!["ext_a".to_string(), "ext_b".to_string()],
+            relocations: vec![
+                super::X86_64ElfRelocation {
+                    offset: 1,
+                    kind: super::X86_64ElfRelocationKind::X86_64Plt32,
+                    target_symbol: "ext_a".to_string(),
+                    addend: -4,
+                },
+                super::X86_64ElfRelocation {
+                    offset: 1,
+                    kind: super::X86_64ElfRelocationKind::X86_64Plt32,
+                    target_symbol: "ext_b".to_string(),
+                    addend: -4,
+                },
+            ],
+        };
+
+        assert_eq!(
+            object.validate(),
+            Err("x86_64 ELF relocation patch offset 1 must be unique".to_string())
         );
     }
 }

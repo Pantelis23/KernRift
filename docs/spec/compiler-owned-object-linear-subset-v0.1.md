@@ -148,3 +148,10 @@ For the current x86_64 linear subset, ELF export must derive:
 - defined function symbols from compiler-owned defined text symbols,
 - undefined external function symbols from compiler-owned undefined external symbols,
 - relocation entries from compiler-owned fixups in patch-offset order.
+
+The compiler-owned object format remains the sole internal truth for:
+
+- code bytes,
+- symbol identity and definition state,
+- fixup identity,
+- relocation intent.

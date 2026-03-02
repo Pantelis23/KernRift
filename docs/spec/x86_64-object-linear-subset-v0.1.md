@@ -92,6 +92,7 @@ Symbol ordering and indices are explicit for this subset:
 - defined function symbols follow in deterministic name order
 - undefined external function symbols follow in deterministic name order
 - relocation symbol indices must refer to those emitted symbol-table entries directly
+- defined function symbols must occupy non-overlapping `.text` ranges
 
 ## Determinism rules
 
@@ -108,6 +109,7 @@ Symbol ordering and indices are explicit for this subset:
 - `.rela.text.sh_link` points to `.symtab`
 - `.rela.text.sh_info` points to `.text`
 - `.rela.text.sh_entsize = 24`
+- relocation patch offsets are unique in the current subset
 - undefined external symbols are invalid unless at least one relocation references them
 
 ## Relationship to the compiler-owned object format
