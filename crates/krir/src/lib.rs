@@ -289,14 +289,318 @@ impl ExecutableKrirModule {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackendTargetId {
+    X86_64Sysv,
+}
+
+impl BackendTargetId {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::X86_64Sysv => "x86_64-sysv",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetArch {
+    X86_64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetAbi {
+    Sysv,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetEndian {
+    Little,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum X86_64IntegerRegister {
+    Rax,
+    Rbx,
+    Rcx,
+    Rdx,
+    Rsi,
+    Rdi,
+    Rbp,
+    Rsp,
+    R8,
+    R9,
+    R10,
+    R11,
+    R12,
+    R13,
+    R14,
+    R15,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CurrentExecutableReturnConvention {
+    UnitNoRegister,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FutureScalarReturnConvention {
+    IntegerRax,
+}
+
+impl FutureScalarReturnConvention {
+    pub fn registers(self) -> &'static [X86_64IntegerRegister] {
+        match self {
+            Self::IntegerRax => &[X86_64IntegerRegister::Rax],
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SymbolNamingConvention {
+    pub function_prefix: &'static str,
+    pub preserve_source_names: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SectionNamingConvention {
+    pub text: &'static str,
+    pub rodata: &'static str,
+    pub data: &'static str,
+    pub bss: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FreestandingTargetAssumptions {
+    pub no_libc: bool,
+    pub no_host_runtime: bool,
+    pub toolchain_bridge_not_yet_exercised: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BackendTargetContract {
+    pub target_id: BackendTargetId,
+    pub arch: TargetArch,
+    pub abi: TargetAbi,
+    pub endian: TargetEndian,
+    pub pointer_bits: u16,
+    pub stack_alignment_bytes: u16,
+    pub integer_registers: Vec<X86_64IntegerRegister>,
+    pub stack_pointer: X86_64IntegerRegister,
+    pub frame_pointer: X86_64IntegerRegister,
+    pub instruction_pointer: &'static str,
+    pub caller_saved: Vec<X86_64IntegerRegister>,
+    pub callee_saved: Vec<X86_64IntegerRegister>,
+    pub current_executable_return: CurrentExecutableReturnConvention,
+    pub future_scalar_return: FutureScalarReturnConvention,
+    pub future_argument_registers: Vec<X86_64IntegerRegister>,
+    pub symbols: SymbolNamingConvention,
+    pub sections: SectionNamingConvention,
+    pub freestanding: FreestandingTargetAssumptions,
+}
+
+impl BackendTargetContract {
+    pub fn x86_64_sysv() -> Self {
+        Self {
+            target_id: BackendTargetId::X86_64Sysv,
+            arch: TargetArch::X86_64,
+            abi: TargetAbi::Sysv,
+            endian: TargetEndian::Little,
+            pointer_bits: 64,
+            stack_alignment_bytes: 16,
+            integer_registers: vec![
+                X86_64IntegerRegister::Rax,
+                X86_64IntegerRegister::Rbx,
+                X86_64IntegerRegister::Rcx,
+                X86_64IntegerRegister::Rdx,
+                X86_64IntegerRegister::Rsi,
+                X86_64IntegerRegister::Rdi,
+                X86_64IntegerRegister::Rbp,
+                X86_64IntegerRegister::Rsp,
+                X86_64IntegerRegister::R8,
+                X86_64IntegerRegister::R9,
+                X86_64IntegerRegister::R10,
+                X86_64IntegerRegister::R11,
+                X86_64IntegerRegister::R12,
+                X86_64IntegerRegister::R13,
+                X86_64IntegerRegister::R14,
+                X86_64IntegerRegister::R15,
+            ],
+            stack_pointer: X86_64IntegerRegister::Rsp,
+            frame_pointer: X86_64IntegerRegister::Rbp,
+            instruction_pointer: "rip",
+            caller_saved: vec![
+                X86_64IntegerRegister::Rax,
+                X86_64IntegerRegister::Rcx,
+                X86_64IntegerRegister::Rdx,
+                X86_64IntegerRegister::Rsi,
+                X86_64IntegerRegister::Rdi,
+                X86_64IntegerRegister::R8,
+                X86_64IntegerRegister::R9,
+                X86_64IntegerRegister::R10,
+                X86_64IntegerRegister::R11,
+            ],
+            callee_saved: vec![
+                X86_64IntegerRegister::Rbx,
+                X86_64IntegerRegister::Rbp,
+                X86_64IntegerRegister::R12,
+                X86_64IntegerRegister::R13,
+                X86_64IntegerRegister::R14,
+                X86_64IntegerRegister::R15,
+            ],
+            current_executable_return: CurrentExecutableReturnConvention::UnitNoRegister,
+            future_scalar_return: FutureScalarReturnConvention::IntegerRax,
+            future_argument_registers: vec![
+                X86_64IntegerRegister::Rdi,
+                X86_64IntegerRegister::Rsi,
+                X86_64IntegerRegister::Rdx,
+                X86_64IntegerRegister::Rcx,
+                X86_64IntegerRegister::R8,
+                X86_64IntegerRegister::R9,
+            ],
+            symbols: SymbolNamingConvention {
+                function_prefix: "",
+                preserve_source_names: true,
+            },
+            sections: SectionNamingConvention {
+                text: ".text",
+                rodata: ".rodata",
+                data: ".data",
+                bss: ".bss",
+            },
+            freestanding: FreestandingTargetAssumptions {
+                no_libc: true,
+                no_host_runtime: true,
+                toolchain_bridge_not_yet_exercised: true,
+            },
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.target_id != BackendTargetId::X86_64Sysv {
+            return Err("backend target contract target_id must be x86_64-sysv".to_string());
+        }
+        if self.arch != TargetArch::X86_64 {
+            return Err("backend target contract arch must be x86_64".to_string());
+        }
+        if self.abi != TargetAbi::Sysv {
+            return Err("backend target contract abi must be sysv".to_string());
+        }
+        if self.endian != TargetEndian::Little {
+            return Err("backend target contract endian must be little".to_string());
+        }
+        if self.pointer_bits != 64 {
+            return Err("backend target contract pointer_bits must be 64".to_string());
+        }
+        if self.stack_alignment_bytes != 16 {
+            return Err("backend target contract stack_alignment_bytes must be 16".to_string());
+        }
+
+        let integer_set = self
+            .integer_registers
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        if integer_set.len() != self.integer_registers.len() {
+            return Err(
+                "backend target contract integer_registers must not contain duplicates".to_string(),
+            );
+        }
+        if !integer_set.contains(&self.stack_pointer) {
+            return Err(
+                "backend target contract stack_pointer must be in integer_registers".to_string(),
+            );
+        }
+        if !integer_set.contains(&self.frame_pointer) {
+            return Err(
+                "backend target contract frame_pointer must be in integer_registers".to_string(),
+            );
+        }
+
+        let caller_saved = self.caller_saved.iter().copied().collect::<BTreeSet<_>>();
+        let callee_saved = self.callee_saved.iter().copied().collect::<BTreeSet<_>>();
+        if caller_saved.len() != self.caller_saved.len() {
+            return Err(
+                "backend target contract caller_saved must not contain duplicates".to_string(),
+            );
+        }
+        if callee_saved.len() != self.callee_saved.len() {
+            return Err(
+                "backend target contract callee_saved must not contain duplicates".to_string(),
+            );
+        }
+        if !caller_saved.is_disjoint(&callee_saved) {
+            return Err(
+                "backend target contract caller_saved and callee_saved must be disjoint"
+                    .to_string(),
+            );
+        }
+        if !caller_saved.is_subset(&integer_set) {
+            return Err(
+                "backend target contract caller_saved must be a subset of integer_registers"
+                    .to_string(),
+            );
+        }
+        if !callee_saved.is_subset(&integer_set) {
+            return Err(
+                "backend target contract callee_saved must be a subset of integer_registers"
+                    .to_string(),
+            );
+        }
+
+        for reg in self.future_scalar_return.registers() {
+            if !integer_set.contains(reg) {
+                return Err(
+                    "backend target contract future_scalar_return must resolve to integer_registers"
+                        .to_string(),
+                );
+            }
+        }
+        for reg in &self.future_argument_registers {
+            if !integer_set.contains(reg) {
+                return Err(
+                    "backend target contract future_argument_registers must be a subset of integer_registers"
+                        .to_string(),
+                );
+            }
+        }
+
+        if self.symbols.function_prefix.contains(char::is_whitespace) {
+            return Err(
+                "backend target contract function_prefix must not contain whitespace".to_string(),
+            );
+        }
+        if self.sections.text.is_empty()
+            || self.sections.rodata.is_empty()
+            || self.sections.data.is_empty()
+            || self.sections.bss.is_empty()
+        {
+            return Err("backend target contract sections must not be empty".to_string());
+        }
+        if !self.freestanding.no_libc || !self.freestanding.no_host_runtime {
+            return Err("backend target contract must remain freestanding in v0.1".to_string());
+        }
+
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        CallEdge, Ctx, Eff, ExecutableBlock, ExecutableFacts, ExecutableFunction,
-        ExecutableKrirModule, ExecutableOp, ExecutableSignature, ExecutableTerminator,
-        ExecutableValue, ExecutableValueType, FunctionAttrs,
+        BackendTargetContract, CallEdge, Ctx, Eff, ExecutableBlock, ExecutableFacts,
+        ExecutableFunction, ExecutableKrirModule, ExecutableOp, ExecutableSignature,
+        ExecutableTerminator, ExecutableValue, ExecutableValueType, FunctionAttrs,
+        FutureScalarReturnConvention, X86_64IntegerRegister,
     };
     use serde_json::json;
+    use std::collections::BTreeSet;
 
     fn executable_function(name: &str) -> ExecutableFunction {
         ExecutableFunction {
@@ -489,6 +793,126 @@ mod tests {
         assert_eq!(
             module.functions[0].signature.params,
             vec![ExecutableValueType::Unit, ExecutableValueType::Unit]
+        );
+    }
+
+    #[test]
+    fn x86_64_sysv_target_contract_is_deterministic_and_valid() {
+        let contract = BackendTargetContract::x86_64_sysv();
+        contract.validate().expect("valid target contract");
+
+        let value = serde_json::to_value(&contract).expect("serialize");
+        assert_eq!(
+            value,
+            json!({
+                "target_id": "x86_64_sysv",
+                "arch": "x86_64",
+                "abi": "sysv",
+                "endian": "little",
+                "pointer_bits": 64,
+                "stack_alignment_bytes": 16,
+                "integer_registers": [
+                    "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp",
+                    "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"
+                ],
+                "stack_pointer": "rsp",
+                "frame_pointer": "rbp",
+                "instruction_pointer": "rip",
+                "caller_saved": ["rax", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11"],
+                "callee_saved": ["rbx", "rbp", "r12", "r13", "r14", "r15"],
+                "current_executable_return": "unit_no_register",
+                "future_scalar_return": "integer_rax",
+                "future_argument_registers": ["rdi", "rsi", "rdx", "rcx", "r8", "r9"],
+                "symbols": {
+                    "function_prefix": "",
+                    "preserve_source_names": true
+                },
+                "sections": {
+                    "text": ".text",
+                    "rodata": ".rodata",
+                    "data": ".data",
+                    "bss": ".bss"
+                },
+                "freestanding": {
+                    "no_libc": true,
+                    "no_host_runtime": true,
+                    "toolchain_bridge_not_yet_exercised": true
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn x86_64_sysv_target_contract_register_sets_are_partitioned() {
+        let contract = BackendTargetContract::x86_64_sysv();
+        let integer_set = contract
+            .integer_registers
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let caller_saved = contract
+            .caller_saved
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let callee_saved = contract
+            .callee_saved
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+
+        assert!(caller_saved.is_disjoint(&callee_saved));
+        assert!(caller_saved.is_subset(&integer_set));
+        assert!(callee_saved.is_subset(&integer_set));
+        assert_eq!(contract.stack_alignment_bytes, 16);
+        assert_eq!(
+            contract.future_argument_registers,
+            vec![
+                X86_64IntegerRegister::Rdi,
+                X86_64IntegerRegister::Rsi,
+                X86_64IntegerRegister::Rdx,
+                X86_64IntegerRegister::Rcx,
+                X86_64IntegerRegister::R8,
+                X86_64IntegerRegister::R9,
+            ]
+        );
+        assert_eq!(
+            contract.future_scalar_return.registers(),
+            &[X86_64IntegerRegister::Rax]
+        );
+    }
+
+    #[test]
+    fn x86_64_sysv_target_contract_validation_rejects_overlapping_saved_sets() {
+        let mut contract = BackendTargetContract::x86_64_sysv();
+        contract.callee_saved.push(X86_64IntegerRegister::Rax);
+
+        assert_eq!(
+            contract.validate(),
+            Err(
+                "backend target contract caller_saved and callee_saved must be disjoint"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn x86_64_sysv_target_contract_validation_rejects_unknown_scalar_return_register_mapping() {
+        let mut contract = BackendTargetContract::x86_64_sysv();
+        contract
+            .integer_registers
+            .retain(|reg| *reg != X86_64IntegerRegister::Rax);
+        contract
+            .caller_saved
+            .retain(|reg| *reg != X86_64IntegerRegister::Rax);
+        contract.future_scalar_return = FutureScalarReturnConvention::IntegerRax;
+
+        assert_eq!(
+            contract.validate(),
+            Err(
+                "backend target contract future_scalar_return must resolve to integer_registers"
+                    .to_string()
+            )
         );
     }
 }

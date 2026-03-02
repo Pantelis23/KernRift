@@ -8,10 +8,13 @@ KRIR currently has two distinct roles:
 
 - `KrirModule`: the existing analysis-first contract used for checks and deterministic artifact emission.
 - `ExecutableKrirModule`: the minimal executable subset contract that future backend work must lower from.
+- `BackendTargetContract`: the explicit target-machine contract that future executable KRIR lowering must target.
 
 Between surface KernRift and executable KRIR, the compiler owns a separate canonical executable semantics boundary in HIR. Governed surface forms normalize there before any lowering to executable KRIR begins.
 
 The executable subset is intentionally narrow. It is specified separately so backend work does not pretend the current fact-heavy analysis IR is already codegen-ready.
+
+The first target contract is specified separately in `docs/spec/backend-target-model-x86_64-sysv-v0.1.md`. It defines target facts only; this branch still does not perform instruction selection, register allocation, stack-frame lowering, or assembly/object emission.
 
 ## Data Model
 
@@ -195,3 +198,13 @@ Executable KRIR is the future backend-facing contract. In KR0.x it is intentiona
 - semantic facts remain attached but separate from executable ops.
 
 Executable KRIR is not yet used by codegen in this branch. This branch only makes the contract explicit so later backend work has a deterministic, compiler-owned boundary.
+
+## Backend Target Boundary
+
+Future backend/codegen work must lower:
+
+- canonical executable semantics
+- to executable KRIR
+- against an explicit backend target contract
+
+The backend target contract is not executable KRIR and is not semantic authority. It records machine-facing constraints such as register sets, ABI, stack alignment, symbol naming, and section naming for a chosen target. In KR0.x the first defined contract is `x86_64-sysv`, but this branch still does not emit machine code.
