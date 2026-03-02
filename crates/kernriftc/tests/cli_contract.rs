@@ -310,6 +310,55 @@ fn emit_backend_artifacts_are_deterministic_for_supported_subset() {
 }
 
 #[test]
+fn emit_backend_artifacts_with_explicit_stable_surface_match_default() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let krbo_default = unique_temp_output_path("emit-krbo-default", "krbo");
+    let krbo_stable = unique_temp_output_path("emit-krbo-stable", "krbo");
+    let elf_default = unique_temp_output_path("emit-elf-default", "o");
+    let elf_stable = unique_temp_output_path("emit-elf-stable", "o");
+
+    for (kind, default_path, stable_path) in [
+        ("krbo", &krbo_default, &krbo_stable),
+        ("elfobj", &elf_default, &elf_stable),
+    ] {
+        fs::remove_file(default_path).ok();
+        fs::remove_file(stable_path).ok();
+
+        let mut default_cmd: Command = cargo_bin_cmd!("kernriftc");
+        default_cmd
+            .current_dir(&root)
+            .arg(format!("--emit={kind}"))
+            .arg("-o")
+            .arg(default_path.as_os_str())
+            .arg(fixture.as_os_str());
+        default_cmd.assert().success();
+
+        let mut stable_cmd: Command = cargo_bin_cmd!("kernriftc");
+        stable_cmd
+            .current_dir(&root)
+            .arg("--surface")
+            .arg("stable")
+            .arg(format!("--emit={kind}"))
+            .arg("-o")
+            .arg(stable_path.as_os_str())
+            .arg(fixture.as_os_str());
+        stable_cmd.assert().success();
+
+        let default_bytes = fs::read(default_path).expect("read default emitted artifact");
+        let stable_bytes = fs::read(stable_path).expect("read stable emitted artifact");
+        assert_eq!(
+            default_bytes, stable_bytes,
+            "explicit stable surface must match default {kind} output"
+        );
+    }
+
+    for path in [&krbo_default, &krbo_stable, &elf_default, &elf_stable] {
+        fs::remove_file(path).ok();
+    }
+}
+
+#[test]
 fn emit_backend_artifact_requires_output_path() {
     let root = repo_root();
     let fixture = root.join("tests").join("must_pass").join("basic.kr");
@@ -324,6 +373,30 @@ fn emit_backend_artifact_requires_output_path() {
         stderr.lines().next(),
         Some("invalid emit mode: missing -o <output-path>")
     );
+}
+
+#[test]
+fn emit_backend_artifact_rejects_invalid_surface_value() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let output_path = unique_temp_output_path("emit-invalid-surface", "krbo");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("--surface")
+        .arg("beta")
+        .arg("--emit=krbo")
+        .arg("-o")
+        .arg(output_path.as_os_str())
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("invalid emit mode: invalid surface mode 'beta', expected 'stable' or 'experimental'")
+    );
+
+    fs::remove_file(&output_path).ok();
 }
 
 #[test]

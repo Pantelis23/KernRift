@@ -812,6 +812,7 @@ struct MigratePreviewArgs {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BackendEmitArgs {
+    surface: SurfaceProfile,
     kind: BackendArtifactKind,
     output_path: String,
     input_path: String,
@@ -1003,6 +1004,35 @@ fn main() -> ExitCode {
     }
 
     match args[1].as_str() {
+        "--surface" => {
+            if args.len() < 4 {
+                eprintln!("invalid emit mode: --surface requires a value");
+                print_usage();
+                return ExitCode::from(EXIT_INVALID_INPUT);
+            }
+            let surface = match SurfaceProfile::parse(&args[2]) {
+                Ok(surface) => surface,
+                Err(err) => {
+                    eprintln!("invalid emit mode: {}", err);
+                    print_usage();
+                    return ExitCode::from(EXIT_INVALID_INPUT);
+                }
+            };
+            let emit_arg = &args[3];
+            if !emit_arg.starts_with("--emit=") {
+                eprintln!("invalid emit mode: --surface must be followed by --emit=<target>");
+                print_usage();
+                return ExitCode::from(EXIT_INVALID_INPUT);
+            }
+            match parse_backend_emit_args(&emit_arg["--emit=".len()..], &args[4..], surface) {
+                Ok(parsed) => run_backend_emit(&parsed),
+                Err(err) => {
+                    eprintln!("{}", err);
+                    print_usage();
+                    ExitCode::from(EXIT_INVALID_INPUT)
+                }
+            }
+        }
         "check" => match parse_check_args(&args[2..]) {
             Ok(parsed) => run_check(&parsed),
             Err(err) => {
@@ -1075,7 +1105,11 @@ fn main() -> ExitCode {
             run_selftest()
         }
         arg if arg.starts_with("--emit=") => {
-            match parse_backend_emit_args(&arg["--emit=".len()..], &args[2..]) {
+            match parse_backend_emit_args(
+                &arg["--emit=".len()..],
+                &args[2..],
+                SurfaceProfile::Stable,
+            ) {
                 Ok(parsed) => run_backend_emit(&parsed),
                 Err(err) => {
                     eprintln!("{}", err);
@@ -1467,7 +1501,11 @@ fn parse_migrate_preview_args(args: &[String]) -> Result<MigratePreviewArgs, Str
     })
 }
 
-fn parse_backend_emit_args(kind: &str, args: &[String]) -> Result<BackendEmitArgs, String> {
+fn parse_backend_emit_args(
+    kind: &str,
+    args: &[String],
+    surface: SurfaceProfile,
+) -> Result<BackendEmitArgs, String> {
     let kind =
         BackendArtifactKind::parse(kind).map_err(|err| format!("invalid emit mode: {}", err))?;
     let mut output_path = None::<String>;
@@ -1505,6 +1543,7 @@ fn parse_backend_emit_args(kind: &str, args: &[String]) -> Result<BackendEmitArg
     }
 
     Ok(BackendEmitArgs {
+        surface,
         kind,
         output_path,
         input_path: positionals.pop().expect("exactly one positional"),
@@ -3476,7 +3515,7 @@ fn run_emit(kind: &str, path: &str) -> ExitCode {
 fn run_backend_emit(args: &BackendEmitArgs) -> ExitCode {
     let bytes = match emit_backend_artifact_file_with_surface(
         Path::new(&args.input_path),
-        SurfaceProfile::Stable,
+        args.surface,
         args.kind,
     ) {
         Ok(bytes) => bytes,
@@ -5741,6 +5780,8 @@ fn print_usage() {
         "  kernriftc verify --contracts <contracts.json> --hash <contracts.sha256> --report <verify-report.json>"
     );
     eprintln!("  kernriftc --selftest");
+    eprintln!("  kernriftc --surface stable --emit=krbo -o <output.krbo> <file.kr>");
+    eprintln!("  kernriftc --surface stable --emit=elfobj -o <output.o> <file.kr>");
     eprintln!("  kernriftc --emit=krbo -o <output.krbo> <file.kr>");
     eprintln!("  kernriftc --emit=elfobj -o <output.o> <file.kr>");
     eprintln!("  kernriftc --emit krir <file.kr>");

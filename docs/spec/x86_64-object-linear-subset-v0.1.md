@@ -127,9 +127,10 @@ Compatibility smoke checks confirm that standard ELF inspection tools accept the
 
 Current user-facing export path:
 
+- `kernriftc --surface stable --emit=elfobj -o <output.o> <file.kr>`
 - `kernriftc --emit=elfobj -o <output.o> <file.kr>`
 
-This writes the downstream ELF relocatable compatibility/export artifact directly. It does not make ELF the internal backend truth.
+This writes the downstream ELF relocatable compatibility/export artifact directly. It participates in the same surface-aware CLI contract as other compiler flows while preserving stable-default behavior. It does not make ELF the internal backend truth.
 
 ## Explicit non-goals
 
