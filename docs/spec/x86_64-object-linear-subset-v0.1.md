@@ -132,7 +132,7 @@ Current user-facing export path:
 - `kernriftc --emit=elfobj -o <output.o> --meta-out <output.json> <file.kr>`
 - `kernriftc --emit=elfobj -o <output.o> <file.kr>`
 
-This writes the downstream ELF relocatable compatibility/export artifact directly. It participates in the same surface-aware CLI contract as other compiler flows while preserving stable-default behavior. Optional `--meta-out` writes deterministic header-level metadata for automation and CI convenience only, including repo-relative source provenance when the resolved input path lies under the repo root. It does not make ELF the internal backend truth.
+This writes the downstream ELF relocatable compatibility/export artifact directly. It participates in the same surface-aware CLI contract as other compiler flows while preserving stable-default behavior. Optional `--meta-out` writes deterministic header-level metadata for automation and CI convenience only, including repo-relative source provenance when the resolved input path lies under the Git repo root. It does not make ELF the internal backend truth.
 
 ## Explicit non-goals
 

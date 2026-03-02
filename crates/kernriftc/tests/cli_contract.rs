@@ -625,13 +625,21 @@ fn emit_backend_artifact_sidecar_normalizes_absolute_repo_input_outside_repo_cwd
 }
 
 #[test]
-fn emit_backend_artifact_sidecar_falls_back_to_raw_input_path_for_non_repo_file() {
+fn emit_backend_artifact_sidecar_falls_back_to_raw_input_path_for_non_git_repo_file() {
     let root = repo_root();
-    let repo_fixture = root.join("tests").join("must_pass").join("basic.kr");
-    let external_fixture = unique_temp_output_path("emit-external-input", "kr");
+    let external_root = unique_temp_output_path("emit-external-input", "dir");
+    let external_fixture = external_root
+        .join("tests")
+        .join("must_pass")
+        .join("basic.kr");
     let artifact_path = unique_temp_output_path("emit-external-input", "krbo");
     let meta_path = unique_temp_output_path("emit-external-input", "json");
-    fs::copy(&repo_fixture, &external_fixture).expect("copy external fixture");
+    fs::create_dir_all(external_fixture.parent().expect("external fixture parent"))
+        .expect("create external fixture tree");
+    fs::create_dir_all(external_root.join(".git")).expect("create fake git dir");
+    fs::create_dir_all(external_root.join("crates")).expect("create fake crates dir");
+    fs::create_dir_all(external_root.join("docs")).expect("create fake docs dir");
+    fs::write(&external_fixture, "fn entry() {\n}\n").expect("write external fixture");
 
     for path in [&artifact_path, &meta_path] {
         fs::remove_file(path).ok();
@@ -656,9 +664,10 @@ fn emit_backend_artifact_sidecar_falls_back_to_raw_input_path_for_non_repo_file(
     );
     assert_eq!(metadata["input_path_kind"], "raw");
 
-    for path in [&external_fixture, &artifact_path, &meta_path] {
+    for path in [&artifact_path, &meta_path] {
         fs::remove_file(path).ok();
     }
+    fs::remove_dir_all(&external_root).ok();
 }
 
 #[test]

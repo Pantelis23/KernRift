@@ -36,7 +36,7 @@ The first ELF machine-facing compatibility/export subset is specified separately
 - `kernriftc --emit=krbo -o <output.krbo> <file.kr>`
 - `kernriftc --emit=elfobj -o <output.o> <file.kr>`
 
-These are artifact-export paths only. They participate in the same surface-aware CLI contract as the rest of `kernriftc`, while preserving stable-default behavior. Optional `--meta-out` writes deterministic automation/CI metadata derived from the emitted bytes and CLI inputs; it does not create a second backend truth path. When the resolved input path lies under the repo root, the sidecar records repo-relative source provenance for stable automation independent of invocation cwd. Linking and execution remain downstream tooling concerns rather than compiler truth.
+These are artifact-export paths only. They participate in the same surface-aware CLI contract as the rest of `kernriftc`, while preserving stable-default behavior. Optional `--meta-out` writes deterministic automation/CI metadata derived from the emitted bytes and CLI inputs; it does not create a second backend truth path. When the resolved input path lies under the Git repo root, the sidecar records repo-relative source provenance for stable automation independent of invocation cwd. Linking and execution remain downstream tooling concerns rather than compiler truth.
 
 ## Data Model
 

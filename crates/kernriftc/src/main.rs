@@ -3641,7 +3641,7 @@ fn normalize_backend_artifact_input_path(input_path: &str) -> (String, &'static 
         Ok(input_abs) => input_abs,
         Err(_) => return (raw, "raw"),
     };
-    let repo_root = match find_kernrift_repo_root_from(&input_abs) {
+    let repo_root = match find_git_repo_root_from(&input_abs) {
         Some(repo_root) => repo_root,
         None => return (raw, "raw"),
     };
@@ -3659,16 +3659,28 @@ fn normalize_backend_artifact_input_path(input_path: &str) -> (String, &'static 
     }
 }
 
-fn find_kernrift_repo_root_from(start: &Path) -> Option<PathBuf> {
-    for candidate in start.ancestors() {
-        let has_git = candidate.join(".git").exists();
-        let has_crates = candidate.join("crates").is_dir();
-        let has_docs = candidate.join("docs").is_dir();
-        if has_git && has_crates && has_docs {
-            return Some(candidate.to_path_buf());
-        }
+fn find_git_repo_root_from(start: &Path) -> Option<PathBuf> {
+    let anchor = if start.is_dir() {
+        start
+    } else {
+        start.parent().unwrap_or(start)
+    };
+    let output = ProcessCommand::new("git")
+        .arg("rev-parse")
+        .arg("--show-toplevel")
+        .current_dir(anchor)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
     }
-    None
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let repo_root = stdout.trim();
+    if repo_root.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(repo_root))
+    }
 }
 
 fn parse_krbo_artifact_metadata(bytes: &[u8]) -> Result<KrboArtifactMetadata, String> {
