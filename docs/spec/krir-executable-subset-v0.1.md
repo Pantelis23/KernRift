@@ -9,6 +9,8 @@ analysis-first KRIR is already a machine-code IR.
 
 Executable KRIR consumes canonical executable semantics. It does not lower directly from raw surface syntax or governed surface aliases.
 
+For the supported subset, canonical executable semantics lowers deterministically to one explicit `entry` block per function.
+
 This subset is intentionally narrow:
 
 - linear function bodies only,

@@ -109,3 +109,12 @@ This boundary keeps KernRift sovereign:
 - canonical KernRift semantics remain the semantic truth,
 - executable KRIR is a downstream compiler contract,
 - backend work does not get to borrow semantics from Rust, C, or LLVM.
+
+## Lowering contract to executable KRIR
+
+For the supported subset, lowering to executable KRIR is deterministic:
+
+- one canonical executable function lowers to one executable KRIR function,
+- one executable body lowers to one explicit `entry` block,
+- ordered canonical direct calls lower to ordered executable `Call` ops,
+- canonical `return unit` lowers to executable `Return { value: Unit }`.
