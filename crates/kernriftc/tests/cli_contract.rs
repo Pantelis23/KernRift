@@ -28,6 +28,14 @@ fn repo_root() -> PathBuf {
         .expect("repo root")
 }
 
+fn unique_temp_output_path(label: &str, ext: &str) -> PathBuf {
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    std::env::temp_dir().join(format!("kernrift-{}-{}.{}", label, ts, ext))
+}
+
 fn write_v2_contracts_for_fixture(root: &Path, fixture: &Path, label: &str) -> PathBuf {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -205,6 +213,143 @@ fn report_unknown_metric_exits_nonzero() {
     cmd.assert()
         .failure()
         .stderr(contains("unsupported report metric"));
+}
+
+#[test]
+fn emit_krbo_writes_valid_artifact() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let output_path = unique_temp_output_path("emit-krbo", "krbo");
+    fs::remove_file(&output_path).ok();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("--emit=krbo")
+        .arg("-o")
+        .arg(output_path.as_os_str())
+        .arg(fixture.as_os_str());
+    cmd.assert().success();
+
+    let bytes = fs::read(&output_path).expect("read krbo output");
+    assert!(bytes.len() >= 12, "krbo output too small");
+    assert_eq!(&bytes[0..4], b"KRBO");
+    assert_eq!(bytes[4], 0, "expected KRBO version major 0");
+    assert_eq!(bytes[5], 1, "expected KRBO version minor 1");
+    assert_eq!(bytes[9], 1, "expected x86_64-sysv target tag");
+
+    fs::remove_file(&output_path).ok();
+}
+
+#[test]
+fn emit_elfobj_writes_valid_relocatable_object() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let output_path = unique_temp_output_path("emit-elfobj", "o");
+    fs::remove_file(&output_path).ok();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("--emit=elfobj")
+        .arg("-o")
+        .arg(output_path.as_os_str())
+        .arg(fixture.as_os_str());
+    cmd.assert().success();
+
+    let bytes = fs::read(&output_path).expect("read elf object output");
+    assert!(bytes.len() >= 20, "elf object output too small");
+    assert_eq!(&bytes[0..4], b"\x7fELF");
+    assert_eq!(bytes[4], 2, "expected ELF64 class");
+    assert_eq!(bytes[5], 1, "expected little-endian ELF");
+    assert_eq!(
+        u16::from_le_bytes([bytes[16], bytes[17]]),
+        1,
+        "expected ET_REL"
+    );
+    assert_eq!(
+        u16::from_le_bytes([bytes[18], bytes[19]]),
+        62,
+        "expected EM_X86_64"
+    );
+
+    fs::remove_file(&output_path).ok();
+}
+
+#[test]
+fn emit_backend_artifacts_are_deterministic_for_supported_subset() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let krbo_a = unique_temp_output_path("emit-krbo-a", "krbo");
+    let krbo_b = unique_temp_output_path("emit-krbo-b", "krbo");
+    let elf_a = unique_temp_output_path("emit-elf-a", "o");
+    let elf_b = unique_temp_output_path("emit-elf-b", "o");
+
+    for (kind, first, second) in [("krbo", &krbo_a, &krbo_b), ("elfobj", &elf_a, &elf_b)] {
+        for path in [first, second] {
+            fs::remove_file(path).ok();
+
+            let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+            cmd.current_dir(&root)
+                .arg(format!("--emit={kind}"))
+                .arg("-o")
+                .arg(path.as_os_str())
+                .arg(fixture.as_os_str());
+            cmd.assert().success();
+        }
+
+        let first_bytes = fs::read(first).expect("read first emitted artifact");
+        let second_bytes = fs::read(second).expect("read second emitted artifact");
+        assert_eq!(
+            first_bytes, second_bytes,
+            "emitted {kind} artifact must be byte-stable"
+        );
+    }
+
+    for path in [&krbo_a, &krbo_b, &elf_a, &elf_b] {
+        fs::remove_file(path).ok();
+    }
+}
+
+#[test]
+fn emit_backend_artifact_requires_output_path() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("--emit=krbo")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("invalid emit mode: missing -o <output-path>")
+    );
+}
+
+#[test]
+fn emit_backend_artifact_rejects_unsupported_current_subset() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("alloc_outside_critical.kr");
+    let output_path = unique_temp_output_path("emit-unsupported", "o");
+    fs::remove_file(&output_path).ok();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("--emit=elfobj")
+        .arg("-o")
+        .arg(output_path.as_os_str())
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec!["canonical-exec: function 'entry' contains unsupported allocpoint()"]
+    );
+
+    fs::remove_file(&output_path).ok();
 }
 
 #[test]

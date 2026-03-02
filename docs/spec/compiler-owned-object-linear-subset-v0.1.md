@@ -50,7 +50,7 @@ The compiler-owned object format v0.1 includes:
 - target id: `x86_64-sysv`
 - endianness: little
 - pointer width: 64
-- deterministic format revision: `1`
+- deterministic format revision: `2`
 
 ## Code payload
 
@@ -157,3 +157,9 @@ The compiler-owned object format remains the sole internal truth for:
 - symbol identity and definition state,
 - fixup identity,
 - relocation intent.
+
+Current user-facing export path:
+
+- `kernriftc --emit=krbo -o <output.krbo> <file.kr>`
+
+This writes the compiler-owned object bytes directly. It does not perform linking or execution.
