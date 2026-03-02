@@ -11,6 +11,8 @@ Executable KRIR consumes canonical executable semantics. It does not lower direc
 
 For the supported subset, canonical executable semantics lowers deterministically to one explicit `entry` block per function.
 
+Executable KRIR v0.1 is still target-independent. A separate backend target contract defines machine-facing facts such as register sets, ABI, stack alignment, symbol naming, and section naming. Only a tiny part of that target contract is exercised by the current executable subset.
+
 This subset is intentionally narrow:
 
 - linear function bodies only,
@@ -160,6 +162,20 @@ Executable KRIR v0.1 does not cover:
 - register allocation,
 - stack-frame layout,
 - assembly or object emission.
+
+## Relationship to backend target contracts
+
+Backend target contracts define:
+
+- target identity,
+- register sets,
+- caller/callee-saved partitions,
+- stack alignment,
+- symbol naming assumptions,
+- section naming assumptions,
+- freestanding toolchain assumptions.
+
+Executable KRIR v0.1 does not lower to those targets in this branch. The contract exists so later lowering can target an explicit machine model without making that machine model the semantic truth.
 
 ## Validation rules
 
