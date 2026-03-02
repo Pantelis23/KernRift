@@ -1,5 +1,5 @@
 use serde::Serialize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -722,6 +722,289 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
     out
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct X86_64ElfRelocatableObject {
+    pub format: &'static str,
+    pub text_section: &'static str,
+    pub text_bytes: Vec<u8>,
+    pub function_symbols: Vec<X86_64ElfFunctionSymbol>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct X86_64ElfFunctionSymbol {
+    pub name: String,
+    pub offset: u64,
+    pub size: u64,
+}
+
+pub fn validate_x86_64_object_linear_subset(
+    module: &ExecutableKrirModule,
+    target: &BackendTargetContract,
+) -> Result<(), String> {
+    validate_x86_64_linear_subset(module, target)
+        .map_err(|err| err.replace("x86_64 asm lowering", "x86_64 object emission"))
+}
+
+pub fn lower_executable_krir_to_x86_64_object(
+    module: &ExecutableKrirModule,
+    target: &BackendTargetContract,
+) -> Result<X86_64ElfRelocatableObject, String> {
+    validate_x86_64_object_linear_subset(module, target)?;
+
+    let mut canonical = module.clone();
+    canonical.canonicalize();
+
+    let mut function_offsets = BTreeMap::new();
+    let mut function_sizes = BTreeMap::new();
+    let mut cursor = 0u64;
+    for function in &canonical.functions {
+        let block = &function.blocks[0];
+        let size = (block.ops.len() as u64) * 5 + 1;
+        function_offsets.insert(function.name.clone(), cursor);
+        function_sizes.insert(function.name.clone(), size);
+        cursor += size;
+    }
+
+    let mut text_bytes = Vec::with_capacity(cursor as usize);
+    let mut function_symbols = Vec::with_capacity(canonical.functions.len());
+    for function in &canonical.functions {
+        let block = &function.blocks[0];
+        let function_offset = *function_offsets
+            .get(&function.name)
+            .expect("function offset must exist");
+        let function_size = *function_sizes
+            .get(&function.name)
+            .expect("function size must exist");
+        let mut local_offset = 0u64;
+        for op in &block.ops {
+            match op {
+                ExecutableOp::Call { callee } => {
+                    let callee_offset = *function_offsets.get(callee).ok_or_else(|| {
+                        format!(
+                            "x86_64 object emission requires defined direct call target '{}' in function '{}'",
+                            callee, function.name
+                        )
+                    })?;
+                    let next_ip = function_offset + local_offset + 5;
+                    let displacement = (callee_offset as i64) - (next_ip as i64);
+                    let rel32 = i32::try_from(displacement).map_err(|_| {
+                        format!(
+                            "x86_64 object emission call displacement to '{}' in function '{}' does not fit rel32",
+                            callee, function.name
+                        )
+                    })?;
+                    text_bytes.push(0xE8);
+                    text_bytes.extend_from_slice(&rel32.to_le_bytes());
+                    local_offset += 5;
+                }
+            }
+        }
+        text_bytes.push(0xC3);
+        function_symbols.push(X86_64ElfFunctionSymbol {
+            name: function.name.clone(),
+            offset: function_offset,
+            size: function_size,
+        });
+    }
+
+    Ok(X86_64ElfRelocatableObject {
+        format: "elf64-relocatable",
+        text_section: target.sections.text,
+        text_bytes,
+        function_symbols,
+    })
+}
+
+fn push_u16_into(dst: &mut [u8], value: u16) {
+    dst.copy_from_slice(&value.to_le_bytes());
+}
+
+fn push_u32_into(dst: &mut [u8], value: u32) {
+    dst.copy_from_slice(&value.to_le_bytes());
+}
+
+fn push_u64_into(dst: &mut [u8], value: u64) {
+    dst.copy_from_slice(&value.to_le_bytes());
+}
+
+fn push_u16_le(out: &mut Vec<u8>, value: u16) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+fn push_u32_le(out: &mut Vec<u8>, value: u32) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+fn push_u64_le(out: &mut Vec<u8>, value: u64) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
+fn append_with_alignment(out: &mut Vec<u8>, bytes: &[u8], align: usize) -> usize {
+    let align = align.max(1);
+    let padding = (align - (out.len() % align)) % align;
+    out.extend(std::iter::repeat_n(0, padding));
+    let offset = out.len();
+    out.extend_from_slice(bytes);
+    offset
+}
+
+fn push_elf64_sym(
+    out: &mut Vec<u8>,
+    st_name: u32,
+    st_info: u8,
+    st_other: u8,
+    st_shndx: u16,
+    st_value: u64,
+    st_size: u64,
+) {
+    push_u32_le(out, st_name);
+    out.push(st_info);
+    out.push(st_other);
+    push_u16_le(out, st_shndx);
+    push_u64_le(out, st_value);
+    push_u64_le(out, st_size);
+}
+
+pub fn emit_x86_64_object_bytes(object: &X86_64ElfRelocatableObject) -> Vec<u8> {
+    let mut strtab = vec![0u8];
+    let mut name_offsets = BTreeMap::new();
+    for symbol in &object.function_symbols {
+        let offset = strtab.len() as u32;
+        strtab.extend_from_slice(symbol.name.as_bytes());
+        strtab.push(0);
+        name_offsets.insert(symbol.name.clone(), offset);
+    }
+
+    let mut symtab = Vec::new();
+    push_elf64_sym(&mut symtab, 0, 0, 0, 0, 0, 0);
+    push_elf64_sym(&mut symtab, 0, 0x03, 0, 1, 0, 0);
+    for symbol in &object.function_symbols {
+        push_elf64_sym(
+            &mut symtab,
+            *name_offsets
+                .get(&symbol.name)
+                .expect("symbol name offset must exist"),
+            0x12,
+            0,
+            1,
+            symbol.offset,
+            symbol.size,
+        );
+    }
+
+    let mut shstrtab = vec![0u8];
+    let text_name = shstrtab.len() as u32;
+    shstrtab.extend_from_slice(object.text_section.as_bytes());
+    shstrtab.push(0);
+    let symtab_name = shstrtab.len() as u32;
+    shstrtab.extend_from_slice(b".symtab\0");
+    let strtab_name = shstrtab.len() as u32;
+    shstrtab.extend_from_slice(b".strtab\0");
+    let shstrtab_name = shstrtab.len() as u32;
+    shstrtab.extend_from_slice(b".shstrtab\0");
+
+    let mut bytes = vec![0u8; 64];
+    let text_offset = append_with_alignment(&mut bytes, &object.text_bytes, 16) as u64;
+    let symtab_offset = append_with_alignment(&mut bytes, &symtab, 8) as u64;
+    let strtab_offset = append_with_alignment(&mut bytes, &strtab, 1) as u64;
+    let shstrtab_offset = append_with_alignment(&mut bytes, &shstrtab, 1) as u64;
+    let shoff = append_with_alignment(&mut bytes, &[], 8) as u64;
+
+    let mut shdrs = vec![0u8; 64];
+    let mut push_shdr = |name: u32,
+                         sh_type: u32,
+                         flags: u64,
+                         addr: u64,
+                         offset: u64,
+                         size: u64,
+                         link: u32,
+                         info: u32,
+                         addralign: u64,
+                         entsize: u64| {
+        push_u32_le(&mut shdrs, name);
+        push_u32_le(&mut shdrs, sh_type);
+        push_u64_le(&mut shdrs, flags);
+        push_u64_le(&mut shdrs, addr);
+        push_u64_le(&mut shdrs, offset);
+        push_u64_le(&mut shdrs, size);
+        push_u32_le(&mut shdrs, link);
+        push_u32_le(&mut shdrs, info);
+        push_u64_le(&mut shdrs, addralign);
+        push_u64_le(&mut shdrs, entsize);
+    };
+
+    push_shdr(
+        text_name,
+        1,
+        0x6,
+        0,
+        text_offset,
+        object.text_bytes.len() as u64,
+        0,
+        0,
+        16,
+        0,
+    );
+    push_shdr(
+        symtab_name,
+        2,
+        0,
+        0,
+        symtab_offset,
+        symtab.len() as u64,
+        3,
+        2,
+        8,
+        24,
+    );
+    push_shdr(
+        strtab_name,
+        3,
+        0,
+        0,
+        strtab_offset,
+        strtab.len() as u64,
+        0,
+        0,
+        1,
+        0,
+    );
+    push_shdr(
+        shstrtab_name,
+        3,
+        0,
+        0,
+        shstrtab_offset,
+        shstrtab.len() as u64,
+        0,
+        0,
+        1,
+        0,
+    );
+    bytes.extend_from_slice(&shdrs);
+
+    bytes[0..4].copy_from_slice(&[0x7F, b'E', b'L', b'F']);
+    bytes[4] = 2;
+    bytes[5] = 1;
+    bytes[6] = 1;
+    bytes[7] = 0;
+    push_u16_into(&mut bytes[16..18], 1);
+    push_u16_into(&mut bytes[18..20], 62);
+    push_u32_into(&mut bytes[20..24], 1);
+    push_u64_into(&mut bytes[24..32], 0);
+    push_u64_into(&mut bytes[32..40], 0);
+    push_u64_into(&mut bytes[40..48], shoff);
+    push_u32_into(&mut bytes[48..52], 0);
+    push_u16_into(&mut bytes[52..54], 64);
+    push_u16_into(&mut bytes[54..56], 0);
+    push_u16_into(&mut bytes[56..58], 0);
+    push_u16_into(&mut bytes[58..60], 64);
+    push_u16_into(&mut bytes[60..62], 5);
+    push_u16_into(&mut bytes[62..64], 4);
+
+    bytes
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -729,10 +1012,144 @@ mod tests {
         ExecutableFunction, ExecutableKrirModule, ExecutableOp, ExecutableSignature,
         ExecutableTerminator, ExecutableValue, ExecutableValueType, FunctionAttrs,
         FutureScalarReturnConvention, X86_64IntegerRegister, emit_x86_64_asm_text,
-        lower_executable_krir_to_x86_64_asm, validate_x86_64_linear_subset,
+        emit_x86_64_object_bytes, lower_executable_krir_to_x86_64_asm,
+        lower_executable_krir_to_x86_64_object, validate_x86_64_linear_subset,
+        validate_x86_64_object_linear_subset,
     };
     use serde_json::json;
     use std::collections::BTreeSet;
+
+    fn hex_encode(bytes: &[u8]) -> String {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut out = String::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            out.push(HEX[(byte >> 4) as usize] as char);
+            out.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+        out
+    }
+
+    fn read_u16(bytes: &[u8], offset: usize) -> u16 {
+        u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
+    }
+
+    fn read_u32(bytes: &[u8], offset: usize) -> u32 {
+        u32::from_le_bytes([
+            bytes[offset],
+            bytes[offset + 1],
+            bytes[offset + 2],
+            bytes[offset + 3],
+        ])
+    }
+
+    fn read_u64(bytes: &[u8], offset: usize) -> u64 {
+        u64::from_le_bytes([
+            bytes[offset],
+            bytes[offset + 1],
+            bytes[offset + 2],
+            bytes[offset + 3],
+            bytes[offset + 4],
+            bytes[offset + 5],
+            bytes[offset + 6],
+            bytes[offset + 7],
+        ])
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct ParsedElfSection {
+        name: String,
+        sh_type: u32,
+        flags: u64,
+        offset: u64,
+        size: u64,
+        link: u32,
+        info: u32,
+        addralign: u64,
+        entsize: u64,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct ParsedElfSymbol {
+        name: String,
+        info: u8,
+        shndx: u16,
+        value: u64,
+        size: u64,
+    }
+
+    fn read_cstr(bytes: &[u8], offset: usize) -> String {
+        let end = bytes[offset..]
+            .iter()
+            .position(|byte| *byte == 0)
+            .map(|idx| offset + idx)
+            .expect("null terminator");
+        String::from_utf8(bytes[offset..end].to_vec()).expect("utf8")
+    }
+
+    fn parse_elf64_sections(bytes: &[u8]) -> Vec<ParsedElfSection> {
+        assert_eq!(&bytes[0..4], b"\x7fELF");
+        assert_eq!(bytes[4], 2);
+        assert_eq!(bytes[5], 1);
+        assert_eq!(bytes[6], 1);
+        assert_eq!(read_u16(bytes, 16), 1);
+        assert_eq!(read_u16(bytes, 18), 62);
+
+        let shoff = read_u64(bytes, 40) as usize;
+        let shentsize = read_u16(bytes, 58) as usize;
+        let shnum = read_u16(bytes, 60) as usize;
+        let shstrndx = read_u16(bytes, 62) as usize;
+
+        let shstr_hdr = shoff + shentsize * shstrndx;
+        let shstr_off = read_u64(bytes, shstr_hdr + 24) as usize;
+        let shstr_size = read_u64(bytes, shstr_hdr + 32) as usize;
+        let shstr = &bytes[shstr_off..shstr_off + shstr_size];
+
+        (0..shnum)
+            .map(|idx| {
+                let off = shoff + shentsize * idx;
+                let name_off = read_u32(bytes, off) as usize;
+                ParsedElfSection {
+                    name: read_cstr(shstr, name_off),
+                    sh_type: read_u32(bytes, off + 4),
+                    flags: read_u64(bytes, off + 8),
+                    offset: read_u64(bytes, off + 24),
+                    size: read_u64(bytes, off + 32),
+                    link: read_u32(bytes, off + 40),
+                    info: read_u32(bytes, off + 44),
+                    addralign: read_u64(bytes, off + 48),
+                    entsize: read_u64(bytes, off + 56),
+                }
+            })
+            .collect()
+    }
+
+    fn parse_elf64_symbols(bytes: &[u8], sections: &[ParsedElfSection]) -> Vec<ParsedElfSymbol> {
+        let symtab_idx = sections
+            .iter()
+            .position(|section| section.name == ".symtab")
+            .expect("symtab section");
+        let symtab = &sections[symtab_idx];
+        let strtab = &sections[symtab.link as usize];
+        let strtab_bytes = &bytes[strtab.offset as usize..(strtab.offset + strtab.size) as usize];
+        let symtab_bytes = &bytes[symtab.offset as usize..(symtab.offset + symtab.size) as usize];
+        symtab_bytes
+            .chunks(symtab.entsize as usize)
+            .map(|entry| {
+                let name_off = read_u32(entry, 0) as usize;
+                ParsedElfSymbol {
+                    name: if name_off == 0 {
+                        String::new()
+                    } else {
+                        read_cstr(strtab_bytes, name_off)
+                    },
+                    info: entry[4],
+                    shndx: read_u16(entry, 6),
+                    value: read_u64(entry, 8),
+                    size: read_u64(entry, 16),
+                }
+            })
+            .collect()
+    }
 
     fn executable_function(name: &str) -> ExecutableFunction {
         ExecutableFunction {
@@ -1212,6 +1629,255 @@ mod tests {
             validate_x86_64_linear_subset(&module, &BackendTargetContract::x86_64_sysv()),
             Err(
                 "x86_64 asm lowering requires defined direct call target 'missing' in function 'entry'"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn executable_krir_emits_empty_function_to_deterministic_elf64_object() {
+        let module = ExecutableKrirModule {
+            module_caps: vec![],
+            functions: vec![unit_return_function("entry")],
+            call_edges: vec![],
+        };
+
+        let object =
+            lower_executable_krir_to_x86_64_object(&module, &BackendTargetContract::x86_64_sysv())
+                .expect("lower x86_64 object");
+        let bytes = emit_x86_64_object_bytes(&object);
+        let sections = parse_elf64_sections(&bytes);
+        let symbols = parse_elf64_symbols(&bytes, &sections);
+
+        assert_eq!(object.format, "elf64-relocatable");
+        assert_eq!(object.text_section, ".text");
+        assert_eq!(object.text_bytes, vec![0xC3]);
+        assert_eq!(
+            hex_encode(&bytes[0..64]),
+            "7f454c4602010100000000000000000001003e000100000000000000000000000000000000000000b80000000000000000000000400000000000400005000400"
+        );
+        assert_eq!(
+            sections,
+            vec![
+                ParsedElfSection {
+                    name: String::new(),
+                    sh_type: 0,
+                    flags: 0,
+                    offset: 0,
+                    size: 0,
+                    link: 0,
+                    info: 0,
+                    addralign: 0,
+                    entsize: 0,
+                },
+                ParsedElfSection {
+                    name: ".text".to_string(),
+                    sh_type: 1,
+                    flags: 0x6,
+                    offset: 64,
+                    size: 1,
+                    link: 0,
+                    info: 0,
+                    addralign: 16,
+                    entsize: 0,
+                },
+                ParsedElfSection {
+                    name: ".symtab".to_string(),
+                    sh_type: 2,
+                    flags: 0,
+                    offset: 72,
+                    size: 72,
+                    link: 3,
+                    info: 2,
+                    addralign: 8,
+                    entsize: 24,
+                },
+                ParsedElfSection {
+                    name: ".strtab".to_string(),
+                    sh_type: 3,
+                    flags: 0,
+                    offset: 144,
+                    size: 7,
+                    link: 0,
+                    info: 0,
+                    addralign: 1,
+                    entsize: 0,
+                },
+                ParsedElfSection {
+                    name: ".shstrtab".to_string(),
+                    sh_type: 3,
+                    flags: 0,
+                    offset: 151,
+                    size: 33,
+                    link: 0,
+                    info: 0,
+                    addralign: 1,
+                    entsize: 0,
+                },
+            ]
+        );
+        assert_eq!(
+            symbols,
+            vec![
+                ParsedElfSymbol {
+                    name: String::new(),
+                    info: 0,
+                    shndx: 0,
+                    value: 0,
+                    size: 0,
+                },
+                ParsedElfSymbol {
+                    name: String::new(),
+                    info: 0x03,
+                    shndx: 1,
+                    value: 0,
+                    size: 0,
+                },
+                ParsedElfSymbol {
+                    name: "entry".to_string(),
+                    info: 0x12,
+                    shndx: 1,
+                    value: 0,
+                    size: 1,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn executable_krir_emits_ordered_direct_calls_to_deterministic_object_text() {
+        let module = ExecutableKrirModule {
+            module_caps: vec![],
+            functions: vec![
+                ExecutableFunction {
+                    name: "entry".to_string(),
+                    blocks: vec![ExecutableBlock {
+                        label: "entry".to_string(),
+                        ops: vec![
+                            ExecutableOp::Call {
+                                callee: "alpha".to_string(),
+                            },
+                            ExecutableOp::Call {
+                                callee: "beta".to_string(),
+                            },
+                        ],
+                        terminator: ExecutableTerminator::Return {
+                            value: ExecutableValue::Unit,
+                        },
+                    }],
+                    ..executable_function("entry")
+                },
+                ExecutableFunction {
+                    name: "alpha".to_string(),
+                    ..unit_return_function("alpha")
+                },
+                ExecutableFunction {
+                    name: "beta".to_string(),
+                    ..unit_return_function("beta")
+                },
+            ],
+            call_edges: vec![],
+        };
+
+        let object =
+            lower_executable_krir_to_x86_64_object(&module, &BackendTargetContract::x86_64_sysv())
+                .expect("lower x86_64 object");
+
+        assert_eq!(
+            object.text_bytes,
+            vec![
+                0xC3, 0xC3, 0xE8, 0xF9, 0xFF, 0xFF, 0xFF, 0xE8, 0xF5, 0xFF, 0xFF, 0xFF, 0xC3
+            ]
+        );
+        assert_eq!(
+            object
+                .function_symbols
+                .iter()
+                .map(|symbol| (symbol.name.as_str(), symbol.offset, symbol.size))
+                .collect::<Vec<_>>(),
+            vec![("alpha", 0, 1), ("beta", 1, 1), ("entry", 2, 11)]
+        );
+    }
+
+    #[test]
+    fn executable_krir_emits_functions_in_deterministic_symbol_order_to_object() {
+        let module = ExecutableKrirModule {
+            module_caps: vec![],
+            functions: vec![unit_return_function("zeta"), unit_return_function("alpha")],
+            call_edges: vec![],
+        };
+
+        let object =
+            lower_executable_krir_to_x86_64_object(&module, &BackendTargetContract::x86_64_sysv())
+                .expect("lower x86_64 object");
+
+        assert_eq!(
+            object
+                .function_symbols
+                .iter()
+                .map(|symbol| symbol.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "zeta"]
+        );
+    }
+
+    #[test]
+    fn executable_krir_x86_64_object_emission_rejects_multiple_blocks() {
+        let module = ExecutableKrirModule {
+            module_caps: vec![],
+            functions: vec![ExecutableFunction {
+                blocks: vec![
+                    ExecutableBlock {
+                        label: "entry".to_string(),
+                        ops: vec![],
+                        terminator: ExecutableTerminator::Return {
+                            value: ExecutableValue::Unit,
+                        },
+                    },
+                    ExecutableBlock {
+                        label: "late".to_string(),
+                        ops: vec![],
+                        terminator: ExecutableTerminator::Return {
+                            value: ExecutableValue::Unit,
+                        },
+                    },
+                ],
+                ..executable_function("entry")
+            }],
+            call_edges: vec![],
+        };
+
+        assert_eq!(
+            validate_x86_64_object_linear_subset(&module, &BackendTargetContract::x86_64_sysv()),
+            Err(
+                "x86_64 object emission requires exactly one block in function 'entry'".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn executable_krir_x86_64_object_emission_rejects_undefined_direct_call_target() {
+        let module = ExecutableKrirModule {
+            module_caps: vec![],
+            functions: vec![ExecutableFunction {
+                blocks: vec![ExecutableBlock {
+                    label: "entry".to_string(),
+                    ops: vec![ExecutableOp::Call {
+                        callee: "missing".to_string(),
+                    }],
+                    terminator: ExecutableTerminator::Return {
+                        value: ExecutableValue::Unit,
+                    },
+                }],
+                ..executable_function("entry")
+            }],
+            call_edges: vec![],
+        };
+
+        assert_eq!(
+            validate_x86_64_object_linear_subset(&module, &BackendTargetContract::x86_64_sysv()),
+            Err(
+                "x86_64 object emission requires defined direct call target 'missing' in function 'entry'"
                     .to_string()
             )
         );

@@ -10,14 +10,17 @@ KRIR currently has two distinct roles:
 - `ExecutableKrirModule`: the minimal executable subset contract that future backend work must lower from.
 - `BackendTargetContract`: the explicit target-machine contract that future executable KRIR lowering must target.
 - `X86_64AsmModule`: the first target-specific linear assembly model, derived from executable KRIR plus a target contract.
+- `X86_64ElfRelocatableObject`: the first machine-facing object artifact, derived from executable KRIR plus a target contract.
 
 Between surface KernRift and executable KRIR, the compiler owns a separate canonical executable semantics boundary in HIR. Governed surface forms normalize there before any lowering to executable KRIR begins.
 
 The executable subset is intentionally narrow. It is specified separately so backend work does not pretend the current fact-heavy analysis IR is already codegen-ready.
 
-The first target contract is specified separately in `docs/spec/backend-target-model-x86_64-sysv-v0.1.md`. It defines target facts only; this branch still does not perform instruction selection, register allocation, stack-frame lowering, or assembly/object emission.
+The first target contract is specified separately in `docs/spec/backend-target-model-x86_64-sysv-v0.1.md`. It defines target facts only; the contract itself still does not perform instruction selection, register allocation, or stack-frame lowering.
 
 The first target-specific lowering subset is specified separately in `docs/spec/x86_64-asm-linear-subset-v0.1.md`. It lowers only the current tiny executable subset to deterministic textual x86_64 SysV-flavored assembly.
+
+The first machine-facing object subset is specified separately in `docs/spec/x86_64-object-linear-subset-v0.1.md`. It lowers only the current tiny executable subset to a deterministic ELF64 relocatable object subset.
 
 ## Data Model
 
@@ -229,4 +232,21 @@ For KR0.x the first target-specific assembly model is intentionally tiny:
 - terminal `ret`,
 - no prologue/epilogue,
 - no stack-slot allocation,
-- no object emission.
+- no linker integration.
+
+## Target-Specific Object Boundary
+
+Target-specific object emission is downstream of:
+
+- canonical executable semantics
+- executable KRIR
+- backend target contract
+
+For KR0.x the first object-emission subset is intentionally tiny:
+
+- ELF64 relocatable object only,
+- one `.text` section,
+- internal direct-call lowering only,
+- no relocation sections,
+- no stack-frame lowering,
+- no executable generation.
