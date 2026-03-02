@@ -560,13 +560,10 @@ fn emit_backend_artifact_meta_out_requires_output_path() {
 fn emit_backend_artifact_sidecar_normalizes_repo_relative_input_path() {
     let root = repo_root();
     let fixture_rel = Path::new("tests").join("must_pass").join("basic.kr");
-    let fixture_abs = root.join(&fixture_rel);
     let artifact_rel = unique_temp_output_path("emit-relative-input", "krbo");
-    let artifact_abs = unique_temp_output_path("emit-absolute-input", "krbo");
     let meta_rel = unique_temp_output_path("emit-relative-input", "json");
-    let meta_abs = unique_temp_output_path("emit-absolute-input", "json");
 
-    for path in [&artifact_rel, &artifact_abs, &meta_rel, &meta_abs] {
+    for path in [&artifact_rel, &meta_rel] {
         fs::remove_file(path).ok();
     }
 
@@ -581,31 +578,50 @@ fn emit_backend_artifact_sidecar_normalizes_repo_relative_input_path() {
         .arg(fixture_rel.as_os_str());
     rel_cmd.assert().success();
 
-    let mut abs_cmd: Command = cargo_bin_cmd!("kernriftc");
-    abs_cmd
-        .current_dir(&root)
-        .arg("--emit=krbo")
-        .arg("-o")
-        .arg(artifact_abs.as_os_str())
-        .arg("--meta-out")
-        .arg(meta_abs.as_os_str())
-        .arg(fixture_abs.as_os_str());
-    abs_cmd.assert().success();
-
-    let rel_meta = fs::read(&meta_rel).expect("read relative metadata");
-    let abs_meta = fs::read(&meta_abs).expect("read absolute metadata");
-    assert_eq!(
-        rel_meta, abs_meta,
-        "repo file metadata must normalize paths"
-    );
-
-    let rel_json: Value = serde_json::from_slice(&rel_meta).expect("parse normalized metadata");
+    let rel_json: Value =
+        serde_json::from_slice(&fs::read(&meta_rel).expect("read relative metadata"))
+            .expect("parse normalized metadata");
     assert_eq!(rel_json["input_path"], "tests/must_pass/basic.kr");
     assert_eq!(rel_json["input_path_kind"], "repo-relative");
 
-    for path in [&artifact_rel, &artifact_abs, &meta_rel, &meta_abs] {
+    for path in [&artifact_rel, &meta_rel] {
         fs::remove_file(path).ok();
     }
+}
+
+#[test]
+fn emit_backend_artifact_sidecar_normalizes_absolute_repo_input_outside_repo_cwd() {
+    let root = repo_root();
+    let fixture_abs = root.join("tests").join("must_pass").join("basic.kr");
+    let outside_cwd = unique_temp_output_path("emit-outside-cwd", "dir");
+    let artifact_path = unique_temp_output_path("emit-outside-cwd", "krbo");
+    let meta_path = unique_temp_output_path("emit-outside-cwd", "json");
+    fs::create_dir_all(&outside_cwd).expect("create outside cwd");
+
+    for path in [&artifact_path, &meta_path] {
+        fs::remove_file(path).ok();
+    }
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&outside_cwd)
+        .arg("--emit=krbo")
+        .arg("-o")
+        .arg(artifact_path.as_os_str())
+        .arg("--meta-out")
+        .arg(meta_path.as_os_str())
+        .arg(fixture_abs.as_os_str());
+    cmd.assert().success();
+
+    let metadata: Value =
+        serde_json::from_slice(&fs::read(&meta_path).expect("read outside-cwd metadata"))
+            .expect("parse outside-cwd metadata");
+    assert_eq!(metadata["input_path"], "tests/must_pass/basic.kr");
+    assert_eq!(metadata["input_path_kind"], "repo-relative");
+
+    for path in [&artifact_path, &meta_path] {
+        fs::remove_file(path).ok();
+    }
+    fs::remove_dir_all(&outside_cwd).ok();
 }
 
 #[test]
