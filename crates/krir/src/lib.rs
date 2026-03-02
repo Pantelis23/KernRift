@@ -1776,6 +1776,7 @@ mod tests {
     use std::{
         collections::BTreeSet,
         fs,
+        os::unix::fs::PermissionsExt,
         path::{Path, PathBuf},
         process::Command,
         sync::atomic::{AtomicU64, Ordering},
@@ -1969,6 +1970,23 @@ mod tests {
             elf_type
         );
         assert_ne!(read_u64(bytes, 24), 0, "expected non-zero ELF entry");
+    }
+
+    fn run_executable_smoke(path: &Path) -> Option<std::process::Output> {
+        let mut permissions = fs::metadata(path)
+            .expect("read linked artifact metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).expect("mark linked artifact executable");
+
+        match Command::new(path).output() {
+            Ok(output) => Some(output),
+            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => None,
+            Err(err) => panic!(
+                "failed to execute linked artifact '{}': {err}",
+                path.display()
+            ),
+        }
     }
 
     #[derive(Debug, PartialEq, Eq)]
@@ -4119,6 +4137,80 @@ mod tests {
     }
 
     #[test]
+    fn x86_64_elf_internal_only_object_executes_in_runtime_smoke() {
+        let Some(linker) = find_optional_linker() else {
+            return;
+        };
+        let Some(compiler) = find_optional_asm_compiler() else {
+            return;
+        };
+
+        let module = ExecutableKrirModule {
+            module_caps: vec![],
+            functions: vec![
+                ExecutableFunction {
+                    name: "entry".to_string(),
+                    blocks: vec![ExecutableBlock {
+                        label: "entry".to_string(),
+                        ops: vec![ExecutableOp::Call {
+                            callee: "alpha".to_string(),
+                        }],
+                        terminator: ExecutableTerminator::Return {
+                            value: ExecutableValue::Unit,
+                        },
+                    }],
+                    ..executable_function("entry")
+                },
+                ExecutableFunction {
+                    name: "alpha".to_string(),
+                    ..unit_return_function("alpha")
+                },
+            ],
+            call_edges: vec![],
+        };
+
+        let startup = compile_asm_source_to_object(
+            &compiler,
+            "runtime-start",
+            ".globl _start\n.text\n_start:\n    call entry\n    mov $60, %rax\n    xor %rdi, %rdi\n    syscall\n",
+        );
+        let object =
+            lower_executable_krir_to_x86_64_object(&module, &BackendTargetContract::x86_64_sysv())
+                .expect("lower x86_64 object");
+        let input = write_temp_elf_file("runtime-internal", &emit_x86_64_object_bytes(&object));
+        let output_path = temp_output_path("runtime-internal", ".out");
+        let output = run_linker_capture(
+            &linker,
+            &["-e", "_start"],
+            &[startup.path(), input.path()],
+            &output_path,
+        );
+        assert!(
+            output.status.success(),
+            "linker '{}' rejected runtime smoke executable\nstdout:\n{}\nstderr:\n{}",
+            linker,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let linked_bytes = linked_output_bytes(&output_path);
+        assert_is_elf64_executable(&linked_bytes);
+
+        let Some(runtime) = run_executable_smoke(&output_path) else {
+            let _ = fs::remove_file(&output_path);
+            return;
+        };
+        assert!(
+            runtime.status.success(),
+            "runtime smoke executable failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&runtime.stdout),
+            String::from_utf8_lossy(&runtime.stderr)
+        );
+        assert_eq!(runtime.status.code(), Some(0));
+        let _ = fs::remove_file(&output_path);
+    }
+
+    #[test]
     fn x86_64_elf_unresolved_external_with_resolver_is_accepted_by_final_link_smoke() {
         let Some(linker) = find_optional_linker() else {
             return;
@@ -4181,6 +4273,84 @@ mod tests {
 
         let linked_bytes = linked_output_bytes(&output_path);
         assert_is_elf64_executable(&linked_bytes);
+        let _ = fs::remove_file(&output_path);
+    }
+
+    #[test]
+    fn x86_64_elf_unresolved_external_with_resolver_executes_in_runtime_smoke() {
+        let Some(linker) = find_optional_linker() else {
+            return;
+        };
+        let Some(compiler) = find_optional_asm_compiler() else {
+            return;
+        };
+
+        let unresolved = ExecutableKrirModule {
+            module_caps: vec![],
+            functions: vec![ExecutableFunction {
+                name: "entry".to_string(),
+                blocks: vec![ExecutableBlock {
+                    label: "entry".to_string(),
+                    ops: vec![ExecutableOp::Call {
+                        callee: "ext".to_string(),
+                    }],
+                    terminator: ExecutableTerminator::Return {
+                        value: ExecutableValue::Unit,
+                    },
+                }],
+                ..executable_function("entry")
+            }],
+            call_edges: vec![],
+        };
+
+        let startup = compile_asm_source_to_object(
+            &compiler,
+            "runtime-start-unresolved",
+            ".globl _start\n.text\n_start:\n    call entry\n    mov $60, %rax\n    xor %rdi, %rdi\n    syscall\n",
+        );
+        let resolver = compile_asm_source_to_object(
+            &compiler,
+            "runtime-resolver",
+            ".globl ext\n.text\next:\n    ret\n",
+        );
+        let unresolved_obj = lower_executable_krir_to_x86_64_object(
+            &unresolved,
+            &BackendTargetContract::x86_64_sysv(),
+        )
+        .expect("lower unresolved object");
+        let unresolved_path = write_temp_elf_file(
+            "runtime-unresolved",
+            &emit_x86_64_object_bytes(&unresolved_obj),
+        );
+        let output_path = temp_output_path("runtime-unresolved", ".out");
+        let output = run_linker_capture(
+            &linker,
+            &["-e", "_start"],
+            &[startup.path(), unresolved_path.path(), resolver.path()],
+            &output_path,
+        );
+        assert!(
+            output.status.success(),
+            "linker '{}' failed runtime smoke final link with resolver\nstdout:\n{}\nstderr:\n{}",
+            linker,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let linked_bytes = linked_output_bytes(&output_path);
+        assert_is_elf64_executable(&linked_bytes);
+
+        let Some(runtime) = run_executable_smoke(&output_path) else {
+            let _ = fs::remove_file(&output_path);
+            return;
+        };
+        assert!(
+            runtime.status.success(),
+            "runtime smoke executable with resolver failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&runtime.stdout),
+            String::from_utf8_lossy(&runtime.stderr)
+        );
+        assert_eq!(runtime.status.code(), Some(0));
         let _ = fs::remove_file(&output_path);
     }
 
@@ -4254,6 +4424,91 @@ mod tests {
 
         let linked_bytes = linked_output_bytes(&output_path);
         assert_is_elf64_executable(&linked_bytes);
+        let _ = fs::remove_file(&output_path);
+    }
+
+    #[test]
+    fn x86_64_elf_mixed_internal_external_object_executes_in_runtime_smoke() {
+        let Some(linker) = find_optional_linker() else {
+            return;
+        };
+        let Some(compiler) = find_optional_asm_compiler() else {
+            return;
+        };
+
+        let mixed = ExecutableKrirModule {
+            module_caps: vec![],
+            functions: vec![
+                ExecutableFunction {
+                    name: "entry".to_string(),
+                    blocks: vec![ExecutableBlock {
+                        label: "entry".to_string(),
+                        ops: vec![
+                            ExecutableOp::Call {
+                                callee: "alpha".to_string(),
+                            },
+                            ExecutableOp::Call {
+                                callee: "ext".to_string(),
+                            },
+                        ],
+                        terminator: ExecutableTerminator::Return {
+                            value: ExecutableValue::Unit,
+                        },
+                    }],
+                    ..executable_function("entry")
+                },
+                ExecutableFunction {
+                    name: "alpha".to_string(),
+                    ..unit_return_function("alpha")
+                },
+            ],
+            call_edges: vec![],
+        };
+
+        let startup = compile_asm_source_to_object(
+            &compiler,
+            "runtime-start-mixed",
+            ".globl _start\n.text\n_start:\n    call entry\n    mov $60, %rax\n    xor %rdi, %rdi\n    syscall\n",
+        );
+        let resolver = compile_asm_source_to_object(
+            &compiler,
+            "runtime-resolver-mixed",
+            ".globl ext\n.text\next:\n    ret\n",
+        );
+        let mixed_obj =
+            lower_executable_krir_to_x86_64_object(&mixed, &BackendTargetContract::x86_64_sysv())
+                .expect("lower mixed object");
+        let mixed_path =
+            write_temp_elf_file("runtime-mixed", &emit_x86_64_object_bytes(&mixed_obj));
+        let output_path = temp_output_path("runtime-mixed", ".out");
+        let output = run_linker_capture(
+            &linker,
+            &["-e", "_start"],
+            &[startup.path(), mixed_path.path(), resolver.path()],
+            &output_path,
+        );
+        assert!(
+            output.status.success(),
+            "linker '{}' failed runtime smoke final link for mixed object\nstdout:\n{}\nstderr:\n{}",
+            linker,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let linked_bytes = linked_output_bytes(&output_path);
+        assert_is_elf64_executable(&linked_bytes);
+
+        let Some(runtime) = run_executable_smoke(&output_path) else {
+            let _ = fs::remove_file(&output_path);
+            return;
+        };
+        assert!(
+            runtime.status.success(),
+            "runtime smoke executable for mixed object failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&runtime.stdout),
+            String::from_utf8_lossy(&runtime.stderr)
+        );
+        assert_eq!(runtime.status.code(), Some(0));
         let _ = fs::remove_file(&output_path);
     }
 

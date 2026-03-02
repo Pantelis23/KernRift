@@ -149,7 +149,7 @@ For the current x86_64 linear subset, ELF export must derive:
 - undefined external function symbols from compiler-owned undefined external symbols,
 - relocation entries from compiler-owned fixups in patch-offset order.
 
-Compatibility smoke checks against standard ELF inspection tools and the smallest downstream linker flows, including the narrowest practical final-link checks, may validate the bytes emitted from this object format, but those tools do not replace the compiler-owned object representation as internal truth.
+Compatibility smoke checks against standard ELF inspection tools and the smallest downstream linker flows, including the narrowest practical final-link and runtime checks, may validate the bytes emitted from this object format, but those tools do not replace the compiler-owned object representation as internal truth.
 
 The compiler-owned object format remains the sole internal truth for:
 
