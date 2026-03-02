@@ -160,6 +160,7 @@ The compiler-owned object format remains the sole internal truth for:
 
 Current user-facing export path:
 
+- `kernriftc --surface stable --emit=krbo -o <output.krbo> <file.kr>`
 - `kernriftc --emit=krbo -o <output.krbo> <file.kr>`
 
-This writes the compiler-owned object bytes directly. It does not perform linking or execution.
+This writes the compiler-owned object bytes directly. It participates in the same surface-aware CLI contract as other compiler flows while preserving stable-default behavior. It does not perform linking or execution.
