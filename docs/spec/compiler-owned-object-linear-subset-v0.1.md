@@ -106,6 +106,8 @@ For this subset:
 
 This preserves compiler-owned relocation intent for later export or patching work.
 
+Downstream export rules must consume these fixups directly. Later formats must not recover relocation intent by re-reading executable KRIR ops.
+
 When the target symbol is unresolved external:
 
 - the object still emits `E8 00 00 00 00`
@@ -139,3 +141,10 @@ This subset does not define:
 ELF is a downstream compatibility/export form, not the primary internal backend boundary.
 
 The current repository exports ELF relocatable objects from this compiler-owned object format through a compatibility wrapper. That export step must not make ELF the semantic authority or the internal truth of the compiler.
+
+For the current x86_64 linear subset, ELF export must derive:
+
+- `.text` bytes from the compiler-owned code payload,
+- defined function symbols from compiler-owned defined text symbols,
+- undefined external function symbols from compiler-owned undefined external symbols,
+- relocation entries from compiler-owned fixups in patch-offset order.
