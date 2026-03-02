@@ -9,6 +9,8 @@ KRIR currently has two distinct roles:
 - `KrirModule`: the existing analysis-first contract used for checks and deterministic artifact emission.
 - `ExecutableKrirModule`: the minimal executable subset contract that future backend work must lower from.
 
+Between surface KernRift and executable KRIR, the compiler owns a separate canonical executable semantics boundary in HIR. Governed surface forms normalize there before any lowering to executable KRIR begins.
+
 The executable subset is intentionally narrow. It is specified separately so backend work does not pretend the current fact-heavy analysis IR is already codegen-ready.
 
 ## Data Model

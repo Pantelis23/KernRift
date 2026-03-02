@@ -111,6 +111,75 @@ pub struct AdaptiveFeaturePromotionPlan {
     pub normalized_migration_plan: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CanonicalExecutableValueType {
+    Unit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CanonicalExecutableTerminator {
+    ReturnUnit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum CanonicalExecutableOp {
+    Call { callee: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CanonicalExecutableSignature {
+    pub params: Vec<CanonicalExecutableValueType>,
+    pub result: CanonicalExecutableValueType,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CanonicalExecutableFacts {
+    pub ctx_ok: Vec<Ctx>,
+    pub eff_used: Vec<Eff>,
+    pub caps_req: Vec<String>,
+    pub attrs: FunctionAttrs,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CanonicalExecutableBody {
+    pub ops: Vec<CanonicalExecutableOp>,
+    pub terminator: CanonicalExecutableTerminator,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CanonicalExecutableFunction {
+    pub name: String,
+    pub signature: CanonicalExecutableSignature,
+    pub facts: CanonicalExecutableFacts,
+    pub body: CanonicalExecutableBody,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+pub struct CanonicalExecutableModule {
+    pub module_caps: Vec<String>,
+    pub functions: Vec<CanonicalExecutableFunction>,
+}
+
+impl CanonicalExecutableModule {
+    pub fn canonicalize(&mut self) {
+        self.module_caps.sort();
+        self.module_caps.dedup();
+
+        self.functions.sort_by(|a, b| a.name.cmp(&b.name));
+        for function in &mut self.functions {
+            function.facts.ctx_ok.sort_by_key(|ctx| ctx.as_str());
+            function.facts.ctx_ok.dedup();
+            function.facts.eff_used.sort_by_key(|eff| eff.as_str());
+            function.facts.eff_used.dedup();
+            function.facts.caps_req.sort();
+            function.facts.caps_req.dedup();
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AdaptiveLoweringRule {
     ContextAlias(&'static [Ctx]),
@@ -649,6 +718,69 @@ pub fn irq_handler_alias_proposal() -> AdaptiveFeatureProposal {
     *adaptive_feature_proposal("irq_handler_alias").expect("irq_handler_alias proposal")
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NormalizedFunctionFacts {
+    ctx_ok: BTreeSet<Ctx>,
+    eff_used: BTreeSet<Eff>,
+    caps_req: BTreeSet<String>,
+    attrs: FunctionAttrs,
+}
+
+pub fn lower_to_canonical_executable(
+    ast: &ModuleAst,
+) -> Result<CanonicalExecutableModule, Vec<String>> {
+    lower_to_canonical_executable_with_surface(ast, SurfaceProfile::Stable)
+}
+
+pub fn lower_to_canonical_executable_with_surface(
+    ast: &ModuleAst,
+    surface_profile: SurfaceProfile,
+) -> Result<CanonicalExecutableModule, Vec<String>> {
+    let mut errors = Vec::new();
+    let mut functions = Vec::new();
+    let mut names = BTreeSet::new();
+    let mut executable_names = BTreeSet::new();
+
+    for item in &ast.items {
+        if !names.insert(item.name.clone()) {
+            errors.push(format!("duplicate symbol '{}'", item.name));
+        }
+        if !item.is_extern {
+            executable_names.insert(item.name.clone());
+        }
+    }
+
+    for item in &ast.items {
+        let facts = match normalize_function_facts(item, surface_profile) {
+            Ok(facts) => facts,
+            Err(errs) => {
+                errors.extend(errs);
+                continue;
+            }
+        };
+
+        if item.is_extern {
+            continue;
+        }
+
+        match lower_function_to_canonical_executable(item, &names, &executable_names, facts) {
+            Ok(function) => functions.push(function),
+            Err(errs) => errors.extend(errs),
+        }
+    }
+
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
+    let mut module = CanonicalExecutableModule {
+        module_caps: ast.module_caps.clone(),
+        functions,
+    };
+    module.canonicalize();
+    Ok(module)
+}
+
 pub fn lower_to_krir(ast: &ModuleAst) -> Result<KrirModule, Vec<String>> {
     lower_to_krir_with_surface(ast, SurfaceProfile::Stable)
 }
@@ -711,6 +843,29 @@ pub fn lower_to_krir_with_surface(
 }
 
 fn lower_function(item: &FnAst, surface_profile: SurfaceProfile) -> Result<Function, Vec<String>> {
+    let facts = normalize_function_facts(item, surface_profile)?;
+
+    let mut ops = Vec::new();
+    let mut eff_used = facts.eff_used;
+    for stmt in &item.body {
+        lower_stmt(stmt, &mut ops, &mut eff_used);
+    }
+
+    Ok(Function {
+        name: item.name.clone(),
+        is_extern: item.is_extern,
+        ctx_ok: facts.ctx_ok.into_iter().collect(),
+        eff_used: eff_used.into_iter().collect(),
+        caps_req: facts.caps_req.into_iter().collect(),
+        attrs: facts.attrs,
+        ops,
+    })
+}
+
+fn normalize_function_facts(
+    item: &FnAst,
+    surface_profile: SurfaceProfile,
+) -> Result<NormalizedFunctionFacts, Vec<String>> {
     let mut errors = Vec::new();
     let mut ctx_ok = BTreeSet::new();
     let mut eff_used = BTreeSet::new();
@@ -839,24 +994,121 @@ fn lower_function(item: &FnAst, surface_profile: SurfaceProfile) -> Result<Funct
         }
     }
 
-    let mut ops = Vec::new();
-    for stmt in &item.body {
-        lower_stmt(stmt, &mut ops, &mut eff_used);
+    if !errors.is_empty() {
+        return Err(errors);
     }
+
+    Ok(NormalizedFunctionFacts {
+        ctx_ok,
+        eff_used,
+        caps_req,
+        attrs,
+    })
+}
+
+fn lower_function_to_canonical_executable(
+    item: &FnAst,
+    all_names: &BTreeSet<String>,
+    executable_names: &BTreeSet<String>,
+    facts: NormalizedFunctionFacts,
+) -> Result<CanonicalExecutableFunction, Vec<String>> {
+    let mut ops = Vec::new();
+    let mut errors = Vec::new();
+    lower_stmts_to_canonical_executable(
+        &item.body,
+        &item.name,
+        all_names,
+        executable_names,
+        &mut ops,
+        &mut errors,
+    );
 
     if !errors.is_empty() {
         return Err(errors);
     }
 
-    Ok(Function {
+    Ok(CanonicalExecutableFunction {
         name: item.name.clone(),
-        is_extern: item.is_extern,
-        ctx_ok: ctx_ok.into_iter().collect(),
-        eff_used: eff_used.into_iter().collect(),
-        caps_req: caps_req.into_iter().collect(),
-        attrs,
-        ops,
+        signature: CanonicalExecutableSignature {
+            params: vec![],
+            result: CanonicalExecutableValueType::Unit,
+        },
+        facts: CanonicalExecutableFacts {
+            ctx_ok: facts.ctx_ok.into_iter().collect(),
+            eff_used: facts.eff_used.into_iter().collect(),
+            caps_req: facts.caps_req.into_iter().collect(),
+            attrs: facts.attrs,
+        },
+        body: CanonicalExecutableBody {
+            ops,
+            terminator: CanonicalExecutableTerminator::ReturnUnit,
+        },
     })
+}
+
+fn lower_stmts_to_canonical_executable(
+    stmts: &[Stmt],
+    function_name: &str,
+    all_names: &BTreeSet<String>,
+    executable_names: &BTreeSet<String>,
+    ops: &mut Vec<CanonicalExecutableOp>,
+    errors: &mut Vec<String>,
+) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Call(callee) => {
+                if !executable_names.contains(callee) {
+                    if all_names.contains(callee) {
+                        errors.push(format!(
+                            "canonical-exec: function '{}' calls unsupported extern '{}' in v0.1",
+                            function_name, callee
+                        ));
+                    } else {
+                        errors.push(format!(
+                        "undefined symbol '{}': add extern declaration with facts (@ctx/@eff/@caps)",
+                        callee
+                    ));
+                    }
+                } else {
+                    ops.push(CanonicalExecutableOp::Call {
+                        callee: callee.clone(),
+                    });
+                }
+            }
+            Stmt::Critical(_) => errors.push(format!(
+                "canonical-exec: function '{}' contains unsupported critical region",
+                function_name
+            )),
+            Stmt::YieldPoint => errors.push(format!(
+                "canonical-exec: function '{}' contains unsupported yieldpoint()",
+                function_name
+            )),
+            Stmt::AllocPoint => errors.push(format!(
+                "canonical-exec: function '{}' contains unsupported allocpoint()",
+                function_name
+            )),
+            Stmt::BlockPoint => errors.push(format!(
+                "canonical-exec: function '{}' contains unsupported blockpoint()",
+                function_name
+            )),
+            Stmt::Acquire(lock_class) => errors.push(format!(
+                "canonical-exec: function '{}' contains unsupported acquire({})",
+                function_name, lock_class
+            )),
+            Stmt::Release(lock_class) => errors.push(format!(
+                "canonical-exec: function '{}' contains unsupported release({})",
+                function_name, lock_class
+            )),
+            Stmt::MmioRead => errors.push(format!(
+                "canonical-exec: function '{}' contains unsupported mmio_read()",
+                function_name
+            )),
+            Stmt::MmioWrite => errors.push(format!(
+                "canonical-exec: function '{}' contains unsupported mmio_write()",
+                function_name
+            )),
+        }
+    }
 }
 
 fn lower_stmt(stmt: &Stmt, ops: &mut Vec<KrirOp>, eff_used: &mut BTreeSet<Eff>) {
@@ -955,11 +1207,12 @@ fn parse_lock_budget(attr: &RawAttr) -> Result<u64, String> {
 mod tests {
     use super::{
         AdaptiveFeatureProposal, AdaptiveFeatureStatus, AdaptiveLoweringRule,
-        AdaptiveSurfaceFeature, SurfaceProfile, adaptive_feature_promotion_plan_with,
-        adaptive_feature_promotion_readiness_with, adaptive_feature_proposal,
-        adaptive_feature_proposals, adaptive_surface_features, lower_to_krir,
-        lower_to_krir_with_surface, surface_profile_enables_feature,
-        validate_adaptive_feature_governance, validate_adaptive_feature_governance_with,
+        AdaptiveSurfaceFeature, CanonicalExecutableTerminator, SurfaceProfile,
+        adaptive_feature_promotion_plan_with, adaptive_feature_promotion_readiness_with,
+        adaptive_feature_proposal, adaptive_feature_proposals, adaptive_surface_features,
+        lower_to_canonical_executable_with_surface, lower_to_krir, lower_to_krir_with_surface,
+        surface_profile_enables_feature, validate_adaptive_feature_governance,
+        validate_adaptive_feature_governance_with,
     };
     use parser::parse_module;
     use proptest::prelude::*;
@@ -1016,6 +1269,116 @@ mod tests {
                 lower_to_krir_with_surface(&canonical_ast, SurfaceProfile::Stable).expect("lower");
             assert_eq!(alias, canonical, "alias '{}' drifted", alias_src);
         }
+    }
+
+    #[test]
+    fn canonical_executable_surface_aliases_normalize_to_supported_semantics() {
+        let ast = parse_module("@thread_entry fn worker() { helper(); }\nfn helper() { }")
+            .expect("parse");
+        let lowered = lower_to_canonical_executable_with_surface(&ast, SurfaceProfile::Stable)
+            .expect("canonical executable lowering");
+
+        assert_eq!(lowered.functions.len(), 2);
+        let worker = lowered
+            .functions
+            .iter()
+            .find(|function| function.name == "worker")
+            .expect("worker");
+        assert_eq!(worker.facts.ctx_ok, vec![krir::Ctx::Thread]);
+        assert_eq!(
+            serde_json::to_value(&worker.body.ops).expect("serialize ops"),
+            json!([{"op": "call", "callee": "helper"}])
+        );
+        assert_eq!(
+            worker.body.terminator,
+            CanonicalExecutableTerminator::ReturnUnit
+        );
+    }
+
+    #[test]
+    fn canonical_executable_semantics_preserve_call_order() {
+        let ast =
+            parse_module("fn entry() { first(); second(); }\nfn first() { }\nfn second() { }")
+                .expect("parse");
+        let mut lowered = lower_to_canonical_executable_with_surface(&ast, SurfaceProfile::Stable)
+            .expect("canonical executable lowering");
+        lowered.canonicalize();
+
+        let entry = lowered
+            .functions
+            .iter()
+            .find(|function| function.name == "entry")
+            .expect("entry");
+        let callees = entry
+            .body
+            .ops
+            .iter()
+            .map(|op| match op {
+                super::CanonicalExecutableOp::Call { callee } => callee.as_str(),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(callees, vec!["first", "second"]);
+    }
+
+    #[test]
+    fn canonical_executable_rejects_unsupported_critical_region_deterministically() {
+        let ast =
+            parse_module("fn entry() { critical { helper(); } }\nfn helper() { }").expect("parse");
+        let errs = lower_to_canonical_executable_with_surface(&ast, SurfaceProfile::Stable)
+            .expect_err("critical region must be rejected");
+        assert_eq!(
+            errs,
+            vec!["canonical-exec: function 'entry' contains unsupported critical region"]
+        );
+    }
+
+    #[test]
+    fn canonical_executable_rejects_extern_call_targets_deterministically() {
+        let ast =
+            parse_module("fn entry() { ext(); }\nextern @ctx(thread) @eff() @caps() fn ext();")
+                .expect("parse");
+        let errs = lower_to_canonical_executable_with_surface(&ast, SurfaceProfile::Stable)
+            .expect_err("extern call target must be rejected");
+        assert_eq!(
+            errs,
+            vec!["canonical-exec: function 'entry' calls unsupported extern 'ext' in v0.1"]
+        );
+    }
+
+    #[test]
+    fn canonical_executable_semantics_are_distinct_from_analysis_krir() {
+        let ast = parse_module("fn entry() { helper(); }\nfn helper() { }").expect("parse");
+        let canonical = lower_to_canonical_executable_with_surface(&ast, SurfaceProfile::Stable)
+            .expect("canonical executable");
+        let analysis = lower_to_krir_with_surface(&ast, SurfaceProfile::Stable).expect("analysis");
+
+        let canonical_entry = canonical
+            .functions
+            .iter()
+            .find(|function| function.name == "entry")
+            .expect("canonical entry");
+        let analysis_entry = analysis
+            .functions
+            .iter()
+            .find(|function| function.name == "entry")
+            .expect("analysis entry");
+
+        assert_eq!(
+            canonical_entry.body.terminator,
+            CanonicalExecutableTerminator::ReturnUnit
+        );
+        assert_eq!(
+            serde_json::to_value(&canonical_entry.body.ops).expect("canonical ops"),
+            json!([{"op": "call", "callee": "helper"}])
+        );
+        assert_eq!(
+            serde_json::to_value(&analysis_entry.ops).expect("analysis ops"),
+            json!([{"op": "call", "callee": "helper"}])
+        );
+        assert_ne!(
+            serde_json::to_value(canonical_entry).expect("canonical"),
+            serde_json::to_value(analysis_entry).expect("analysis")
+        );
     }
 
     #[test]

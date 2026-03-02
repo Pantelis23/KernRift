@@ -7,7 +7,7 @@ Executable KRIR v0.1 is the smallest backend-facing contract for KernRift.
 It exists to make the executable boundary explicit without pretending the existing
 analysis-first KRIR is already a machine-code IR.
 
-Executable KRIR is a downstream compiler contract for future executable lowering. This document defines its shape without claiming that the current analysis-first KRIR is already codegen-ready.
+Executable KRIR consumes canonical executable semantics. It does not lower directly from raw surface syntax or governed surface aliases.
 
 This subset is intentionally narrow:
 
