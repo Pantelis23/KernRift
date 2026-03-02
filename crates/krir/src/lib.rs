@@ -1888,6 +1888,40 @@ mod tests {
         true
     }
 
+    fn find_optional_linker() -> Option<String> {
+        find_optional_tool(&["ld", "ld.lld"])
+    }
+
+    fn temp_output_path(prefix: &str, suffix: &str) -> PathBuf {
+        let unique = ELF_SMOKE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "kernrift-{}-{}-{}{}",
+            prefix,
+            std::process::id(),
+            unique,
+            suffix
+        ))
+    }
+
+    fn run_linker_capture(
+        tool: &str,
+        args: &[&str],
+        inputs: &[&Path],
+        output_path: &Path,
+    ) -> std::process::Output {
+        Command::new(tool)
+            .args(args)
+            .arg("-o")
+            .arg(output_path)
+            .args(inputs)
+            .output()
+            .expect("run linker compatibility tool")
+    }
+
+    fn linked_output_bytes(path: &Path) -> Vec<u8> {
+        fs::read(path).expect("read linked ELF output")
+    }
+
     #[derive(Debug, PartialEq, Eq)]
     struct ParsedElfSection {
         name: String,
@@ -3680,6 +3714,297 @@ mod tests {
         assert!(readelf_output.contains("ext_b"));
         assert!(readelf_output.contains("R_X86_64_PLT32"));
         let _ = objdump_smoke_check(file.path());
+    }
+
+    #[test]
+    fn x86_64_elf_internal_only_object_is_accepted_by_relocatable_link_smoke() {
+        let Some(linker) = find_optional_linker() else {
+            return;
+        };
+
+        let module = ExecutableKrirModule {
+            module_caps: vec![],
+            functions: vec![
+                ExecutableFunction {
+                    name: "entry".to_string(),
+                    blocks: vec![ExecutableBlock {
+                        label: "entry".to_string(),
+                        ops: vec![
+                            ExecutableOp::Call {
+                                callee: "alpha".to_string(),
+                            },
+                            ExecutableOp::Call {
+                                callee: "beta".to_string(),
+                            },
+                        ],
+                        terminator: ExecutableTerminator::Return {
+                            value: ExecutableValue::Unit,
+                        },
+                    }],
+                    ..executable_function("entry")
+                },
+                ExecutableFunction {
+                    name: "alpha".to_string(),
+                    ..unit_return_function("alpha")
+                },
+                ExecutableFunction {
+                    name: "beta".to_string(),
+                    ..unit_return_function("beta")
+                },
+            ],
+            call_edges: vec![],
+        };
+
+        let object =
+            lower_executable_krir_to_x86_64_object(&module, &BackendTargetContract::x86_64_sysv())
+                .expect("lower x86_64 object");
+        let input = write_temp_elf_file("ld-r-internal", &emit_x86_64_object_bytes(&object));
+        let output_path = temp_output_path("ld-r-internal", ".o");
+        let output = run_linker_capture(&linker, &["-r"], &[input.path()], &output_path);
+        assert!(
+            output.status.success(),
+            "linker '{}' rejected internal-only object\nstdout:\n{}\nstderr:\n{}",
+            linker,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let linked_bytes = linked_output_bytes(&output_path);
+        let sections = parse_elf64_sections(&linked_bytes);
+        let symbols = parse_elf64_symbols(&linked_bytes, &sections);
+        assert!(sections.iter().any(|section| section.name == ".text"));
+        assert!(sections.iter().any(|section| section.name == ".symtab"));
+        assert!(!sections.iter().any(|section| section.name == ".rela.text"));
+        assert!(symbols.iter().any(|symbol| symbol.name == "alpha"));
+        assert!(symbols.iter().any(|symbol| symbol.name == "beta"));
+        assert!(symbols.iter().any(|symbol| symbol.name == "entry"));
+        let _ = fs::remove_file(&output_path);
+    }
+
+    #[test]
+    fn x86_64_elf_unresolved_external_with_resolver_links_successfully() {
+        let Some(linker) = find_optional_linker() else {
+            return;
+        };
+
+        let unresolved = ExecutableKrirModule {
+            module_caps: vec![],
+            functions: vec![ExecutableFunction {
+                name: "entry".to_string(),
+                blocks: vec![ExecutableBlock {
+                    label: "entry".to_string(),
+                    ops: vec![ExecutableOp::Call {
+                        callee: "ext".to_string(),
+                    }],
+                    terminator: ExecutableTerminator::Return {
+                        value: ExecutableValue::Unit,
+                    },
+                }],
+                ..executable_function("entry")
+            }],
+            call_edges: vec![],
+        };
+        let resolver = ExecutableKrirModule {
+            module_caps: vec![],
+            functions: vec![unit_return_function("ext")],
+            call_edges: vec![],
+        };
+
+        let unresolved_obj = lower_executable_krir_to_x86_64_object(
+            &unresolved,
+            &BackendTargetContract::x86_64_sysv(),
+        )
+        .expect("lower unresolved object");
+        let resolver_obj = lower_executable_krir_to_x86_64_object(
+            &resolver,
+            &BackendTargetContract::x86_64_sysv(),
+        )
+        .expect("lower resolver object");
+
+        let unresolved_path = write_temp_elf_file(
+            "ld-resolve-unresolved",
+            &emit_x86_64_object_bytes(&unresolved_obj),
+        );
+        let resolver_path = write_temp_elf_file(
+            "ld-resolve-resolver",
+            &emit_x86_64_object_bytes(&resolver_obj),
+        );
+        let output_path = temp_output_path("ld-resolve-linked", ".o");
+        let output = run_linker_capture(
+            &linker,
+            &["-r"],
+            &[unresolved_path.path(), resolver_path.path()],
+            &output_path,
+        );
+        assert!(
+            output.status.success(),
+            "linker '{}' failed to resolve external relocation\nstdout:\n{}\nstderr:\n{}",
+            linker,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let linked_bytes = linked_output_bytes(&output_path);
+        let sections = parse_elf64_sections(&linked_bytes);
+        let symbols = parse_elf64_symbols(&linked_bytes, &sections);
+        assert!(sections.iter().any(|section| section.name == ".text"));
+        assert!(
+            symbols
+                .iter()
+                .any(|symbol| symbol.name == "entry" && symbol.shndx != 0)
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|symbol| symbol.name == "ext" && symbol.shndx != 0)
+        );
+        let _ = fs::remove_file(&output_path);
+    }
+
+    #[test]
+    fn x86_64_elf_mixed_internal_external_object_links_successfully() {
+        let Some(linker) = find_optional_linker() else {
+            return;
+        };
+
+        let mixed = ExecutableKrirModule {
+            module_caps: vec![],
+            functions: vec![
+                ExecutableFunction {
+                    name: "entry".to_string(),
+                    blocks: vec![ExecutableBlock {
+                        label: "entry".to_string(),
+                        ops: vec![
+                            ExecutableOp::Call {
+                                callee: "alpha".to_string(),
+                            },
+                            ExecutableOp::Call {
+                                callee: "ext".to_string(),
+                            },
+                        ],
+                        terminator: ExecutableTerminator::Return {
+                            value: ExecutableValue::Unit,
+                        },
+                    }],
+                    ..executable_function("entry")
+                },
+                ExecutableFunction {
+                    name: "alpha".to_string(),
+                    ..unit_return_function("alpha")
+                },
+            ],
+            call_edges: vec![],
+        };
+        let resolver = ExecutableKrirModule {
+            module_caps: vec![],
+            functions: vec![unit_return_function("ext")],
+            call_edges: vec![],
+        };
+
+        let mixed_obj =
+            lower_executable_krir_to_x86_64_object(&mixed, &BackendTargetContract::x86_64_sysv())
+                .expect("lower mixed object");
+        let resolver_obj = lower_executable_krir_to_x86_64_object(
+            &resolver,
+            &BackendTargetContract::x86_64_sysv(),
+        )
+        .expect("lower resolver object");
+
+        let mixed_path = write_temp_elf_file("ld-mixed", &emit_x86_64_object_bytes(&mixed_obj));
+        let resolver_path = write_temp_elf_file(
+            "ld-mixed-resolver",
+            &emit_x86_64_object_bytes(&resolver_obj),
+        );
+        let output_path = temp_output_path("ld-mixed-linked", ".o");
+        let output = run_linker_capture(
+            &linker,
+            &["-r"],
+            &[mixed_path.path(), resolver_path.path()],
+            &output_path,
+        );
+        assert!(
+            output.status.success(),
+            "linker '{}' failed on mixed internal/external object\nstdout:\n{}\nstderr:\n{}",
+            linker,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let linked_bytes = linked_output_bytes(&output_path);
+        let sections = parse_elf64_sections(&linked_bytes);
+        let symbols = parse_elf64_symbols(&linked_bytes, &sections);
+        assert!(sections.iter().any(|section| section.name == ".text"));
+        assert!(
+            symbols
+                .iter()
+                .any(|symbol| symbol.name == "alpha" && symbol.shndx != 0)
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|symbol| symbol.name == "entry" && symbol.shndx != 0)
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|symbol| symbol.name == "ext" && symbol.shndx != 0)
+        );
+        let _ = fs::remove_file(&output_path);
+    }
+
+    #[test]
+    fn x86_64_elf_unresolved_external_without_resolver_fails_link_smoke() {
+        let Some(linker) = find_optional_linker() else {
+            return;
+        };
+
+        let unresolved = ExecutableKrirModule {
+            module_caps: vec![],
+            functions: vec![ExecutableFunction {
+                name: "entry".to_string(),
+                blocks: vec![ExecutableBlock {
+                    label: "entry".to_string(),
+                    ops: vec![ExecutableOp::Call {
+                        callee: "ext".to_string(),
+                    }],
+                    terminator: ExecutableTerminator::Return {
+                        value: ExecutableValue::Unit,
+                    },
+                }],
+                ..executable_function("entry")
+            }],
+            call_edges: vec![],
+        };
+
+        let unresolved_obj = lower_executable_krir_to_x86_64_object(
+            &unresolved,
+            &BackendTargetContract::x86_64_sysv(),
+        )
+        .expect("lower unresolved object");
+        let unresolved_path = write_temp_elf_file(
+            "ld-fail-unresolved",
+            &emit_x86_64_object_bytes(&unresolved_obj),
+        );
+        let output_path = temp_output_path("ld-fail-unresolved-out", ".out");
+        let output = run_linker_capture(
+            &linker,
+            &["-e", "entry"],
+            &[unresolved_path.path()],
+            &output_path,
+        );
+        assert!(
+            !output.status.success(),
+            "linker '{}' unexpectedly accepted unresolved external object",
+            linker
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
+        assert!(
+            stderr.contains("undefined") || stderr.contains("unresolved"),
+            "expected unresolved-symbol failure from linker '{}', stderr was:\n{}",
+            linker,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let _ = fs::remove_file(&output_path);
     }
 
     #[test]

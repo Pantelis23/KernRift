@@ -11,7 +11,7 @@ KRIR currently has two distinct roles:
 - `BackendTargetContract`: the explicit target-machine contract that future executable KRIR lowering must target.
 - `CompilerOwnedObject`: the primary internal machine-facing binary object artifact, derived from executable KRIR plus a target contract and preserving explicit symbols and fixups, including unresolved external call intent.
 - `X86_64AsmModule`: a target-specific assembly/debug/reference model, derived from executable KRIR plus a target contract.
-- `X86_64ElfRelocatableObject`: a downstream x86_64 ELF compatibility/export artifact derived from `CompilerOwnedObject`, including relocation/export data derived only from compiler-owned symbols and fixups rather than from direct KRIR lowering. Its symbol ordering, symbol indices, relocation ordering, and `.rela.text` metadata are deterministic compatibility facts, not hidden emitter accidents. When external ELF inspection tools are available, this subset is smoke-checked against them for compatibility; those tools do not become compiler truth.
+- `X86_64ElfRelocatableObject`: a downstream x86_64 ELF compatibility/export artifact derived from `CompilerOwnedObject`, including relocation/export data derived only from compiler-owned symbols and fixups rather than from direct KRIR lowering. Its symbol ordering, symbol indices, relocation ordering, and `.rela.text` metadata are deterministic compatibility facts, not hidden emitter accidents. When external ELF inspection and linker tools are available, this subset is smoke-checked against them for compatibility; those tools do not become compiler truth.
 
 Between surface KernRift and executable KRIR, the compiler owns a separate canonical executable semantics boundary in HIR. Governed surface forms normalize there before any lowering to executable KRIR begins.
 
@@ -23,7 +23,7 @@ The first compiler-owned object subset is specified separately in `docs/spec/com
 
 The first target-specific lowering subset is specified separately in `docs/spec/x86_64-asm-linear-subset-v0.1.md`. It lowers only the current tiny executable subset to deterministic textual x86_64 SysV-flavored assembly and is not the primary backend artifact.
 
-The first ELF machine-facing compatibility/export subset is specified separately in `docs/spec/x86_64-object-linear-subset-v0.1.md`. It exports the current tiny compiler-owned object subset to a deterministic ELF64 relocatable object subset with explicit symbol-order, symbol-index, relocation-order, and `.rela.text` metadata guarantees. It is not the primary internal object contract. Compatibility smoke checks against standard ELF inspection tools verify acceptance of the emitted bytes without making those tools a second semantic source.
+The first ELF machine-facing compatibility/export subset is specified separately in `docs/spec/x86_64-object-linear-subset-v0.1.md`. It exports the current tiny compiler-owned object subset to a deterministic ELF64 relocatable object subset with explicit symbol-order, symbol-index, relocation-order, and `.rela.text` metadata guarantees. It is not the primary internal object contract. Compatibility smoke checks against standard ELF inspection tools and the smallest practical linker flows verify acceptance of the emitted bytes without making those tools a second semantic source.
 
 ## Data Model
 
