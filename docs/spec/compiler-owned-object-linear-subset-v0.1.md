@@ -165,4 +165,4 @@ Current user-facing export path:
 - `kernriftc --emit=krbo -o <output.krbo> --meta-out <output.json> <file.kr>`
 - `kernriftc --emit=krbo -o <output.krbo> <file.kr>`
 
-This writes the compiler-owned object bytes directly. It participates in the same surface-aware CLI contract as other compiler flows while preserving stable-default behavior. Optional `--meta-out` writes deterministic header-level metadata for automation and CI convenience only. It does not perform linking or execution.
+This writes the compiler-owned object bytes directly. It participates in the same surface-aware CLI contract as other compiler flows while preserving stable-default behavior. Optional `--meta-out` writes deterministic header-level metadata for automation and CI convenience only, including repo-relative source provenance when the input resolves under the repo root. It does not perform linking or execution.
