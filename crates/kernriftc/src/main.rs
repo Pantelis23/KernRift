@@ -826,7 +826,8 @@ struct BackendArtifactMetadata {
     surface: &'static str,
     byte_len: usize,
     sha256: String,
-    input_file: String,
+    input_path: String,
+    input_path_kind: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     krbo: Option<KrboArtifactMetadata>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3609,17 +3610,66 @@ fn build_backend_artifact_metadata(
         BackendArtifactKind::Krbo => (Some(parse_krbo_artifact_metadata(bytes)?), None),
         BackendArtifactKind::ElfObject => (None, Some(parse_elf_object_artifact_metadata(bytes)?)),
     };
+    let (input_path, input_path_kind) = normalize_backend_artifact_input_path(&args.input_path);
 
     Ok(BackendArtifactMetadata {
-        schema_version: "kernrift_artifact_meta_v0",
+        schema_version: "kernrift_artifact_meta_v1",
         emit_kind: args.kind.as_str(),
         surface: args.surface.as_str(),
         byte_len: bytes.len(),
         sha256: sha256_hex(bytes),
-        input_file: args.input_path.clone(),
+        input_path,
+        input_path_kind,
         krbo,
         elfobj,
     })
+}
+
+fn normalize_backend_artifact_input_path(input_path: &str) -> (String, &'static str) {
+    let raw = input_path.to_string();
+    let cwd = match std::env::current_dir() {
+        Ok(cwd) => cwd,
+        Err(_) => return (raw, "raw"),
+    };
+    let repo_root = match find_kernrift_repo_root_from(&cwd) {
+        Some(repo_root) => repo_root,
+        None => return (raw, "raw"),
+    };
+    let repo_root = match fs::canonicalize(repo_root) {
+        Ok(repo_root) => repo_root,
+        Err(_) => return (raw, "raw"),
+    };
+
+    let input_abs = Path::new(input_path);
+    let input_abs = if input_abs.is_absolute() {
+        input_abs.to_path_buf()
+    } else {
+        cwd.join(input_abs)
+    };
+    let input_abs = match fs::canonicalize(input_abs) {
+        Ok(input_abs) => input_abs,
+        Err(_) => return (raw, "raw"),
+    };
+
+    match input_abs.strip_prefix(&repo_root) {
+        Ok(relative) => (
+            relative.to_string_lossy().replace('\\', "/"),
+            "repo-relative",
+        ),
+        Err(_) => (raw, "raw"),
+    }
+}
+
+fn find_kernrift_repo_root_from(start: &Path) -> Option<PathBuf> {
+    for candidate in start.ancestors() {
+        let has_git = candidate.join(".git").exists();
+        let has_crates = candidate.join("crates").is_dir();
+        let has_docs = candidate.join("docs").is_dir();
+        if has_git && has_crates && has_docs {
+            return Some(candidate.to_path_buf());
+        }
+    }
+    None
 }
 
 fn parse_krbo_artifact_metadata(bytes: &[u8]) -> Result<KrboArtifactMetadata, String> {

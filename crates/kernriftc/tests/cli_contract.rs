@@ -336,12 +336,13 @@ fn emit_krbo_sidecar_is_written_and_contains_expected_metadata() {
     assert_eq!(
         metadata,
         json!({
-            "schema_version": "kernrift_artifact_meta_v0",
+            "schema_version": "kernrift_artifact_meta_v1",
             "emit_kind": "krbo",
             "surface": "stable",
             "byte_len": artifact_bytes.len(),
             "sha256": format!("{:x}", Sha256::digest(&artifact_bytes)),
-            "input_file": fixture.to_string_lossy().to_string(),
+            "input_path": "tests/must_pass/basic.kr",
+            "input_path_kind": "repo-relative",
             "krbo": {
                 "magic": "KRBO",
                 "version_major": 0,
@@ -383,12 +384,13 @@ fn emit_elfobj_sidecar_is_written_and_contains_expected_metadata() {
     assert_eq!(
         metadata,
         json!({
-            "schema_version": "kernrift_artifact_meta_v0",
+            "schema_version": "kernrift_artifact_meta_v1",
             "emit_kind": "elfobj",
             "surface": "stable",
             "byte_len": artifact_bytes.len(),
             "sha256": format!("{:x}", Sha256::digest(&artifact_bytes)),
-            "input_file": fixture.to_string_lossy().to_string(),
+            "input_path": "tests/must_pass/basic.kr",
+            "input_path_kind": "repo-relative",
             "elfobj": {
                 "magic": "7f454c46",
                 "class": "elf64",
@@ -552,6 +554,95 @@ fn emit_backend_artifact_meta_out_requires_output_path() {
     );
 
     fs::remove_file(&artifact_path).ok();
+}
+
+#[test]
+fn emit_backend_artifact_sidecar_normalizes_repo_relative_input_path() {
+    let root = repo_root();
+    let fixture_rel = Path::new("tests").join("must_pass").join("basic.kr");
+    let fixture_abs = root.join(&fixture_rel);
+    let artifact_rel = unique_temp_output_path("emit-relative-input", "krbo");
+    let artifact_abs = unique_temp_output_path("emit-absolute-input", "krbo");
+    let meta_rel = unique_temp_output_path("emit-relative-input", "json");
+    let meta_abs = unique_temp_output_path("emit-absolute-input", "json");
+
+    for path in [&artifact_rel, &artifact_abs, &meta_rel, &meta_abs] {
+        fs::remove_file(path).ok();
+    }
+
+    let mut rel_cmd: Command = cargo_bin_cmd!("kernriftc");
+    rel_cmd
+        .current_dir(&root)
+        .arg("--emit=krbo")
+        .arg("-o")
+        .arg(artifact_rel.as_os_str())
+        .arg("--meta-out")
+        .arg(meta_rel.as_os_str())
+        .arg(fixture_rel.as_os_str());
+    rel_cmd.assert().success();
+
+    let mut abs_cmd: Command = cargo_bin_cmd!("kernriftc");
+    abs_cmd
+        .current_dir(&root)
+        .arg("--emit=krbo")
+        .arg("-o")
+        .arg(artifact_abs.as_os_str())
+        .arg("--meta-out")
+        .arg(meta_abs.as_os_str())
+        .arg(fixture_abs.as_os_str());
+    abs_cmd.assert().success();
+
+    let rel_meta = fs::read(&meta_rel).expect("read relative metadata");
+    let abs_meta = fs::read(&meta_abs).expect("read absolute metadata");
+    assert_eq!(
+        rel_meta, abs_meta,
+        "repo file metadata must normalize paths"
+    );
+
+    let rel_json: Value = serde_json::from_slice(&rel_meta).expect("parse normalized metadata");
+    assert_eq!(rel_json["input_path"], "tests/must_pass/basic.kr");
+    assert_eq!(rel_json["input_path_kind"], "repo-relative");
+
+    for path in [&artifact_rel, &artifact_abs, &meta_rel, &meta_abs] {
+        fs::remove_file(path).ok();
+    }
+}
+
+#[test]
+fn emit_backend_artifact_sidecar_falls_back_to_raw_input_path_for_non_repo_file() {
+    let root = repo_root();
+    let repo_fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let external_fixture = unique_temp_output_path("emit-external-input", "kr");
+    let artifact_path = unique_temp_output_path("emit-external-input", "krbo");
+    let meta_path = unique_temp_output_path("emit-external-input", "json");
+    fs::copy(&repo_fixture, &external_fixture).expect("copy external fixture");
+
+    for path in [&artifact_path, &meta_path] {
+        fs::remove_file(path).ok();
+    }
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("--emit=krbo")
+        .arg("-o")
+        .arg(artifact_path.as_os_str())
+        .arg("--meta-out")
+        .arg(meta_path.as_os_str())
+        .arg(external_fixture.as_os_str());
+    cmd.assert().success();
+
+    let metadata: Value =
+        serde_json::from_slice(&fs::read(&meta_path).expect("read raw-path metadata"))
+            .expect("parse raw-path metadata");
+    assert_eq!(
+        metadata["input_path"],
+        external_fixture.to_string_lossy().to_string()
+    );
+    assert_eq!(metadata["input_path_kind"], "raw");
+
+    for path in [&external_fixture, &artifact_path, &meta_path] {
+        fs::remove_file(path).ok();
+    }
 }
 
 #[test]
