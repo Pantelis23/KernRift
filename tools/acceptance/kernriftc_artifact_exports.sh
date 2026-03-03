@@ -13,6 +13,7 @@ KRBO_META="$TMP_DIR/basic.krbo.json"
 ELF_OUT="$TMP_DIR/basic.o"
 ELF_META="$TMP_DIR/basic.o.json"
 ASM_OUT="$TMP_DIR/basic.s"
+RELINKED_ELF_OUT="$TMP_DIR/basic.relinked.o"
 
 find_readelf() {
   if command -v readelf >/dev/null 2>&1; then
@@ -21,6 +22,18 @@ find_readelf() {
   fi
   if command -v llvm-readelf >/dev/null 2>&1; then
     printf '%s\n' "llvm-readelf"
+    return 0
+  fi
+  return 1
+}
+
+find_reloc_linker() {
+  if command -v ld.lld >/dev/null 2>&1; then
+    printf '%s\n' "ld.lld"
+    return 0
+  fi
+  if command -v ld >/dev/null 2>&1; then
+    printf '%s\n' "ld"
     return 0
   fi
   return 1
@@ -80,11 +93,30 @@ grep -q '^    ret$' "$ASM_OUT"
 
 if READELF_TOOL="$(find_readelf)"; then
   echo "[optional] inspect emitted elfobj with $READELF_TOOL"
-  READELF_OUTPUT="$("$READELF_TOOL" -h "$ELF_OUT")"
-  printf '%s\n' "$READELF_OUTPUT" | grep -Eq 'Class:[[:space:]]+ELF64'
-  printf '%s\n' "$READELF_OUTPUT" | grep -Eq "Data:[[:space:]]+2's complement, little endian"
-  printf '%s\n' "$READELF_OUTPUT" | grep -Eq 'Type:[[:space:]]+REL'
-  printf '%s\n' "$READELF_OUTPUT" | grep -Eq 'Machine:[[:space:]]+(Advanced Micro Devices X86-64|x86-64)'
+  READELF_HEADER="$("$READELF_TOOL" -h "$ELF_OUT")"
+  printf '%s\n' "$READELF_HEADER" | grep -Eq 'Class:[[:space:]]+ELF64'
+  printf '%s\n' "$READELF_HEADER" | grep -Eq "Data:[[:space:]]+2's complement, little endian"
+  printf '%s\n' "$READELF_HEADER" | grep -Eq 'Type:[[:space:]]+REL'
+  printf '%s\n' "$READELF_HEADER" | grep -Eq 'Machine:[[:space:]]+(Advanced Micro Devices X86-64|x86-64)'
+
+  READELF_SYMS="$("$READELF_TOOL" -sW "$ELF_OUT")"
+  printf '%s\n' "$READELF_SYMS" | grep -Eq '[[:space:]]bar$'
+  printf '%s\n' "$READELF_SYMS" | grep -Eq '[[:space:]]foo$'
+
+  READELF_RELOCS="$("$READELF_TOOL" -rW "$ELF_OUT")"
+  printf '%s\n' "$READELF_RELOCS" | grep -Eq 'There are no relocations in this file\.'
+fi
+
+if RELOC_LINKER="$(find_reloc_linker)"; then
+  echo "[optional] relocatable relink smoke with $RELOC_LINKER"
+  "$RELOC_LINKER" -r "$ELF_OUT" -o "$RELINKED_ELF_OUT"
+  assert_nonempty_file "$RELINKED_ELF_OUT"
+
+  if READELF_TOOL="$(find_readelf)"; then
+    RELINKED_HEADER="$("$READELF_TOOL" -h "$RELINKED_ELF_OUT")"
+    printf '%s\n' "$RELINKED_HEADER" | grep -Eq 'Type:[[:space:]]+REL'
+    printf '%s\n' "$RELINKED_HEADER" | grep -Eq 'Machine:[[:space:]]+(Advanced Micro Devices X86-64|x86-64)'
+  fi
 fi
 
 echo "kernriftc artifact export acceptance: PASS"
