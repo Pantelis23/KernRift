@@ -158,6 +158,8 @@ The compiler-owned object format remains the sole internal truth for:
 - fixup identity,
 - relocation intent.
 
+The same compiler-owned symbols, code bytes, and fixups are also the source for the current x86_64 assembly/debug export path. Assembly must not remain a separate peer lowering truth.
+
 Current user-facing export path:
 
 - `kernriftc --surface stable --emit=krbo -o <output.krbo> --meta-out <output.json> <file.kr>`

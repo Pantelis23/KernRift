@@ -21,7 +21,7 @@ The intended pipeline for the supported subset is:
 - compiler-owned object format
 - x86_64 linear assembly subset
 
-The assembly model is downstream of executable KRIR and downstream of the compiler-owned object format. It is not the semantic truth of the language and is not the primary backend artifact.
+The assembly model is downstream of executable KRIR and downstream of the compiler-owned object format. Current implementation exports this assembly from the compiler-owned object format rather than lowering from executable KRIR as a peer path. It is not the semantic truth of the language and is not the primary backend artifact.
 
 ## Supported lowering subset
 
@@ -33,10 +33,10 @@ Supported executable KRIR inputs:
 - ordered direct `Call` ops
 - terminal `Return { value: Unit }`
 
-Rejected at this lowering boundary:
+Rejected at this export boundary:
 
 - multiple blocks
-- missing defined direct call targets
+- unresolved external direct call targets preserved in the compiler-owned object format
 - any executable KRIR shape outside the linear subset
 
 ## Assembly syntax
@@ -77,8 +77,8 @@ So stack-frame machinery would be fake progress here.
 
 ## Determinism rules
 
-- functions are emitted in deterministic executable-KRIR order
-- direct calls are emitted in the original executable op order
+- functions are emitted in deterministic compiler-owned object symbol order
+- direct calls are emitted in compiler-owned fixup order within each function
 - output text is byte-stable for the same executable KRIR input
 
 ## Explicit non-goals
