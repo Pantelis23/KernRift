@@ -1835,14 +1835,17 @@ pub fn emit_compiler_owned_object_bytes(object: &CompilerOwnedObject) -> Vec<u8>
 #[cfg(test)]
 mod tests {
     use super::{
-        BackendTargetContract, CallEdge, CompilerOwnedFixupKind, CompilerOwnedObjectFixup,
-        CompilerOwnedObjectSymbolDefinition, Ctx, Eff, ExecutableBlock, ExecutableFacts,
-        ExecutableFunction, ExecutableKrirModule, ExecutableOp, ExecutableSignature,
-        ExecutableTerminator, ExecutableValue, ExecutableValueType, FunctionAttrs,
-        FutureScalarReturnConvention, X86_64IntegerRegister, emit_compiler_owned_object_bytes,
-        emit_x86_64_asm_text, emit_x86_64_object_bytes, export_compiler_owned_object_to_x86_64_asm,
-        export_compiler_owned_object_to_x86_64_elf, lower_executable_krir_to_compiler_owned_object,
-        lower_executable_krir_to_x86_64_asm, lower_executable_krir_to_x86_64_object,
+        BackendTargetContract, BackendTargetId, CallEdge, CompilerOwnedCodeSection,
+        CompilerOwnedFixupKind, CompilerOwnedObject, CompilerOwnedObjectFixup,
+        CompilerOwnedObjectHeader, CompilerOwnedObjectKind, CompilerOwnedObjectSymbol,
+        CompilerOwnedObjectSymbolDefinition, CompilerOwnedObjectSymbolKind, Ctx, Eff,
+        ExecutableBlock, ExecutableFacts, ExecutableFunction, ExecutableKrirModule, ExecutableOp,
+        ExecutableSignature, ExecutableTerminator, ExecutableValue, ExecutableValueType,
+        FunctionAttrs, FutureScalarReturnConvention, TargetEndian, X86_64IntegerRegister,
+        emit_compiler_owned_object_bytes, emit_x86_64_asm_text, emit_x86_64_object_bytes,
+        export_compiler_owned_object_to_x86_64_asm, export_compiler_owned_object_to_x86_64_elf,
+        lower_executable_krir_to_compiler_owned_object, lower_executable_krir_to_x86_64_asm,
+        lower_executable_krir_to_x86_64_object,
         validate_compiler_owned_object_for_x86_64_asm_export,
         validate_compiler_owned_object_linear_subset, validate_x86_64_object_linear_subset,
     };
@@ -2332,6 +2335,37 @@ mod tests {
                 },
             }],
             ..executable_function(name)
+        }
+    }
+
+    fn asm_export_fixture_target() -> BackendTargetContract {
+        BackendTargetContract::x86_64_sysv()
+    }
+
+    fn asm_export_fixture_object(bytes: Vec<u8>) -> CompilerOwnedObject {
+        CompilerOwnedObject {
+            header: CompilerOwnedObjectHeader {
+                magic: *b"KRBO",
+                version_major: 0,
+                version_minor: 1,
+                object_kind: CompilerOwnedObjectKind::LinearRelocatable,
+                target_id: BackendTargetId::X86_64Sysv,
+                endian: TargetEndian::Little,
+                pointer_bits: 64,
+                format_revision: 2,
+            },
+            code: CompilerOwnedCodeSection {
+                name: ".text",
+                bytes,
+            },
+            symbols: vec![CompilerOwnedObjectSymbol {
+                name: "entry".to_string(),
+                kind: CompilerOwnedObjectSymbolKind::Function,
+                definition: CompilerOwnedObjectSymbolDefinition::DefinedText,
+                offset: 0,
+                size: 1,
+            }],
+            fixups: vec![],
         }
     }
 
@@ -2832,6 +2866,73 @@ mod tests {
         assert_eq!(
             emit_x86_64_asm_text(&exported),
             ".text\n\nalpha:\n    ret\n\nentry:\n    call alpha\n    ret\n"
+        );
+    }
+
+    #[test]
+    fn x86_64_asm_export_rejects_unsupported_code_byte_in_defined_symbol() {
+        let target = asm_export_fixture_target();
+        let object = asm_export_fixture_object(vec![0x90]);
+
+        assert_eq!(
+            export_compiler_owned_object_to_x86_64_asm(&object, &target),
+            Err(
+                "x86_64 asm export encountered unsupported code byte 0x90 in function 'entry' at offset 0"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn x86_64_asm_export_rejects_call_without_matching_fixup() {
+        let target = asm_export_fixture_target();
+        let mut object = asm_export_fixture_object(vec![0xE8, 0, 0, 0, 0, 0xC3]);
+        object.symbols[0].size = 6;
+
+        assert_eq!(
+            export_compiler_owned_object_to_x86_64_asm(&object, &target),
+            Err(
+                "x86_64 asm export requires fixup for call at offset 1 in function 'entry'"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn x86_64_asm_export_rejects_wrong_fixup_width() {
+        let target = asm_export_fixture_target();
+        let mut object = asm_export_fixture_object(vec![0xE8, 0, 0, 0, 0, 0xC3]);
+        object.symbols[0].size = 6;
+        object.symbols.push(CompilerOwnedObjectSymbol {
+            name: "helper".to_string(),
+            kind: CompilerOwnedObjectSymbolKind::Function,
+            definition: CompilerOwnedObjectSymbolDefinition::DefinedText,
+            offset: 5,
+            size: 1,
+        });
+        object.fixups.push(CompilerOwnedObjectFixup {
+            source_symbol: "entry".to_string(),
+            patch_offset: 1,
+            kind: CompilerOwnedFixupKind::X86_64CallRel32,
+            target_symbol: "helper".to_string(),
+            width_bytes: 2,
+        });
+
+        assert_eq!(
+            validate_compiler_owned_object_for_x86_64_asm_export(&object, &target),
+            Err("x86_64 asm export requires rel32 fixup width 4 for target 'helper'".to_string())
+        );
+    }
+
+    #[test]
+    fn x86_64_asm_export_rejects_pointer_width_mismatch() {
+        let mut target = asm_export_fixture_target();
+        let object = asm_export_fixture_object(vec![0xC3]);
+        target.pointer_bits = 32;
+
+        assert_eq!(
+            validate_compiler_owned_object_for_x86_64_asm_export(&object, &target),
+            Err("x86_64 asm export pointer width mismatch".to_string())
         );
     }
 
