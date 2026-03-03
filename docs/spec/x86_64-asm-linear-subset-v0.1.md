@@ -15,7 +15,7 @@ This is still a tiny subset. It does not add general codegen machinery, and it i
 - `kernriftc --surface stable --emit=asm -o <output.s> <file.kr>`
 - `kernriftc --emit=asm -o <output.s> <file.kr>`
 
-This does not change backend truth. Metadata sidecars remain limited to `krbo` and `elfobj` in this slice.
+This participates in the shared surface-aware export path, but `--meta-out` and `verify-artifact-meta` do not apply to `asm` in this slice. This does not change backend truth. Metadata sidecars remain limited to `krbo` and `elfobj`.
 
 ## Layer boundary
 

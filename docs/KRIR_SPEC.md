@@ -189,8 +189,10 @@ Any violation is a compile error.
 - `kernriftc --emit krir <file.kr>`
 - `kernriftc --surface stable --emit=krbo -o <output.krbo> --meta-out <output.json> <file.kr>`
 - `kernriftc --surface stable --emit=elfobj -o <output.o> --meta-out <output.json> <file.kr>`
+- `kernriftc --surface stable --emit=asm -o <output.s> <file.kr>`
 - `kernriftc --surface stable --emit=krbo -o <output.krbo> <file.kr>`
 - `kernriftc --surface stable --emit=elfobj -o <output.o> <file.kr>`
+- `kernriftc --emit=asm -o <output.s> <file.kr>`
 - `kernriftc --emit=krbo -o <output.krbo> --meta-out <output.json> <file.kr>`
 - `kernriftc --emit=elfobj -o <output.o> --meta-out <output.json> <file.kr>`
 - `kernriftc --emit=krbo -o <output.krbo> <file.kr>`
@@ -204,6 +206,8 @@ Any violation is a compile error.
 - `kernriftc check --policy <policy.toml> --contracts-out <contracts.json> --hash-out <contracts.sha256> <file.kr>`
 - `kernriftc check --policy <policy.toml> --contracts-out <contracts.json> --hash-out <contracts.sha256> --sign-ed25519 <secret.hex> --sig-out <contracts.sig> <file.kr>`
 - `kernriftc --report max_lock_depth,no_yield_spans <file.kr>`
+
+Within this export matrix, optional `--meta-out` applies only to `krbo` and `elfobj`. `verify-artifact-meta` applies only to sidecar-bearing artifacts. `asm` is export-only in this slice.
 - `kernriftc policy --policy <policy.toml> --contracts <contracts.json>`
 - `kernriftc verify --contracts <contracts.json> --hash <contracts.sha256>`
 - `kernriftc verify --contracts <contracts.json> --hash <contracts.sha256> --sig <contracts.sig> --pubkey <pubkey.hex>`
