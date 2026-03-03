@@ -853,72 +853,145 @@ fn validate_executable_krir_linear_structure(
     Ok(())
 }
 
-pub fn validate_x86_64_linear_subset(
-    module: &ExecutableKrirModule,
+pub fn validate_compiler_owned_object_for_x86_64_asm_export(
+    object: &CompilerOwnedObject,
     target: &BackendTargetContract,
 ) -> Result<(), String> {
-    validate_executable_krir_linear_structure(module, target, "x86_64 asm lowering")?;
-    let function_names = module
-        .functions
-        .iter()
-        .map(|function| function.name.as_str())
-        .collect::<BTreeSet<_>>();
+    object.validate()?;
+    if object.header.target_id != target.target_id {
+        return Err("x86_64 asm export target_id mismatch".to_string());
+    }
+    if object.header.endian != target.endian {
+        return Err("x86_64 asm export endianness mismatch".to_string());
+    }
+    if object.header.pointer_bits != target.pointer_bits {
+        return Err("x86_64 asm export pointer width mismatch".to_string());
+    }
+    if object.code.name != target.sections.text {
+        return Err(
+            "x86_64 asm export requires code section to match target text section".to_string(),
+        );
+    }
 
-    for function in &module.functions {
-        let entry = &function.blocks[0];
-        for op in &entry.ops {
-            match op {
-                ExecutableOp::Call { callee } => {
-                    if !function_names.contains(callee.as_str()) {
-                        return Err(format!(
-                            "x86_64 asm lowering requires defined direct call target '{}' in function '{}'",
-                            callee, function.name
-                        ));
-                    }
-                }
-            }
+    let symbol_defs = object
+        .symbols
+        .iter()
+        .map(|symbol| (symbol.name.as_str(), symbol.definition))
+        .collect::<BTreeMap<_, _>>();
+
+    for fixup in &object.fixups {
+        if fixup.kind != CompilerOwnedFixupKind::X86_64CallRel32 {
+            return Err(format!(
+                "x86_64 asm export requires x86_64_call_rel32 fixups, found {:?}",
+                fixup.kind
+            ));
+        }
+        if fixup.width_bytes != 4 {
+            return Err(format!(
+                "x86_64 asm export requires rel32 fixup width 4 for target '{}'",
+                fixup.target_symbol
+            ));
+        }
+        let Some(target_def) = symbol_defs.get(fixup.target_symbol.as_str()) else {
+            return Err(format!(
+                "x86_64 asm export requires target symbol '{}' for fixup",
+                fixup.target_symbol
+            ));
+        };
+        if *target_def == CompilerOwnedObjectSymbolDefinition::UndefinedExternal {
+            return Err(format!(
+                "x86_64 asm export does not support unresolved external call target '{}' in function '{}'",
+                fixup.target_symbol, fixup.source_symbol
+            ));
         }
     }
 
     Ok(())
 }
 
-pub fn lower_executable_krir_to_x86_64_asm(
-    module: &ExecutableKrirModule,
+pub fn export_compiler_owned_object_to_x86_64_asm(
+    object: &CompilerOwnedObject,
     target: &BackendTargetContract,
 ) -> Result<X86_64AsmModule, String> {
-    validate_x86_64_linear_subset(module, target)?;
+    validate_compiler_owned_object_for_x86_64_asm_export(object, target)?;
 
-    let mut canonical = module.clone();
-    canonical.canonicalize();
-
-    let functions = canonical
-        .functions
-        .into_iter()
-        .map(|function| {
-            let block = &function.blocks[0];
-            let mut instructions = block
-                .ops
-                .iter()
-                .map(|op| match op {
-                    ExecutableOp::Call { callee } => X86_64AsmInstruction::Call {
-                        symbol: callee.clone(),
-                    },
-                })
-                .collect::<Vec<_>>();
-            instructions.push(X86_64AsmInstruction::Ret);
-
-            X86_64AsmFunction {
-                symbol: function.name,
-                instructions,
-            }
+    let fixups_by_source = object
+        .fixups
+        .iter()
+        .map(|fixup| {
+            (
+                (fixup.source_symbol.as_str(), fixup.patch_offset),
+                fixup.target_symbol.as_str(),
+            )
         })
-        .collect::<Vec<_>>();
+        .collect::<BTreeMap<_, _>>();
+
+    let functions = object
+        .symbols
+        .iter()
+        .filter(|symbol| symbol.definition == CompilerOwnedObjectSymbolDefinition::DefinedText)
+        .map(|symbol| {
+            let start = usize::try_from(symbol.offset).expect("symbol offset must fit usize");
+            let end =
+                usize::try_from(symbol.offset + symbol.size).expect("symbol end must fit usize");
+            let bytes = &object.code.bytes[start..end];
+            let mut instructions = Vec::new();
+            let mut cursor = 0usize;
+            while cursor < bytes.len() {
+                if cursor == bytes.len() - 1 && bytes[cursor] == 0xC3 {
+                    instructions.push(X86_64AsmInstruction::Ret);
+                    cursor += 1;
+                    continue;
+                }
+
+                if cursor + 5 <= bytes.len() && bytes[cursor] == 0xE8 {
+                    if bytes[cursor + 1..cursor + 5] != [0, 0, 0, 0] {
+                        return Err(format!(
+                            "x86_64 asm export requires zeroed rel32 bytes for call in function '{}'",
+                            symbol.name
+                        ));
+                    }
+                    let patch_offset = symbol.offset + cursor as u64 + 1;
+                    let target_symbol = fixups_by_source
+                        .get(&(symbol.name.as_str(), patch_offset))
+                        .ok_or_else(|| {
+                            format!(
+                                "x86_64 asm export requires fixup for call at offset {} in function '{}'",
+                                patch_offset, symbol.name
+                            )
+                        })?;
+                    instructions.push(X86_64AsmInstruction::Call {
+                        symbol: (*target_symbol).to_string(),
+                    });
+                    cursor += 5;
+                    continue;
+                }
+
+                return Err(format!(
+                    "x86_64 asm export encountered unsupported code byte 0x{:02x} in function '{}' at offset {}",
+                    bytes[cursor], symbol.name, cursor
+                ));
+            }
+
+            Ok(X86_64AsmFunction {
+                symbol: symbol.name.clone(),
+                instructions,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
 
     Ok(X86_64AsmModule {
         section: target.sections.text,
         functions,
     })
+}
+
+pub fn lower_executable_krir_to_x86_64_asm(
+    module: &ExecutableKrirModule,
+    target: &BackendTargetContract,
+) -> Result<X86_64AsmModule, String> {
+    let object = lower_executable_krir_to_compiler_owned_object(module, target)?;
+    export_compiler_owned_object_to_x86_64_asm(&object, target)
 }
 
 pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
@@ -1767,10 +1840,11 @@ mod tests {
         ExecutableFunction, ExecutableKrirModule, ExecutableOp, ExecutableSignature,
         ExecutableTerminator, ExecutableValue, ExecutableValueType, FunctionAttrs,
         FutureScalarReturnConvention, X86_64IntegerRegister, emit_compiler_owned_object_bytes,
-        emit_x86_64_asm_text, emit_x86_64_object_bytes, export_compiler_owned_object_to_x86_64_elf,
-        lower_executable_krir_to_compiler_owned_object, lower_executable_krir_to_x86_64_asm,
-        lower_executable_krir_to_x86_64_object, validate_compiler_owned_object_linear_subset,
-        validate_x86_64_linear_subset, validate_x86_64_object_linear_subset,
+        emit_x86_64_asm_text, emit_x86_64_object_bytes, export_compiler_owned_object_to_x86_64_asm,
+        export_compiler_owned_object_to_x86_64_elf, lower_executable_krir_to_compiler_owned_object,
+        lower_executable_krir_to_x86_64_asm, lower_executable_krir_to_x86_64_object,
+        validate_compiler_owned_object_for_x86_64_asm_export,
+        validate_compiler_owned_object_linear_subset, validate_x86_64_object_linear_subset,
     };
     use serde_json::json;
     use std::{
@@ -2671,8 +2745,11 @@ mod tests {
         };
 
         assert_eq!(
-            validate_x86_64_linear_subset(&module, &BackendTargetContract::x86_64_sysv()),
-            Err("x86_64 asm lowering requires exactly one block in function 'entry'".to_string())
+            lower_executable_krir_to_x86_64_asm(&module, &BackendTargetContract::x86_64_sysv()),
+            Err(
+                "compiler-owned object emission requires exactly one block in function 'entry'"
+                    .to_string()
+            )
         );
     }
 
@@ -2695,12 +2772,66 @@ mod tests {
             call_edges: vec![],
         };
 
+        let target = BackendTargetContract::x86_64_sysv();
+        let object = lower_executable_krir_to_compiler_owned_object(&module, &target)
+            .expect("lower compiler-owned object");
+        assert!(object.symbols.iter().any(|symbol| {
+            symbol.name == "missing"
+                && symbol.definition == CompilerOwnedObjectSymbolDefinition::UndefinedExternal
+        }));
         assert_eq!(
-            validate_x86_64_linear_subset(&module, &BackendTargetContract::x86_64_sysv()),
+            validate_compiler_owned_object_for_x86_64_asm_export(&object, &target),
             Err(
-                "x86_64 asm lowering requires defined direct call target 'missing' in function 'entry'"
+                "x86_64 asm export does not support unresolved external call target 'missing' in function 'entry'"
                     .to_string()
             )
+        );
+        assert_eq!(
+            lower_executable_krir_to_x86_64_asm(&module, &target),
+            Err(
+                "x86_64 asm export does not support unresolved external call target 'missing' in function 'entry'"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn executable_krir_x86_64_asm_export_is_derived_from_compiler_owned_object() {
+        let module = ExecutableKrirModule {
+            module_caps: vec![],
+            functions: vec![
+                ExecutableFunction {
+                    name: "entry".to_string(),
+                    blocks: vec![ExecutableBlock {
+                        label: "entry".to_string(),
+                        ops: vec![ExecutableOp::Call {
+                            callee: "alpha".to_string(),
+                        }],
+                        terminator: ExecutableTerminator::Return {
+                            value: ExecutableValue::Unit,
+                        },
+                    }],
+                    ..executable_function("entry")
+                },
+                ExecutableFunction {
+                    name: "alpha".to_string(),
+                    ..unit_return_function("alpha")
+                },
+            ],
+            call_edges: vec![],
+        };
+
+        let target = BackendTargetContract::x86_64_sysv();
+        let object = lower_executable_krir_to_compiler_owned_object(&module, &target)
+            .expect("lower compiler-owned object");
+        let exported =
+            export_compiler_owned_object_to_x86_64_asm(&object, &target).expect("export asm");
+        let wrapped = lower_executable_krir_to_x86_64_asm(&module, &target).expect("wrap asm");
+
+        assert_eq!(wrapped, exported);
+        assert_eq!(
+            emit_x86_64_asm_text(&exported),
+            ".text\n\nalpha:\n    ret\n\nentry:\n    call alpha\n    ret\n"
         );
     }
 
