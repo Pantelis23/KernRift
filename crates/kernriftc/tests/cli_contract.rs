@@ -745,6 +745,86 @@ fn verify_artifact_meta_accepts_matching_elf_object_artifact() {
 }
 
 #[test]
+fn verify_artifact_meta_accepts_krbo_artifact_with_extra_elf_block() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let artifact_path = unique_temp_output_path("verify-meta-krbo-extra-elf", "krbo");
+    let meta_path = unique_temp_output_path("verify-meta-krbo-extra-elf", "json");
+    emit_backend_artifact_with_sidecar(&root, "krbo", &fixture, &artifact_path, &meta_path, false);
+
+    let mut metadata: Value =
+        serde_json::from_slice(&fs::read(&meta_path).expect("read metadata")).expect("parse json");
+    metadata["elfobj"] = json!({
+        "magic": "7f454c46",
+        "class": "elf64",
+        "endianness": "little",
+        "elf_type": "relocatable",
+        "machine": "arm64"
+    });
+    fs::write(
+        &meta_path,
+        serde_json::to_vec_pretty(&metadata).expect("serialize metadata"),
+    )
+    .expect("write metadata");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("verify-artifact-meta")
+        .arg(artifact_path.as_os_str())
+        .arg(meta_path.as_os_str());
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    assert_eq!(stdout, "verify-artifact-meta: PASS\n");
+
+    fs::remove_file(&artifact_path).ok();
+    fs::remove_file(&meta_path).ok();
+}
+
+#[test]
+fn verify_artifact_meta_accepts_elf_object_with_extra_krbo_block() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let artifact_path = unique_temp_output_path("verify-meta-elf-extra-krbo", "o");
+    let meta_path = unique_temp_output_path("verify-meta-elf-extra-krbo", "json");
+    emit_backend_artifact_with_sidecar(
+        &root,
+        "elfobj",
+        &fixture,
+        &artifact_path,
+        &meta_path,
+        false,
+    );
+
+    let mut metadata: Value =
+        serde_json::from_slice(&fs::read(&meta_path).expect("read metadata")).expect("parse json");
+    metadata["krbo"] = json!({
+        "magic": "KRBO",
+        "version_major": 0,
+        "version_minor": 1,
+        "format_revision": 999,
+        "target_tag": 1,
+        "target_name": "other-target"
+    });
+    fs::write(
+        &meta_path,
+        serde_json::to_vec_pretty(&metadata).expect("serialize metadata"),
+    )
+    .expect("write metadata");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("verify-artifact-meta")
+        .arg(artifact_path.as_os_str())
+        .arg(meta_path.as_os_str());
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    assert_eq!(stdout, "verify-artifact-meta: PASS\n");
+
+    fs::remove_file(&artifact_path).ok();
+    fs::remove_file(&meta_path).ok();
+}
+
+#[test]
 fn verify_artifact_meta_rejects_tampered_sha256() {
     let root = repo_root();
     let fixture = root.join("tests").join("must_pass").join("basic.kr");
