@@ -61,6 +61,27 @@ fn emit_backend_artifact_with_sidecar(
     cmd.assert().success();
 }
 
+fn emit_backend_artifact(
+    root: &Path,
+    kind: &str,
+    fixture: &Path,
+    artifact_path: &Path,
+    explicit_stable: bool,
+) {
+    fs::remove_file(artifact_path).ok();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(root);
+    if explicit_stable {
+        cmd.arg("--surface").arg("stable");
+    }
+    cmd.arg(format!("--emit={kind}"))
+        .arg("-o")
+        .arg(artifact_path.as_os_str())
+        .arg(fixture.as_os_str());
+    cmd.assert().success();
+}
+
 fn write_v2_contracts_for_fixture(root: &Path, fixture: &Path, label: &str) -> PathBuf {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -300,6 +321,30 @@ fn emit_elfobj_writes_valid_relocatable_object() {
 }
 
 #[test]
+fn emit_asm_writes_expected_text_output() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let output_path = unique_temp_output_path("emit-asm", "s");
+    fs::remove_file(&output_path).ok();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("--emit=asm")
+        .arg("-o")
+        .arg(output_path.as_os_str())
+        .arg(fixture.as_os_str());
+    cmd.assert().success();
+
+    let text = fs::read_to_string(&output_path).expect("read asm output");
+    assert_eq!(
+        text,
+        ".text\n\nbar:\n    ret\n\nfoo:\n    call bar\n    ret\n"
+    );
+
+    fs::remove_file(&output_path).ok();
+}
+
+#[test]
 fn emit_backend_artifacts_are_deterministic_for_supported_subset() {
     let root = repo_root();
     let fixture = root.join("tests").join("must_pass").join("basic.kr");
@@ -307,8 +352,14 @@ fn emit_backend_artifacts_are_deterministic_for_supported_subset() {
     let krbo_b = unique_temp_output_path("emit-krbo-b", "krbo");
     let elf_a = unique_temp_output_path("emit-elf-a", "o");
     let elf_b = unique_temp_output_path("emit-elf-b", "o");
+    let asm_a = unique_temp_output_path("emit-asm-a", "s");
+    let asm_b = unique_temp_output_path("emit-asm-b", "s");
 
-    for (kind, first, second) in [("krbo", &krbo_a, &krbo_b), ("elfobj", &elf_a, &elf_b)] {
+    for (kind, first, second) in [
+        ("krbo", &krbo_a, &krbo_b),
+        ("elfobj", &elf_a, &elf_b),
+        ("asm", &asm_a, &asm_b),
+    ] {
         for path in [first, second] {
             fs::remove_file(path).ok();
 
@@ -329,7 +380,7 @@ fn emit_backend_artifacts_are_deterministic_for_supported_subset() {
         );
     }
 
-    for path in [&krbo_a, &krbo_b, &elf_a, &elf_b] {
+    for path in [&krbo_a, &krbo_b, &elf_a, &elf_b, &asm_a, &asm_b] {
         fs::remove_file(path).ok();
     }
 }
@@ -442,6 +493,8 @@ fn emit_backend_artifacts_with_explicit_stable_surface_match_default() {
     let krbo_stable_meta = unique_temp_output_path("emit-krbo-stable", "json");
     let elf_default_meta = unique_temp_output_path("emit-elf-default", "json");
     let elf_stable_meta = unique_temp_output_path("emit-elf-stable", "json");
+    let asm_default = unique_temp_output_path("emit-asm-default", "s");
+    let asm_stable = unique_temp_output_path("emit-asm-stable", "s");
 
     for (kind, default_path, stable_path, default_meta_path, stable_meta_path) in [
         (
@@ -503,6 +556,15 @@ fn emit_backend_artifacts_with_explicit_stable_surface_match_default() {
         );
     }
 
+    emit_backend_artifact(&root, "asm", &fixture, &asm_default, false);
+    emit_backend_artifact(&root, "asm", &fixture, &asm_stable, true);
+    let default_asm = fs::read(&asm_default).expect("read default asm");
+    let stable_asm = fs::read(&asm_stable).expect("read stable asm");
+    assert_eq!(
+        default_asm, stable_asm,
+        "explicit stable surface must match default asm output"
+    );
+
     for path in [
         &krbo_default,
         &krbo_stable,
@@ -512,6 +574,8 @@ fn emit_backend_artifacts_with_explicit_stable_surface_match_default() {
         &krbo_stable_meta,
         &elf_default_meta,
         &elf_stable_meta,
+        &asm_default,
+        &asm_stable,
     ] {
         fs::remove_file(path).ok();
     }
@@ -579,6 +643,32 @@ fn emit_backend_artifact_meta_out_requires_output_path() {
     );
 
     fs::remove_file(&artifact_path).ok();
+}
+
+#[test]
+fn emit_asm_rejects_meta_out() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let output_path = unique_temp_output_path("emit-asm-meta-out", "s");
+    let meta_path = unique_temp_output_path("emit-asm-meta-out", "json");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("--emit=asm")
+        .arg("-o")
+        .arg(output_path.as_os_str())
+        .arg("--meta-out")
+        .arg(meta_path.as_os_str())
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("invalid emit mode: --meta-out is unsupported for 'asm'")
+    );
+
+    fs::remove_file(&output_path).ok();
+    fs::remove_file(&meta_path).ok();
 }
 
 #[test]

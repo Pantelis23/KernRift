@@ -14,7 +14,8 @@ use hir::{
     lower_to_krir_with_surface,
 };
 use krir::{
-    BackendTargetContract, KrirModule, emit_compiler_owned_object_bytes, emit_x86_64_object_bytes,
+    BackendTargetContract, KrirModule, emit_compiler_owned_object_bytes, emit_x86_64_asm_text,
+    emit_x86_64_object_bytes, export_compiler_owned_object_to_x86_64_asm,
     lower_executable_krir_to_compiler_owned_object, lower_executable_krir_to_x86_64_object,
 };
 use parser::parse_module;
@@ -25,6 +26,7 @@ use passes::{CheckError, analyze_module, run_checks};
 pub enum BackendArtifactKind {
     Krbo,
     ElfObject,
+    Asm,
 }
 
 impl BackendArtifactKind {
@@ -32,6 +34,7 @@ impl BackendArtifactKind {
         match self {
             Self::Krbo => "krbo",
             Self::ElfObject => "elfobj",
+            Self::Asm => "asm",
         }
     }
 
@@ -39,8 +42,9 @@ impl BackendArtifactKind {
         match value {
             "krbo" => Ok(Self::Krbo),
             "elfobj" => Ok(Self::ElfObject),
+            "asm" => Ok(Self::Asm),
             _ => Err(format!(
-                "unsupported emit target '{}'; expected 'krbo' or 'elfobj'",
+                "unsupported emit target '{}'; expected 'krbo', 'elfobj', or 'asm'",
                 value
             )),
         }
@@ -94,6 +98,13 @@ pub fn emit_backend_artifact_file_with_surface(
             let object = lower_executable_krir_to_x86_64_object(&executable, &target)
                 .map_err(|err| vec![err])?;
             Ok(emit_x86_64_object_bytes(&object))
+        }
+        BackendArtifactKind::Asm => {
+            let object = lower_executable_krir_to_compiler_owned_object(&executable, &target)
+                .map_err(|err| vec![err])?;
+            let asm = export_compiler_owned_object_to_x86_64_asm(&object, &target)
+                .map_err(|err| vec![err])?;
+            Ok(emit_x86_64_asm_text(&asm).into_bytes())
         }
     }
 }

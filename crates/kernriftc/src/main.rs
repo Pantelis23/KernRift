@@ -1641,6 +1641,10 @@ fn parse_backend_emit_args(
         return Err("invalid emit mode: missing -o <output-path>".to_string());
     };
 
+    if kind == BackendArtifactKind::Asm && meta_output_path.is_some() {
+        return Err("invalid emit mode: --meta-out is unsupported for 'asm'".to_string());
+    }
+
     if positionals.len() != 1 {
         return Err("invalid emit mode: expected exactly one <file.kr> input".to_string());
     }
@@ -3760,6 +3764,9 @@ fn build_backend_artifact_metadata(
     let (krbo, elfobj) = match args.kind {
         BackendArtifactKind::Krbo => (Some(parse_krbo_artifact_metadata(bytes)?), None),
         BackendArtifactKind::ElfObject => (None, Some(parse_elf_object_artifact_metadata(bytes)?)),
+        BackendArtifactKind::Asm => {
+            return Err("invalid emit mode: --meta-out is unsupported for 'asm'".to_string());
+        }
     };
     let (input_path, input_path_kind) = normalize_backend_artifact_input_path(&args.input_path);
 
@@ -3841,6 +3848,9 @@ fn verify_backend_artifact_metadata(
             })?;
             verify_elf_object_artifact_metadata(expected, &actual)
         }
+        BackendArtifactKind::Asm => Err(VerifyArtifactMetaError::InvalidInput(
+            "verify-artifact-meta: unsupported artifact bytes".to_string(),
+        )),
     }
 }
 
@@ -6299,8 +6309,10 @@ fn print_usage() {
     eprintln!(
         "  kernriftc --surface stable --emit=elfobj -o <output.o> --meta-out <output.json> <file.kr>"
     );
+    eprintln!("  kernriftc --surface stable --emit=asm -o <output.s> <file.kr>");
     eprintln!("  kernriftc --surface stable --emit=krbo -o <output.krbo> <file.kr>");
     eprintln!("  kernriftc --surface stable --emit=elfobj -o <output.o> <file.kr>");
+    eprintln!("  kernriftc --emit=asm -o <output.s> <file.kr>");
     eprintln!("  kernriftc --emit=krbo -o <output.krbo> --meta-out <output.json> <file.kr>");
     eprintln!("  kernriftc --emit=elfobj -o <output.o> --meta-out <output.json> <file.kr>");
     eprintln!("  kernriftc --emit=krbo -o <output.krbo> <file.kr>");
