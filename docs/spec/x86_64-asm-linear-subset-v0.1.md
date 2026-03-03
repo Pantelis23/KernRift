@@ -10,6 +10,13 @@ This document defines the first real target-specific lowering step for KernRift:
 
 This is still a tiny subset. It does not add general codegen machinery, and it is not the primary internal backend artifact. The compiler-owned binary object format remains the primary internal machine-facing boundary.
 
+`kernriftc` may export this downstream/debug/reference artifact directly:
+
+- `kernriftc --surface stable --emit=asm -o <output.s> <file.kr>`
+- `kernriftc --emit=asm -o <output.s> <file.kr>`
+
+This does not change backend truth. Metadata sidecars remain limited to `krbo` and `elfobj` in this slice.
+
 ## Layer boundary
 
 The intended pipeline for the supported subset is:
