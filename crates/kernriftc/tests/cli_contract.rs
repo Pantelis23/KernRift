@@ -1249,6 +1249,186 @@ fn verify_artifact_meta_rejects_wrong_json_field_types() {
 }
 
 #[test]
+fn verify_artifact_meta_rejects_missing_krbo_target_name_field() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let artifact_path = unique_temp_output_path("verify-meta-missing-krbo-target-name", "krbo");
+    let meta_path = unique_temp_output_path("verify-meta-missing-krbo-target-name", "json");
+    emit_backend_artifact_with_sidecar(&root, "krbo", &fixture, &artifact_path, &meta_path, false);
+
+    let mut metadata: Value =
+        serde_json::from_slice(&fs::read(&meta_path).expect("read metadata")).expect("parse json");
+    metadata["krbo"]
+        .as_object_mut()
+        .expect("krbo metadata object")
+        .remove("target_name");
+    fs::write(
+        &meta_path,
+        serde_json::to_vec_pretty(&metadata).expect("serialize metadata"),
+    )
+    .expect("write metadata");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("verify-artifact-meta")
+        .arg(artifact_path.as_os_str())
+        .arg(meta_path.as_os_str());
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr
+            .lines()
+            .next()
+            .expect("stderr line")
+            .starts_with(&format!(
+                "failed to decode artifact metadata '{}': missing field `target_name`",
+                meta_path.display()
+            )),
+        "unexpected stderr: {stderr}"
+    );
+
+    fs::remove_file(&artifact_path).ok();
+    fs::remove_file(&meta_path).ok();
+}
+
+#[test]
+fn verify_artifact_meta_rejects_wrong_krbo_target_name_type() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let artifact_path = unique_temp_output_path("verify-meta-bad-krbo-target-name-type", "krbo");
+    let meta_path = unique_temp_output_path("verify-meta-bad-krbo-target-name-type", "json");
+    emit_backend_artifact_with_sidecar(&root, "krbo", &fixture, &artifact_path, &meta_path, false);
+
+    let mut metadata: Value =
+        serde_json::from_slice(&fs::read(&meta_path).expect("read metadata")).expect("parse json");
+    metadata["krbo"]["target_name"] = json!(123);
+    fs::write(
+        &meta_path,
+        serde_json::to_vec_pretty(&metadata).expect("serialize metadata"),
+    )
+    .expect("write metadata");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("verify-artifact-meta")
+        .arg(artifact_path.as_os_str())
+        .arg(meta_path.as_os_str());
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr
+            .lines()
+            .next()
+            .expect("stderr line")
+            .starts_with(&format!(
+                "failed to decode artifact metadata '{}': invalid type: integer `123`, expected a string",
+                meta_path.display()
+            )),
+        "unexpected stderr: {stderr}"
+    );
+
+    fs::remove_file(&artifact_path).ok();
+    fs::remove_file(&meta_path).ok();
+}
+
+#[test]
+fn verify_artifact_meta_rejects_missing_elf_machine_field() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let artifact_path = unique_temp_output_path("verify-meta-missing-elf-machine", "o");
+    let meta_path = unique_temp_output_path("verify-meta-missing-elf-machine", "json");
+    emit_backend_artifact_with_sidecar(
+        &root,
+        "elfobj",
+        &fixture,
+        &artifact_path,
+        &meta_path,
+        false,
+    );
+
+    let mut metadata: Value =
+        serde_json::from_slice(&fs::read(&meta_path).expect("read metadata")).expect("parse json");
+    metadata["elfobj"]
+        .as_object_mut()
+        .expect("elfobj metadata object")
+        .remove("machine");
+    fs::write(
+        &meta_path,
+        serde_json::to_vec_pretty(&metadata).expect("serialize metadata"),
+    )
+    .expect("write metadata");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("verify-artifact-meta")
+        .arg(artifact_path.as_os_str())
+        .arg(meta_path.as_os_str());
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr
+            .lines()
+            .next()
+            .expect("stderr line")
+            .starts_with(&format!(
+                "failed to decode artifact metadata '{}': missing field `machine`",
+                meta_path.display()
+            )),
+        "unexpected stderr: {stderr}"
+    );
+
+    fs::remove_file(&artifact_path).ok();
+    fs::remove_file(&meta_path).ok();
+}
+
+#[test]
+fn verify_artifact_meta_rejects_wrong_elf_machine_type() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let artifact_path = unique_temp_output_path("verify-meta-bad-elf-machine-type", "o");
+    let meta_path = unique_temp_output_path("verify-meta-bad-elf-machine-type", "json");
+    emit_backend_artifact_with_sidecar(
+        &root,
+        "elfobj",
+        &fixture,
+        &artifact_path,
+        &meta_path,
+        false,
+    );
+
+    let mut metadata: Value =
+        serde_json::from_slice(&fs::read(&meta_path).expect("read metadata")).expect("parse json");
+    metadata["elfobj"]["machine"] = json!(123);
+    fs::write(
+        &meta_path,
+        serde_json::to_vec_pretty(&metadata).expect("serialize metadata"),
+    )
+    .expect("write metadata");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("verify-artifact-meta")
+        .arg(artifact_path.as_os_str())
+        .arg(meta_path.as_os_str());
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr
+            .lines()
+            .next()
+            .expect("stderr line")
+            .starts_with(&format!(
+                "failed to decode artifact metadata '{}': invalid type: integer `123`, expected a string",
+                meta_path.display()
+            )),
+        "unexpected stderr: {stderr}"
+    );
+
+    fs::remove_file(&artifact_path).ok();
+    fs::remove_file(&meta_path).ok();
+}
+
+#[test]
 fn verify_artifact_meta_rejects_missing_args() {
     let root = repo_root();
 
