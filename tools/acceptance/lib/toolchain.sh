@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+acceptance_optional_tool_discovery_disabled() {
+  [[ "${ACCEPTANCE_DISABLE_OPTIONAL_TOOL_DISCOVERY:-0}" == "1" ]]
+}
+
 acceptance_find_readelf() {
+  if acceptance_optional_tool_discovery_disabled; then
+    return 1
+  fi
   if command -v readelf >/dev/null 2>&1; then
     printf '%s\n' "readelf"
     return 0
@@ -14,6 +21,9 @@ acceptance_find_readelf() {
 }
 
 acceptance_find_linker() {
+  if acceptance_optional_tool_discovery_disabled; then
+    return 1
+  fi
   if command -v ld.lld >/dev/null 2>&1; then
     printf '%s\n' "ld.lld"
     return 0
@@ -26,6 +36,9 @@ acceptance_find_linker() {
 }
 
 acceptance_find_asm_compiler() {
+  if acceptance_optional_tool_discovery_disabled; then
+    return 1
+  fi
   if command -v as >/dev/null 2>&1; then
     printf '%s\n' "as"
     return 0

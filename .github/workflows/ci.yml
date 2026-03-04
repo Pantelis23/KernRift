@@ -80,3 +80,20 @@ jobs:
 
       - name: test
         run: cargo test --workspace
+
+  acceptance-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install linker and ELF tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lld binutils clang
+
+      - name: acceptance smoke
+        run: ./tools/acceptance/all.sh
