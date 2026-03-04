@@ -96,6 +96,21 @@ Gate contents:
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `cargo run -q -p kernriftc -- --emit lockgraph tests/must_pass/callee_acquires_lock.kr`
 
+## Acceptance Smoke
+
+Run acceptance smoke checks with:
+
+- `./tools/acceptance/all.sh`
+
+Current acceptance smoke covers downstream artifact compatibility for KRBO/ELF/ASM export paths. Tool-dependent checks are optional and skip explicitly when required host tools are unavailable. Hosted runtime smoke is Linux x86_64 only and can skip when binary execution is unavailable (for example, `noexec` temporary directories).
+
+Useful acceptance toggles:
+
+- `ACCEPTANCE_TMPDIR=<dir>`: override temp workspace location
+- `ACCEPTANCE_KEEP_TMP=1`: keep temp workspace for debugging
+- `ACCEPTANCE_TRACE=1`: enable shell trace output
+- `ACCEPTANCE_DISABLE_RUNTIME_SMOKE=1`: disable runtime execution checks explicitly
+
 ## Dev
 
 Enable repo hooks:
