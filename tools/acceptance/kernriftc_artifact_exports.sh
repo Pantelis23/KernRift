@@ -19,6 +19,9 @@ ASM_OUT="$TMP_DIR/basic.s"
 RELOC_ASM_OUT="$TMP_DIR/extern_call_object.s"
 RELOC_ASM_OBJ="$TMP_DIR/extern_call_object.from_asm.o"
 RELINKED_ELF_OUT="$TMP_DIR/basic.relinked.o"
+FINAL_LINK_EXT_SRC="$TMP_DIR/ext.s"
+FINAL_LINK_EXT_OBJ="$TMP_DIR/ext.o"
+FINAL_LINK_OUT="$TMP_DIR/extern_call_object.final"
 
 find_readelf() {
   if command -v readelf >/dev/null 2>&1; then
@@ -177,6 +180,58 @@ if RELOC_LINKER="$(find_reloc_linker)"; then
     printf '%s\n' "$RELINKED_HEADER" | grep -Eq 'Type:[[:space:]]+REL'
     printf '%s\n' "$RELINKED_HEADER" | grep -Eq 'Machine:[[:space:]]+(Advanced Micro Devices X86-64|x86-64)'
   fi
+fi
+
+if FINAL_LINKER="$(find_reloc_linker)" && ASM_COMPILER="$(find_asm_compiler)"; then
+  echo "[optional] final-link smoke with $FINAL_LINKER + $ASM_COMPILER"
+  cat > "$FINAL_LINK_EXT_SRC" <<'EOF'
+.text
+.globl ext
+ext:
+    ret
+EOF
+
+  case "$ASM_COMPILER" in
+    as)
+      "$ASM_COMPILER" -o "$FINAL_LINK_EXT_OBJ" "$FINAL_LINK_EXT_SRC"
+      ;;
+    *)
+      "$ASM_COMPILER" -c "$FINAL_LINK_EXT_SRC" -o "$FINAL_LINK_EXT_OBJ"
+      ;;
+  esac
+  assert_nonempty_file "$FINAL_LINK_EXT_OBJ"
+
+  "$FINAL_LINKER" -m elf_x86_64 -e entry -o "$FINAL_LINK_OUT" "$RELOC_ELF_OUT" "$FINAL_LINK_EXT_OBJ"
+  assert_nonempty_file "$FINAL_LINK_OUT"
+
+  if READELF_TOOL="$(find_readelf)"; then
+    FINAL_LINK_HEADER="$("$READELF_TOOL" -h "$FINAL_LINK_OUT")"
+    printf '%s\n' "$FINAL_LINK_HEADER" | grep -Eq 'Type:[[:space:]]+EXEC'
+    printf '%s\n' "$FINAL_LINK_HEADER" | grep -Eq 'Machine:[[:space:]]+(Advanced Micro Devices X86-64|x86-64)'
+
+    FINAL_LINK_SYMS="$("$READELF_TOOL" -sW "$FINAL_LINK_OUT")"
+    printf '%s\n' "$FINAL_LINK_SYMS" | grep -Eq '[[:space:]]entry$'
+    printf '%s\n' "$FINAL_LINK_SYMS" | grep -Eq '[[:space:]]ext$'
+    if printf '%s\n' "$FINAL_LINK_SYMS" | grep -Eq '[[:space:]]UND[[:space:]].*[[:space:]]ext$'; then
+      echo "expected ext to be resolved in final linked artifact" >&2
+      exit 1
+    fi
+
+    FINAL_LINK_RELOCS="$("$READELF_TOOL" -rW "$FINAL_LINK_OUT")"
+    if printf '%s\n' "$FINAL_LINK_RELOCS" | grep -Eq '[[:space:]]ext([[:space:]]|$)'; then
+      echo "expected no relocation against ext in final linked artifact" >&2
+      exit 1
+    fi
+  fi
+else
+  missing_tools=()
+  if ! FINAL_LINKER="$(find_reloc_linker)"; then
+    missing_tools+=("ld.lld/ld")
+  fi
+  if ! ASM_COMPILER="$(find_asm_compiler)"; then
+    missing_tools+=("as/clang/gcc")
+  fi
+  echo "[optional] final-link smoke skipped: ${missing_tools[*]}"
 fi
 
 if ASM_COMPILER="$(find_asm_compiler)" && READELF_TOOL="$(find_readelf)"; then
