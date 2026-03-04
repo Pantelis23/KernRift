@@ -16,6 +16,8 @@ ELF_META="$TMP_DIR/basic.o.json"
 RELOC_ELF_OUT="$TMP_DIR/extern_call_object.o"
 RELOC_ELF_META="$TMP_DIR/extern_call_object.o.json"
 ASM_OUT="$TMP_DIR/basic.s"
+RELOC_ASM_OUT="$TMP_DIR/extern_call_object.s"
+RELOC_ASM_OBJ="$TMP_DIR/extern_call_object.from_asm.o"
 RELINKED_ELF_OUT="$TMP_DIR/basic.relinked.o"
 
 find_readelf() {
@@ -42,6 +44,22 @@ find_reloc_linker() {
   return 1
 }
 
+find_asm_compiler() {
+  if command -v as >/dev/null 2>&1; then
+    printf '%s\n' "as"
+    return 0
+  fi
+  if command -v clang >/dev/null 2>&1; then
+    printf '%s\n' "clang"
+    return 0
+  fi
+  if command -v gcc >/dev/null 2>&1; then
+    printf '%s\n' "gcc"
+    return 0
+  fi
+  return 1
+}
+
 assert_nonempty_file() {
   local path="$1"
   if [[ ! -s "$path" ]]; then
@@ -50,7 +68,7 @@ assert_nonempty_file() {
   fi
 }
 
-echo "[1/8] emit krbo + metadata"
+echo "[1/9] emit krbo + metadata"
 cargo run -q -p kernriftc -- \
   --emit=krbo \
   -o "$KRBO_OUT" \
@@ -59,7 +77,7 @@ cargo run -q -p kernriftc -- \
 assert_nonempty_file "$KRBO_OUT"
 assert_nonempty_file "$KRBO_META"
 
-echo "[2/8] emit elfobj + metadata"
+echo "[2/9] emit elfobj + metadata"
 cargo run -q -p kernriftc -- \
   --emit=elfobj \
   -o "$ELF_OUT" \
@@ -68,7 +86,7 @@ cargo run -q -p kernriftc -- \
 assert_nonempty_file "$ELF_OUT"
 assert_nonempty_file "$ELF_META"
 
-echo "[3/8] emit relocation-bearing elfobj + metadata"
+echo "[3/9] emit relocation-bearing elfobj + metadata"
 cargo run -q -p kernriftc -- \
   --emit=elfobj \
   -o "$RELOC_ELF_OUT" \
@@ -77,37 +95,48 @@ cargo run -q -p kernriftc -- \
 assert_nonempty_file "$RELOC_ELF_OUT"
 assert_nonempty_file "$RELOC_ELF_META"
 
-echo "[4/8] emit asm"
+echo "[4/9] emit asm"
 cargo run -q -p kernriftc -- \
   --emit=asm \
   -o "$ASM_OUT" \
   "$FIXTURE"
 assert_nonempty_file "$ASM_OUT"
 
-echo "[5/8] verify krbo metadata"
+echo "[5/9] emit relocation-bearing asm"
+cargo run -q -p kernriftc -- \
+  --emit=asm \
+  -o "$RELOC_ASM_OUT" \
+  "$RELOC_FIXTURE"
+assert_nonempty_file "$RELOC_ASM_OUT"
+
+echo "[6/9] verify krbo metadata"
 cargo run -q -p kernriftc -- \
   verify-artifact-meta \
   "$KRBO_OUT" \
   "$KRBO_META"
 
-echo "[6/8] verify elfobj metadata"
+echo "[7/9] verify elfobj metadata"
 cargo run -q -p kernriftc -- \
   verify-artifact-meta \
   "$ELF_OUT" \
   "$ELF_META"
 
-echo "[7/8] verify relocation-bearing elfobj metadata"
+echo "[8/9] verify relocation-bearing elfobj metadata"
 cargo run -q -p kernriftc -- \
   verify-artifact-meta \
   "$RELOC_ELF_OUT" \
   "$RELOC_ELF_META"
 
-echo "[8/8] smoke-check asm structure"
+echo "[9/9] smoke-check asm structure"
 grep -q '^\.text$' "$ASM_OUT"
 grep -q '^bar:$' "$ASM_OUT"
 grep -q '^foo:$' "$ASM_OUT"
 grep -q '^    call bar$' "$ASM_OUT"
 grep -q '^    ret$' "$ASM_OUT"
+grep -q '^\.text$' "$RELOC_ASM_OUT"
+grep -q '^entry:$' "$RELOC_ASM_OUT"
+grep -q '^    call ext$' "$RELOC_ASM_OUT"
+grep -q '^    ret$' "$RELOC_ASM_OUT"
 
 if READELF_TOOL="$(find_readelf)"; then
   echo "[optional] inspect emitted elfobj with $READELF_TOOL"
@@ -148,6 +177,23 @@ if RELOC_LINKER="$(find_reloc_linker)"; then
     printf '%s\n' "$RELINKED_HEADER" | grep -Eq 'Type:[[:space:]]+REL'
     printf '%s\n' "$RELINKED_HEADER" | grep -Eq 'Machine:[[:space:]]+(Advanced Micro Devices X86-64|x86-64)'
   fi
+fi
+
+if ASM_COMPILER="$(find_asm_compiler)" && READELF_TOOL="$(find_readelf)"; then
+  echo "[optional] assemble relocation-bearing asm with $ASM_COMPILER and inspect with $READELF_TOOL"
+  case "$ASM_COMPILER" in
+    as)
+      "$ASM_COMPILER" -o "$RELOC_ASM_OBJ" "$RELOC_ASM_OUT"
+      ;;
+    *)
+      "$ASM_COMPILER" -c "$RELOC_ASM_OUT" -o "$RELOC_ASM_OBJ"
+      ;;
+  esac
+  assert_nonempty_file "$RELOC_ASM_OBJ"
+
+  RELOC_ASM_RELOCS="$("$READELF_TOOL" -rW "$RELOC_ASM_OBJ")"
+  printf '%s\n' "$RELOC_ASM_RELOCS" | grep -Eq '\.rela\.text'
+  printf '%s\n' "$RELOC_ASM_RELOCS" | grep -Eq '[[:space:]]ext([[:space:]]|$)'
 fi
 
 echo "kernriftc artifact export acceptance: PASS"

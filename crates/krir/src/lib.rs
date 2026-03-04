@@ -949,11 +949,9 @@ pub fn validate_compiler_owned_object_for_x86_64_asm_export(
                 fixup.target_symbol
             ));
         };
-        if *target_def == CompilerOwnedObjectSymbolDefinition::UndefinedExternal {
-            return Err(format!(
-                "x86_64 asm export does not support unresolved external call target '{}' in function '{}'",
-                fixup.target_symbol, fixup.source_symbol
-            ));
+        match target_def {
+            CompilerOwnedObjectSymbolDefinition::DefinedText
+            | CompilerOwnedObjectSymbolDefinition::UndefinedExternal => {}
         }
     }
 
@@ -2868,7 +2866,7 @@ mod tests {
     }
 
     #[test]
-    fn executable_krir_x86_64_lowering_rejects_declared_external_direct_call_target() {
+    fn executable_krir_x86_64_lowering_supports_declared_external_direct_call_target() {
         let module = ExecutableKrirModule {
             module_caps: vec![],
             functions: vec![ExecutableFunction {
@@ -2894,19 +2892,16 @@ mod tests {
             symbol.name == "missing"
                 && symbol.definition == CompilerOwnedObjectSymbolDefinition::UndefinedExternal
         }));
+        validate_compiler_owned_object_for_x86_64_asm_export(&object, &target)
+            .expect("validate asm export");
+        let exported =
+            export_compiler_owned_object_to_x86_64_asm(&object, &target).expect("export asm");
+        let wrapped = lower_executable_krir_to_x86_64_asm(&module, &target).expect("wrap asm");
+
+        assert_eq!(wrapped, exported);
         assert_eq!(
-            validate_compiler_owned_object_for_x86_64_asm_export(&object, &target),
-            Err(
-                "x86_64 asm export does not support unresolved external call target 'missing' in function 'entry'"
-                    .to_string()
-            )
-        );
-        assert_eq!(
-            lower_executable_krir_to_x86_64_asm(&module, &target),
-            Err(
-                "x86_64 asm export does not support unresolved external call target 'missing' in function 'entry'"
-                    .to_string()
-            )
+            emit_x86_64_asm_text(&exported),
+            ".text\n\nentry:\n    call missing\n    ret\n"
         );
     }
 

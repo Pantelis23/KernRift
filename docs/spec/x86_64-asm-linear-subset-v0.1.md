@@ -39,11 +39,11 @@ Supported executable KRIR inputs:
 - exactly one explicit `entry` block per function
 - ordered direct `Call` ops
 - terminal `Return { value: Unit }`
+- direct call targets lowered from explicit compiler-owned object symbols, including unresolved external call targets preserved as `UndefinedExternal`
 
 Rejected at this export boundary:
 
 - multiple blocks
-- unresolved external direct call targets preserved in the compiler-owned object format
 - any executable KRIR shape outside the linear subset
 
 ## Assembly syntax
@@ -54,6 +54,8 @@ The emitted syntax is deterministic GNU-style text assembly:
 - function label: `<source_symbol>:`
 - direct call: `call <callee_symbol>`
 - return: `ret`
+
+For the current subset, unresolved external direct call targets preserved explicitly in the compiler-owned object format are renderable as textual `call <symbol>`. This remains a downstream debug/reference export only; it does not change backend truth and it does not add sidecars or `verify-artifact-meta` support for `asm`.
 
 Indentation:
 

@@ -402,7 +402,7 @@ fn emit_elfobj_supports_declared_extern_call_target_and_metadata_verifies() {
 }
 
 #[test]
-fn emit_asm_rejects_declared_extern_call_target_downstream() {
+fn emit_asm_supports_declared_extern_call_target_downstream() {
     let root = repo_root();
     let fixture = root
         .join("tests")
@@ -417,14 +417,9 @@ fn emit_asm_rejects_declared_extern_call_target_downstream() {
         .arg("-o")
         .arg(output_path.as_os_str())
         .arg(fixture.as_os_str());
-    let assert = cmd.assert().failure().code(1);
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
-    assert_eq!(
-        stderr.lines().collect::<Vec<_>>(),
-        vec![
-            "x86_64 asm export does not support unresolved external call target 'ext' in function 'entry'"
-        ]
-    );
+    cmd.assert().success();
+    let text = fs::read_to_string(&output_path).expect("read asm output");
+    assert_eq!(text, ".text\n\nentry:\n    call ext\n    ret\n");
 
     fs::remove_file(&output_path).ok();
 }
