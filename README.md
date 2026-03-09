@@ -73,10 +73,18 @@ CLI:
 - `kernriftc policy --policy <policy.toml> --contracts <contracts.json>`
 - `kernriftc verify --contracts <contracts.json> --hash <contracts.sha256>`
 - `kernriftc verify --contracts <contracts.json> --hash <contracts.sha256> --sig <contracts.sig> --pubkey <pubkey.hex>`
+- `kernriftc inspect-artifact <artifact-path>`
+- `kernriftc inspect-artifact <artifact-path> --format json`
 
 Contracts ABI:
 
 - Schema file: `docs/schemas/kernrift_contracts_v1.schema.json`
+
+Artifact inspection notes:
+
+- `inspect-artifact` is descriptive inspection from artifact bytes only (KRBO/ELF/ASM best-effort text), with deterministic text/JSON output.
+- `verify-artifact-meta` rechecks sidecar/header-derived byte facts for sidecar-bearing artifacts (`krbo`, `elfobj`).
+- `inspect-artifact` does not prove source provenance and does not re-lower source.
 
 ## Quality Gate
 

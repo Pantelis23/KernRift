@@ -102,6 +102,9 @@ MIXED_ELF_OUT="$TMP_DIR/extern_internal_chain.o"
 MIXED_ELF_META="$TMP_DIR/extern_internal_chain.o.json"
 MIXED_ASM_OUT="$TMP_DIR/extern_internal_chain.s"
 MIXED_ASM_OBJ="$TMP_DIR/extern_internal_chain.from_asm.o"
+INSPECT_BASIC_ELF_TXT="$TMP_DIR/inspect.basic.elf.txt"
+INSPECT_EXTERN_ELF_TXT="$TMP_DIR/inspect.extern.elf.txt"
+INSPECT_MIXED_ASM_TXT="$TMP_DIR/inspect.mixed.asm.txt"
 
 RELINKED_BASIC_ELF_OUT="$TMP_DIR/basic.relinked.o"
 FINAL_RUNTIME_STUB_SRC="$TMP_DIR/runtime_stub.s"
@@ -168,6 +171,13 @@ verify_artifact_meta() {
     verify-artifact-meta \
     "$artifact_path" \
     "$meta_path"
+}
+
+inspect_artifact_text() {
+  local artifact_path="$1"
+  local output_path="$2"
+  run_kernriftc inspect-artifact "$artifact_path" >"$output_path"
+  acceptance_assert_nonempty_file "$output_path"
 }
 
 assert_asm_line() {
@@ -247,6 +257,28 @@ step_check_asm_text_shapes() {
   assert_asm_line "helper:" "$MIXED_ASM_OUT"
   assert_asm_line "    call ext" "$MIXED_ASM_OUT"
   assert_asm_line "    ret" "$MIXED_ASM_OUT"
+}
+
+step_inspect_artifact_cli_smoke() {
+  set_context "$BASIC_FIXTURE" "$BASIC_ELF_OUT" "$EXTERN_ELF_OUT" "$MIXED_ASM_OUT" "$INSPECT_BASIC_ELF_TXT" "$INSPECT_EXTERN_ELF_TXT" "$INSPECT_MIXED_ASM_TXT"
+
+  inspect_artifact_text "$BASIC_ELF_OUT" "$INSPECT_BASIC_ELF_TXT"
+  inspect_artifact_text "$EXTERN_ELF_OUT" "$INSPECT_EXTERN_ELF_TXT"
+  inspect_artifact_text "$MIXED_ASM_OUT" "$INSPECT_MIXED_ASM_TXT"
+
+  grep -q "^Artifact: elf_relocatable$" "$INSPECT_BASIC_ELF_TXT"
+  grep -q "^Defined symbols:$" "$INSPECT_BASIC_ELF_TXT"
+  grep -q "^- foo$" "$INSPECT_BASIC_ELF_TXT"
+
+  grep -q "^Artifact: elf_relocatable$" "$INSPECT_EXTERN_ELF_TXT"
+  grep -q "^Undefined symbols:$" "$INSPECT_EXTERN_ELF_TXT"
+  grep -q "^- ext$" "$INSPECT_EXTERN_ELF_TXT"
+  grep -q "^- \\.rela\\.text R_X86_64_PLT32 -> ext$" "$INSPECT_EXTERN_ELF_TXT"
+
+  grep -q "^Artifact: asm_text$" "$INSPECT_MIXED_ASM_TXT"
+  grep -q "^ASM direct call targets:$" "$INSPECT_MIXED_ASM_TXT"
+  grep -q "^- helper$" "$INSPECT_MIXED_ASM_TXT"
+  grep -q "^- ext$" "$INSPECT_MIXED_ASM_TXT"
 }
 
 step_optional_elf_inspection_matrix() {
@@ -396,13 +428,14 @@ if [[ "${ACCEPTANCE_KEEP_TMP:-0}" == "1" ]]; then
   echo "[info] using tmp dir: $TMP_DIR"
 fi
 
-step "[1/10] internal-only fixture: emit krbo/elfobj/asm" step_emit_internal_artifacts
-step "[2/10] internal-only fixture: verify sidecars" step_verify_internal_sidecars
-step "[3/10] simple extern fixture: emit elfobj/asm" step_emit_simple_extern_artifacts
-step "[4/10] simple extern fixture: verify elfobj sidecar" step_verify_simple_extern_sidecar
-step "[5/10] mixed internal+extern fixture: emit elfobj/asm" step_emit_mixed_artifacts
-step "[6/10] mixed internal+extern fixture: verify elfobj sidecar" step_verify_mixed_sidecar
-step "[7/10] asm text structure smoke" step_check_asm_text_shapes
-step "[8/10] optional emitted-ELF inspection matrix" step_optional_elf_inspection_matrix
-step "[9/10] optional downstream relink/final-link/runtime matrix" step_optional_downstream_matrix
-step "[10/10] hosted artifact matrix complete" step_complete
+step "[1/11] internal-only fixture: emit krbo/elfobj/asm" step_emit_internal_artifacts
+step "[2/11] internal-only fixture: verify sidecars" step_verify_internal_sidecars
+step "[3/11] simple extern fixture: emit elfobj/asm" step_emit_simple_extern_artifacts
+step "[4/11] simple extern fixture: verify elfobj sidecar" step_verify_simple_extern_sidecar
+step "[5/11] mixed internal+extern fixture: emit elfobj/asm" step_emit_mixed_artifacts
+step "[6/11] mixed internal+extern fixture: verify elfobj sidecar" step_verify_mixed_sidecar
+step "[7/11] asm text structure smoke" step_check_asm_text_shapes
+step "[8/11] inspect-artifact CLI smoke" step_inspect_artifact_cli_smoke
+step "[9/11] optional emitted-ELF inspection matrix" step_optional_elf_inspection_matrix
+step "[10/11] optional downstream relink/final-link/runtime matrix" step_optional_downstream_matrix
+step "[11/11] hosted artifact matrix complete" step_complete

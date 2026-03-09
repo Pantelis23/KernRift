@@ -82,6 +82,18 @@ fn emit_backend_artifact(
     cmd.assert().success();
 }
 
+fn inspect_artifact_output(root: &Path, artifact_path: &Path, format: Option<&str>) -> String {
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(root)
+        .arg("inspect-artifact")
+        .arg(artifact_path.as_os_str());
+    if let Some(format) = format {
+        cmd.arg("--format").arg(format);
+    }
+    let assert = cmd.assert().success();
+    String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8")
+}
+
 fn write_v2_contracts_for_fixture(root: &Path, fixture: &Path, label: &str) -> PathBuf {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -492,6 +504,180 @@ fn emit_backend_artifacts_are_deterministic_for_supported_subset() {
     for path in [&krbo_a, &krbo_b, &elf_a, &elf_b, &asm_a, &asm_b] {
         fs::remove_file(path).ok();
     }
+}
+
+#[test]
+fn inspect_artifact_text_summarizes_basic_asm_output() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let artifact_path = unique_temp_output_path("inspect-artifact-basic-asm", "s");
+    emit_backend_artifact(&root, "asm", &fixture, &artifact_path, false);
+
+    let output = inspect_artifact_output(&root, &artifact_path, None);
+    assert!(output.contains("Artifact: asm_text\n"));
+    assert!(output.contains("Machine: x86_64\n"));
+    assert!(output.contains("Defined symbols:\n- bar\n- foo\n"));
+    assert!(output.contains("ASM direct call targets:\n- bar\n"));
+    assert!(output.contains("- has_entry_symbol: no\n"));
+
+    fs::remove_file(&artifact_path).ok();
+}
+
+#[test]
+fn inspect_artifact_text_summarizes_extern_elf_object_output() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("extern_call_object.kr");
+    let artifact_path = unique_temp_output_path("inspect-artifact-extern-elf", "o");
+    emit_backend_artifact(&root, "elfobj", &fixture, &artifact_path, false);
+
+    let output = inspect_artifact_output(&root, &artifact_path, None);
+    assert!(output.contains("Artifact: elf_relocatable\n"));
+    assert!(output.contains("Machine: x86_64\n"));
+    assert!(output.contains("Defined symbols:\n- entry\n"));
+    assert!(output.contains("Undefined symbols:\n- ext\n"));
+    assert!(output.contains("- .rela.text R_X86_64_PLT32 -> ext\n"));
+    assert!(output.contains("- has_text_relocations: yes\n"));
+
+    fs::remove_file(&artifact_path).ok();
+}
+
+#[test]
+fn inspect_artifact_text_summarizes_mixed_extern_asm_output() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("extern_internal_chain.kr");
+    let artifact_path = unique_temp_output_path("inspect-artifact-mixed-asm", "s");
+    emit_backend_artifact(&root, "asm", &fixture, &artifact_path, false);
+
+    let output = inspect_artifact_output(&root, &artifact_path, None);
+    assert!(output.contains("Artifact: asm_text\n"));
+    assert!(output.contains("Defined symbols:\n- entry\n- helper\n"));
+    assert!(output.contains("Undefined symbols:\n- ext\n"));
+    assert!(output.contains("ASM direct call targets:\n- ext\n- helper\n"));
+    assert!(output.contains("- has_entry_symbol: yes\n"));
+    assert!(output.contains("- has_undefined_symbols: yes\n"));
+
+    fs::remove_file(&artifact_path).ok();
+}
+
+#[test]
+fn inspect_artifact_json_reports_krbo_header_and_symbols() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let artifact_path = unique_temp_output_path("inspect-artifact-krbo-json", "krbo");
+    emit_backend_artifact(&root, "krbo", &fixture, &artifact_path, false);
+
+    let output = inspect_artifact_output(&root, &artifact_path, Some("json"));
+    let json: Value = serde_json::from_str(&output).expect("parse inspect-artifact JSON");
+    assert_eq!(json["artifact_kind"], "krbo");
+    assert_eq!(json["machine"], "x86_64");
+    assert_eq!(json["pointer_bits"], 64);
+    assert_eq!(json["defined_symbols"], json!(["bar", "foo"]));
+    assert_eq!(json["undefined_symbols"], json!([]));
+    assert_eq!(json["flags"]["has_text_relocations"], true);
+
+    fs::remove_file(&artifact_path).ok();
+}
+
+#[test]
+fn inspect_artifact_json_reports_relocation_bearing_elf_object() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("extern_call_object.kr");
+    let artifact_path = unique_temp_output_path("inspect-artifact-elf-json", "o");
+    emit_backend_artifact(&root, "elfobj", &fixture, &artifact_path, false);
+
+    let output = inspect_artifact_output(&root, &artifact_path, Some("json"));
+    let json: Value = serde_json::from_str(&output).expect("parse inspect-artifact JSON");
+    assert_eq!(json["artifact_kind"], "elf_relocatable");
+    assert_eq!(json["machine"], "x86_64");
+    assert_eq!(json["undefined_symbols"], json!(["ext"]));
+    assert_eq!(json["flags"]["has_text_relocations"], true);
+    assert_eq!(json["relocations"][0]["section"], ".rela.text");
+    assert_eq!(json["relocations"][0]["target"], "ext");
+
+    fs::remove_file(&artifact_path).ok();
+}
+
+#[test]
+fn inspect_artifact_json_output_is_byte_stable() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let artifact_path = unique_temp_output_path("inspect-artifact-repeatable-json", "krbo");
+    emit_backend_artifact(&root, "krbo", &fixture, &artifact_path, false);
+
+    let first = inspect_artifact_output(&root, &artifact_path, Some("json"));
+    let second = inspect_artifact_output(&root, &artifact_path, Some("json"));
+    assert_eq!(first, second, "inspect-artifact JSON must be byte-stable");
+
+    fs::remove_file(&artifact_path).ok();
+}
+
+#[test]
+fn inspect_artifact_rejects_random_text_file() {
+    let root = repo_root();
+    let input_path = unique_temp_output_path("inspect-artifact-random-text", "txt");
+    fs::write(&input_path, "hello artifact\n").expect("write random text");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("inspect-artifact")
+        .arg(input_path.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("inspect-artifact: unsupported artifact bytes")
+    );
+
+    fs::remove_file(&input_path).ok();
+}
+
+#[test]
+fn inspect_artifact_rejects_empty_file() {
+    let root = repo_root();
+    let input_path = unique_temp_output_path("inspect-artifact-empty", "bin");
+    fs::write(&input_path, b"").expect("write empty file");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("inspect-artifact")
+        .arg(input_path.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("inspect-artifact: unsupported artifact bytes")
+    );
+
+    fs::remove_file(&input_path).ok();
+}
+
+#[test]
+fn inspect_artifact_rejects_malformed_known_magic_bytes() {
+    let root = repo_root();
+    let input_path = unique_temp_output_path("inspect-artifact-malformed-krbo", "krbo");
+    fs::write(&input_path, b"KRBO").expect("write malformed KRBO bytes");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("inspect-artifact")
+        .arg(input_path.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("inspect-artifact: failed to parse KRBO artifact: artifact too small")
+    );
+
+    fs::remove_file(&input_path).ok();
 }
 
 #[test]
