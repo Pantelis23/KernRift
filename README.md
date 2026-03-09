@@ -85,6 +85,7 @@ Artifact inspection notes:
 - `inspect-artifact` is descriptive inspection from artifact bytes only (KRBO/ELF/ASM best-effort text), with deterministic text/JSON output.
 - `verify-artifact-meta` rechecks sidecar/header-derived byte facts for sidecar-bearing artifacts (`krbo`, `elfobj`).
 - `inspect-artifact` does not prove source provenance and does not re-lower source.
+- Quick fixture matrix helper: `./scripts/inspect_fixture_artifacts.sh` (set `KEEP_TMP=1` to keep generated outputs).
 
 ## Quality Gate
 

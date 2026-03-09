@@ -681,6 +681,447 @@ fn inspect_artifact_rejects_malformed_known_magic_bytes() {
 }
 
 #[test]
+fn inspect_artifact_text_outputs_are_exact_for_fixture_matrix() {
+    let root = repo_root();
+    let basic_fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let extern_fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("extern_call_object.kr");
+    let mixed_fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("extern_internal_chain.kr");
+
+    let basic_krbo = unique_temp_output_path("inspect-exact-basic-krbo", "krbo");
+    let basic_elf = unique_temp_output_path("inspect-exact-basic-elf", "o");
+    let basic_asm = unique_temp_output_path("inspect-exact-basic-asm", "s");
+    let extern_elf = unique_temp_output_path("inspect-exact-extern-elf", "o");
+    let extern_asm = unique_temp_output_path("inspect-exact-extern-asm", "s");
+    let mixed_elf = unique_temp_output_path("inspect-exact-mixed-elf", "o");
+    let mixed_asm = unique_temp_output_path("inspect-exact-mixed-asm", "s");
+
+    emit_backend_artifact(&root, "krbo", &basic_fixture, &basic_krbo, false);
+    emit_backend_artifact(&root, "elfobj", &basic_fixture, &basic_elf, false);
+    emit_backend_artifact(&root, "asm", &basic_fixture, &basic_asm, false);
+    emit_backend_artifact(&root, "elfobj", &extern_fixture, &extern_elf, false);
+    emit_backend_artifact(&root, "asm", &extern_fixture, &extern_asm, false);
+    emit_backend_artifact(&root, "elfobj", &mixed_fixture, &mixed_elf, false);
+    emit_backend_artifact(&root, "asm", &mixed_fixture, &mixed_asm, false);
+
+    assert_eq!(
+        inspect_artifact_output(&root, &basic_krbo, None),
+        concat!(
+            "Artifact: krbo\n",
+            "File size: 136 bytes\n",
+            "Machine: x86_64\n",
+            "Pointer width: 64-bit\n",
+            "Endianness: little\n",
+            "Defined symbols:\n",
+            "- bar\n",
+            "- foo\n",
+            "Undefined symbols:\n",
+            "- <none>\n",
+            "Relocations:\n",
+            "- .text x86_64_call_rel32/w4 -> bar\n",
+            "Flags:\n",
+            "- has_entry_symbol: no\n",
+            "- has_undefined_symbols: no\n",
+            "- has_text_relocations: yes\n"
+        )
+    );
+    assert_eq!(
+        inspect_artifact_output(&root, &basic_elf, None),
+        concat!(
+            "Artifact: elf_relocatable\n",
+            "File size: 536 bytes\n",
+            "Machine: x86_64\n",
+            "Pointer width: 64-bit\n",
+            "Endianness: little\n",
+            "Defined symbols:\n",
+            "- bar\n",
+            "- foo\n",
+            "Undefined symbols:\n",
+            "- <none>\n",
+            "Relocations:\n",
+            "- <none>\n",
+            "Flags:\n",
+            "- has_entry_symbol: no\n",
+            "- has_undefined_symbols: no\n",
+            "- has_text_relocations: no\n"
+        )
+    );
+    assert_eq!(
+        inspect_artifact_output(&root, &basic_asm, None),
+        concat!(
+            "Artifact: asm_text\n",
+            "File size: 69 bytes\n",
+            "Machine: x86_64\n",
+            "Defined symbols:\n",
+            "- bar\n",
+            "- foo\n",
+            "Undefined symbols:\n",
+            "- <none>\n",
+            "Relocations:\n",
+            "- <none>\n",
+            "ASM globals:\n",
+            "- bar\n",
+            "- foo\n",
+            "ASM labels:\n",
+            "- bar\n",
+            "- foo\n",
+            "ASM direct call targets:\n",
+            "- bar\n",
+            "ASM appears_x86_64_text_subset: yes\n",
+            "Flags:\n",
+            "- has_entry_symbol: no\n",
+            "- has_undefined_symbols: no\n",
+            "- has_text_relocations: no\n"
+        )
+    );
+    assert_eq!(
+        inspect_artifact_output(&root, &extern_elf, None),
+        concat!(
+            "Artifact: elf_relocatable\n",
+            "File size: 632 bytes\n",
+            "Machine: x86_64\n",
+            "Pointer width: 64-bit\n",
+            "Endianness: little\n",
+            "Defined symbols:\n",
+            "- entry\n",
+            "Undefined symbols:\n",
+            "- ext\n",
+            "Relocations:\n",
+            "- .rela.text R_X86_64_PLT32 -> ext\n",
+            "Flags:\n",
+            "- has_entry_symbol: yes\n",
+            "- has_undefined_symbols: yes\n",
+            "- has_text_relocations: yes\n"
+        )
+    );
+    assert_eq!(
+        inspect_artifact_output(&root, &extern_asm, None),
+        concat!(
+            "Artifact: asm_text\n",
+            "File size: 48 bytes\n",
+            "Machine: x86_64\n",
+            "Defined symbols:\n",
+            "- entry\n",
+            "Undefined symbols:\n",
+            "- ext\n",
+            "Relocations:\n",
+            "- <none>\n",
+            "ASM globals:\n",
+            "- entry\n",
+            "ASM labels:\n",
+            "- entry\n",
+            "ASM direct call targets:\n",
+            "- ext\n",
+            "ASM appears_x86_64_text_subset: yes\n",
+            "Flags:\n",
+            "- has_entry_symbol: yes\n",
+            "- has_undefined_symbols: yes\n",
+            "- has_text_relocations: no\n"
+        )
+    );
+    assert_eq!(
+        inspect_artifact_output(&root, &mixed_elf, None),
+        concat!(
+            "Artifact: elf_relocatable\n",
+            "File size: 672 bytes\n",
+            "Machine: x86_64\n",
+            "Pointer width: 64-bit\n",
+            "Endianness: little\n",
+            "Defined symbols:\n",
+            "- entry\n",
+            "- helper\n",
+            "Undefined symbols:\n",
+            "- ext\n",
+            "Relocations:\n",
+            "- .rela.text R_X86_64_PLT32 -> ext\n",
+            "Flags:\n",
+            "- has_entry_symbol: yes\n",
+            "- has_undefined_symbols: yes\n",
+            "- has_text_relocations: yes\n"
+        )
+    );
+    assert_eq!(
+        inspect_artifact_output(&root, &mixed_asm, None),
+        concat!(
+            "Artifact: asm_text\n",
+            "File size: 95 bytes\n",
+            "Machine: x86_64\n",
+            "Defined symbols:\n",
+            "- entry\n",
+            "- helper\n",
+            "Undefined symbols:\n",
+            "- ext\n",
+            "Relocations:\n",
+            "- <none>\n",
+            "ASM globals:\n",
+            "- entry\n",
+            "- helper\n",
+            "ASM labels:\n",
+            "- entry\n",
+            "- helper\n",
+            "ASM direct call targets:\n",
+            "- ext\n",
+            "- helper\n",
+            "ASM appears_x86_64_text_subset: yes\n",
+            "Flags:\n",
+            "- has_entry_symbol: yes\n",
+            "- has_undefined_symbols: yes\n",
+            "- has_text_relocations: no\n"
+        )
+    );
+
+    for path in [
+        &basic_krbo,
+        &basic_elf,
+        &basic_asm,
+        &extern_elf,
+        &extern_asm,
+        &mixed_elf,
+        &mixed_asm,
+    ] {
+        fs::remove_file(path).ok();
+    }
+}
+
+#[test]
+fn inspect_artifact_json_outputs_are_exact_for_fixture_matrix() {
+    let root = repo_root();
+    let basic_fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let extern_fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("extern_call_object.kr");
+    let mixed_fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("extern_internal_chain.kr");
+
+    let basic_krbo = unique_temp_output_path("inspect-exact-json-basic-krbo", "krbo");
+    let basic_elf = unique_temp_output_path("inspect-exact-json-basic-elf", "o");
+    let basic_asm = unique_temp_output_path("inspect-exact-json-basic-asm", "s");
+    let extern_elf = unique_temp_output_path("inspect-exact-json-extern-elf", "o");
+    let extern_asm = unique_temp_output_path("inspect-exact-json-extern-asm", "s");
+    let mixed_elf = unique_temp_output_path("inspect-exact-json-mixed-elf", "o");
+    let mixed_asm = unique_temp_output_path("inspect-exact-json-mixed-asm", "s");
+
+    emit_backend_artifact(&root, "krbo", &basic_fixture, &basic_krbo, false);
+    emit_backend_artifact(&root, "elfobj", &basic_fixture, &basic_elf, false);
+    emit_backend_artifact(&root, "asm", &basic_fixture, &basic_asm, false);
+    emit_backend_artifact(&root, "elfobj", &extern_fixture, &extern_elf, false);
+    emit_backend_artifact(&root, "asm", &extern_fixture, &extern_asm, false);
+    emit_backend_artifact(&root, "elfobj", &mixed_fixture, &mixed_elf, false);
+    emit_backend_artifact(&root, "asm", &mixed_fixture, &mixed_asm, false);
+
+    let expected_json = |artifact_kind: &str,
+                         file_size: usize,
+                         machine: &str,
+                         pointer_bits: Option<u64>,
+                         endianness: Option<&str>,
+                         symbols: Value,
+                         defined_symbols: Value,
+                         undefined_symbols: Value,
+                         relocations: Value,
+                         asm: Option<Value>,
+                         flags: Value| {
+        let mut obj = json!({
+            "artifact_kind": artifact_kind,
+            "file_size": file_size,
+            "machine": machine,
+            "symbols": symbols,
+            "defined_symbols": defined_symbols,
+            "undefined_symbols": undefined_symbols,
+            "relocations": relocations,
+            "flags": flags
+        });
+        if let Some(pointer_bits) = pointer_bits {
+            obj["pointer_bits"] = json!(pointer_bits);
+        }
+        if let Some(endianness) = endianness {
+            obj["endianness"] = json!(endianness);
+        }
+        if let Some(asm) = asm {
+            obj["asm"] = asm;
+        }
+        obj
+    };
+
+    assert_eq!(
+        serde_json::from_str::<Value>(&inspect_artifact_output(&root, &basic_krbo, Some("json")))
+            .expect("parse krbo inspect json"),
+        expected_json(
+            "krbo",
+            136,
+            "x86_64",
+            Some(64),
+            Some("little"),
+            json!([
+                {"name":"bar","category":"function","definition":"defined"},
+                {"name":"foo","category":"function","definition":"defined"}
+            ]),
+            json!(["bar", "foo"]),
+            json!([]),
+            json!([{"section":".text","type":"x86_64_call_rel32/w4","target":"bar"}]),
+            None,
+            json!({"has_entry_symbol":false,"has_undefined_symbols":false,"has_text_relocations":true})
+        )
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&inspect_artifact_output(&root, &basic_elf, Some("json")))
+            .expect("parse basic elf inspect json"),
+        expected_json(
+            "elf_relocatable",
+            536,
+            "x86_64",
+            Some(64),
+            Some("little"),
+            json!([
+                {"name":"bar","category":"function","definition":"defined"},
+                {"name":"foo","category":"function","definition":"defined"}
+            ]),
+            json!(["bar", "foo"]),
+            json!([]),
+            json!([]),
+            None,
+            json!({"has_entry_symbol":false,"has_undefined_symbols":false,"has_text_relocations":false})
+        )
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&inspect_artifact_output(&root, &basic_asm, Some("json")))
+            .expect("parse basic asm inspect json"),
+        expected_json(
+            "asm_text",
+            69,
+            "x86_64",
+            None,
+            None,
+            json!([
+                {"name":"bar","category":"function","definition":"defined"},
+                {"name":"foo","category":"function","definition":"defined"}
+            ]),
+            json!(["bar", "foo"]),
+            json!([]),
+            json!([]),
+            Some(json!({
+                "globals":["bar","foo"],
+                "labels":["bar","foo"],
+                "direct_call_targets":["bar"],
+                "appears_x86_64_text_subset": true
+            })),
+            json!({"has_entry_symbol":false,"has_undefined_symbols":false,"has_text_relocations":false})
+        )
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&inspect_artifact_output(&root, &extern_elf, Some("json")))
+            .expect("parse extern elf inspect json"),
+        expected_json(
+            "elf_relocatable",
+            632,
+            "x86_64",
+            Some(64),
+            Some("little"),
+            json!([
+                {"name":"entry","category":"function","definition":"defined"},
+                {"name":"ext","category":"function","definition":"undefined"}
+            ]),
+            json!(["entry"]),
+            json!(["ext"]),
+            json!([{"section":".rela.text","type":"R_X86_64_PLT32","target":"ext"}]),
+            None,
+            json!({"has_entry_symbol":true,"has_undefined_symbols":true,"has_text_relocations":true})
+        )
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&inspect_artifact_output(&root, &extern_asm, Some("json")))
+            .expect("parse extern asm inspect json"),
+        expected_json(
+            "asm_text",
+            48,
+            "x86_64",
+            None,
+            None,
+            json!([
+                {"name":"entry","category":"function","definition":"defined"},
+                {"name":"ext","category":"function","definition":"undefined"}
+            ]),
+            json!(["entry"]),
+            json!(["ext"]),
+            json!([]),
+            Some(json!({
+                "globals":["entry"],
+                "labels":["entry"],
+                "direct_call_targets":["ext"],
+                "appears_x86_64_text_subset": true
+            })),
+            json!({"has_entry_symbol":true,"has_undefined_symbols":true,"has_text_relocations":false})
+        )
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&inspect_artifact_output(&root, &mixed_elf, Some("json")))
+            .expect("parse mixed elf inspect json"),
+        expected_json(
+            "elf_relocatable",
+            672,
+            "x86_64",
+            Some(64),
+            Some("little"),
+            json!([
+                {"name":"entry","category":"function","definition":"defined"},
+                {"name":"ext","category":"function","definition":"undefined"},
+                {"name":"helper","category":"function","definition":"defined"}
+            ]),
+            json!(["entry", "helper"]),
+            json!(["ext"]),
+            json!([{"section":".rela.text","type":"R_X86_64_PLT32","target":"ext"}]),
+            None,
+            json!({"has_entry_symbol":true,"has_undefined_symbols":true,"has_text_relocations":true})
+        )
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&inspect_artifact_output(&root, &mixed_asm, Some("json")))
+            .expect("parse mixed asm inspect json"),
+        expected_json(
+            "asm_text",
+            95,
+            "x86_64",
+            None,
+            None,
+            json!([
+                {"name":"entry","category":"function","definition":"defined"},
+                {"name":"ext","category":"function","definition":"undefined"},
+                {"name":"helper","category":"function","definition":"defined"}
+            ]),
+            json!(["entry", "helper"]),
+            json!(["ext"]),
+            json!([]),
+            Some(json!({
+                "globals":["entry","helper"],
+                "labels":["entry","helper"],
+                "direct_call_targets":["ext","helper"],
+                "appears_x86_64_text_subset": true
+            })),
+            json!({"has_entry_symbol":true,"has_undefined_symbols":true,"has_text_relocations":false})
+        )
+    );
+
+    for path in [
+        &basic_krbo,
+        &basic_elf,
+        &basic_asm,
+        &extern_elf,
+        &extern_asm,
+        &mixed_elf,
+        &mixed_asm,
+    ] {
+        fs::remove_file(path).ok();
+    }
+}
+
+#[test]
 fn emit_krbo_sidecar_is_written_and_contains_expected_metadata() {
     let root = repo_root();
     let fixture = root.join("tests").join("must_pass").join("basic.kr");
