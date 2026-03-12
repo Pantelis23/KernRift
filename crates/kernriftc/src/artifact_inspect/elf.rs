@@ -5,8 +5,8 @@ use super::read_u16_at;
 use super::read_u32_at;
 use super::read_u64_at;
 use super::report::{
-    ArtifactInspectionFlags, ArtifactInspectionRelocation, ArtifactInspectionReport,
-    ArtifactInspectionSymbol,
+    ARTIFACT_INSPECTION_SCHEMA_VERSION, ArtifactInspectionFlags, ArtifactInspectionRelocation,
+    ArtifactInspectionReport, ArtifactInspectionSymbol,
 };
 
 pub(crate) fn inspect_elf_artifact(bytes: &[u8]) -> Result<ArtifactInspectionReport, String> {
@@ -329,6 +329,7 @@ pub(crate) fn inspect_elf_artifact(bytes: &[u8]) -> Result<ArtifactInspectionRep
     };
 
     Ok(ArtifactInspectionReport {
+        schema_version: ARTIFACT_INSPECTION_SCHEMA_VERSION,
         artifact_kind,
         file_size: bytes.len(),
         machine: Some(machine_name),

@@ -574,6 +574,7 @@ fn inspect_artifact_json_reports_krbo_header_and_symbols() {
 
     let output = inspect_artifact_output(&root, &artifact_path, Some("json"));
     let json: Value = serde_json::from_str(&output).expect("parse inspect-artifact JSON");
+    assert_eq!(json["schema_version"], "kernrift_inspect_artifact_v1");
     assert_eq!(json["artifact_kind"], "krbo");
     assert_eq!(json["machine"], "x86_64");
     assert_eq!(json["pointer_bits"], 64);
@@ -596,6 +597,7 @@ fn inspect_artifact_json_reports_relocation_bearing_elf_object() {
 
     let output = inspect_artifact_output(&root, &artifact_path, Some("json"));
     let json: Value = serde_json::from_str(&output).expect("parse inspect-artifact JSON");
+    assert_eq!(json["schema_version"], "kernrift_inspect_artifact_v1");
     assert_eq!(json["artifact_kind"], "elf_relocatable");
     assert_eq!(json["machine"], "x86_64");
     assert_eq!(json["undefined_symbols"], json!(["ext"]));
@@ -604,6 +606,117 @@ fn inspect_artifact_json_reports_relocation_bearing_elf_object() {
     assert_eq!(json["relocations"][0]["target"], "ext");
 
     fs::remove_file(&artifact_path).ok();
+}
+
+#[test]
+fn inspect_artifact_json_contract_shape_is_stable_across_krbo_elf_and_asm() {
+    let root = repo_root();
+    let basic_fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let extern_fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("extern_call_object.kr");
+
+    let krbo_path = unique_temp_output_path("inspect-artifact-contract-krbo", "krbo");
+    let elf_path = unique_temp_output_path("inspect-artifact-contract-elf", "o");
+    let asm_path = unique_temp_output_path("inspect-artifact-contract-asm", "s");
+
+    emit_backend_artifact(&root, "krbo", &basic_fixture, &krbo_path, false);
+    emit_backend_artifact(&root, "elfobj", &extern_fixture, &elf_path, false);
+    emit_backend_artifact(&root, "asm", &basic_fixture, &asm_path, false);
+
+    let parse = |path: &Path| -> Value {
+        serde_json::from_str(&inspect_artifact_output(&root, path, Some("json")))
+            .expect("parse inspect-artifact json")
+    };
+
+    let krbo = parse(&krbo_path);
+    let elf = parse(&elf_path);
+    let asm = parse(&asm_path);
+
+    for report in [&krbo, &elf, &asm] {
+        assert_eq!(
+            report["schema_version"],
+            json!("kernrift_inspect_artifact_v1")
+        );
+        for key in [
+            "schema_version",
+            "artifact_kind",
+            "file_size",
+            "symbols",
+            "defined_symbols",
+            "undefined_symbols",
+            "relocations",
+            "flags",
+        ] {
+            assert!(
+                report.get(key).is_some(),
+                "missing required key '{}' in report: {}",
+                key,
+                report
+            );
+        }
+        for key in [
+            "has_entry_symbol",
+            "has_undefined_symbols",
+            "has_text_relocations",
+        ] {
+            assert!(
+                report["flags"].get(key).is_some(),
+                "missing required flag key '{}' in report: {}",
+                key,
+                report
+            );
+        }
+        for symbol in report["symbols"].as_array().expect("symbols array") {
+            assert!(
+                symbol.get("name").is_some(),
+                "symbol missing name: {}",
+                symbol
+            );
+            assert!(
+                symbol.get("category").is_some(),
+                "symbol missing category: {}",
+                symbol
+            );
+            assert!(
+                symbol.get("definition").is_some(),
+                "symbol missing definition: {}",
+                symbol
+            );
+        }
+        for relocation in report["relocations"].as_array().expect("relocations array") {
+            assert!(
+                relocation.get("section").is_some(),
+                "relocation missing section: {}",
+                relocation
+            );
+            assert!(
+                relocation.get("type").is_some(),
+                "relocation missing type: {}",
+                relocation
+            );
+            assert!(
+                relocation.get("target").is_some(),
+                "relocation missing target: {}",
+                relocation
+            );
+        }
+    }
+
+    assert!(krbo.get("pointer_bits").is_some());
+    assert!(krbo.get("endianness").is_some());
+    assert!(krbo.get("asm").is_none());
+    assert!(elf.get("pointer_bits").is_some());
+    assert!(elf.get("endianness").is_some());
+    assert!(elf.get("asm").is_none());
+    assert!(asm.get("pointer_bits").is_none());
+    assert!(asm.get("endianness").is_none());
+    assert!(asm.get("asm").is_some());
+
+    for path in [&krbo_path, &elf_path, &asm_path] {
+        fs::remove_file(path).ok();
+    }
 }
 
 #[test]
@@ -979,6 +1092,7 @@ fn inspect_artifact_json_outputs_are_exact_for_fixture_matrix() {
                          asm: Option<Value>,
                          flags: Value| {
         let mut obj = json!({
+            "schema_version": "kernrift_inspect_artifact_v1",
             "artifact_kind": artifact_kind,
             "file_size": file_size,
             "machine": machine,
