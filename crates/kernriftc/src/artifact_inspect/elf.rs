@@ -276,11 +276,13 @@ pub(crate) fn inspect_elf_artifact(bytes: &[u8]) -> Result<ArtifactInspectionRep
             let r_info = read_u64_at(bytes, base + 8, little, "ELF r_info")?;
             let symbol_index = (r_info >> 32) as usize;
             let reloc_type = (r_info & 0xFFFF_FFFF) as u32;
-            let target = symbols
-                .get(symbol_index)
-                .cloned()
-                .filter(|name| !name.is_empty())
-                .unwrap_or_else(|| format!("<sym#{}>", symbol_index));
+            if symbol_index >= symbols.len() {
+                return Err(format!(
+                    "inspect-artifact: failed to parse ELF artifact: relocation section '{}' entry {} references out-of-range symbol index {}",
+                    section.name, idx, symbol_index
+                ));
+            }
+            let target = symbols[symbol_index].clone();
             relocations.push(ArtifactInspectionRelocation {
                 section: section.name.clone(),
                 reloc_type: elf_relocation_name(machine_name, reloc_type).to_string(),

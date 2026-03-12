@@ -681,6 +681,56 @@ fn inspect_artifact_rejects_malformed_known_magic_bytes() {
 }
 
 #[test]
+fn inspect_artifact_rejects_elf_relocation_with_out_of_range_symbol_index() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("extern_call_object.kr");
+    let artifact_path = unique_temp_output_path("inspect-artifact-extern-reloc-idx", "o");
+    let malformed_path =
+        unique_temp_output_path("inspect-artifact-extern-reloc-idx-malformed", "o");
+
+    emit_backend_artifact(&root, "elfobj", &fixture, &artifact_path, false);
+    let mut bytes = fs::read(&artifact_path).expect("read emitted elf object");
+
+    let shoff = u64::from_le_bytes(bytes[40..48].try_into().expect("u64")) as usize;
+    let shentsize = u16::from_le_bytes(bytes[58..60].try_into().expect("u16")) as usize;
+    let shnum = u16::from_le_bytes(bytes[60..62].try_into().expect("u16")) as usize;
+    let rela_offset = (0..shnum)
+        .find_map(|idx| {
+            let base = shoff + idx * shentsize;
+            let section_type = u32::from_le_bytes(bytes[base + 4..base + 8].try_into().ok()?);
+            if section_type == 4 {
+                Some(u64::from_le_bytes(bytes[base + 24..base + 32].try_into().ok()?) as usize)
+            } else {
+                None
+            }
+        })
+        .expect("find SHT_RELA section");
+
+    let malformed_r_info = (999u64 << 32) | 4;
+    bytes[rela_offset + 8..rela_offset + 16].copy_from_slice(&malformed_r_info.to_le_bytes());
+    fs::write(&malformed_path, bytes).expect("write malformed elf object");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("inspect-artifact")
+        .arg(malformed_path.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some(
+            "inspect-artifact: failed to parse ELF artifact: relocation section '.rela.text' entry 0 references out-of-range symbol index 999"
+        )
+    );
+
+    fs::remove_file(&artifact_path).ok();
+    fs::remove_file(&malformed_path).ok();
+}
+
+#[test]
 fn inspect_artifact_text_outputs_are_exact_for_fixture_matrix() {
     let root = repo_root();
     let basic_fixture = root.join("tests").join("must_pass").join("basic.kr");

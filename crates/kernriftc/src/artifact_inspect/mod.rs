@@ -330,6 +330,28 @@ mod tests {
     }
 
     #[test]
+    fn elf_rejects_relocation_with_out_of_range_symbol_index() {
+        let mut bytes = reloc_elf_bytes();
+        let shoff = u64::from_le_bytes(bytes[40..48].try_into().expect("u64")) as usize;
+        let shentsize = u16::from_le_bytes(bytes[58..60].try_into().expect("u16")) as usize;
+        let rela_text_section_index = 2usize;
+        let rela_text_offset = u64::from_le_bytes(
+            bytes[shoff + rela_text_section_index * shentsize + 24
+                ..shoff + rela_text_section_index * shentsize + 32]
+                .try_into()
+                .expect("u64"),
+        ) as usize;
+        let malformed_r_info = (999u64 << 32) | 4;
+        write_u64_le(&mut bytes, rela_text_offset + 8, malformed_r_info);
+        let err = elf::inspect_elf_artifact(&bytes)
+            .expect_err("relocation symbol index out of range must fail");
+        assert_eq!(
+            err,
+            "inspect-artifact: failed to parse ELF artifact: relocation section '.rela.text' entry 0 references out-of-range symbol index 999"
+        );
+    }
+
+    #[test]
     fn asm_close_shape_with_unknown_instruction_is_rejected() {
         let err = inspect_artifact_from_bytes(b".text\n.globl entry\nentry:\n    nop\n")
             .expect_err("unsupported asm instruction must fail");
