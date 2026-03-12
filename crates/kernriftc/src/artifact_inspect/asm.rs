@@ -2,8 +2,8 @@ use std::collections::BTreeSet;
 
 use super::is_asm_symbol_name;
 use super::report::{
-    ArtifactInspectionAsmSummary, ArtifactInspectionFlags, ArtifactInspectionReport,
-    ArtifactInspectionSymbol,
+    ARTIFACT_INSPECTION_SCHEMA_VERSION, ArtifactInspectionAsmSummary, ArtifactInspectionFlags,
+    ArtifactInspectionReport, ArtifactInspectionSymbol,
 };
 
 pub(crate) fn inspect_asm_artifact(bytes: &[u8]) -> Result<ArtifactInspectionReport, String> {
@@ -100,6 +100,7 @@ pub(crate) fn inspect_asm_artifact(bytes: &[u8]) -> Result<ArtifactInspectionRep
     let call_targets = call_targets.into_iter().collect::<Vec<_>>();
 
     Ok(ArtifactInspectionReport {
+        schema_version: ARTIFACT_INSPECTION_SCHEMA_VERSION,
         artifact_kind: "asm_text",
         file_size: bytes.len(),
         machine: Some("x86_64"),

@@ -1,7 +1,10 @@
 use serde::Serialize;
 
+pub const ARTIFACT_INSPECTION_SCHEMA_VERSION: &str = "kernrift_inspect_artifact_v1";
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ArtifactInspectionReport {
+    pub schema_version: &'static str,
     pub artifact_kind: &'static str,
     pub file_size: usize,
     #[serde(skip_serializing_if = "Option::is_none")]

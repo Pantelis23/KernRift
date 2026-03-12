@@ -3,8 +3,8 @@ use std::collections::BTreeSet;
 use super::parse_nul_terminated_utf8;
 use super::read_u32_at;
 use super::report::{
-    ArtifactInspectionFlags, ArtifactInspectionRelocation, ArtifactInspectionReport,
-    ArtifactInspectionSymbol,
+    ARTIFACT_INSPECTION_SCHEMA_VERSION, ArtifactInspectionFlags, ArtifactInspectionRelocation,
+    ArtifactInspectionReport, ArtifactInspectionSymbol,
 };
 
 pub(crate) fn inspect_krbo_artifact(bytes: &[u8]) -> Result<ArtifactInspectionReport, String> {
@@ -136,6 +136,7 @@ pub(crate) fn inspect_krbo_artifact(bytes: &[u8]) -> Result<ArtifactInspectionRe
     };
 
     Ok(ArtifactInspectionReport {
+        schema_version: ARTIFACT_INSPECTION_SCHEMA_VERSION,
         artifact_kind: "krbo",
         file_size: bytes.len(),
         machine,
