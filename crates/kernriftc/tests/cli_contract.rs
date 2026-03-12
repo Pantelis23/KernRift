@@ -1894,6 +1894,61 @@ fn verify_artifact_meta_json_reports_mismatch_with_schema_marker() {
 }
 
 #[test]
+fn verify_artifact_meta_json_reports_invalid_input_with_schema_marker() {
+    let root = repo_root();
+    let artifact_path = unique_temp_output_path("verify-meta-json-invalid-input", "bin");
+    let meta_path = unique_temp_output_path("verify-meta-json-invalid-input", "json");
+    fs::write(&artifact_path, b"not-an-artifact").expect("write unsupported artifact");
+    fs::write(
+        &meta_path,
+        serde_json::to_vec_pretty(&json!({
+            "schema_version": "kernrift_artifact_meta_v1",
+            "emit_kind": "krbo",
+            "surface": "stable",
+            "byte_len": 15,
+            "sha256": format!("{:x}", Sha256::digest(b"not-an-artifact")),
+            "input_path": "tests/must_pass/basic.kr",
+            "input_path_kind": "repo-relative",
+            "krbo": {
+                "magic": "KRBO",
+                "version_major": 0,
+                "version_minor": 1,
+                "format_revision": 2,
+                "target_tag": 1,
+                "target_name": "x86_64-sysv"
+            }
+        }))
+        .expect("serialize metadata"),
+    )
+    .expect("write metadata");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("verify-artifact-meta")
+        .arg("--format")
+        .arg("json")
+        .arg(artifact_path.as_os_str())
+        .arg(meta_path.as_os_str());
+    let assert = cmd.assert().failure().code(2);
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let json: Value = serde_json::from_str(&stdout).expect("parse verify-artifact-meta JSON");
+    assert_eq!(
+        json,
+        json!({
+            "schema_version": "kernrift_verify_artifact_meta_v1",
+            "result": "invalid_input",
+            "exit_code": 2,
+            "message": "verify-artifact-meta: unsupported artifact bytes"
+        })
+    );
+    assert!(stderr.is_empty(), "expected empty stderr, got: {stderr}");
+
+    fs::remove_file(&artifact_path).ok();
+    fs::remove_file(&meta_path).ok();
+}
+
+#[test]
 fn verify_artifact_meta_rejects_tampered_sha256() {
     let root = repo_root();
     let fixture = root.join("tests").join("must_pass").join("basic.kr");
@@ -2638,6 +2693,64 @@ fn verify_artifact_meta_rejects_unexpected_flag() {
     assert_eq!(
         stderr.lines().next(),
         Some("invalid verify-artifact-meta mode: unexpected argument '--flag'")
+    );
+}
+
+#[test]
+fn verify_artifact_meta_rejects_format_missing_value() {
+    let root = repo_root();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("verify-artifact-meta")
+        .arg("--format");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("invalid verify-artifact-meta mode: --format requires 'text' or 'json'")
+    );
+}
+
+#[test]
+fn verify_artifact_meta_rejects_duplicate_format_flag() {
+    let root = repo_root();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("verify-artifact-meta")
+        .arg("--format")
+        .arg("json")
+        .arg("--format")
+        .arg("text")
+        .arg("artifact.krbo")
+        .arg("meta.json");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("invalid verify-artifact-meta mode: duplicate --format")
+    );
+}
+
+#[test]
+fn verify_artifact_meta_rejects_unsupported_format_value() {
+    let root = repo_root();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("verify-artifact-meta")
+        .arg("--format")
+        .arg("yaml")
+        .arg("artifact.krbo")
+        .arg("meta.json");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some(
+            "invalid verify-artifact-meta mode: unsupported --format 'yaml' (expected 'text' or 'json')"
+        )
     );
 }
 
