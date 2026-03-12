@@ -39,6 +39,7 @@ const VERIFY_REPORT_SCHEMA_V1: &str =
 const CONTRACTS_SCHEMA_VERSION: &str = "kernrift_contracts_v1";
 const CONTRACTS_SCHEMA_VERSION_V2: &str = "kernrift_contracts_v2";
 const VERIFY_REPORT_SCHEMA_VERSION: &str = "kernrift_verify_report_v1";
+const VERIFY_ARTIFACT_META_SCHEMA_VERSION: &str = "kernrift_verify_artifact_meta_v1";
 const EXIT_POLICY_VIOLATION: u8 = 1;
 const EXIT_INVALID_INPUT: u8 = 2;
 
@@ -845,6 +846,34 @@ struct MigratePreviewArgs {
 struct VerifyArtifactMetaArgs {
     artifact_path: String,
     metadata_path: String,
+    format: VerifyArtifactMetaFormat,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VerifyArtifactMetaFormat {
+    Text,
+    Json,
+}
+
+impl VerifyArtifactMetaFormat {
+    fn parse(raw: &str) -> Result<Self, String> {
+        match raw {
+            "text" => Ok(Self::Text),
+            "json" => Ok(Self::Json),
+            other => Err(format!(
+                "invalid verify-artifact-meta mode: unsupported --format '{}' (expected 'text' or 'json')",
+                other
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct VerifyArtifactMetaReport {
+    schema_version: &'static str,
+    result: &'static str,
+    exit_code: u8,
+    message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1745,16 +1774,38 @@ fn parse_backend_emit_args(
 }
 
 fn parse_verify_artifact_meta_args(args: &[String]) -> Result<VerifyArtifactMetaArgs, String> {
+    let mut format = VerifyArtifactMetaFormat::Text;
+    let mut format_set = false;
     let mut positionals = Vec::<String>::new();
 
-    for arg in args {
-        if arg.starts_with('-') {
-            return Err(format!(
-                "invalid verify-artifact-meta mode: unexpected argument '{}'",
-                arg
-            ));
+    let mut idx = 0usize;
+    while idx < args.len() {
+        match args[idx].as_str() {
+            "--format" => {
+                if format_set {
+                    return Err("invalid verify-artifact-meta mode: duplicate --format".to_string());
+                }
+                idx += 1;
+                if idx >= args.len() {
+                    return Err(
+                        "invalid verify-artifact-meta mode: --format requires 'text' or 'json'"
+                            .to_string(),
+                    );
+                }
+                format = VerifyArtifactMetaFormat::parse(&args[idx])?;
+                format_set = true;
+            }
+            arg if arg.starts_with('-') => {
+                return Err(format!(
+                    "invalid verify-artifact-meta mode: unexpected argument '{}'",
+                    arg
+                ));
+            }
+            arg => {
+                positionals.push(arg.to_string());
+            }
         }
-        positionals.push(arg.clone());
+        idx += 1;
     }
 
     if positionals.len() != 2 {
@@ -1766,6 +1817,7 @@ fn parse_verify_artifact_meta_args(args: &[String]) -> Result<VerifyArtifactMeta
     Ok(VerifyArtifactMetaArgs {
         artifact_path: positionals.remove(0),
         metadata_path: positionals.remove(0),
+        format,
     })
 }
 
@@ -2264,42 +2316,91 @@ fn run_verify_artifact_meta(args: &VerifyArtifactMetaArgs) -> ExitCode {
     let artifact_bytes = match fs::read(Path::new(&args.artifact_path)) {
         Ok(bytes) => bytes,
         Err(err) => {
-            eprintln!("failed to read artifact '{}': {}", args.artifact_path, err);
-            return ExitCode::from(EXIT_INVALID_INPUT);
+            return emit_verify_artifact_meta_result(
+                args.format,
+                "invalid_input",
+                EXIT_INVALID_INPUT,
+                format!("failed to read artifact '{}': {}", args.artifact_path, err),
+            );
         }
     };
 
     let metadata_bytes = match fs::read(Path::new(&args.metadata_path)) {
         Ok(bytes) => bytes,
         Err(err) => {
-            eprintln!(
-                "failed to read artifact metadata '{}': {}",
-                args.metadata_path, err
+            return emit_verify_artifact_meta_result(
+                args.format,
+                "invalid_input",
+                EXIT_INVALID_INPUT,
+                format!(
+                    "failed to read artifact metadata '{}': {}",
+                    args.metadata_path, err
+                ),
             );
-            return ExitCode::from(EXIT_INVALID_INPUT);
         }
     };
 
     let metadata = match decode_backend_artifact_metadata(&metadata_bytes, &args.metadata_path) {
         Ok(metadata) => metadata,
         Err(err) => {
-            eprintln!("{}", err);
-            return ExitCode::from(EXIT_INVALID_INPUT);
+            return emit_verify_artifact_meta_result(
+                args.format,
+                "invalid_input",
+                EXIT_INVALID_INPUT,
+                err,
+            );
         }
     };
 
     match verify_backend_artifact_metadata(&artifact_bytes, &metadata) {
-        Ok(()) => {
-            println!("verify-artifact-meta: PASS");
-            ExitCode::SUCCESS
-        }
+        Ok(()) => emit_verify_artifact_meta_result(
+            args.format,
+            "pass",
+            0,
+            "verify-artifact-meta: PASS".to_string(),
+        ),
         Err(VerifyArtifactMetaError::InvalidInput(err)) => {
-            eprintln!("{}", err);
-            ExitCode::from(EXIT_INVALID_INPUT)
+            emit_verify_artifact_meta_result(args.format, "invalid_input", EXIT_INVALID_INPUT, err)
         }
         Err(VerifyArtifactMetaError::Mismatch(err)) => {
-            eprintln!("{}", err);
-            ExitCode::from(EXIT_POLICY_VIOLATION)
+            emit_verify_artifact_meta_result(args.format, "mismatch", EXIT_POLICY_VIOLATION, err)
+        }
+    }
+}
+
+fn emit_verify_artifact_meta_result(
+    format: VerifyArtifactMetaFormat,
+    result: &'static str,
+    exit_code: u8,
+    message: String,
+) -> ExitCode {
+    match format {
+        VerifyArtifactMetaFormat::Text => {
+            if result == "pass" {
+                println!("{}", message);
+            } else {
+                eprintln!("{}", message);
+            }
+            ExitCode::from(exit_code)
+        }
+        VerifyArtifactMetaFormat::Json => {
+            let report = VerifyArtifactMetaReport {
+                schema_version: VERIFY_ARTIFACT_META_SCHEMA_VERSION,
+                result,
+                exit_code,
+                message,
+            };
+            match serde_json::to_string_pretty(&report) {
+                Ok(mut text) => {
+                    text.push('\n');
+                    print!("{}", text);
+                    ExitCode::from(exit_code)
+                }
+                Err(err) => {
+                    eprintln!("failed to serialize verify-artifact-meta JSON: {}", err);
+                    ExitCode::from(EXIT_INVALID_INPUT)
+                }
+            }
         }
     }
 }
@@ -6425,6 +6526,7 @@ fn print_usage() {
         "  kernriftc verify --contracts <contracts.json> --hash <contracts.sha256> --report <verify-report.json>"
     );
     eprintln!("  kernriftc verify-artifact-meta <artifact> <meta.json>");
+    eprintln!("  kernriftc verify-artifact-meta --format json <artifact> <meta.json>");
     eprintln!("  kernriftc --selftest");
     eprintln!(
         "  kernriftc --surface stable --emit=krbo -o <output.krbo> --meta-out <output.json> <file.kr>"
