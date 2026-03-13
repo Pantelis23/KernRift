@@ -105,6 +105,11 @@ MIXED_ASM_OBJ="$TMP_DIR/extern_internal_chain.from_asm.o"
 INSPECT_BASIC_ELF_TXT="$TMP_DIR/inspect.basic.elf.txt"
 INSPECT_EXTERN_ELF_TXT="$TMP_DIR/inspect.extern.elf.txt"
 INSPECT_MIXED_ASM_TXT="$TMP_DIR/inspect.mixed.asm.txt"
+INSPECT_BASIC_KRBO_JSON="$TMP_DIR/inspect.basic.krbo.json"
+INSPECT_BASIC_ELF_JSON="$TMP_DIR/inspect.basic.elf.json"
+INSPECT_MIXED_ASM_JSON="$TMP_DIR/inspect.mixed.asm.json"
+VERIFY_BASIC_KRBO_JSON="$TMP_DIR/verify.basic.krbo.json"
+VERIFY_BASIC_ELF_JSON="$TMP_DIR/verify.basic.elf.json"
 
 RELINKED_BASIC_ELF_OUT="$TMP_DIR/basic.relinked.o"
 FINAL_RUNTIME_STUB_SRC="$TMP_DIR/runtime_stub.s"
@@ -180,6 +185,25 @@ inspect_artifact_text() {
   acceptance_assert_nonempty_file "$output_path"
 }
 
+inspect_artifact_json() {
+  local artifact_path="$1"
+  local output_path="$2"
+  run_kernriftc inspect-artifact "$artifact_path" --format json >"$output_path"
+  acceptance_assert_nonempty_file "$output_path"
+}
+
+verify_artifact_meta_json() {
+  local artifact_path="$1"
+  local meta_path="$2"
+  local output_path="$3"
+  run_kernriftc \
+    verify-artifact-meta \
+    --format json \
+    "$artifact_path" \
+    "$meta_path" >"$output_path"
+  acceptance_assert_nonempty_file "$output_path"
+}
+
 assert_asm_line() {
   local line="$1"
   local file="$2"
@@ -205,9 +229,16 @@ step_emit_internal_artifacts() {
 }
 
 step_verify_internal_sidecars() {
-  set_context "$BASIC_FIXTURE" "$BASIC_KRBO_OUT" "$BASIC_KRBO_META" "$BASIC_ELF_OUT" "$BASIC_ELF_META"
+  set_context "$BASIC_FIXTURE" "$BASIC_KRBO_OUT" "$BASIC_KRBO_META" "$BASIC_ELF_OUT" "$BASIC_ELF_META" "$VERIFY_BASIC_KRBO_JSON" "$VERIFY_BASIC_ELF_JSON"
   verify_artifact_meta "$BASIC_KRBO_OUT" "$BASIC_KRBO_META"
   verify_artifact_meta "$BASIC_ELF_OUT" "$BASIC_ELF_META"
+  verify_artifact_meta_json "$BASIC_KRBO_OUT" "$BASIC_KRBO_META" "$VERIFY_BASIC_KRBO_JSON"
+  verify_artifact_meta_json "$BASIC_ELF_OUT" "$BASIC_ELF_META" "$VERIFY_BASIC_ELF_JSON"
+
+  grep -Eq '"schema_version"[[:space:]]*:[[:space:]]*"kernrift_verify_artifact_meta_v1"' "$VERIFY_BASIC_KRBO_JSON"
+  grep -Eq '"result"[[:space:]]*:[[:space:]]*"pass"' "$VERIFY_BASIC_KRBO_JSON"
+  grep -Eq '"schema_version"[[:space:]]*:[[:space:]]*"kernrift_verify_artifact_meta_v1"' "$VERIFY_BASIC_ELF_JSON"
+  grep -Eq '"result"[[:space:]]*:[[:space:]]*"pass"' "$VERIFY_BASIC_ELF_JSON"
 }
 
 step_emit_simple_extern_artifacts() {
@@ -260,11 +291,14 @@ step_check_asm_text_shapes() {
 }
 
 step_inspect_artifact_cli_smoke() {
-  set_context "$BASIC_FIXTURE" "$BASIC_ELF_OUT" "$EXTERN_ELF_OUT" "$MIXED_ASM_OUT" "$INSPECT_BASIC_ELF_TXT" "$INSPECT_EXTERN_ELF_TXT" "$INSPECT_MIXED_ASM_TXT"
+  set_context "$BASIC_FIXTURE" "$BASIC_KRBO_OUT" "$BASIC_ELF_OUT" "$EXTERN_ELF_OUT" "$MIXED_ASM_OUT" "$INSPECT_BASIC_ELF_TXT" "$INSPECT_EXTERN_ELF_TXT" "$INSPECT_MIXED_ASM_TXT" "$INSPECT_BASIC_KRBO_JSON" "$INSPECT_BASIC_ELF_JSON" "$INSPECT_MIXED_ASM_JSON"
 
   inspect_artifact_text "$BASIC_ELF_OUT" "$INSPECT_BASIC_ELF_TXT"
   inspect_artifact_text "$EXTERN_ELF_OUT" "$INSPECT_EXTERN_ELF_TXT"
   inspect_artifact_text "$MIXED_ASM_OUT" "$INSPECT_MIXED_ASM_TXT"
+  inspect_artifact_json "$BASIC_KRBO_OUT" "$INSPECT_BASIC_KRBO_JSON"
+  inspect_artifact_json "$BASIC_ELF_OUT" "$INSPECT_BASIC_ELF_JSON"
+  inspect_artifact_json "$MIXED_ASM_OUT" "$INSPECT_MIXED_ASM_JSON"
 
   grep -q "^Artifact: elf_relocatable$" "$INSPECT_BASIC_ELF_TXT"
   grep -q "^Defined symbols:$" "$INSPECT_BASIC_ELF_TXT"
@@ -279,6 +313,13 @@ step_inspect_artifact_cli_smoke() {
   grep -q "^ASM direct call targets:$" "$INSPECT_MIXED_ASM_TXT"
   grep -q "^- helper$" "$INSPECT_MIXED_ASM_TXT"
   grep -q "^- ext$" "$INSPECT_MIXED_ASM_TXT"
+
+  grep -Eq '"schema_version"[[:space:]]*:[[:space:]]*"kernrift_inspect_artifact_v1"' "$INSPECT_BASIC_KRBO_JSON"
+  grep -Eq '"artifact_kind"[[:space:]]*:[[:space:]]*"krbo"' "$INSPECT_BASIC_KRBO_JSON"
+  grep -Eq '"schema_version"[[:space:]]*:[[:space:]]*"kernrift_inspect_artifact_v1"' "$INSPECT_BASIC_ELF_JSON"
+  grep -Eq '"artifact_kind"[[:space:]]*:[[:space:]]*"elf_relocatable"' "$INSPECT_BASIC_ELF_JSON"
+  grep -Eq '"schema_version"[[:space:]]*:[[:space:]]*"kernrift_inspect_artifact_v1"' "$INSPECT_MIXED_ASM_JSON"
+  grep -Eq '"artifact_kind"[[:space:]]*:[[:space:]]*"asm_text"' "$INSPECT_MIXED_ASM_JSON"
 }
 
 step_optional_elf_inspection_matrix() {
