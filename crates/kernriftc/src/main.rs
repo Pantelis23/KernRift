@@ -13,11 +13,10 @@ use emit::{
 };
 use jsonschema::JSONSchema;
 use kernriftc::{
-    AdaptiveFeaturePromotionPlan, BackendArtifactKind, SurfaceProfile,
-    adaptive_feature_promotion_plan, adaptive_feature_promotion_readiness,
-    adaptive_feature_proposal_summaries, adaptive_surface_features_for_profile, analyze,
-    check_file, check_file_with_surface, check_module, compile_file, compile_file_with_surface,
-    emit_backend_artifact_file_with_surface, migrate_preview_file_with_surface,
+    AdaptiveFeaturePromotionPlan, SurfaceProfile, adaptive_feature_promotion_plan,
+    adaptive_feature_promotion_readiness, adaptive_feature_proposal_summaries,
+    adaptive_surface_features_for_profile, analyze, check_file, check_file_with_surface,
+    check_module, compile_file, compile_file_with_surface, migrate_preview_file_with_surface,
     validate_adaptive_feature_governance,
 };
 use serde::{Deserialize, Serialize};
@@ -26,12 +25,13 @@ use sha2::{Digest, Sha256};
 
 mod artifact_inspect;
 mod artifact_meta;
+mod backend_emit;
 mod verify_artifact_meta;
 
 use crate::artifact_inspect::{
     format_artifact_inspection_report_text, inspect_artifact_from_bytes,
 };
-use crate::artifact_meta::write_backend_artifact_sidecar;
+use crate::backend_emit::{parse_backend_emit_args, run_backend_emit};
 use crate::verify_artifact_meta::{parse_verify_artifact_meta_args, run_verify_artifact_meta};
 
 const CONTRACTS_SCHEMA_V1: &str =
@@ -845,15 +845,6 @@ struct MigratePreviewArgs {
     input_path: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct BackendEmitArgs {
-    surface: SurfaceProfile,
-    kind: BackendArtifactKind,
-    output_path: String,
-    meta_output_path: Option<String>,
-    input_path: String,
-}
-
 impl PartialOrd for PolicyViolation {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
@@ -1597,71 +1588,6 @@ fn parse_migrate_preview_args(args: &[String]) -> Result<MigratePreviewArgs, Str
     Ok(MigratePreviewArgs {
         surface,
         input_path,
-    })
-}
-
-fn parse_backend_emit_args(
-    kind: &str,
-    args: &[String],
-    surface: SurfaceProfile,
-) -> Result<BackendEmitArgs, String> {
-    let kind =
-        BackendArtifactKind::parse(kind).map_err(|err| format!("invalid emit mode: {}", err))?;
-    let mut output_path = None::<String>;
-    let mut meta_output_path = None::<String>;
-    let mut positionals = Vec::<String>::new();
-
-    let mut idx = 0usize;
-    while idx < args.len() {
-        match args[idx].as_str() {
-            "-o" => {
-                if output_path.is_some() {
-                    return Err("invalid emit mode: duplicate -o".to_string());
-                }
-                let Some(value) = args.get(idx + 1) else {
-                    return Err("invalid emit mode: -o requires a file path".to_string());
-                };
-                output_path = Some(value.clone());
-                idx += 2;
-            }
-            "--meta-out" => {
-                if meta_output_path.is_some() {
-                    return Err("invalid emit mode: duplicate --meta-out".to_string());
-                }
-                let Some(value) = args.get(idx + 1) else {
-                    return Err("invalid emit mode: --meta-out requires a file path".to_string());
-                };
-                meta_output_path = Some(value.clone());
-                idx += 2;
-            }
-            other if other.starts_with('-') => {
-                return Err(format!("invalid emit mode: unknown flag '{}'", other));
-            }
-            other => {
-                positionals.push(other.to_string());
-                idx += 1;
-            }
-        }
-    }
-
-    let Some(output_path) = output_path else {
-        return Err("invalid emit mode: missing -o <output-path>".to_string());
-    };
-
-    if kind == BackendArtifactKind::Asm && meta_output_path.is_some() {
-        return Err("invalid emit mode: --meta-out is unsupported for 'asm'".to_string());
-    }
-
-    if positionals.len() != 1 {
-        return Err("invalid emit mode: expected exactly one <file.kr> input".to_string());
-    }
-
-    Ok(BackendEmitArgs {
-        surface,
-        kind,
-        output_path,
-        meta_output_path,
-        input_path: positionals.pop().expect("exactly one positional"),
     })
 }
 
@@ -3660,40 +3586,6 @@ fn run_emit(kind: &str, path: &str) -> ExitCode {
             ExitCode::from(2)
         }
     }
-}
-
-fn run_backend_emit(args: &BackendEmitArgs) -> ExitCode {
-    let bytes = match emit_backend_artifact_file_with_surface(
-        Path::new(&args.input_path),
-        args.surface,
-        args.kind,
-    ) {
-        Ok(bytes) => bytes,
-        Err(errs) => {
-            print_errors(&errs);
-            return ExitCode::from(1);
-        }
-    };
-
-    if let Err(err) = fs::write(&args.output_path, &bytes) {
-        eprintln!("failed to write '{}': {}", args.output_path, err);
-        return ExitCode::from(1);
-    }
-
-    if let Some(meta_output_path) = &args.meta_output_path
-        && let Err(err) = write_backend_artifact_sidecar(
-            args.kind,
-            args.surface,
-            &args.input_path,
-            meta_output_path,
-            &bytes,
-        )
-    {
-        eprintln!("{}", err);
-        return ExitCode::from(1);
-    }
-
-    ExitCode::SUCCESS
 }
 
 fn run_report(metrics_csv: &str, path: &str) -> ExitCode {
