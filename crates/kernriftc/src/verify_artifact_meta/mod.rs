@@ -11,8 +11,11 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::{
-    ElfObjectArtifactMetadata, KrboArtifactMetadata, parse_elf_object_artifact_metadata,
-    parse_krbo_artifact_metadata, sha256_hex,
+    artifact_meta::{
+        BACKEND_ARTIFACT_META_SCHEMA_VERSION, ElfObjectArtifactMetadata, KrboArtifactMetadata,
+        parse_elf_object_artifact_metadata, parse_krbo_artifact_metadata,
+    },
+    sha256_hex,
 };
 
 pub(crate) use args::{VerifyArtifactMetaArgs, parse_verify_artifact_meta_args};
@@ -142,7 +145,7 @@ fn decode_backend_artifact_metadata(
                 path
             )
         })?;
-    if schema_version != "kernrift_artifact_meta_v1" {
+    if schema_version != BACKEND_ARTIFACT_META_SCHEMA_VERSION {
         return Err(format!(
             "unsupported artifact metadata schema_version '{}', expected 'kernrift_artifact_meta_v1'",
             schema_version

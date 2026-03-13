@@ -25,11 +25,13 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 mod artifact_inspect;
+mod artifact_meta;
 mod verify_artifact_meta;
 
 use crate::artifact_inspect::{
     format_artifact_inspection_report_text, inspect_artifact_from_bytes,
 };
+use crate::artifact_meta::write_backend_artifact_sidecar;
 use crate::verify_artifact_meta::{parse_verify_artifact_meta_args, run_verify_artifact_meta};
 
 const CONTRACTS_SCHEMA_V1: &str =
@@ -850,40 +852,6 @@ struct BackendEmitArgs {
     output_path: String,
     meta_output_path: Option<String>,
     input_path: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct BackendArtifactMetadata {
-    schema_version: &'static str,
-    emit_kind: &'static str,
-    surface: &'static str,
-    byte_len: usize,
-    sha256: String,
-    input_path: String,
-    input_path_kind: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    krbo: Option<KrboArtifactMetadata>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    elfobj: Option<ElfObjectArtifactMetadata>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct KrboArtifactMetadata {
-    magic: String,
-    version_major: u8,
-    version_minor: u8,
-    format_revision: u16,
-    target_tag: u8,
-    target_name: &'static str,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct ElfObjectArtifactMetadata {
-    magic: String,
-    class: &'static str,
-    endianness: &'static str,
-    elf_type: &'static str,
-    machine: &'static str,
 }
 
 impl PartialOrd for PolicyViolation {
@@ -3712,170 +3680,20 @@ fn run_backend_emit(args: &BackendEmitArgs) -> ExitCode {
         return ExitCode::from(1);
     }
 
-    if let Some(meta_output_path) = &args.meta_output_path {
-        let metadata = match build_backend_artifact_metadata(args, &bytes) {
-            Ok(metadata) => metadata,
-            Err(err) => {
-                eprintln!("{}", err);
-                return ExitCode::from(1);
-            }
-        };
-        let mut text = match serde_json::to_string_pretty(&metadata) {
-            Ok(text) => text,
-            Err(err) => {
-                eprintln!("failed to serialize '{}': {}", meta_output_path, err);
-                return ExitCode::from(1);
-            }
-        };
-        text.push('\n');
-        if let Err(err) = fs::write(meta_output_path, text) {
-            eprintln!("failed to write '{}': {}", meta_output_path, err);
-            return ExitCode::from(1);
-        }
+    if let Some(meta_output_path) = &args.meta_output_path
+        && let Err(err) = write_backend_artifact_sidecar(
+            args.kind,
+            args.surface,
+            &args.input_path,
+            meta_output_path,
+            &bytes,
+        )
+    {
+        eprintln!("{}", err);
+        return ExitCode::from(1);
     }
 
     ExitCode::SUCCESS
-}
-
-fn build_backend_artifact_metadata(
-    args: &BackendEmitArgs,
-    bytes: &[u8],
-) -> Result<BackendArtifactMetadata, String> {
-    let (krbo, elfobj) = match args.kind {
-        BackendArtifactKind::Krbo => (Some(parse_krbo_artifact_metadata(bytes)?), None),
-        BackendArtifactKind::ElfObject => (None, Some(parse_elf_object_artifact_metadata(bytes)?)),
-        BackendArtifactKind::Asm => {
-            return Err("invalid emit mode: --meta-out is unsupported for 'asm'".to_string());
-        }
-    };
-    let (input_path, input_path_kind) = normalize_backend_artifact_input_path(&args.input_path);
-
-    Ok(BackendArtifactMetadata {
-        schema_version: "kernrift_artifact_meta_v1",
-        emit_kind: args.kind.as_str(),
-        surface: args.surface.as_str(),
-        byte_len: bytes.len(),
-        sha256: sha256_hex(bytes),
-        input_path,
-        input_path_kind,
-        krbo,
-        elfobj,
-    })
-}
-
-fn normalize_backend_artifact_input_path(input_path: &str) -> (String, &'static str) {
-    let raw = input_path.to_string();
-    let cwd = match std::env::current_dir() {
-        Ok(cwd) => cwd,
-        Err(_) => return (raw, "raw"),
-    };
-    let input_abs = Path::new(input_path);
-    let input_abs = if input_abs.is_absolute() {
-        input_abs.to_path_buf()
-    } else {
-        cwd.join(input_abs)
-    };
-    let input_abs = match fs::canonicalize(input_abs) {
-        Ok(input_abs) => input_abs,
-        Err(_) => return (raw, "raw"),
-    };
-    let repo_root = match find_git_repo_root_from(&input_abs) {
-        Some(repo_root) => repo_root,
-        None => return (raw, "raw"),
-    };
-    let repo_root = match fs::canonicalize(repo_root) {
-        Ok(repo_root) => repo_root,
-        Err(_) => return (raw, "raw"),
-    };
-
-    match input_abs.strip_prefix(&repo_root) {
-        Ok(relative) => (
-            relative.to_string_lossy().replace('\\', "/"),
-            "repo-relative",
-        ),
-        Err(_) => (raw, "raw"),
-    }
-}
-
-fn find_git_repo_root_from(start: &Path) -> Option<PathBuf> {
-    let anchor = if start.is_dir() {
-        start
-    } else {
-        start.parent().unwrap_or(start)
-    };
-    let output = ProcessCommand::new("git")
-        .arg("rev-parse")
-        .arg("--show-toplevel")
-        .current_dir(anchor)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let stdout = String::from_utf8(output.stdout).ok()?;
-    let repo_root = stdout.trim();
-    if repo_root.is_empty() {
-        None
-    } else {
-        Some(PathBuf::from(repo_root))
-    }
-}
-
-fn parse_krbo_artifact_metadata(bytes: &[u8]) -> Result<KrboArtifactMetadata, String> {
-    if bytes.len() < 12 {
-        return Err("failed to derive krbo metadata: artifact too small".to_string());
-    }
-    let magic = std::str::from_utf8(&bytes[0..4])
-        .map_err(|_| "failed to derive krbo metadata: invalid magic bytes".to_string())?
-        .to_string();
-    let target_tag = bytes[9];
-    let target_name = match target_tag {
-        1 => "x86_64-sysv",
-        _ => "unknown",
-    };
-
-    Ok(KrboArtifactMetadata {
-        magic,
-        version_major: bytes[4],
-        version_minor: bytes[5],
-        format_revision: u16::from_le_bytes([bytes[6], bytes[7]]),
-        target_tag,
-        target_name,
-    })
-}
-
-fn parse_elf_object_artifact_metadata(bytes: &[u8]) -> Result<ElfObjectArtifactMetadata, String> {
-    if bytes.len() < 20 {
-        return Err("failed to derive elfobj metadata: artifact too small".to_string());
-    }
-    if &bytes[0..4] != b"\x7fELF" {
-        return Err("failed to derive elfobj metadata: invalid ELF magic".to_string());
-    }
-
-    let class = match bytes[4] {
-        2 => "elf64",
-        _ => "unknown",
-    };
-    let endianness = match bytes[5] {
-        1 => "little",
-        _ => "unknown",
-    };
-    let elf_type = match u16::from_le_bytes([bytes[16], bytes[17]]) {
-        1 => "relocatable",
-        _ => "unknown",
-    };
-    let machine = match u16::from_le_bytes([bytes[18], bytes[19]]) {
-        62 => "x86_64",
-        _ => "unknown",
-    };
-
-    Ok(ElfObjectArtifactMetadata {
-        magic: "7f454c46".to_string(),
-        class,
-        endianness,
-        elf_type,
-        machine,
-    })
 }
 
 fn run_report(metrics_csv: &str, path: &str) -> ExitCode {
