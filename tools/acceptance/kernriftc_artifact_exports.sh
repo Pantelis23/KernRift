@@ -110,6 +110,9 @@ INSPECT_BASIC_ELF_JSON="$TMP_DIR/inspect.basic.elf.json"
 INSPECT_MIXED_ASM_JSON="$TMP_DIR/inspect.mixed.asm.json"
 VERIFY_BASIC_KRBO_JSON="$TMP_DIR/verify.basic.krbo.json"
 VERIFY_BASIC_ELF_JSON="$TMP_DIR/verify.basic.elf.json"
+NEGATIVE_BOGUS_ARTIFACT="$TMP_DIR/negative.unsupported.bin"
+NEGATIVE_META_JSON="$TMP_DIR/negative.meta.json"
+VERIFY_NEGATIVE_JSON="$TMP_DIR/verify.negative.json"
 
 RELINKED_BASIC_ELF_OUT="$TMP_DIR/basic.relinked.o"
 FINAL_RUNTIME_STUB_SRC="$TMP_DIR/runtime_stub.s"
@@ -235,10 +238,10 @@ step_verify_internal_sidecars() {
   verify_artifact_meta_json "$BASIC_KRBO_OUT" "$BASIC_KRBO_META" "$VERIFY_BASIC_KRBO_JSON"
   verify_artifact_meta_json "$BASIC_ELF_OUT" "$BASIC_ELF_META" "$VERIFY_BASIC_ELF_JSON"
 
-  grep -Eq '"schema_version"[[:space:]]*:[[:space:]]*"kernrift_verify_artifact_meta_v1"' "$VERIFY_BASIC_KRBO_JSON"
-  grep -Eq '"result"[[:space:]]*:[[:space:]]*"pass"' "$VERIFY_BASIC_KRBO_JSON"
-  grep -Eq '"schema_version"[[:space:]]*:[[:space:]]*"kernrift_verify_artifact_meta_v1"' "$VERIFY_BASIC_ELF_JSON"
-  grep -Eq '"result"[[:space:]]*:[[:space:]]*"pass"' "$VERIFY_BASIC_ELF_JSON"
+  acceptance_assert_json_string_field "$VERIFY_BASIC_KRBO_JSON" "schema_version" "kernrift_verify_artifact_meta_v1"
+  acceptance_assert_json_string_field "$VERIFY_BASIC_KRBO_JSON" "result" "pass"
+  acceptance_assert_json_string_field "$VERIFY_BASIC_ELF_JSON" "schema_version" "kernrift_verify_artifact_meta_v1"
+  acceptance_assert_json_string_field "$VERIFY_BASIC_ELF_JSON" "result" "pass"
 }
 
 step_emit_simple_extern_artifacts() {
@@ -314,12 +317,36 @@ step_inspect_artifact_cli_smoke() {
   grep -q "^- helper$" "$INSPECT_MIXED_ASM_TXT"
   grep -q "^- ext$" "$INSPECT_MIXED_ASM_TXT"
 
-  grep -Eq '"schema_version"[[:space:]]*:[[:space:]]*"kernrift_inspect_artifact_v1"' "$INSPECT_BASIC_KRBO_JSON"
-  grep -Eq '"artifact_kind"[[:space:]]*:[[:space:]]*"krbo"' "$INSPECT_BASIC_KRBO_JSON"
-  grep -Eq '"schema_version"[[:space:]]*:[[:space:]]*"kernrift_inspect_artifact_v1"' "$INSPECT_BASIC_ELF_JSON"
-  grep -Eq '"artifact_kind"[[:space:]]*:[[:space:]]*"elf_relocatable"' "$INSPECT_BASIC_ELF_JSON"
-  grep -Eq '"schema_version"[[:space:]]*:[[:space:]]*"kernrift_inspect_artifact_v1"' "$INSPECT_MIXED_ASM_JSON"
-  grep -Eq '"artifact_kind"[[:space:]]*:[[:space:]]*"asm_text"' "$INSPECT_MIXED_ASM_JSON"
+  acceptance_assert_json_string_field "$INSPECT_BASIC_KRBO_JSON" "schema_version" "kernrift_inspect_artifact_v1"
+  acceptance_assert_json_string_field "$INSPECT_BASIC_KRBO_JSON" "artifact_kind" "krbo"
+  acceptance_assert_json_string_field "$INSPECT_BASIC_ELF_JSON" "schema_version" "kernrift_inspect_artifact_v1"
+  acceptance_assert_json_string_field "$INSPECT_BASIC_ELF_JSON" "artifact_kind" "elf_relocatable"
+  acceptance_assert_json_string_field "$INSPECT_MIXED_ASM_JSON" "schema_version" "kernrift_inspect_artifact_v1"
+  acceptance_assert_json_string_field "$INSPECT_MIXED_ASM_JSON" "artifact_kind" "asm_text"
+}
+
+step_verify_json_negative_consumer_smoke() {
+  set_context "$BASIC_FIXTURE" "$NEGATIVE_BOGUS_ARTIFACT" "$NEGATIVE_META_JSON" "$VERIFY_NEGATIVE_JSON"
+
+  printf "not-an-artifact" >"$NEGATIVE_BOGUS_ARTIFACT"
+  cp "$BASIC_KRBO_META" "$NEGATIVE_META_JSON"
+
+  if run_kernriftc verify-artifact-meta --format json "$NEGATIVE_BOGUS_ARTIFACT" "$NEGATIVE_META_JSON" >"$VERIFY_NEGATIVE_JSON"; then
+    echo "expected verify-artifact-meta --format json to fail for unsupported artifact bytes" >&2
+    exit 1
+  else
+    local status=$?
+    if [[ "$status" -ne 2 ]]; then
+      echo "expected verify-artifact-meta --format json exit code 2, got $status" >&2
+      exit 1
+    fi
+  fi
+
+  acceptance_assert_nonempty_file "$VERIFY_NEGATIVE_JSON"
+  acceptance_assert_json_string_field "$VERIFY_NEGATIVE_JSON" "schema_version" "kernrift_verify_artifact_meta_v1"
+  acceptance_assert_json_string_field "$VERIFY_NEGATIVE_JSON" "result" "invalid_input"
+  acceptance_assert_json_number_field "$VERIFY_NEGATIVE_JSON" "exit_code" "2"
+  acceptance_assert_json_string_field "$VERIFY_NEGATIVE_JSON" "message" "verify-artifact-meta: unsupported artifact bytes"
 }
 
 step_optional_elf_inspection_matrix() {
@@ -469,14 +496,15 @@ if [[ "${ACCEPTANCE_KEEP_TMP:-0}" == "1" ]]; then
   echo "[info] using tmp dir: $TMP_DIR"
 fi
 
-step "[1/11] internal-only fixture: emit krbo/elfobj/asm" step_emit_internal_artifacts
-step "[2/11] internal-only fixture: verify sidecars" step_verify_internal_sidecars
-step "[3/11] simple extern fixture: emit elfobj/asm" step_emit_simple_extern_artifacts
-step "[4/11] simple extern fixture: verify elfobj sidecar" step_verify_simple_extern_sidecar
-step "[5/11] mixed internal+extern fixture: emit elfobj/asm" step_emit_mixed_artifacts
-step "[6/11] mixed internal+extern fixture: verify elfobj sidecar" step_verify_mixed_sidecar
-step "[7/11] asm text structure smoke" step_check_asm_text_shapes
-step "[8/11] inspect-artifact CLI smoke" step_inspect_artifact_cli_smoke
-step "[9/11] optional emitted-ELF inspection matrix" step_optional_elf_inspection_matrix
-step "[10/11] optional downstream relink/final-link/runtime matrix" step_optional_downstream_matrix
-step "[11/11] hosted artifact matrix complete" step_complete
+step "[1/12] internal-only fixture: emit krbo/elfobj/asm" step_emit_internal_artifacts
+step "[2/12] internal-only fixture: verify sidecars" step_verify_internal_sidecars
+step "[3/12] simple extern fixture: emit elfobj/asm" step_emit_simple_extern_artifacts
+step "[4/12] simple extern fixture: verify elfobj sidecar" step_verify_simple_extern_sidecar
+step "[5/12] mixed internal+extern fixture: emit elfobj/asm" step_emit_mixed_artifacts
+step "[6/12] mixed internal+extern fixture: verify elfobj sidecar" step_verify_mixed_sidecar
+step "[7/12] asm text structure smoke" step_check_asm_text_shapes
+step "[8/12] inspect-artifact CLI smoke" step_inspect_artifact_cli_smoke
+step "[9/12] verify-artifact-meta JSON negative consumer smoke" step_verify_json_negative_consumer_smoke
+step "[10/12] optional emitted-ELF inspection matrix" step_optional_elf_inspection_matrix
+step "[11/12] optional downstream relink/final-link/runtime matrix" step_optional_downstream_matrix
+step "[12/12] hosted artifact matrix complete" step_complete

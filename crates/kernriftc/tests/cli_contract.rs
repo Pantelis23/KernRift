@@ -257,6 +257,19 @@ fn replace_in_hir_entry(path: &Path, section_marker: &str, entry_id: &str, from:
 }
 
 #[test]
+fn usage_includes_artifact_json_consumer_commands() {
+    let root = repo_root();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root);
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+
+    assert!(stderr.contains("kernriftc inspect-artifact <artifact-path> --format json"));
+    assert!(stderr.contains("kernriftc verify-artifact-meta --format json <artifact> <meta.json>"));
+}
+
+#[test]
 fn report_unknown_metric_exits_nonzero() {
     let root = repo_root();
     let fixture = root.join("tests").join("must_pass").join("locks_ok.kr");
