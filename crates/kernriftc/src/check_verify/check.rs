@@ -1,0 +1,167 @@
+use std::path::Path;
+use std::process::ExitCode;
+
+use base64::Engine;
+use ed25519_dalek::Signer;
+use emit::{ContractsSchema as EmitContractsSchema, emit_contracts_json_canonical_with_schema};
+use kernriftc::{analyze, check_file_with_surface, check_module, compile_file_with_surface};
+
+use super::args::{CheckArgs, CheckProfile, ContractsSchemaArg};
+use super::crypto::{load_signing_key_hex, sha256_hex};
+use super::output::write_output_files;
+use crate::policy_engine::{
+    decode_contracts_bundle, evaluate_policy, load_policy_file, materialize_kernel_profile_policy,
+    print_policy_violations,
+};
+use crate::{EXIT_INVALID_INPUT, EXIT_POLICY_VIOLATION, print_errors};
+
+pub(crate) fn run_check(args: &CheckArgs) -> ExitCode {
+    if args.profile.is_none()
+        && args.contracts_schema.is_none()
+        && args.contracts_out.is_none()
+        && args.policy_path.is_none()
+        && args.hash_out.is_none()
+        && args.sign_key_path.is_none()
+        && args.sig_out.is_none()
+    {
+        return match check_file_with_surface(Path::new(&args.path), args.surface) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(errs) => {
+                print_errors(&errs);
+                ExitCode::from(EXIT_POLICY_VIOLATION)
+            }
+        };
+    }
+
+    let module = match compile_file_with_surface(Path::new(&args.path), args.surface) {
+        Ok(module) => module,
+        Err(errs) => {
+            print_errors(&errs);
+            return ExitCode::from(EXIT_POLICY_VIOLATION);
+        }
+    };
+    let check_errs = match check_module(&module) {
+        Ok(()) => Vec::new(),
+        Err(errs) => errs,
+    };
+    let (report, analysis_errs) = analyze(&module);
+    let mut semantic_errs = check_errs.clone();
+    semantic_errs.extend(analysis_errs.clone());
+    semantic_errs.sort();
+    semantic_errs.dedup();
+
+    let contracts_schema = match resolve_contracts_schema(args.profile, args.contracts_schema) {
+        Ok(schema) => schema,
+        Err(err) => {
+            eprintln!("{}", err);
+            return ExitCode::from(EXIT_INVALID_INPUT);
+        }
+    };
+
+    let contracts =
+        match emit_contracts_json_canonical_with_schema(&module, &report, contracts_schema) {
+            Ok(text) => text,
+            Err(err) => {
+                eprintln!("{}", err);
+                return ExitCode::from(EXIT_INVALID_INPUT);
+            }
+        };
+    let contracts_bundle = match decode_contracts_bundle(&contracts, "<generated>") {
+        Ok(bundle) => bundle,
+        Err(err) => {
+            eprintln!("{}", err);
+            return ExitCode::from(EXIT_INVALID_INPUT);
+        }
+    };
+    let mut policy_violations = Vec::new();
+
+    if let Some(profile) = args.profile {
+        let profile_policy = match profile {
+            CheckProfile::Kernel => materialize_kernel_profile_policy(),
+        };
+        let profile_policy = match profile_policy {
+            Ok(policy) => policy,
+            Err(err) => {
+                eprintln!("{}", err);
+                return ExitCode::from(EXIT_INVALID_INPUT);
+            }
+        };
+        policy_violations.extend(evaluate_policy(&profile_policy, &contracts_bundle));
+    }
+
+    if let Some(policy_path) = args.policy_path.as_deref() {
+        let file_policy = match load_policy_file(policy_path) {
+            Ok(policy) => policy,
+            Err(err) => {
+                eprintln!("{}", err);
+                return ExitCode::from(EXIT_INVALID_INPUT);
+            }
+        };
+        policy_violations.extend(evaluate_policy(&file_policy, &contracts_bundle));
+    }
+
+    if !semantic_errs.is_empty() {
+        print_errors(&semantic_errs);
+    }
+    if !policy_violations.is_empty() {
+        policy_violations.sort();
+        policy_violations.dedup();
+        print_policy_violations(&policy_violations, false);
+    }
+    if !semantic_errs.is_empty() || !policy_violations.is_empty() {
+        return ExitCode::from(EXIT_POLICY_VIOLATION);
+    }
+
+    let hash_hex = sha256_hex(contracts.as_bytes());
+    let mut signature_b64 = None::<String>;
+    if let Some(key_path) = args.sign_key_path.as_deref() {
+        let signing_key = match load_signing_key_hex(key_path) {
+            Ok(key) => key,
+            Err(err) => {
+                eprintln!("{}", err);
+                return ExitCode::from(EXIT_INVALID_INPUT);
+            }
+        };
+        let sig = signing_key.sign(contracts.as_bytes());
+        signature_b64 = Some(base64::engine::general_purpose::STANDARD.encode(sig.to_bytes()));
+    }
+
+    let mut outputs = Vec::<(String, String)>::new();
+    if let Some(path) = args.contracts_out.as_ref() {
+        outputs.push((path.clone(), contracts));
+    }
+    if let Some(path) = args.hash_out.as_ref() {
+        outputs.push((path.clone(), format!("{hash_hex}\n")));
+    }
+    if let Some(path) = args.sig_out.as_ref() {
+        let Some(sig_b64) = signature_b64.as_ref() else {
+            eprintln!("internal error: missing signature text for --sig-out");
+            return ExitCode::from(EXIT_INVALID_INPUT);
+        };
+        outputs.push((path.clone(), format!("{sig_b64}\n")));
+    }
+
+    if let Err(err) = write_output_files(&outputs) {
+        eprintln!("{}", err);
+        return ExitCode::from(EXIT_INVALID_INPUT);
+    }
+
+    ExitCode::SUCCESS
+}
+
+fn resolve_contracts_schema(
+    profile: Option<CheckProfile>,
+    requested: Option<ContractsSchemaArg>,
+) -> Result<EmitContractsSchema, String> {
+    if profile == Some(CheckProfile::Kernel) {
+        if requested == Some(ContractsSchemaArg::V1) {
+            return Err(
+                "invalid check mode: --profile kernel requires contracts schema v2 (omit --contracts-schema or use --contracts-schema v2)"
+                    .to_string(),
+            );
+        }
+        return Ok(EmitContractsSchema::V2);
+    }
+
+    Ok(requested.unwrap_or(ContractsSchemaArg::V1).to_emit_schema())
+}

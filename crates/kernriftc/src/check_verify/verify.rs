@@ -1,31 +1,23 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use emit::{
-    ContractsSchema as EmitContractsSchema, emit_contracts_json_canonical_with_schema,
-    emit_report_json,
-};
-use kernriftc::{
-    analyze, check_file_with_surface, check_module, compile_file, compile_file_with_surface,
-};
+use ed25519_dalek::{Signature, Verifier};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use sha2::{Digest, Sha256};
 
-use super::args::{CheckArgs, CheckProfile, ContractsSchemaArg, VerifyArgs};
+use super::args::VerifyArgs;
+use super::crypto::{load_verifying_key_hex, normalize_hex, sha256_hex};
+use super::output::write_output_files;
 use crate::policy_engine::{
-    contracts_bundle_schema_version, decode_contracts_bundle, evaluate_policy,
-    format_contracts_inspect_summary, load_policy_file, materialize_kernel_profile_policy,
-    print_policy_violations, validate_json_against_schema_text,
+    contracts_bundle_schema_version, decode_contracts_bundle, validate_json_against_schema_text,
 };
 use crate::{
     EXIT_INVALID_INPUT, EXIT_POLICY_VIOLATION, VERIFY_REPORT_SCHEMA_V1,
-    VERIFY_REPORT_SCHEMA_VERSION, print_errors, print_usage,
+    VERIFY_REPORT_SCHEMA_VERSION, print_errors,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,7 +57,7 @@ struct VerifyReport {
 }
 
 #[derive(Debug, Deserialize)]
-struct DecodedVerifyReport {
+pub(super) struct DecodedVerifyReport {
     schema_version: String,
     result: String,
     inputs: DecodedVerifyReportInputs,
@@ -129,140 +121,6 @@ struct VerifyReportContracts {
 struct VerifyReportSignature {
     checked: bool,
     valid: Option<bool>,
-}
-
-pub(crate) fn run_check(args: &CheckArgs) -> ExitCode {
-    if args.profile.is_none()
-        && args.contracts_schema.is_none()
-        && args.contracts_out.is_none()
-        && args.policy_path.is_none()
-        && args.hash_out.is_none()
-        && args.sign_key_path.is_none()
-        && args.sig_out.is_none()
-    {
-        return match check_file_with_surface(Path::new(&args.path), args.surface) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(errs) => {
-                print_errors(&errs);
-                ExitCode::from(EXIT_POLICY_VIOLATION)
-            }
-        };
-    }
-
-    let module = match compile_file_with_surface(Path::new(&args.path), args.surface) {
-        Ok(module) => module,
-        Err(errs) => {
-            print_errors(&errs);
-            return ExitCode::from(EXIT_POLICY_VIOLATION);
-        }
-    };
-    let check_errs = match check_module(&module) {
-        Ok(()) => Vec::new(),
-        Err(errs) => errs,
-    };
-    let (report, analysis_errs) = analyze(&module);
-    let mut semantic_errs = check_errs.clone();
-    semantic_errs.extend(analysis_errs.clone());
-    semantic_errs.sort();
-    semantic_errs.dedup();
-
-    let contracts_schema = match resolve_contracts_schema(args.profile, args.contracts_schema) {
-        Ok(schema) => schema,
-        Err(err) => {
-            eprintln!("{}", err);
-            return ExitCode::from(EXIT_INVALID_INPUT);
-        }
-    };
-
-    let contracts =
-        match emit_contracts_json_canonical_with_schema(&module, &report, contracts_schema) {
-            Ok(text) => text,
-            Err(err) => {
-                eprintln!("{}", err);
-                return ExitCode::from(EXIT_INVALID_INPUT);
-            }
-        };
-    let contracts_bundle = match decode_contracts_bundle(&contracts, "<generated>") {
-        Ok(bundle) => bundle,
-        Err(err) => {
-            eprintln!("{}", err);
-            return ExitCode::from(EXIT_INVALID_INPUT);
-        }
-    };
-    let mut policy_violations = Vec::new();
-
-    if let Some(profile) = args.profile {
-        let profile_policy = match profile {
-            CheckProfile::Kernel => materialize_kernel_profile_policy(),
-        };
-        let profile_policy = match profile_policy {
-            Ok(policy) => policy,
-            Err(err) => {
-                eprintln!("{}", err);
-                return ExitCode::from(EXIT_INVALID_INPUT);
-            }
-        };
-        policy_violations.extend(evaluate_policy(&profile_policy, &contracts_bundle));
-    }
-
-    if let Some(policy_path) = args.policy_path.as_deref() {
-        let file_policy = match load_policy_file(policy_path) {
-            Ok(policy) => policy,
-            Err(err) => {
-                eprintln!("{}", err);
-                return ExitCode::from(EXIT_INVALID_INPUT);
-            }
-        };
-        policy_violations.extend(evaluate_policy(&file_policy, &contracts_bundle));
-    }
-
-    if !semantic_errs.is_empty() {
-        print_errors(&semantic_errs);
-    }
-    if !policy_violations.is_empty() {
-        policy_violations.sort();
-        policy_violations.dedup();
-        print_policy_violations(&policy_violations, false);
-    }
-    if !semantic_errs.is_empty() || !policy_violations.is_empty() {
-        return ExitCode::from(EXIT_POLICY_VIOLATION);
-    }
-
-    let hash_hex = sha256_hex(contracts.as_bytes());
-    let mut signature_b64 = None::<String>;
-    if let Some(key_path) = args.sign_key_path.as_deref() {
-        let signing_key = match load_signing_key_hex(key_path) {
-            Ok(key) => key,
-            Err(err) => {
-                eprintln!("{}", err);
-                return ExitCode::from(EXIT_INVALID_INPUT);
-            }
-        };
-        let sig = signing_key.sign(contracts.as_bytes());
-        signature_b64 = Some(BASE64_STANDARD.encode(sig.to_bytes()));
-    }
-
-    let mut outputs = Vec::<(String, String)>::new();
-    if let Some(path) = args.contracts_out.as_ref() {
-        outputs.push((path.clone(), contracts));
-    }
-    if let Some(path) = args.hash_out.as_ref() {
-        outputs.push((path.clone(), format!("{hash_hex}\n")));
-    }
-    if let Some(path) = args.sig_out.as_ref() {
-        let Some(sig_b64) = signature_b64.as_ref() else {
-            eprintln!("internal error: missing signature text for --sig-out");
-            return ExitCode::from(EXIT_INVALID_INPUT);
-        };
-        outputs.push((path.clone(), format!("{sig_b64}\n")));
-    }
-
-    if let Err(err) = write_output_files(&outputs) {
-        eprintln!("{}", err);
-        return ExitCode::from(EXIT_INVALID_INPUT);
-    }
-
-    ExitCode::SUCCESS
 }
 
 pub(crate) fn run_verify(args: &VerifyArgs) -> ExitCode {
@@ -424,23 +282,6 @@ pub(crate) fn run_verify(args: &VerifyArgs) -> ExitCode {
     ExitCode::from(status.as_exit_code())
 }
 
-fn resolve_contracts_schema(
-    profile: Option<CheckProfile>,
-    requested: Option<ContractsSchemaArg>,
-) -> Result<EmitContractsSchema, String> {
-    if profile == Some(CheckProfile::Kernel) {
-        if requested == Some(ContractsSchemaArg::V1) {
-            return Err(
-                "invalid check mode: --profile kernel requires contracts schema v2 (omit --contracts-schema or use --contracts-schema v2)"
-                    .to_string(),
-            );
-        }
-        return Ok(EmitContractsSchema::V2);
-    }
-
-    Ok(requested.unwrap_or(ContractsSchemaArg::V1).to_emit_schema())
-}
-
 fn new_verify_report(args: &VerifyArgs) -> VerifyReport {
     VerifyReport {
         schema_version: VERIFY_REPORT_SCHEMA_VERSION,
@@ -483,7 +324,7 @@ fn emit_verify_report_json(report: &VerifyReport) -> Result<String, String> {
         .map_err(|e| format!("failed to format verify report JSON: {}", e))
 }
 
-fn decode_verify_report(
+pub(super) fn decode_verify_report(
     report_text: &str,
     source_name: &str,
 ) -> Result<DecodedVerifyReport, String> {
@@ -581,259 +422,7 @@ fn normalize_verify_diagnostic_for_report(diag: &str, args: &VerifyArgs) -> Stri
     out
 }
 
-pub(crate) fn run_policy(policy_path: &str, contracts_path: &str, evidence: bool) -> ExitCode {
-    let policy = match load_policy_file(policy_path) {
-        Ok(policy) => policy,
-        Err(err) => {
-            eprintln!("{}", err);
-            return ExitCode::from(EXIT_INVALID_INPUT);
-        }
-    };
-
-    let contracts_text = match fs::read_to_string(Path::new(contracts_path)) {
-        Ok(text) => text,
-        Err(err) => {
-            eprintln!("failed to read contracts '{}': {}", contracts_path, err);
-            return ExitCode::from(EXIT_INVALID_INPUT);
-        }
-    };
-    let contracts = match decode_contracts_bundle(&contracts_text, contracts_path) {
-        Ok(bundle) => bundle,
-        Err(err) => {
-            eprintln!("{}", err);
-            return ExitCode::from(EXIT_INVALID_INPUT);
-        }
-    };
-
-    let violations = evaluate_policy(&policy, &contracts);
-    if violations.is_empty() {
-        ExitCode::SUCCESS
-    } else {
-        print_policy_violations(&violations, evidence);
-        ExitCode::from(EXIT_POLICY_VIOLATION)
-    }
-}
-
-pub(crate) fn run_inspect(contracts_path: &str) -> ExitCode {
-    let contracts_text = match fs::read_to_string(Path::new(contracts_path)) {
-        Ok(text) => text,
-        Err(err) => {
-            eprintln!("failed to read contracts '{}': {}", contracts_path, err);
-            return ExitCode::from(EXIT_INVALID_INPUT);
-        }
-    };
-    let contracts = match decode_contracts_bundle(&contracts_text, contracts_path) {
-        Ok(bundle) => bundle,
-        Err(err) => {
-            eprintln!("{}", err);
-            return ExitCode::from(EXIT_INVALID_INPUT);
-        }
-    };
-
-    println!("{}", format_contracts_inspect_summary(&contracts));
-    ExitCode::SUCCESS
-}
-
-pub(crate) fn run_inspect_report(report_path: &str) -> ExitCode {
-    let report_text = match fs::read_to_string(Path::new(report_path)) {
-        Ok(text) => text,
-        Err(err) => {
-            eprintln!("failed to read verify report '{}': {}", report_path, err);
-            return ExitCode::from(EXIT_INVALID_INPUT);
-        }
-    };
-    let report = match decode_verify_report(&report_text, report_path) {
-        Ok(report) => report,
-        Err(err) => {
-            eprintln!("{}", err);
-            return ExitCode::from(EXIT_INVALID_INPUT);
-        }
-    };
-
-    println!("{}", format_verify_report_inspect_summary(&report));
-    ExitCode::SUCCESS
-}
-
-pub(crate) fn run_report(metrics_csv: &str, path: &str) -> ExitCode {
-    let metrics = metrics_csv
-        .split(',')
-        .map(|m| m.trim().to_string())
-        .filter(|m| !m.is_empty())
-        .collect::<Vec<_>>();
-
-    if metrics.is_empty() {
-        eprintln!("report metric list is empty");
-        print_usage();
-        return ExitCode::from(2);
-    }
-
-    for metric in &metrics {
-        if metric != "max_lock_depth" && metric != "no_yield_spans" {
-            eprintln!("unsupported report metric '{}'", metric);
-            print_usage();
-            return ExitCode::from(2);
-        }
-    }
-
-    let module = match compile_file(Path::new(path)) {
-        Ok(module) => module,
-        Err(errs) => {
-            print_errors(&errs);
-            return ExitCode::from(1);
-        }
-    };
-
-    let (report, errs) = analyze(&module);
-    if !errs.is_empty() {
-        print_errors(&errs);
-        return ExitCode::from(1);
-    }
-
-    match emit_report_json(&report, &metrics) {
-        Ok(text) => {
-            println!("{}", text);
-            ExitCode::SUCCESS
-        }
-        Err(err) => {
-            eprintln!("{}", err);
-            ExitCode::from(1)
-        }
-    }
-}
-
-fn write_output_files(outputs: &[(String, String)]) -> Result<(), String> {
-    if outputs.is_empty() {
-        return Ok(());
-    }
-
-    let mut final_paths = BTreeSet::<&str>::new();
-    for (path, _) in outputs {
-        if !final_paths.insert(path.as_str()) {
-            return Err(format!("duplicate output path '{}'", path));
-        }
-        if Path::new(path).exists() {
-            return Err(format!(
-                "refusing to overwrite existing output '{}'; remove it first",
-                path
-            ));
-        }
-    }
-
-    let mut staged = Vec::<(String, String)>::new();
-    for (idx, (path, payload)) in outputs.iter().enumerate() {
-        let tmp = format!("{}.kernriftc.tmp.{}.{}", path, std::process::id(), idx);
-        fs::write(Path::new(&tmp), payload).map_err(|e| {
-            cleanup_temp_paths(&staged);
-            format!("failed to stage output '{}': {}", path, e)
-        })?;
-        staged.push((tmp, path.clone()));
-    }
-
-    let mut committed = Vec::<String>::new();
-    for (tmp, final_path) in &staged {
-        if let Err(err) = fs::rename(Path::new(tmp), Path::new(final_path)) {
-            cleanup_temp_paths(&staged);
-            cleanup_final_paths(&committed);
-            return Err(format!(
-                "failed to commit output '{}' from '{}': {}",
-                final_path, tmp, err
-            ));
-        }
-        committed.push(final_path.clone());
-    }
-
-    Ok(())
-}
-
-fn cleanup_temp_paths(staged: &[(String, String)]) {
-    for (tmp, _) in staged {
-        let _ = fs::remove_file(Path::new(tmp));
-    }
-}
-
-fn cleanup_final_paths(paths: &[String]) {
-    for path in paths {
-        let _ = fs::remove_file(Path::new(path));
-    }
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    let mut out = String::with_capacity(64);
-    for b in digest {
-        out.push(nibble_to_hex((b >> 4) & 0x0f));
-        out.push(nibble_to_hex(b & 0x0f));
-    }
-    out
-}
-
-fn nibble_to_hex(n: u8) -> char {
-    debug_assert!(n < 16);
-    match n {
-        0..=9 => (b'0' + n) as char,
-        10..=15 => (b'a' + (n - 10)) as char,
-        _ => unreachable!(),
-    }
-}
-
-fn normalize_hex(text: &str, expected_len: usize, label: &str) -> Result<String, String> {
-    let normalized = text.trim().to_ascii_lowercase();
-    if normalized.len() != expected_len {
-        return Err(format!(
-            "invalid hex in '{}': expected {} hex chars, got {}",
-            label,
-            expected_len,
-            normalized.len()
-        ));
-    }
-    if !normalized.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(format!(
-            "invalid hex in '{}': value contains non-hex characters",
-            label
-        ));
-    }
-    Ok(normalized)
-}
-
-fn decode_hex_fixed<const N: usize>(text: &str, label: &str) -> Result<[u8; N], String> {
-    let normalized = normalize_hex(text, N * 2, label)?;
-    let mut out = [0_u8; N];
-    let bytes = normalized.as_bytes();
-    for i in 0..N {
-        let hi = hex_char_to_nibble(bytes[i * 2] as char)
-            .ok_or_else(|| format!("invalid hex in '{}': bad nibble", label))?;
-        let lo = hex_char_to_nibble(bytes[i * 2 + 1] as char)
-            .ok_or_else(|| format!("invalid hex in '{}': bad nibble", label))?;
-        out[i] = (hi << 4) | lo;
-    }
-    Ok(out)
-}
-
-fn hex_char_to_nibble(c: char) -> Option<u8> {
-    match c {
-        '0'..='9' => Some((c as u8) - b'0'),
-        'a'..='f' => Some((c as u8) - b'a' + 10),
-        'A'..='F' => Some((c as u8) - b'A' + 10),
-        _ => None,
-    }
-}
-
-fn load_signing_key_hex(path: &str) -> Result<SigningKey, String> {
-    let text = fs::read_to_string(Path::new(path))
-        .map_err(|e| format!("failed to read signing key '{}': {}", path, e))?;
-    let key_bytes = decode_hex_fixed::<32>(&text, path)?;
-    Ok(SigningKey::from_bytes(&key_bytes))
-}
-
-fn load_verifying_key_hex(path: &str) -> Result<VerifyingKey, String> {
-    let text = fs::read_to_string(Path::new(path))
-        .map_err(|e| format!("failed to read public key '{}': {}", path, e))?;
-    let key_bytes = decode_hex_fixed::<32>(&text, path)?;
-    VerifyingKey::from_bytes(&key_bytes)
-        .map_err(|e| format!("invalid public key '{}': {}", path, e))
-}
-
-fn format_verify_report_inspect_summary(report: &DecodedVerifyReport) -> String {
+pub(super) fn format_verify_report_inspect_summary(report: &DecodedVerifyReport) -> String {
     let mut lines = vec![
         format!("schema: {}", report.schema_version),
         format!("result: {}", report.result),
