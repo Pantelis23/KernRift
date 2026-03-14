@@ -8529,3 +8529,348 @@ fn verify_report_records_hash_mismatch_deterministically() {
     fs::remove_file(&hash_path).ok();
     fs::remove_file(&report_path).ok();
 }
+
+#[test]
+fn verify_report_signature_pass_is_stable_and_path_stripped() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("callee_acquires_lock.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path = std::env::temp_dir().join(format!("kernrift-vrf-sig-pass-{}.json", ts));
+    let hash_path = std::env::temp_dir().join(format!("kernrift-vrf-sig-pass-{}.sha256", ts));
+    let sig_path = std::env::temp_dir().join(format!("kernrift-vrf-sig-pass-{}.sig", ts));
+    let report_path =
+        std::env::temp_dir().join(format!("kernrift-vrf-sig-pass-{}.report.json", ts));
+    let secret_path = std::env::temp_dir().join(format!("kernrift-vrf-sig-pass-secret-{}.hex", ts));
+    let pubkey_path = std::env::temp_dir().join(format!("kernrift-vrf-sig-pass-pubkey-{}.hex", ts));
+
+    write_test_keypair(&secret_path, &pubkey_path);
+
+    let mut check_cmd: Command = cargo_bin_cmd!("kernriftc");
+    check_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg("--hash-out")
+        .arg(hash_path.as_os_str())
+        .arg("--sign-ed25519")
+        .arg(secret_path.as_os_str())
+        .arg("--sig-out")
+        .arg(sig_path.as_os_str())
+        .arg(fixture.as_os_str());
+    check_cmd.assert().success();
+
+    let mut verify_cmd: Command = cargo_bin_cmd!("kernriftc");
+    verify_cmd
+        .current_dir(&root)
+        .arg("verify")
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str())
+        .arg("--hash")
+        .arg(hash_path.as_os_str())
+        .arg("--sig")
+        .arg(sig_path.as_os_str())
+        .arg("--pubkey")
+        .arg(pubkey_path.as_os_str())
+        .arg("--report")
+        .arg(report_path.as_os_str());
+    verify_cmd.assert().success();
+
+    let report_text = fs::read_to_string(&report_path).expect("read verify report");
+    let report_json: Value = serde_json::from_str(&report_text).expect("verify report json");
+
+    assert_eq!(report_json["result"], Value::String("pass".to_string()));
+    assert_eq!(report_json["signature"]["checked"], Value::Bool(true));
+    assert_eq!(report_json["signature"]["valid"], Value::Bool(true));
+    assert_eq!(
+        report_json["diagnostics"],
+        Value::Array(vec![]),
+        "verify report diagnostics should be empty on signature pass"
+    );
+
+    let sig_name = sig_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .expect("sig basename");
+    let pubkey_name = pubkey_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .expect("pubkey basename");
+    let report_sig_path = report_json["inputs"]["sig"]
+        .as_str()
+        .expect("report sig path");
+    let report_pubkey_path = report_json["inputs"]["pubkey"]
+        .as_str()
+        .expect("report pubkey path");
+    assert_eq!(report_sig_path, sig_name);
+    assert_eq!(report_pubkey_path, pubkey_name);
+    assert!(
+        !report_sig_path.contains('/'),
+        "verify report should strip absolute signature path"
+    );
+    assert!(
+        !report_pubkey_path.contains('/'),
+        "verify report should strip absolute pubkey path"
+    );
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&hash_path).ok();
+    fs::remove_file(&sig_path).ok();
+    fs::remove_file(&report_path).ok();
+    fs::remove_file(&secret_path).ok();
+    fs::remove_file(&pubkey_path).ok();
+}
+
+#[test]
+fn verify_report_signature_mismatch_records_deny_deterministically() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("callee_acquires_lock.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path =
+        std::env::temp_dir().join(format!("kernrift-vrf-sig-deny-contracts-{}.json", ts));
+    let hash_path = std::env::temp_dir().join(format!("kernrift-vrf-sig-deny-hash-{}.sha256", ts));
+    let sig_path = std::env::temp_dir().join(format!("kernrift-vrf-sig-deny-sig-{}.sig", ts));
+    let report_path =
+        std::env::temp_dir().join(format!("kernrift-vrf-sig-deny-report-{}.json", ts));
+    let secret_path = std::env::temp_dir().join(format!("kernrift-vrf-sig-deny-secret-{}.hex", ts));
+    let pubkey_path = std::env::temp_dir().join(format!("kernrift-vrf-sig-deny-pubkey-{}.hex", ts));
+
+    write_test_keypair(&secret_path, &pubkey_path);
+
+    let mut check_cmd: Command = cargo_bin_cmd!("kernriftc");
+    check_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg("--hash-out")
+        .arg(hash_path.as_os_str())
+        .arg("--sign-ed25519")
+        .arg(secret_path.as_os_str())
+        .arg("--sig-out")
+        .arg(sig_path.as_os_str())
+        .arg(fixture.as_os_str());
+    check_cmd.assert().success();
+
+    fs::write(
+        &sig_path,
+        format!("{}\n", BASE64_STANDARD.encode([0_u8; 64])),
+    )
+    .expect("tamper signature");
+
+    let mut verify_cmd: Command = cargo_bin_cmd!("kernriftc");
+    verify_cmd
+        .current_dir(&root)
+        .arg("verify")
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str())
+        .arg("--hash")
+        .arg(hash_path.as_os_str())
+        .arg("--sig")
+        .arg(sig_path.as_os_str())
+        .arg("--pubkey")
+        .arg(pubkey_path.as_os_str())
+        .arg("--report")
+        .arg(report_path.as_os_str());
+    verify_cmd.assert().failure().code(1);
+
+    let report_text = fs::read_to_string(&report_path).expect("read verify report");
+    let report_json: Value = serde_json::from_str(&report_text).expect("verify report json");
+    assert_eq!(report_json["result"], Value::String("deny".to_string()));
+    assert_eq!(report_json["hash"]["matched"], Value::Bool(true));
+    assert_eq!(report_json["signature"]["checked"], Value::Bool(true));
+    assert_eq!(report_json["signature"]["valid"], Value::Bool(false));
+
+    let diagnostics = report_json["diagnostics"]
+        .as_array()
+        .expect("diagnostics array")
+        .iter()
+        .map(|v| v.as_str().expect("diag string").to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(diagnostics.len(), 1);
+    assert!(
+        diagnostics[0].starts_with("verify: SIG_MISMATCH:"),
+        "unexpected diagnostics: {:?}",
+        diagnostics
+    );
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&hash_path).ok();
+    fs::remove_file(&sig_path).ok();
+    fs::remove_file(&report_path).ok();
+    fs::remove_file(&secret_path).ok();
+    fs::remove_file(&pubkey_path).ok();
+}
+
+#[test]
+fn verify_report_invalid_input_normalizes_diagnostic_paths() {
+    let root = repo_root();
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path = std::env::temp_dir().join(format!("kernrift-vrf-missing-{}.json", ts));
+    let hash_path = std::env::temp_dir().join(format!("kernrift-vrf-missing-{}.sha256", ts));
+    let report_path = std::env::temp_dir().join(format!("kernrift-vrf-missing-{}.report.json", ts));
+
+    fs::remove_file(&contracts_path).ok();
+    fs::write(
+        &hash_path,
+        "0000000000000000000000000000000000000000000000000000000000000000\n",
+    )
+    .expect("write hash");
+
+    let mut verify_cmd: Command = cargo_bin_cmd!("kernriftc");
+    verify_cmd
+        .current_dir(&root)
+        .arg("verify")
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str())
+        .arg("--hash")
+        .arg(hash_path.as_os_str())
+        .arg("--report")
+        .arg(report_path.as_os_str());
+    verify_cmd.assert().failure().code(2);
+
+    let report_text = fs::read_to_string(&report_path).expect("read verify report");
+    let report_json: Value = serde_json::from_str(&report_text).expect("verify report json");
+    assert_eq!(
+        report_json["result"],
+        Value::String("invalid_input".to_string())
+    );
+    assert_eq!(report_json["signature"]["checked"], Value::Bool(false));
+    assert_eq!(report_json["signature"]["valid"], Value::Null);
+    assert_eq!(report_json["hash"]["matched"], Value::Bool(false));
+
+    let contracts_name = contracts_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .expect("contracts basename");
+    let report_contracts_path = report_json["inputs"]["contracts"]
+        .as_str()
+        .expect("report contracts path");
+    assert_eq!(report_contracts_path, contracts_name);
+
+    let diagnostics = report_json["diagnostics"]
+        .as_array()
+        .expect("diagnostics array")
+        .iter()
+        .map(|v| v.as_str().expect("diag string").to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(diagnostics.len(), 1);
+    assert!(
+        diagnostics[0].starts_with(&format!("failed to read contracts '{}':", contracts_name)),
+        "unexpected diagnostics: {:?}",
+        diagnostics
+    );
+    assert!(
+        !diagnostics[0].contains('/'),
+        "diagnostic path should be normalized to basename"
+    );
+
+    fs::remove_file(&hash_path).ok();
+    fs::remove_file(&report_path).ok();
+}
+
+#[test]
+fn inspect_report_generated_signature_pass_summary_is_exact() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("callee_acquires_lock.kr");
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let contracts_path =
+        std::env::temp_dir().join(format!("kernrift-inspect-sig-pass-contracts-{}.json", ts));
+    let hash_path =
+        std::env::temp_dir().join(format!("kernrift-inspect-sig-pass-hash-{}.sha256", ts));
+    let sig_path = std::env::temp_dir().join(format!("kernrift-inspect-sig-pass-sig-{}.sig", ts));
+    let report_path =
+        std::env::temp_dir().join(format!("kernrift-inspect-sig-pass-report-{}.json", ts));
+    let secret_path =
+        std::env::temp_dir().join(format!("kernrift-inspect-sig-pass-secret-{}.hex", ts));
+    let pubkey_path =
+        std::env::temp_dir().join(format!("kernrift-inspect-sig-pass-pubkey-{}.hex", ts));
+
+    write_test_keypair(&secret_path, &pubkey_path);
+
+    let mut check_cmd: Command = cargo_bin_cmd!("kernriftc");
+    check_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg("--hash-out")
+        .arg(hash_path.as_os_str())
+        .arg("--sign-ed25519")
+        .arg(secret_path.as_os_str())
+        .arg("--sig-out")
+        .arg(sig_path.as_os_str())
+        .arg(fixture.as_os_str());
+    check_cmd.assert().success();
+
+    let mut verify_cmd: Command = cargo_bin_cmd!("kernriftc");
+    verify_cmd
+        .current_dir(&root)
+        .arg("verify")
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str())
+        .arg("--hash")
+        .arg(hash_path.as_os_str())
+        .arg("--sig")
+        .arg(sig_path.as_os_str())
+        .arg("--pubkey")
+        .arg(pubkey_path.as_os_str())
+        .arg("--report")
+        .arg(report_path.as_os_str());
+    verify_cmd.assert().success();
+
+    let mut inspect_cmd: Command = cargo_bin_cmd!("kernriftc");
+    inspect_cmd
+        .current_dir(&root)
+        .arg("inspect-report")
+        .arg("--report")
+        .arg(report_path.as_os_str());
+    let assert = inspect_cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let lines = stdout.lines().collect::<Vec<_>>();
+
+    let sig_name = sig_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .expect("sig basename");
+    let pubkey_name = pubkey_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .expect("pubkey basename");
+
+    assert_eq!(lines[0], "schema: kernrift_verify_report_v1");
+    assert_eq!(lines[1], "result: pass");
+    assert!(lines.contains(&format!("sig: {}", sig_name).as_str()));
+    assert!(lines.contains(&format!("pubkey: {}", pubkey_name).as_str()));
+    assert!(lines.contains(&"checked: true"));
+    assert!(lines.contains(&"valid: true"));
+    assert!(lines.contains(&"diagnostics: 0"));
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&hash_path).ok();
+    fs::remove_file(&sig_path).ok();
+    fs::remove_file(&report_path).ok();
+    fs::remove_file(&secret_path).ok();
+    fs::remove_file(&pubkey_path).ok();
+}
