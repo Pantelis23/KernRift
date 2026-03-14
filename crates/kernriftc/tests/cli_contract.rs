@@ -5235,6 +5235,19 @@ fn check_accepts_mmio_register_absolute_literal_fixture() {
 }
 
 #[test]
+fn check_accepts_mmio_raw_literal_with_opt_in_fixture() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("mmio_reg_raw_literal_opt_in.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    cmd.assert().success();
+}
+
+#[test]
 fn check_rejects_symbolic_mmio_base_without_offset_zero_register_fixture() {
     let root = repo_root();
     let fixture = root
@@ -5411,6 +5424,26 @@ fn check_rejects_mmio_register_absolute_literal_width_mismatch_fixture() {
     assert_eq!(
         stderr.lines().next(),
         Some("mmio_write<u32>(0x1008, x) width mismatch: register 'UART0.CR' is u16")
+    );
+}
+
+#[test]
+fn check_rejects_mmio_raw_literal_without_opt_in_fixture() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("mmio_reg_raw_literal_without_opt_in.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some(
+            "unresolved raw mmio address '0x1014'; declare a matching mmio_reg or enable raw mmio access"
+        )
     );
 }
 

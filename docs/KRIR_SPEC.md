@@ -92,6 +92,8 @@ Register offsets are semantically matched by normalized numeric value (`4 == 0x0
 Symbolic MMIO base operands (`mmio_*<T>(BASE, ...)`) are resolved as offset `0` against this register table.
 If an integer-literal MMIO address exactly matches `BASE_ADDR + OFFSET` for a declared register, access and width checks are enforced against that register.
 Duplicate absolute register addresses are rejected deterministically when two declarations compute the same numeric `BASE_ADDR + OFFSET`.
+If a module declares MMIO structure (`mmio` / `mmio_reg`), unmatched raw integer-literal MMIO addresses require `@module_caps(MmioRaw)`; otherwise they are rejected deterministically.
+Modules with no MMIO declarations keep prior unmatched integer-literal MMIO behavior.
 
 ### Defaults (MVP)
 

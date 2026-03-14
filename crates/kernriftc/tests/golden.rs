@@ -518,6 +518,24 @@ fn golden_mmio_typed_slice_checks_are_stable() {
         reg_absolute_literal.stderr
     );
 
+    let reg_raw_literal_opt_in_fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("mmio_reg_raw_literal_opt_in.kr");
+    let reg_raw_literal_opt_in = run_cmd(
+        bin,
+        &root,
+        &[
+            "check".to_string(),
+            reg_raw_literal_opt_in_fixture.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        reg_raw_literal_opt_in.code, 0,
+        "raw literal mmio fixture with opt-in should pass, stderr={}",
+        reg_raw_literal_opt_in.stderr
+    );
+
     let reg_offset_fail_fixture = root
         .join("tests")
         .join("must_fail")
@@ -714,6 +732,30 @@ fn golden_mmio_typed_slice_checks_are_stable() {
     assert_eq!(
         reg_abs_width_fail.stderr.lines().next(),
         Some("mmio_write<u32>(0x1008, x) width mismatch: register 'UART0.CR' is u16")
+    );
+
+    let reg_raw_literal_no_optin_fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("mmio_reg_raw_literal_without_opt_in.kr");
+    let reg_raw_literal_no_optin = run_cmd(
+        bin,
+        &root,
+        &[
+            "check".to_string(),
+            reg_raw_literal_no_optin_fixture.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        reg_raw_literal_no_optin.code, 1,
+        "raw literal mmio fixture without opt-in should fail, stderr={}",
+        reg_raw_literal_no_optin.stderr
+    );
+    assert_eq!(
+        reg_raw_literal_no_optin.stderr.lines().next(),
+        Some(
+            "unresolved raw mmio address '0x1014'; declare a matching mmio_reg or enable raw mmio access"
+        )
     );
 
     let reg_base_zero_width_fixture = root

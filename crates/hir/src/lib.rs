@@ -965,6 +965,8 @@ pub fn lower_to_krir_with_surface(
     let mut errors = Vec::new();
     let mut functions = Vec::new();
     let mut names = BTreeSet::new();
+    let module_declares_mmio_structure = module_declares_mmio_structure(ast);
+    let module_allows_raw_mmio_literals = module_allows_raw_mmio_literals(&ast.module_caps);
     let (mmio_bases, mmio_base_names, mmio_errors) = collect_mmio_bases(ast);
     let mmio_base_numeric_addrs = collect_mmio_base_numeric_addrs(&mmio_bases);
     let (mmio_registers, mmio_register_rules, mmio_absolute_register_rules, mmio_register_errors) =
@@ -984,6 +986,8 @@ pub fn lower_to_krir_with_surface(
             &mmio_base_names,
             &mmio_register_rules,
             &mmio_absolute_register_rules,
+            module_declares_mmio_structure,
+            module_allows_raw_mmio_literals,
             &mut errors,
         );
     }
@@ -1105,6 +1109,7 @@ impl MmioOffsetKey {
 type MmioRegisterRules = BTreeMap<String, BTreeMap<MmioOffsetKey, MmioRegisterRule>>;
 type MmioAbsoluteRegisterRules = BTreeMap<u128, MmioRegisterRule>;
 const MMIO_SYMBOLIC_BASE_ZERO_OFFSET: &str = "0";
+const MMIO_RAW_MODULE_CAP: &str = "MmioRaw";
 
 fn collect_mmio_registers(
     ast: &ModuleAst,
@@ -1199,6 +1204,8 @@ fn validate_mmio_address_bases_in_stmts(
     declared_bases: &BTreeSet<String>,
     declared_registers: &MmioRegisterRules,
     declared_absolute_registers: &MmioAbsoluteRegisterRules,
+    module_declares_mmio_structure: bool,
+    module_allows_raw_mmio_literals: bool,
     errors: &mut Vec<String>,
 ) {
     for stmt in stmts {
@@ -1208,6 +1215,8 @@ fn validate_mmio_address_bases_in_stmts(
                 declared_bases,
                 declared_registers,
                 declared_absolute_registers,
+                module_declares_mmio_structure,
+                module_allows_raw_mmio_literals,
                 errors,
             ),
             Stmt::MmioRead { ty, addr } => {
@@ -1240,13 +1249,22 @@ fn validate_mmio_address_bases_in_stmts(
                             );
                         }
                         ParserMmioAddrExpr::IntLiteral(literal) => {
-                            validate_mmio_register_read_absolute(
+                            let matched = validate_mmio_register_read_absolute(
                                 literal,
                                 *ty,
                                 addr,
                                 declared_absolute_registers,
                                 errors,
                             );
+                            if !matched
+                                && module_declares_mmio_structure
+                                && !module_allows_raw_mmio_literals
+                            {
+                                errors.push(format!(
+                                    "unresolved raw mmio address '{}'; declare a matching mmio_reg or enable raw mmio access",
+                                    literal
+                                ));
+                            }
                         }
                     }
                 }
@@ -1283,7 +1301,7 @@ fn validate_mmio_address_bases_in_stmts(
                             );
                         }
                         ParserMmioAddrExpr::IntLiteral(literal) => {
-                            validate_mmio_register_write_absolute(
+                            let matched = validate_mmio_register_write_absolute(
                                 literal,
                                 *ty,
                                 addr,
@@ -1291,6 +1309,15 @@ fn validate_mmio_address_bases_in_stmts(
                                 declared_absolute_registers,
                                 errors,
                             );
+                            if !matched
+                                && module_declares_mmio_structure
+                                && !module_allows_raw_mmio_literals
+                            {
+                                errors.push(format!(
+                                    "unresolved raw mmio address '{}'; declare a matching mmio_reg or enable raw mmio access",
+                                    literal
+                                ));
+                            }
                         }
                     }
                 }
@@ -1355,15 +1382,16 @@ fn validate_mmio_register_read_absolute(
     addr: &ParserMmioAddrExpr,
     declared_absolute_registers: &MmioAbsoluteRegisterRules,
     errors: &mut Vec<String>,
-) {
+) -> bool {
     let Some(addr_numeric) = int_literal_numeric_value(literal) else {
-        return;
+        return false;
     };
     let Some(rule) = declared_absolute_registers.get(&addr_numeric) else {
-        return;
+        return false;
     };
     let invocation = format_mmio_read_invocation(ty, addr);
     validate_mmio_read_rule(rule, &invocation, ty, errors);
+    true
 }
 
 fn validate_mmio_register_write_absolute(
@@ -1373,15 +1401,24 @@ fn validate_mmio_register_write_absolute(
     value: &ParserMmioValueExpr,
     declared_absolute_registers: &MmioAbsoluteRegisterRules,
     errors: &mut Vec<String>,
-) {
+) -> bool {
     let Some(addr_numeric) = int_literal_numeric_value(literal) else {
-        return;
+        return false;
     };
     let Some(rule) = declared_absolute_registers.get(&addr_numeric) else {
-        return;
+        return false;
     };
     let invocation = format_mmio_write_invocation(ty, addr, value);
     validate_mmio_write_rule(rule, &invocation, ty, errors);
+    true
+}
+
+fn module_declares_mmio_structure(ast: &ModuleAst) -> bool {
+    !ast.mmio_bases.is_empty() || !ast.mmio_registers.is_empty()
+}
+
+fn module_allows_raw_mmio_literals(module_caps: &[String]) -> bool {
+    module_caps.iter().any(|cap| cap == MMIO_RAW_MODULE_CAP)
 }
 
 fn validate_mmio_read_rule(
@@ -2268,7 +2305,11 @@ mod tests {
             lower_to_krir_with_surface(&ast, SurfaceProfile::Stable).expect_err("should reject");
         assert_eq!(
             errs,
-            vec!["undeclared mmio base 'UART0' in register declaration 'UART0.DR'".to_string()]
+            vec![
+                "undeclared mmio base 'UART0' in register declaration 'UART0.DR'".to_string(),
+                "unresolved raw mmio address '0x1000'; declare a matching mmio_reg or enable raw mmio access"
+                    .to_string()
+            ]
         );
     }
 
@@ -2303,6 +2344,44 @@ mod tests {
                 "op": "mmio_read",
                 "ty": "u32",
                 "addr": {"kind": "int_literal", "value": "0x1000"}
+            }])
+        );
+    }
+
+    #[test]
+    fn analysis_krir_lowering_rejects_unmatched_raw_mmio_literal_when_mmio_structure_declared() {
+        let ast = parse_module("mmio UART0 = 0x1000;\nfn entry() { mmio_write<u32>(0x1014, x); }")
+            .expect("parse");
+        let errs =
+            lower_to_krir_with_surface(&ast, SurfaceProfile::Stable).expect_err("should reject");
+        assert_eq!(
+            errs,
+            vec![
+                "unresolved raw mmio address '0x1014'; declare a matching mmio_reg or enable raw mmio access"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn analysis_krir_lowering_allows_unmatched_raw_mmio_literal_with_mmioraw_module_cap() {
+        let ast = parse_module(
+            "@module_caps(MmioRaw);\nmmio UART0 = 0x1000;\nfn entry() { mmio_write<u32>(0x1014, x); }",
+        )
+        .expect("parse");
+        let lowered = lower_to_krir_with_surface(&ast, SurfaceProfile::Stable).expect("lower");
+        let entry = lowered
+            .functions
+            .iter()
+            .find(|function| function.name == "entry")
+            .expect("entry function");
+        assert_eq!(
+            serde_json::to_value(&entry.ops).expect("serialize ops"),
+            json!([{
+                "op": "mmio_write",
+                "ty": "u32",
+                "addr": {"kind": "int_literal", "value": "0x1014"},
+                "value": {"kind": "ident", "name": "x"}
             }])
         );
     }

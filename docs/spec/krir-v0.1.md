@@ -113,7 +113,9 @@ Notes:
   - `T` must match the declared register `TYPE`.
 - Integer-literal MMIO addresses remain valid without declaration.
   - If an integer literal exactly matches a declared register absolute address (`BASE_ADDR + OFFSET`), access and width checks are enforced for that register.
-  - If no exact absolute match exists, integer-literal MMIO behavior remains unchanged.
+  - If no exact absolute match exists and the module declares no MMIO structure (`mmio` / `mmio_reg`), integer-literal MMIO behavior remains unchanged.
+  - If the module declares MMIO structure and no exact absolute match exists, unmatched raw integer-literal MMIO requires `@module_caps(MmioRaw)`.
+  - Without `@module_caps(MmioRaw)`, unmatched raw integer-literal MMIO is rejected deterministically.
 
 ### Check/analyze semantics
 
