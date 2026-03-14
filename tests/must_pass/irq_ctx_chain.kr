@@ -5,4 +5,4 @@ fn isr() { mid(); }
 fn mid() { helper(); }
 
 @ctx(irq)
-fn helper() { mmio_read(); }
+fn helper() { mmio_read<u32>(mmio_status); }

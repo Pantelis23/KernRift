@@ -45,8 +45,15 @@ pub enum Stmt {
     BlockPoint,
     Acquire(String),
     Release(String),
-    MmioRead(MmioScalarType),
-    MmioWrite(MmioScalarType),
+    MmioRead {
+        ty: MmioScalarType,
+        addr: String,
+    },
+    MmioWrite {
+        ty: MmioScalarType,
+        addr: String,
+        value: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -482,18 +489,40 @@ fn parse_stmt(stmt: &str) -> Result<Option<Stmt>, String> {
 }
 
 fn parse_typed_mmio_stmt(name: &str, args: &str) -> Result<Option<Stmt>, String> {
+    let lowered = name.to_ascii_lowercase();
+    if lowered == "mmio_read" {
+        return Err("mmio_read() legacy form is unsupported; use mmio_read<T>(addr)".to_string());
+    }
+    if lowered == "mmio_write" {
+        return Err(
+            "mmio_write() legacy form is unsupported; use mmio_write<T>(addr, value)".to_string(),
+        );
+    }
+
     if let Some(ty) = parse_mmio_scalar_from_name(name, "mmio_read")? {
-        if !args.trim().is_empty() {
-            return Err("mmio_read<T>() must have no arguments".to_string());
+        let parts = split_csv(args);
+        if parts.len() != 1 {
+            return Err("mmio_read<T>(addr) requires exactly one address argument".to_string());
         }
-        return Ok(Some(Stmt::MmioRead(ty)));
+        return Ok(Some(Stmt::MmioRead {
+            ty,
+            addr: parts[0].trim().to_string(),
+        }));
     }
 
     if let Some(ty) = parse_mmio_scalar_from_name(name, "mmio_write")? {
-        if !args.trim().is_empty() {
-            return Err("mmio_write<T>() must have no arguments".to_string());
+        let parts = split_csv(args);
+        if parts.len() != 2 {
+            return Err(
+                "mmio_write<T>(addr, value) requires exactly two arguments: address and value"
+                    .to_string(),
+            );
         }
-        return Ok(Some(Stmt::MmioWrite(ty)));
+        return Ok(Some(Stmt::MmioWrite {
+            ty,
+            addr: parts[0].trim().to_string(),
+            value: parts[1].trim().to_string(),
+        }));
     }
 
     Ok(None)
@@ -506,10 +535,6 @@ fn parse_mmio_scalar_from_name(name: &str, base: &str) -> Result<Option<MmioScal
     }
 
     let suffix = &lowered[base.len()..];
-    if suffix.is_empty() {
-        return Ok(Some(MmioScalarType::U32));
-    }
-
     if suffix.starts_with('<') {
         if !suffix.ends_with('>') {
             return Err(format!(
@@ -533,8 +558,8 @@ fn parse_mmio_scalar_from_name(name: &str, base: &str) -> Result<Option<MmioScal
     }
 
     Err(format!(
-        "malformed {} invocation '{}'; expected {}() or {}<T>()",
-        base, name, base, base
+        "malformed {} invocation '{}'; expected {}<T>(...)",
+        base, name, base
     ))
 }
 
@@ -600,8 +625,8 @@ mod tests {
     fn parse_typed_mmio_statements() {
         let src = r#"
         fn entry() {
-          mmio_read<u16>();
-          mmio_write<u64>();
+          mmio_read<u16>(uart0);
+          mmio_write<u64>(uart0, value0);
         }
         "#;
         let ast = parse_module(src).expect("parse");
@@ -613,26 +638,30 @@ mod tests {
         assert_eq!(
             entry.body,
             vec![
-                Stmt::MmioRead(MmioScalarType::U16),
-                Stmt::MmioWrite(MmioScalarType::U64)
+                Stmt::MmioRead {
+                    ty: MmioScalarType::U16,
+                    addr: "uart0".to_string()
+                },
+                Stmt::MmioWrite {
+                    ty: MmioScalarType::U64,
+                    addr: "uart0".to_string(),
+                    value: "value0".to_string()
+                }
             ]
         );
     }
 
     #[test]
-    fn parse_untyped_mmio_defaults_to_u32() {
+    fn parse_rejects_legacy_zero_arg_mmio_forms() {
         let src = "fn entry() { mmio_read(); mmio_write(); }";
-        let ast = parse_module(src).expect("parse");
-        let entry = ast
-            .items
-            .iter()
-            .find(|item| item.name == "entry")
-            .expect("entry function");
+        let err = parse_module(src).expect_err("legacy zero-arg mmio should fail");
         assert_eq!(
-            entry.body,
+            err,
             vec![
-                Stmt::MmioRead(MmioScalarType::U32),
-                Stmt::MmioWrite(MmioScalarType::U32)
+                "mmio_read() legacy form is unsupported; use mmio_read<T>(addr) at byte 25"
+                    .to_string(),
+                "mmio_write() legacy form is unsupported; use mmio_write<T>(addr, value) at byte 39"
+                    .to_string()
             ]
         );
     }
@@ -658,6 +687,39 @@ mod tests {
             err,
             vec![
                 "malformed mmio_write typed invocation 'mmio_write<u32'; expected mmio_write<T>() at byte 31"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_rejects_typed_mmio_read_missing_address_argument() {
+        let src = "fn entry() { mmio_read<u32>(); }";
+        let err = parse_module(src).expect_err("missing mmio read arg should fail");
+        assert_eq!(
+            err,
+            vec!["mmio_read<T>(addr) requires exactly one address argument at byte 30".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_rejects_typed_mmio_write_wrong_arity() {
+        let src_missing = "fn entry() { mmio_write<u32>(addr); }";
+        let err_missing = parse_module(src_missing).expect_err("missing value arg should fail");
+        assert_eq!(
+            err_missing,
+            vec![
+                "mmio_write<T>(addr, value) requires exactly two arguments: address and value at byte 35"
+                    .to_string()
+            ]
+        );
+
+        let src_extra = "fn entry() { mmio_write<u32>(addr, value, extra); }";
+        let err_extra = parse_module(src_extra).expect_err("extra value arg should fail");
+        assert_eq!(
+            err_extra,
+            vec![
+                "mmio_write<T>(addr, value) requires exactly two arguments: address and value at byte 49"
                     .to_string()
             ]
         );

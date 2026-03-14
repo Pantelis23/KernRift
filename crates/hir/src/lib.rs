@@ -1266,15 +1266,15 @@ fn lower_stmts_to_canonical_executable(
                 "canonical-exec: function '{}' contains unsupported release({})",
                 function_name, lock_class
             )),
-            Stmt::MmioRead(ty) => errors.push(format!(
+            Stmt::MmioRead { ty, addr } => errors.push(format!(
                 "canonical-exec: function '{}' contains unsupported {}",
                 function_name,
-                format_mmio_invocation("mmio_read", *ty)
+                format_mmio_read_invocation(*ty, addr)
             )),
-            Stmt::MmioWrite(ty) => errors.push(format!(
+            Stmt::MmioWrite { ty, addr, value } => errors.push(format!(
                 "canonical-exec: function '{}' contains unsupported {}",
                 function_name,
-                format_mmio_invocation("mmio_write", *ty)
+                format_mmio_write_invocation(*ty, addr, value)
             )),
         }
     }
@@ -1310,15 +1310,18 @@ fn lower_stmt(stmt: &Stmt, ops: &mut Vec<KrirOp>, eff_used: &mut BTreeSet<Eff>) 
         Stmt::Release(lock_class) => ops.push(KrirOp::Release {
             lock_class: lock_class.clone(),
         }),
-        Stmt::MmioRead(ty) => {
+        Stmt::MmioRead { ty, addr } => {
             ops.push(KrirOp::MmioRead {
                 ty: lower_mmio_scalar_type(*ty),
+                addr: addr.clone(),
             });
             eff_used.insert(Eff::Mmio);
         }
-        Stmt::MmioWrite(ty) => {
+        Stmt::MmioWrite { ty, addr, value } => {
             ops.push(KrirOp::MmioWrite {
                 ty: lower_mmio_scalar_type(*ty),
+                addr: addr.clone(),
+                value: value.clone(),
             });
             eff_used.insert(Eff::Mmio);
         }
@@ -1334,11 +1337,12 @@ fn lower_mmio_scalar_type(ty: ParserMmioScalarType) -> KrirMmioScalarType {
     }
 }
 
-fn format_mmio_invocation(op: &str, ty: ParserMmioScalarType) -> String {
-    if ty == ParserMmioScalarType::U32 {
-        return format!("{}()", op);
-    }
-    format!("{}<{}>()", op, ty.as_str())
+fn format_mmio_read_invocation(ty: ParserMmioScalarType, addr: &str) -> String {
+    format!("mmio_read<{}>({})", ty.as_str(), addr)
+}
+
+fn format_mmio_write_invocation(ty: ParserMmioScalarType, addr: &str, value: &str) -> String {
+    format!("mmio_write<{}>({}, {})", ty.as_str(), addr, value)
 }
 
 fn parse_ctx_attr(attr: &RawAttr) -> Result<Vec<Ctx>, String> {
@@ -1523,19 +1527,21 @@ mod tests {
 
     #[test]
     fn canonical_executable_rejects_typed_mmio_deterministically() {
-        let ast = parse_module("fn entry() { mmio_read<u16>(); }").expect("parse");
+        let ast = parse_module("fn entry() { mmio_read<u16>(mmio_addr); }").expect("parse");
         let errs = lower_to_canonical_executable_with_surface(&ast, SurfaceProfile::Stable)
             .expect_err("typed mmio must be rejected in canonical executable lowering");
         assert_eq!(
             errs,
-            vec!["canonical-exec: function 'entry' contains unsupported mmio_read<u16>()"]
+            vec!["canonical-exec: function 'entry' contains unsupported mmio_read<u16>(mmio_addr)"]
         );
     }
 
     #[test]
     fn analysis_krir_lowering_preserves_typed_mmio_ops() {
-        let ast =
-            parse_module("fn entry() { mmio_read<u16>(); mmio_write<u64>(); }").expect("parse");
+        let ast = parse_module(
+            "fn entry() { mmio_read<u16>(base + 4); mmio_write<u64>(base + 8, payload); }",
+        )
+        .expect("parse");
         let lowered = lower_to_krir_with_surface(&ast, SurfaceProfile::Stable).expect("lower");
         let entry = lowered
             .functions
@@ -1545,8 +1551,8 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&entry.ops).expect("serialize ops"),
             json!([
-                {"op": "mmio_read", "ty": "u16"},
-                {"op": "mmio_write", "ty": "u64"}
+                {"op": "mmio_read", "ty": "u16", "addr": "base + 4"},
+                {"op": "mmio_write", "ty": "u64", "addr": "base + 8", "value": "payload"}
             ])
         );
         assert_eq!(entry.eff_used, vec![krir::Eff::Mmio]);

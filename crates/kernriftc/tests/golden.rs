@@ -330,6 +330,32 @@ fn golden_mmio_typed_slice_checks_are_stable() {
         "unexpected invalid typed mmio diagnostic: {}",
         fail.stderr
     );
+
+    let arity_fail_fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("mmio_invalid_arity.kr");
+    let arity_fail = run_cmd(
+        bin,
+        &root,
+        &[
+            "check".to_string(),
+            arity_fail_fixture.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        arity_fail.code, 1,
+        "invalid typed mmio arity fixture should fail, stderr={}",
+        arity_fail.stderr
+    );
+    let first = arity_fail.stderr.lines().next().unwrap_or_default();
+    assert!(
+        first.starts_with(
+            "mmio_write<T>(addr, value) requires exactly two arguments: address and value at byte "
+        ),
+        "unexpected invalid typed mmio arity diagnostic: {}",
+        arity_fail.stderr
+    );
 }
 
 fn run_cmd(bin: &Path, cwd: &Path, args: &[String]) -> CmdOut {

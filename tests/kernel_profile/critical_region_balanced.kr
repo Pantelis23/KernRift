@@ -1,5 +1,5 @@
 @ctx(boot)
-fn helper() { mmio_read(); }
+fn helper() { mmio_read<u32>(mmio_status); }
 
 @ctx(boot)
 fn entry() {

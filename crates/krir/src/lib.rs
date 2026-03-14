@@ -71,16 +71,29 @@ pub struct FunctionAttrs {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum KrirOp {
-    Call { callee: String },
+    Call {
+        callee: String,
+    },
     CriticalEnter,
     CriticalExit,
     YieldPoint,
     AllocPoint,
     BlockPoint,
-    Acquire { lock_class: String },
-    Release { lock_class: String },
-    MmioRead { ty: MmioScalarType },
-    MmioWrite { ty: MmioScalarType },
+    Acquire {
+        lock_class: String,
+    },
+    Release {
+        lock_class: String,
+    },
+    MmioRead {
+        ty: MmioScalarType,
+        addr: String,
+    },
+    MmioWrite {
+        ty: MmioScalarType,
+        addr: String,
+        value: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -2153,17 +2166,20 @@ mod tests {
     fn krir_mmio_ops_encode_scalar_type_deterministically() {
         assert_eq!(
             serde_json::to_value(super::KrirOp::MmioRead {
-                ty: MmioScalarType::U16
+                ty: MmioScalarType::U16,
+                addr: "mmio_base + 2".to_string()
             })
             .expect("serialize mmio_read"),
-            json!({"op": "mmio_read", "ty": "u16"})
+            json!({"op": "mmio_read", "ty": "u16", "addr": "mmio_base + 2"})
         );
         assert_eq!(
             serde_json::to_value(super::KrirOp::MmioWrite {
-                ty: MmioScalarType::U64
+                ty: MmioScalarType::U64,
+                addr: "mmio_base + 8".to_string(),
+                value: "payload".to_string()
             })
             .expect("serialize mmio_write"),
-            json!({"op": "mmio_write", "ty": "u64"})
+            json!({"op": "mmio_write", "ty": "u64", "addr": "mmio_base + 8", "value": "payload"})
         );
     }
 

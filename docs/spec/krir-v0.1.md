@@ -56,8 +56,9 @@ Notes:
   - `acquire(LockClass)`
   - `release(LockClass)`
   - `yieldpoint()`
-  - `mmio_read<T>()` / `mmio_write<T>()` where `T in {u8,u16,u32,u64}`
-  - `mmio_read()` / `mmio_write()` remain accepted and normalize to `T = u32`
+  - `mmio_read<T>(addr)` where `T in {u8,u16,u32,u64}`
+  - `mmio_write<T>(addr, value)` where `T in {u8,u16,u32,u64}`
+  - `mmio_read()` / `mmio_write()` are rejected as legacy non-addressful forms
   - otherwise `call(callee)`.
 
 ## KRIR v0.1 Semantics
@@ -81,7 +82,7 @@ Notes:
 - `yieldpoint()` marks a scheduler yield point and contributes to yield analysis.
 - `call()` adds call-graph edges and participates in interprocedural checks.
 - `mmio_read/mmio_write` mark `mmio` effect usage.
-- Typed MMIO scalar width is preserved in KRIR ops as `ty`.
+- Typed MMIO scalar width and operands are preserved in KRIR ops as `ty`, `addr`, and `value` (write only).
 
 ### Check/analyze semantics
 
