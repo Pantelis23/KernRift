@@ -1,14 +1,16 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use krir::{
     CallEdge, Ctx, Eff, ExecutableBlock, ExecutableExternDecl, ExecutableFacts, ExecutableFunction,
     ExecutableKrirModule, ExecutableOp as KrExecutableOp, ExecutableSignature,
     ExecutableTerminator, ExecutableValue, ExecutableValueType, Function, FunctionAttrs,
     KrirModule, KrirOp, MmioAddrExpr as KrirMmioAddrExpr, MmioBaseDecl as KrirMmioBaseDecl,
+    MmioRegAccess as KrirMmioRegAccess, MmioRegisterDecl as KrirMmioRegisterDecl,
     MmioScalarType as KrirMmioScalarType, MmioValueExpr as KrirMmioValueExpr,
 };
 use parser::{
     FnAst, MmioAddrExpr as ParserMmioAddrExpr, MmioBaseDecl as ParserMmioBaseDecl,
+    MmioRegAccess as ParserMmioRegAccess, MmioRegisterDecl as ParserMmioRegisterDecl,
     MmioScalarType as ParserMmioScalarType, MmioValueExpr as ParserMmioValueExpr, ModuleAst,
     RawAttr, Stmt, split_csv,
 };
@@ -964,7 +966,10 @@ pub fn lower_to_krir_with_surface(
     let mut functions = Vec::new();
     let mut names = BTreeSet::new();
     let (mmio_bases, mmio_base_names, mmio_errors) = collect_mmio_bases(ast);
+    let (mmio_registers, mmio_register_rules, mmio_register_errors) =
+        collect_mmio_registers(ast, &mmio_base_names);
     errors.extend(mmio_errors);
+    errors.extend(mmio_register_errors);
 
     for item in &ast.items {
         if !names.insert(item.name.clone()) {
@@ -973,7 +978,12 @@ pub fn lower_to_krir_with_surface(
     }
 
     for item in &ast.items {
-        validate_mmio_address_bases_in_stmts(&item.body, &mmio_base_names, &mut errors);
+        validate_mmio_address_bases_in_stmts(
+            &item.body,
+            &mmio_base_names,
+            &mmio_register_rules,
+            &mut errors,
+        );
     }
 
     for item in &ast.items {
@@ -1013,6 +1023,7 @@ pub fn lower_to_krir_with_surface(
     let mut module = KrirModule {
         module_caps: ast.module_caps.clone(),
         mmio_bases,
+        mmio_registers,
         functions,
         call_edges,
     };
@@ -1059,16 +1070,79 @@ fn collect_mmio_bases(ast: &ModuleAst) -> (Vec<KrirMmioBaseDecl>, BTreeSet<Strin
     (out, names, errors)
 }
 
+#[derive(Debug, Clone)]
+struct MmioRegisterRule {
+    full_name: String,
+    ty: ParserMmioScalarType,
+    access: ParserMmioRegAccess,
+}
+
+type MmioRegisterRules = BTreeMap<String, BTreeMap<String, MmioRegisterRule>>;
+
+fn collect_mmio_registers(
+    ast: &ModuleAst,
+    declared_bases: &BTreeSet<String>,
+) -> (Vec<KrirMmioRegisterDecl>, MmioRegisterRules, Vec<String>) {
+    let mut out = Vec::new();
+    let mut names = BTreeSet::new();
+    let mut by_base_and_offset = MmioRegisterRules::new();
+    let mut errors = Vec::new();
+
+    for ParserMmioRegisterDecl {
+        base,
+        name,
+        offset,
+        ty,
+        access,
+    } in &ast.mmio_registers
+    {
+        let full_name = format!("{}.{}", base, name);
+        if !declared_bases.contains(base) {
+            errors.push(format!(
+                "undeclared mmio base '{}' in register declaration '{}'",
+                base, full_name
+            ));
+            continue;
+        }
+        if !names.insert(full_name.clone()) {
+            errors.push(format!("duplicate mmio register '{}'", full_name));
+            continue;
+        }
+
+        out.push(KrirMmioRegisterDecl {
+            base: base.clone(),
+            name: name.clone(),
+            offset: offset.clone(),
+            ty: lower_mmio_scalar_type(*ty),
+            access: lower_mmio_reg_access(*access),
+        });
+        by_base_and_offset.entry(base.clone()).or_default().insert(
+            offset.clone(),
+            MmioRegisterRule {
+                full_name,
+                ty: *ty,
+                access: *access,
+            },
+        );
+    }
+
+    (out, by_base_and_offset, errors)
+}
+
 fn validate_mmio_address_bases_in_stmts(
     stmts: &[Stmt],
     declared_bases: &BTreeSet<String>,
+    declared_registers: &MmioRegisterRules,
     errors: &mut Vec<String>,
 ) {
     for stmt in stmts {
         match stmt {
-            Stmt::Critical(inner) => {
-                validate_mmio_address_bases_in_stmts(inner, declared_bases, errors)
-            }
+            Stmt::Critical(inner) => validate_mmio_address_bases_in_stmts(
+                inner,
+                declared_bases,
+                declared_registers,
+                errors,
+            ),
             Stmt::MmioRead { ty, addr } => {
                 if let Some(base) = mmio_addr_base_name(addr)
                     && !declared_bases.contains(base)
@@ -1078,6 +1152,15 @@ fn validate_mmio_address_bases_in_stmts(
                         base,
                         format_mmio_read_invocation(*ty, addr)
                     ));
+                } else if let ParserMmioAddrExpr::IdentPlusOffset { base, offset } = addr {
+                    validate_mmio_register_read(
+                        base,
+                        offset,
+                        *ty,
+                        addr,
+                        declared_registers,
+                        errors,
+                    );
                 }
             }
             Stmt::MmioWrite { ty, addr, value } => {
@@ -1089,10 +1172,93 @@ fn validate_mmio_address_bases_in_stmts(
                         base,
                         format_mmio_write_invocation(*ty, addr, value)
                     ));
+                } else if let ParserMmioAddrExpr::IdentPlusOffset { base, offset } = addr {
+                    validate_mmio_register_write(
+                        base,
+                        offset,
+                        *ty,
+                        addr,
+                        value,
+                        declared_registers,
+                        errors,
+                    );
                 }
             }
             _ => {}
         }
+    }
+}
+
+fn validate_mmio_register_read(
+    base: &str,
+    offset: &str,
+    ty: ParserMmioScalarType,
+    addr: &ParserMmioAddrExpr,
+    declared_registers: &MmioRegisterRules,
+    errors: &mut Vec<String>,
+) {
+    let invocation = format_mmio_read_invocation(ty, addr);
+    let Some(rule) = declared_registers
+        .get(base)
+        .and_then(|offsets| offsets.get(offset))
+    else {
+        errors.push(format!(
+            "undeclared mmio register offset '{}' for base '{}'",
+            offset, base
+        ));
+        return;
+    };
+
+    if rule.access == ParserMmioRegAccess::Wo {
+        errors.push(format!(
+            "{} violates register access: '{}' is write-only",
+            invocation, rule.full_name
+        ));
+    }
+    if ty != rule.ty {
+        errors.push(format!(
+            "{} width mismatch: register '{}' is {}",
+            invocation,
+            rule.full_name,
+            rule.ty.as_str()
+        ));
+    }
+}
+
+fn validate_mmio_register_write(
+    base: &str,
+    offset: &str,
+    ty: ParserMmioScalarType,
+    addr: &ParserMmioAddrExpr,
+    value: &ParserMmioValueExpr,
+    declared_registers: &MmioRegisterRules,
+    errors: &mut Vec<String>,
+) {
+    let invocation = format_mmio_write_invocation(ty, addr, value);
+    let Some(rule) = declared_registers
+        .get(base)
+        .and_then(|offsets| offsets.get(offset))
+    else {
+        errors.push(format!(
+            "undeclared mmio register offset '{}' for base '{}'",
+            offset, base
+        ));
+        return;
+    };
+
+    if rule.access == ParserMmioRegAccess::Ro {
+        errors.push(format!(
+            "{} violates register access: '{}' is read-only",
+            invocation, rule.full_name
+        ));
+    }
+    if ty != rule.ty {
+        errors.push(format!(
+            "{} width mismatch: register '{}' is {}",
+            invocation,
+            rule.full_name,
+            rule.ty.as_str()
+        ));
     }
 }
 
@@ -1413,6 +1579,14 @@ fn lower_mmio_scalar_type(ty: ParserMmioScalarType) -> KrirMmioScalarType {
     }
 }
 
+fn lower_mmio_reg_access(access: ParserMmioRegAccess) -> KrirMmioRegAccess {
+    match access {
+        ParserMmioRegAccess::Ro => KrirMmioRegAccess::Ro,
+        ParserMmioRegAccess::Wo => KrirMmioRegAccess::Wo,
+        ParserMmioRegAccess::Rw => KrirMmioRegAccess::Rw,
+    }
+}
+
 fn lower_mmio_addr_expr(expr: &ParserMmioAddrExpr) -> KrirMmioAddrExpr {
     match expr {
         ParserMmioAddrExpr::Ident(name) => KrirMmioAddrExpr::Ident { name: name.clone() },
@@ -1646,7 +1820,7 @@ mod tests {
     #[test]
     fn analysis_krir_lowering_preserves_typed_mmio_ops() {
         let ast = parse_module(
-            "mmio base = 0x1000;\nfn entry() { mmio_read<u16>(base + 4); mmio_write<u64>(base + 8, payload); }",
+            "mmio base = 0x1000;\nmmio_reg base.SR = 4 : u16 ro;\nmmio_reg base.DR = 8 : u64 rw;\nfn entry() { mmio_read<u16>(base + 4); mmio_write<u64>(base + 8, payload); }",
         )
         .expect("parse");
         let lowered = lower_to_krir_with_surface(&ast, SurfaceProfile::Stable).expect("lower");
@@ -1677,7 +1851,7 @@ mod tests {
     #[test]
     fn analysis_krir_lowering_resolves_declared_mmio_bases() {
         let ast = parse_module(
-            "mmio UART0 = 0x1000;\nfn entry() { mmio_read<u32>(UART0); mmio_write<u8>(UART0 + 4, 0xff); }",
+            "mmio UART0 = 0x1000;\nmmio_reg UART0.DR = 4 : u8 rw;\nfn entry() { mmio_read<u32>(UART0); mmio_write<u8>(UART0 + 4, 0xff); }",
         )
         .expect("parse");
         let lowered = lower_to_krir_with_surface(&ast, SurfaceProfile::Stable).expect("lower");
@@ -1687,6 +1861,81 @@ mod tests {
                 name: "UART0".to_string(),
                 addr: "0x1000".to_string()
             }]
+        );
+    }
+
+    #[test]
+    fn analysis_krir_lowering_preserves_mmio_register_metadata() {
+        let ast = parse_module(
+            "mmio UART0 = 0x1000;\nmmio_reg UART0.DR = 0x00 : u32 rw;\nmmio_reg UART0.SR = 0x04 : u32 ro;\nfn entry() { mmio_read<u32>(UART0 + 0x04); mmio_write<u32>(UART0 + 0x00, value); }",
+        )
+        .expect("parse");
+        let lowered = lower_to_krir_with_surface(&ast, SurfaceProfile::Stable).expect("lower");
+        assert_eq!(
+            lowered.mmio_registers,
+            vec![
+                krir::MmioRegisterDecl {
+                    base: "UART0".to_string(),
+                    name: "DR".to_string(),
+                    offset: "0x00".to_string(),
+                    ty: krir::MmioScalarType::U32,
+                    access: krir::MmioRegAccess::Rw,
+                },
+                krir::MmioRegisterDecl {
+                    base: "UART0".to_string(),
+                    name: "SR".to_string(),
+                    offset: "0x04".to_string(),
+                    ty: krir::MmioScalarType::U32,
+                    access: krir::MmioRegAccess::Ro,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn analysis_krir_lowering_rejects_undeclared_mmio_register_offset() {
+        let ast = parse_module(
+            "mmio UART0 = 0x1000;\nmmio_reg UART0.DR = 0x00 : u32 rw;\nfn entry() { mmio_read<u32>(UART0 + 0x44); }",
+        )
+        .expect("parse");
+        let errs =
+            lower_to_krir_with_surface(&ast, SurfaceProfile::Stable).expect_err("should reject");
+        assert_eq!(
+            errs,
+            vec!["undeclared mmio register offset '0x44' for base 'UART0'".to_string()]
+        );
+    }
+
+    #[test]
+    fn analysis_krir_lowering_rejects_mmio_register_access_and_width_mismatch() {
+        let ast = parse_module(
+            "mmio UART0 = 0x1000;\nmmio_reg UART0.SR = 0x04 : u32 ro;\nmmio_reg UART0.CR = 0x08 : u16 rw;\nfn entry() { mmio_write<u32>(UART0 + 0x04, x); mmio_write<u32>(UART0 + 0x08, x); }",
+        )
+        .expect("parse");
+        let errs =
+            lower_to_krir_with_surface(&ast, SurfaceProfile::Stable).expect_err("should reject");
+        assert_eq!(
+            errs,
+            vec![
+                "mmio_write<u32>(UART0 + 0x04, x) violates register access: 'UART0.SR' is read-only"
+                    .to_string(),
+                "mmio_write<u32>(UART0 + 0x08, x) width mismatch: register 'UART0.CR' is u16"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn analysis_krir_lowering_rejects_mmio_register_with_undeclared_base() {
+        let ast = parse_module(
+            "mmio_reg UART0.DR = 0x00 : u32 rw;\nfn entry() { mmio_read<u32>(0x1000); }",
+        )
+        .expect("parse");
+        let errs =
+            lower_to_krir_with_surface(&ast, SurfaceProfile::Stable).expect_err("should reject");
+        assert_eq!(
+            errs,
+            vec!["undeclared mmio base 'UART0' in register declaration 'UART0.DR'".to_string()]
         );
     }
 

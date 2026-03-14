@@ -130,7 +130,7 @@ impl MmioValueExpr {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MmioScalarType {
     U8,
@@ -167,6 +167,33 @@ pub struct MmioBaseDecl {
     pub addr: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MmioRegAccess {
+    Ro,
+    Wo,
+    Rw,
+}
+
+impl MmioRegAccess {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ro => "ro",
+            Self::Wo => "wo",
+            Self::Rw => "rw",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct MmioRegisterDecl {
+    pub base: String,
+    pub name: String,
+    pub offset: String,
+    pub ty: MmioScalarType,
+    pub access: MmioRegAccess,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct CallEdge {
     pub caller: String,
@@ -178,6 +205,8 @@ pub struct KrirModule {
     pub module_caps: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mmio_bases: Vec<MmioBaseDecl>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mmio_registers: Vec<MmioRegisterDecl>,
     pub functions: Vec<Function>,
     pub call_edges: Vec<CallEdge>,
 }
@@ -188,6 +217,14 @@ impl KrirModule {
         self.module_caps.dedup();
         self.mmio_bases.sort_by(|a, b| a.name.cmp(&b.name));
         self.mmio_bases.dedup();
+        self.mmio_registers.sort_by(|a, b| {
+            (a.base.as_str(), a.offset.as_str(), a.name.as_str()).cmp(&(
+                b.base.as_str(),
+                b.offset.as_str(),
+                b.name.as_str(),
+            ))
+        });
+        self.mmio_registers.dedup();
 
         self.functions.sort_by(|a, b| a.name.cmp(&b.name));
         for f in &mut self.functions {
@@ -2257,6 +2294,7 @@ mod tests {
                     addr: "0xfee00000".to_string(),
                 },
             ],
+            mmio_registers: Vec::new(),
             functions: Vec::new(),
             call_edges: Vec::new(),
         };
@@ -2268,6 +2306,51 @@ mod tests {
                 "mmio_bases": [
                     {"name": "APIC", "addr": "0xfee00000"},
                     {"name": "UART0", "addr": "0x1000"}
+                ],
+                "functions": [],
+                "call_edges": []
+            })
+        );
+    }
+
+    #[test]
+    fn krir_module_mmio_registers_encode_deterministically() {
+        let mut module = super::KrirModule {
+            module_caps: vec!["Mmio".to_string()],
+            mmio_bases: vec![super::MmioBaseDecl {
+                name: "UART0".to_string(),
+                addr: "0x1000".to_string(),
+            }],
+            mmio_registers: vec![
+                super::MmioRegisterDecl {
+                    base: "UART0".to_string(),
+                    name: "SR".to_string(),
+                    offset: "0x04".to_string(),
+                    ty: super::MmioScalarType::U32,
+                    access: super::MmioRegAccess::Ro,
+                },
+                super::MmioRegisterDecl {
+                    base: "UART0".to_string(),
+                    name: "DR".to_string(),
+                    offset: "0x00".to_string(),
+                    ty: super::MmioScalarType::U32,
+                    access: super::MmioRegAccess::Rw,
+                },
+            ],
+            functions: Vec::new(),
+            call_edges: Vec::new(),
+        };
+        module.canonicalize();
+        assert_eq!(
+            serde_json::to_value(&module).expect("serialize module"),
+            json!({
+                "module_caps": ["Mmio"],
+                "mmio_bases": [
+                    {"name": "UART0", "addr": "0x1000"}
+                ],
+                "mmio_registers": [
+                    {"base": "UART0", "name": "DR", "offset": "0x00", "ty": "u32", "access": "rw"},
+                    {"base": "UART0", "name": "SR", "offset": "0x04", "ty": "u32", "access": "ro"}
                 ],
                 "functions": [],
                 "call_edges": []

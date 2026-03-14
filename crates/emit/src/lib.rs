@@ -917,6 +917,7 @@ mod tests {
                 "IoPort".to_string(),
             ],
             mmio_bases: Vec::new(),
+            mmio_registers: Vec::new(),
             functions: vec![
                 Function {
                     name: "zeta".to_string(),
@@ -1012,6 +1013,7 @@ mod tests {
         let module = KrirModule {
             module_caps: vec!["PhysMap".to_string(), "IoPort".to_string()],
             mmio_bases: Vec::new(),
+            mmio_registers: Vec::new(),
             functions: vec![
                 Function {
                     name: "zeta".to_string(),
@@ -1082,6 +1084,7 @@ mod tests {
                 "IoPort".to_string(),
             ],
             mmio_bases: Vec::new(),
+            mmio_registers: Vec::new(),
             functions: vec![
                 Function {
                     name: "zeta".to_string(),
@@ -1244,6 +1247,7 @@ mod tests {
         let module = KrirModule {
             module_caps: vec![],
             mmio_bases: Vec::new(),
+            mmio_registers: Vec::new(),
             functions: vec![
                 Function {
                     name: "helper".to_string(),
@@ -1316,6 +1320,7 @@ mod tests {
         let module = KrirModule {
             module_caps: vec![],
             mmio_bases: Vec::new(),
+            mmio_registers: Vec::new(),
             functions: vec![
                 Function {
                     name: "kmalloc".to_string(),
@@ -1373,6 +1378,7 @@ mod tests {
         let module = KrirModule {
             module_caps: vec![],
             mmio_bases: Vec::new(),
+            mmio_registers: Vec::new(),
             functions: vec![
                 Function {
                     name: "a".to_string(),
@@ -1420,6 +1426,7 @@ mod tests {
         let module = KrirModule {
             module_caps: vec![],
             mmio_bases: Vec::new(),
+            mmio_registers: Vec::new(),
             functions: vec![Function {
                 name: "f".to_string(),
                 is_extern: false,
@@ -1446,6 +1453,7 @@ mod tests {
         let module = KrirModule {
             module_caps: vec![],
             mmio_bases: Vec::new(),
+            mmio_registers: Vec::new(),
             functions: vec![
                 Function {
                     name: "helper".to_string(),
@@ -1491,6 +1499,7 @@ mod tests {
         let module = KrirModule {
             module_caps: vec![],
             mmio_bases: Vec::new(),
+            mmio_registers: Vec::new(),
             functions: vec![
                 Function {
                     name: "kmalloc".to_string(),
@@ -1536,6 +1545,7 @@ mod tests {
         let module = KrirModule {
             module_caps: vec![],
             mmio_bases: Vec::new(),
+            mmio_registers: Vec::new(),
             functions: vec![
                 Function {
                     name: "kmalloc".to_string(),
@@ -1603,6 +1613,7 @@ mod tests {
         let module = KrirModule {
             module_caps: vec![],
             mmio_bases: Vec::new(),
+            mmio_registers: Vec::new(),
             functions: vec![
                 Function {
                     name: "kmalloc".to_string(),
@@ -1697,6 +1708,7 @@ mod tests {
         let module = KrirModule {
             module_caps: vec![],
             mmio_bases: Vec::new(),
+            mmio_registers: Vec::new(),
             functions: vec![Function {
                 name: "f".to_string(),
                 is_extern: false,
@@ -1723,6 +1735,7 @@ mod tests {
         let module = KrirModule {
             module_caps: vec![],
             mmio_bases: Vec::new(),
+            mmio_registers: Vec::new(),
             functions: vec![
                 Function {
                     name: "helper".to_string(),
@@ -1768,6 +1781,7 @@ mod tests {
         let module = KrirModule {
             module_caps: vec![],
             mmio_bases: Vec::new(),
+            mmio_registers: Vec::new(),
             functions: vec![
                 Function {
                     name: "map_io".to_string(),
@@ -1813,6 +1827,7 @@ mod tests {
         let module = KrirModule {
             module_caps: vec![],
             mmio_bases: Vec::new(),
+            mmio_registers: Vec::new(),
             functions: vec![
                 Function {
                     name: "map_io".to_string(),
@@ -1881,6 +1896,7 @@ mod tests {
         let module = KrirModule {
             module_caps: vec![],
             mmio_bases: Vec::new(),
+            mmio_registers: Vec::new(),
             functions: vec![
                 Function {
                     name: "map_io".to_string(),
@@ -1975,6 +1991,7 @@ mod tests {
         let module = KrirModule {
             module_caps: vec![],
             mmio_bases: Vec::new(),
+            mmio_registers: Vec::new(),
             functions: vec![
                 Function {
                     name: "helper".to_string(),

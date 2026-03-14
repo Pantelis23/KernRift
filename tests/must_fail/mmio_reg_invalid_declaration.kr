@@ -1,0 +1,6 @@
+mmio UART0 = 0x1000;
+mmio_reg UART0.DR = BASE + 4 : u32 rw;
+
+fn entry() {
+  mmio_read<u32>(0x1000);
+}

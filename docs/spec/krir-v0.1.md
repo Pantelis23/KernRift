@@ -56,6 +56,12 @@ Notes:
   - `mmio NAME = INT_LITERAL;`
   - `NAME` must be unique across module MMIO declarations.
   - RHS must be an integer literal (decimal or hex).
+- Module-level MMIO register declarations are supported in KR0 typed MMIO slice:
+  - `mmio_reg BASE.REG = INT_LITERAL : TYPE ACCESS;`
+  - `TYPE in {u8,u16,u32,u64}`
+  - `ACCESS in {ro,wo,rw}`
+  - `BASE` must resolve to a declared module MMIO base.
+  - `REG` must be unique within `BASE`.
 - Statement forms are lowered by callee name:
   - `acquire(LockClass)`
   - `release(LockClass)`
@@ -78,6 +84,7 @@ Notes:
 
 - `@module_caps(...)` defines module-wide available capabilities.
 - `mmio NAME = INT_LITERAL;` defines module-level symbolic MMIO base declarations.
+- `mmio_reg BASE.REG = INT_LITERAL : TYPE ACCESS;` defines module-level MMIO register metadata.
 - All function cap checks are evaluated against module caps in KR0.x.
 
 ### Function fact semantics
@@ -96,6 +103,10 @@ Notes:
 - `mmio_read/mmio_write` mark `mmio` effect usage.
 - Typed MMIO scalar width and operands are preserved in KRIR ops as `ty`, structured `addr`, and structured `value` (write only).
 - When an MMIO address uses an identifier base (`IDENT` or `IDENT + OFFSET`), that base must resolve to a declared module MMIO base.
+- When an MMIO address uses `IDENT + OFFSET`, the pair must resolve to a declared MMIO register for that base.
+  - `mmio_read<T>(IDENT + OFFSET)` requires register access `ro` or `rw`.
+  - `mmio_write<T>(IDENT + OFFSET, value)` requires register access `wo` or `rw`.
+  - `T` must match the declared register `TYPE`.
 - Integer-literal MMIO addresses remain valid without declaration.
 
 ### Check/analyze semantics
@@ -108,6 +119,8 @@ Notes:
 - Recursion is rejected in KR0.1 analysis.
 - KRIR module JSON includes deterministic `mmio_bases` metadata when non-empty:
   - `[{ "name": "<IDENT>", "addr": "<INT_LITERAL>" }, ...]`
+- KRIR module JSON includes deterministic `mmio_registers` metadata when non-empty:
+  - `[{ "base": "<IDENT>", "name": "<IDENT>", "offset": "<INT_LITERAL>", "ty": "u{8|16|32|64}", "access": "{ro|wo|rw}" }, ...]`
 
 ## Contracts ABI (v1)
 

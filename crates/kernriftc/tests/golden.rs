@@ -448,6 +448,135 @@ fn golden_mmio_typed_slice_checks_are_stable() {
         "unexpected invalid mmio declaration diagnostic: {}",
         invalid_decl.stderr
     );
+
+    let reg_pass_fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("mmio_register_declared.kr");
+    let reg_pass = run_cmd(
+        bin,
+        &root,
+        &["check".to_string(), reg_pass_fixture.display().to_string()],
+    );
+    assert_eq!(
+        reg_pass.code, 0,
+        "declared mmio register fixture should pass, stderr={}",
+        reg_pass.stderr
+    );
+
+    let reg_offset_fail_fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("mmio_reg_undeclared_offset.kr");
+    let reg_offset_fail = run_cmd(
+        bin,
+        &root,
+        &[
+            "check".to_string(),
+            reg_offset_fail_fixture.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        reg_offset_fail.code, 1,
+        "undeclared mmio register offset fixture should fail, stderr={}",
+        reg_offset_fail.stderr
+    );
+    assert_eq!(
+        reg_offset_fail.stderr.lines().next(),
+        Some("undeclared mmio register offset '0x44' for base 'UART0'")
+    );
+
+    let reg_access_fail_fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("mmio_reg_access_mismatch.kr");
+    let reg_access_fail = run_cmd(
+        bin,
+        &root,
+        &[
+            "check".to_string(),
+            reg_access_fail_fixture.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        reg_access_fail.code, 1,
+        "mmio register access mismatch fixture should fail, stderr={}",
+        reg_access_fail.stderr
+    );
+    assert_eq!(
+        reg_access_fail.stderr.lines().next(),
+        Some("mmio_write<u32>(UART0 + 0x04, x) violates register access: 'UART0.SR' is read-only")
+    );
+
+    let reg_width_fail_fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("mmio_reg_width_mismatch.kr");
+    let reg_width_fail = run_cmd(
+        bin,
+        &root,
+        &[
+            "check".to_string(),
+            reg_width_fail_fixture.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        reg_width_fail.code, 1,
+        "mmio register width mismatch fixture should fail, stderr={}",
+        reg_width_fail.stderr
+    );
+    assert_eq!(
+        reg_width_fail.stderr.lines().next(),
+        Some("mmio_write<u32>(UART0 + 0x08, x) width mismatch: register 'UART0.CR' is u16")
+    );
+
+    let reg_base_fail_fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("mmio_reg_undeclared_base.kr");
+    let reg_base_fail = run_cmd(
+        bin,
+        &root,
+        &[
+            "check".to_string(),
+            reg_base_fail_fixture.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        reg_base_fail.code, 1,
+        "undeclared mmio register base fixture should fail, stderr={}",
+        reg_base_fail.stderr
+    );
+    assert_eq!(
+        reg_base_fail.stderr.lines().next(),
+        Some("undeclared mmio base 'UART0' in register declaration 'UART0.DR'")
+    );
+
+    let reg_invalid_decl_fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("mmio_reg_invalid_declaration.kr");
+    let reg_invalid_decl = run_cmd(
+        bin,
+        &root,
+        &[
+            "check".to_string(),
+            reg_invalid_decl_fixture.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        reg_invalid_decl.code, 1,
+        "invalid mmio register declaration fixture should fail, stderr={}",
+        reg_invalid_decl.stderr
+    );
+    let first = reg_invalid_decl.stderr.lines().next().unwrap_or_default();
+    assert!(
+        first.starts_with(
+            "invalid mmio register declaration for 'UART0.DR': expected integer literal offset at byte "
+        ),
+        "unexpected invalid mmio register declaration diagnostic: {}",
+        reg_invalid_decl.stderr
+    );
 }
 
 fn run_cmd(bin: &Path, cwd: &Path, args: &[String]) -> CmdOut {

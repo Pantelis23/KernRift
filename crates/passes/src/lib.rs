@@ -1090,6 +1090,7 @@ mod tests {
         KrirModule {
             module_caps: Vec::new(),
             mmio_bases: Vec::new(),
+            mmio_registers: Vec::new(),
             functions,
             call_edges: Vec::new(),
         }

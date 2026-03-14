@@ -81,6 +81,14 @@ Each function in KRIR carries:
 
 where each entry comes from source `mmio NAME = INT_LITERAL;` declarations.
 
+### Module MMIO Registers (KR0 typed MMIO register slice)
+
+`KrirModule` may carry deterministic module-level MMIO register metadata:
+
+- `mmio_registers: [{ base, name, offset, ty, access }]`
+
+where each entry comes from source `mmio_reg BASE.REG = INT_LITERAL : TYPE ACCESS;` declarations.
+
 ### Defaults (MVP)
 
 If a function has no explicit annotations for these facts:

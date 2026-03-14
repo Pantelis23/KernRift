@@ -102,10 +102,37 @@ pub struct MmioBaseDecl {
     pub addr: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MmioRegAccess {
+    Ro,
+    Wo,
+    Rw,
+}
+
+impl MmioRegAccess {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ro => "ro",
+            Self::Wo => "wo",
+            Self::Rw => "rw",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MmioRegisterDecl {
+    pub base: String,
+    pub name: String,
+    pub offset: String,
+    pub ty: MmioScalarType,
+    pub access: MmioRegAccess,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ModuleAst {
     pub module_caps: Vec<String>,
     pub mmio_bases: Vec<MmioBaseDecl>,
+    pub mmio_registers: Vec<MmioRegisterDecl>,
     pub items: Vec<FnAst>,
 }
 
@@ -165,6 +192,7 @@ impl<'a> Parser<'a> {
     fn parse_module(mut self) -> Result<ModuleAst, Vec<String>> {
         let mut module = ModuleAst::default();
         let mut mmio_names = std::collections::BTreeSet::new();
+        let mut mmio_register_names = std::collections::BTreeSet::new();
 
         while self.skip_ws_comments() {
             if self.eof() {
@@ -179,6 +207,25 @@ impl<'a> Parser<'a> {
                                 .push(format!("duplicate mmio base '{}'", decl.name));
                         } else {
                             module.mmio_bases.push(decl);
+                        }
+                    }
+                    Err(msg) => {
+                        self.error_here(&msg);
+                        self.recover_to_next_item();
+                    }
+                }
+                continue;
+            }
+
+            if self.consume_keyword("mmio_reg") {
+                match self.parse_mmio_reg_decl() {
+                    Ok(decl) => {
+                        let full_name = format!("{}.{}", decl.base, decl.name);
+                        if !mmio_register_names.insert(full_name.clone()) {
+                            self.errors
+                                .push(format!("duplicate mmio register '{}'", full_name));
+                        } else {
+                            module.mmio_registers.push(decl);
                         }
                     }
                     Err(msg) => {
@@ -222,7 +269,9 @@ impl<'a> Parser<'a> {
             }
 
             if !self.consume_keyword("fn") {
-                self.error_here("expected 'fn', 'mmio', or @module_caps(...) at item boundary");
+                self.error_here(
+                    "expected 'fn', 'mmio', 'mmio_reg', or @module_caps(...) at item boundary",
+                );
                 self.recover_to_next_item();
                 continue;
             }
@@ -324,6 +373,119 @@ impl<'a> Parser<'a> {
         }
 
         Ok(MmioBaseDecl { name, addr: value })
+    }
+
+    fn parse_mmio_reg_decl(&mut self) -> Result<MmioRegisterDecl, String> {
+        let Some(base) = self.parse_ident() else {
+            return Err("expected mmio register base name after 'mmio_reg'".to_string());
+        };
+
+        self.skip_ws_comments();
+        if !self.consume_char('.') {
+            return Err(format!(
+                "invalid mmio register declaration for '{}': expected '.'",
+                base
+            ));
+        }
+
+        let Some(name) = self.parse_ident() else {
+            return Err(format!(
+                "invalid mmio register declaration for '{}': expected register name",
+                base
+            ));
+        };
+
+        let full_name = format!("{}.{}", base, name);
+
+        self.skip_ws_comments();
+        if !self.consume_char('=') {
+            return Err(format!(
+                "invalid mmio register declaration for '{}': expected '='",
+                full_name
+            ));
+        }
+
+        self.skip_ws_comments();
+        let offset_start = self.pos;
+        while let Some(ch) = self.peek_char() {
+            if ch == ':' || ch == ';' {
+                break;
+            }
+            self.pos += ch.len_utf8();
+        }
+
+        if self.eof() {
+            return Err(format!(
+                "invalid mmio register declaration for '{}': expected ':'",
+                full_name
+            ));
+        }
+
+        let offset = self.src[offset_start..self.pos].trim().to_string();
+        if !self.consume_char(':') {
+            return Err(format!(
+                "invalid mmio register declaration for '{}': expected ':'",
+                full_name
+            ));
+        }
+        if !is_int_literal_token(&offset) {
+            return Err(format!(
+                "invalid mmio register declaration for '{}': expected integer literal offset",
+                full_name
+            ));
+        }
+
+        self.skip_ws_comments();
+        let Some(ty_raw) = self.parse_ident() else {
+            return Err(format!(
+                "invalid mmio register declaration for '{}': expected type",
+                full_name
+            ));
+        };
+        let ty = match MmioScalarType::parse(&ty_raw) {
+            Ok(ty) => ty,
+            Err(_) => {
+                return Err(format!(
+                    "invalid mmio register declaration for '{}': unsupported type '{}'",
+                    full_name, ty_raw
+                ));
+            }
+        };
+
+        self.skip_ws_comments();
+        let Some(access_raw) = self.parse_ident() else {
+            return Err(format!(
+                "invalid mmio register declaration for '{}': expected access",
+                full_name
+            ));
+        };
+        let access = match access_raw.to_ascii_lowercase().as_str() {
+            "ro" => MmioRegAccess::Ro,
+            "wo" => MmioRegAccess::Wo,
+            "rw" => MmioRegAccess::Rw,
+            _ => {
+                return Err(format!(
+                    "invalid mmio register declaration for '{}': unsupported access '{}'",
+                    full_name, access_raw
+                ));
+            }
+        };
+
+        self.skip_ws_comments();
+        if !self.consume_char(';') {
+            return Err(format!(
+                "invalid mmio register declaration for '{}': expected ';'",
+                full_name
+            ));
+        }
+
+        Ok(MmioRegisterDecl {
+            base,
+            name,
+            offset,
+            ty,
+            access,
+        })
     }
 
     fn parse_body(&mut self) -> Vec<Stmt> {
@@ -549,6 +711,13 @@ fn parse_stmt(stmt: &str) -> Result<Option<Stmt>, String> {
     if stmt.trim_start().to_ascii_lowercase().starts_with("mmio ") {
         return Err("mmio declarations are only allowed at module scope".to_string());
     }
+    if stmt
+        .trim_start()
+        .to_ascii_lowercase()
+        .starts_with("mmio_reg ")
+    {
+        return Err("mmio_reg declarations are only allowed at module scope".to_string());
+    }
 
     let (name, args) = parse_invocation(stmt)?;
     let lowered = name.to_ascii_lowercase();
@@ -768,7 +937,10 @@ fn parse_invocation(stmt: &str) -> Result<(String, String), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MmioAddrExpr, MmioBaseDecl, MmioScalarType, MmioValueExpr, Stmt, parse_module};
+    use super::{
+        MmioAddrExpr, MmioBaseDecl, MmioRegAccess, MmioRegisterDecl, MmioScalarType, MmioValueExpr,
+        Stmt, parse_module,
+    };
     use proptest::prelude::*;
 
     #[test]
@@ -893,6 +1065,80 @@ mod tests {
     }
 
     #[test]
+    fn parse_module_mmio_register_declarations() {
+        let src = r#"
+        mmio UART0 = 0x1000;
+        mmio_reg UART0.DR = 0x00 : u32 rw;
+        mmio_reg UART0.SR = 0x04 : u32 ro;
+        fn entry() { mmio_read<u32>(UART0 + 0x04); }
+        "#;
+        let ast = parse_module(src).expect("parse");
+        assert_eq!(
+            ast.mmio_registers,
+            vec![
+                MmioRegisterDecl {
+                    base: "UART0".to_string(),
+                    name: "DR".to_string(),
+                    offset: "0x00".to_string(),
+                    ty: MmioScalarType::U32,
+                    access: MmioRegAccess::Rw,
+                },
+                MmioRegisterDecl {
+                    base: "UART0".to_string(),
+                    name: "SR".to_string(),
+                    offset: "0x04".to_string(),
+                    ty: MmioScalarType::U32,
+                    access: MmioRegAccess::Ro,
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_rejects_invalid_mmio_register_declaration_rhs() {
+        let src = "mmio UART0 = 0x1000; mmio_reg UART0.DR = BASE + 4 : u32 rw;";
+        let err = parse_module(src).expect_err("invalid register rhs should fail");
+        assert_eq!(
+            err,
+            vec![
+                "invalid mmio register declaration for 'UART0.DR': expected integer literal offset at byte 51"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_rejects_invalid_mmio_register_type_or_access() {
+        let invalid_type = "mmio UART0 = 0x1000; mmio_reg UART0.DR = 0x00 : u128 rw;";
+        let err_type = parse_module(invalid_type).expect_err("invalid register type should fail");
+        assert_eq!(
+            err_type,
+            vec![
+                "invalid mmio register declaration for 'UART0.DR': unsupported type 'u128' at byte 52"
+                    .to_string()
+            ]
+        );
+
+        let invalid_access = "mmio UART0 = 0x1000; mmio_reg UART0.DR = 0x00 : u32 xx;";
+        let err_access =
+            parse_module(invalid_access).expect_err("invalid register access should fail");
+        assert_eq!(
+            err_access,
+            vec![
+                "invalid mmio register declaration for 'UART0.DR': unsupported access 'xx' at byte 54"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_rejects_duplicate_mmio_register_declarations() {
+        let src = "mmio UART0 = 0x1000; mmio_reg UART0.DR = 0x00 : u32 rw; mmio_reg UART0.DR = 0x08 : u32 ro;";
+        let err = parse_module(src).expect_err("duplicate mmio register declarations should fail");
+        assert_eq!(err, vec!["duplicate mmio register 'UART0.DR'".to_string()]);
+    }
+
+    #[test]
     fn parse_rejects_invalid_mmio_base_declaration_rhs() {
         let src = "mmio UART0 = BASE + 4;";
         let err = parse_module(src).expect_err("invalid rhs should fail");
@@ -919,6 +1165,16 @@ mod tests {
         assert_eq!(
             err,
             vec!["mmio declarations are only allowed at module scope at byte 33".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_rejects_mmio_register_declaration_inside_function_body() {
+        let src = "fn entry() { mmio_reg UART0.DR = 0x00 : u32 rw; }";
+        let err = parse_module(src).expect_err("nested register declaration should fail");
+        assert_eq!(
+            err,
+            vec!["mmio_reg declarations are only allowed at module scope at byte 47".to_string()]
         );
     }
 

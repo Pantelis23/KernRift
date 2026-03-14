@@ -5183,6 +5183,113 @@ fn check_rejects_invalid_mmio_base_declaration_fixture() {
 }
 
 #[test]
+fn check_accepts_mmio_register_declared_fixture() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("mmio_register_declared.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    cmd.assert().success();
+}
+
+#[test]
+fn check_rejects_undeclared_mmio_register_offset_fixture() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("mmio_reg_undeclared_offset.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("undeclared mmio register offset '0x44' for base 'UART0'")
+    );
+}
+
+#[test]
+fn check_rejects_mmio_register_access_mismatch_fixture() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("mmio_reg_access_mismatch.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("mmio_write<u32>(UART0 + 0x04, x) violates register access: 'UART0.SR' is read-only")
+    );
+}
+
+#[test]
+fn check_rejects_mmio_register_width_mismatch_fixture() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("mmio_reg_width_mismatch.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("mmio_write<u32>(UART0 + 0x08, x) width mismatch: register 'UART0.CR' is u16")
+    );
+}
+
+#[test]
+fn check_rejects_mmio_register_with_undeclared_base_fixture() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("mmio_reg_undeclared_base.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("undeclared mmio base 'UART0' in register declaration 'UART0.DR'")
+    );
+}
+
+#[test]
+fn check_rejects_invalid_mmio_register_declaration_fixture() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("mmio_reg_invalid_declaration.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let first = stderr.lines().next().expect("first stderr line");
+    assert!(
+        first.starts_with(
+            "invalid mmio register declaration for 'UART0.DR': expected integer literal offset at byte "
+        ),
+        "unexpected diagnostic: {}",
+        stderr
+    );
+}
+
+#[test]
 fn check_rejects_critical_block_boundary_direct() {
     let root = repo_root();
     let fixture = root
