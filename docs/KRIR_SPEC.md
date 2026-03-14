@@ -94,6 +94,10 @@ If an integer-literal MMIO address exactly matches `BASE_ADDR + OFFSET` for a de
 Duplicate absolute register addresses are rejected deterministically when two declarations compute the same numeric `BASE_ADDR + OFFSET`.
 If a module declares MMIO structure (`mmio` / `mmio_reg`), unmatched raw integer-literal MMIO addresses require `@module_caps(MmioRaw)`; otherwise they are rejected deterministically.
 Modules with no MMIO declarations keep prior unmatched integer-literal MMIO behavior.
+`raw_mmio_read<T>(addr)` / `raw_mmio_write<T>(addr, value)` are explicit raw escape-hatch operations:
+- they require `@module_caps(MmioRaw)`,
+- they preserve typed MMIO operands,
+- they bypass register lookup/access/width checks (ordinary `mmio_*` keeps strict structured validation).
 
 ### Defaults (MVP)
 

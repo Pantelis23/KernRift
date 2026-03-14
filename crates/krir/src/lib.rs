@@ -94,6 +94,15 @@ pub enum KrirOp {
         addr: MmioAddrExpr,
         value: MmioValueExpr,
     },
+    RawMmioRead {
+        ty: MmioScalarType,
+        addr: MmioAddrExpr,
+    },
+    RawMmioWrite {
+        ty: MmioScalarType,
+        addr: MmioAddrExpr,
+        value: MmioValueExpr,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2276,6 +2285,38 @@ mod tests {
                 "ty": "u64",
                 "addr": {"kind": "ident", "name": "mmio_base"},
                 "value": {"kind": "ident", "name": "payload"}
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(super::KrirOp::RawMmioRead {
+                ty: MmioScalarType::U8,
+                addr: super::MmioAddrExpr::IntLiteral {
+                    value: "0x1014".to_string(),
+                }
+            })
+            .expect("serialize raw_mmio_read"),
+            json!({
+                "op": "raw_mmio_read",
+                "ty": "u8",
+                "addr": {"kind": "int_literal", "value": "0x1014"}
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(super::KrirOp::RawMmioWrite {
+                ty: MmioScalarType::U32,
+                addr: super::MmioAddrExpr::Ident {
+                    name: "UART0".to_string(),
+                },
+                value: super::MmioValueExpr::IntLiteral {
+                    value: "0xff".to_string(),
+                }
+            })
+            .expect("serialize raw_mmio_write"),
+            json!({
+                "op": "raw_mmio_write",
+                "ty": "u32",
+                "addr": {"kind": "ident", "name": "UART0"},
+                "value": {"kind": "int_literal", "value": "0xff"}
             })
         );
     }

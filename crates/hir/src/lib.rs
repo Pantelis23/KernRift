@@ -1269,6 +1269,25 @@ fn validate_mmio_address_bases_in_stmts(
                     }
                 }
             }
+            Stmt::RawMmioRead { ty, addr } => {
+                if !module_allows_raw_mmio_literals {
+                    errors.push(format!(
+                        "{} requires @module_caps({})",
+                        format_raw_mmio_read_invocation(*ty, addr),
+                        MMIO_RAW_MODULE_CAP
+                    ));
+                    continue;
+                }
+                if let Some(base) = mmio_addr_base_name(addr)
+                    && !declared_bases.contains(base)
+                {
+                    errors.push(format!(
+                        "undeclared mmio base '{}' used in {}",
+                        base,
+                        format_raw_mmio_read_invocation(*ty, addr)
+                    ));
+                }
+            }
             Stmt::MmioWrite { ty, addr, value } => {
                 if let Some(base) = mmio_addr_base_name(addr)
                     && !declared_bases.contains(base)
@@ -1320,6 +1339,25 @@ fn validate_mmio_address_bases_in_stmts(
                             }
                         }
                     }
+                }
+            }
+            Stmt::RawMmioWrite { ty, addr, value } => {
+                if !module_allows_raw_mmio_literals {
+                    errors.push(format!(
+                        "{} requires @module_caps({})",
+                        format_raw_mmio_write_invocation(*ty, addr, value),
+                        MMIO_RAW_MODULE_CAP
+                    ));
+                    continue;
+                }
+                if let Some(base) = mmio_addr_base_name(addr)
+                    && !declared_bases.contains(base)
+                {
+                    errors.push(format!(
+                        "undeclared mmio base '{}' used in {}",
+                        base,
+                        format_raw_mmio_write_invocation(*ty, addr, value)
+                    ));
                 }
             }
             _ => {}
@@ -1725,6 +1763,16 @@ fn lower_stmts_to_canonical_executable(
                 function_name,
                 format_mmio_write_invocation(*ty, addr, value)
             )),
+            Stmt::RawMmioRead { ty, addr } => errors.push(format!(
+                "canonical-exec: function '{}' contains unsupported {}",
+                function_name,
+                format_raw_mmio_read_invocation(*ty, addr)
+            )),
+            Stmt::RawMmioWrite { ty, addr, value } => errors.push(format!(
+                "canonical-exec: function '{}' contains unsupported {}",
+                function_name,
+                format_raw_mmio_write_invocation(*ty, addr, value)
+            )),
         }
     }
 }
@@ -1768,6 +1816,21 @@ fn lower_stmt(stmt: &Stmt, ops: &mut Vec<KrirOp>, eff_used: &mut BTreeSet<Eff>) 
         }
         Stmt::MmioWrite { ty, addr, value } => {
             ops.push(KrirOp::MmioWrite {
+                ty: lower_mmio_scalar_type(*ty),
+                addr: lower_mmio_addr_expr(addr),
+                value: lower_mmio_value_expr(value),
+            });
+            eff_used.insert(Eff::Mmio);
+        }
+        Stmt::RawMmioRead { ty, addr } => {
+            ops.push(KrirOp::RawMmioRead {
+                ty: lower_mmio_scalar_type(*ty),
+                addr: lower_mmio_addr_expr(addr),
+            });
+            eff_used.insert(Eff::Mmio);
+        }
+        Stmt::RawMmioWrite { ty, addr, value } => {
+            ops.push(KrirOp::RawMmioWrite {
                 ty: lower_mmio_scalar_type(*ty),
                 addr: lower_mmio_addr_expr(addr),
                 value: lower_mmio_value_expr(value),
@@ -1827,6 +1890,23 @@ fn format_mmio_write_invocation(
 ) -> String {
     format!(
         "mmio_write<{}>({}, {})",
+        ty.as_str(),
+        addr.as_source(),
+        value.as_source()
+    )
+}
+
+fn format_raw_mmio_read_invocation(ty: ParserMmioScalarType, addr: &ParserMmioAddrExpr) -> String {
+    format!("raw_mmio_read<{}>({})", ty.as_str(), addr.as_source())
+}
+
+fn format_raw_mmio_write_invocation(
+    ty: ParserMmioScalarType,
+    addr: &ParserMmioAddrExpr,
+    value: &ParserMmioValueExpr,
+) -> String {
+    format!(
+        "raw_mmio_write<{}>({}, {})",
         ty.as_str(),
         addr.as_source(),
         value.as_source()
@@ -2383,6 +2463,62 @@ mod tests {
                 "addr": {"kind": "int_literal", "value": "0x1014"},
                 "value": {"kind": "ident", "name": "x"}
             }])
+        );
+    }
+
+    #[test]
+    fn analysis_krir_lowering_rejects_raw_mmio_without_mmioraw_module_cap() {
+        let ast = parse_module("fn entry() { raw_mmio_write<u32>(0x1014, x); }").expect("parse");
+        let errs =
+            lower_to_krir_with_surface(&ast, SurfaceProfile::Stable).expect_err("should reject");
+        assert_eq!(
+            errs,
+            vec!["raw_mmio_write<u32>(0x1014, x) requires @module_caps(MmioRaw)".to_string()]
+        );
+    }
+
+    #[test]
+    fn analysis_krir_lowering_allows_raw_mmio_literal_exact_match_without_access_width_checks() {
+        let ast = parse_module(
+            "@module_caps(MmioRaw);\nmmio UART0 = 0x1000;\nmmio_reg UART0.SR = 0x04 : u32 ro;\nmmio_reg UART0.CR = 0x08 : u16 rw;\nfn entry() { raw_mmio_write<u32>(0x1004, x); raw_mmio_write<u32>(0x1008, x); }",
+        )
+        .expect("parse");
+        let lowered = lower_to_krir_with_surface(&ast, SurfaceProfile::Stable).expect("lower");
+        let entry = lowered
+            .functions
+            .iter()
+            .find(|function| function.name == "entry")
+            .expect("entry function");
+        assert_eq!(
+            serde_json::to_value(&entry.ops).expect("serialize ops"),
+            json!([
+                {
+                    "op": "raw_mmio_write",
+                    "ty": "u32",
+                    "addr": {"kind": "int_literal", "value": "0x1004"},
+                    "value": {"kind": "ident", "name": "x"}
+                },
+                {
+                    "op": "raw_mmio_write",
+                    "ty": "u32",
+                    "addr": {"kind": "int_literal", "value": "0x1008"},
+                    "value": {"kind": "ident", "name": "x"}
+                }
+            ])
+        );
+    }
+
+    #[test]
+    fn canonical_executable_rejects_raw_mmio_deterministically() {
+        let ast = parse_module("fn entry() { raw_mmio_read<u32>(0x1000); }").expect("parse");
+        let errs = lower_to_canonical_executable_with_surface(&ast, SurfaceProfile::Stable)
+            .expect_err("canonical executable should reject raw mmio");
+        assert_eq!(
+            errs,
+            vec![
+                "canonical-exec: function 'entry' contains unsupported raw_mmio_read<u32>(0x1000)"
+                    .to_string()
+            ]
         );
     }
 

@@ -536,6 +536,42 @@ fn golden_mmio_typed_slice_checks_are_stable() {
         reg_raw_literal_opt_in.stderr
     );
 
+    let raw_mmio_opt_in_fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("raw_mmio_with_cap.kr");
+    let raw_mmio_opt_in = run_cmd(
+        bin,
+        &root,
+        &[
+            "check".to_string(),
+            raw_mmio_opt_in_fixture.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        raw_mmio_opt_in.code, 0,
+        "raw_mmio_* fixture with MmioRaw should pass, stderr={}",
+        raw_mmio_opt_in.stderr
+    );
+
+    let raw_mmio_bypass_fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("raw_mmio_bypass_register_checks.kr");
+    let raw_mmio_bypass = run_cmd(
+        bin,
+        &root,
+        &[
+            "check".to_string(),
+            raw_mmio_bypass_fixture.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        raw_mmio_bypass.code, 0,
+        "raw_mmio_* should bypass register access/width checks, stderr={}",
+        raw_mmio_bypass.stderr
+    );
+
     let reg_offset_fail_fixture = root
         .join("tests")
         .join("must_fail")
@@ -756,6 +792,28 @@ fn golden_mmio_typed_slice_checks_are_stable() {
         Some(
             "unresolved raw mmio address '0x1014'; declare a matching mmio_reg or enable raw mmio access"
         )
+    );
+
+    let raw_mmio_no_optin_fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("raw_mmio_without_cap.kr");
+    let raw_mmio_no_optin = run_cmd(
+        bin,
+        &root,
+        &[
+            "check".to_string(),
+            raw_mmio_no_optin_fixture.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        raw_mmio_no_optin.code, 1,
+        "raw_mmio_* fixture without MmioRaw should fail, stderr={}",
+        raw_mmio_no_optin.stderr
+    );
+    assert_eq!(
+        raw_mmio_no_optin.stderr.lines().next(),
+        Some("raw_mmio_write<u32>(0x1014, x) requires @module_caps(MmioRaw)")
     );
 
     let reg_base_zero_width_fixture = root

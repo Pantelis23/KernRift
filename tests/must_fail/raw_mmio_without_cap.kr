@@ -1,0 +1,5 @@
+mmio UART0 = 0x1000;
+
+fn entry() {
+  raw_mmio_write<u32>(0x1014, x);
+}

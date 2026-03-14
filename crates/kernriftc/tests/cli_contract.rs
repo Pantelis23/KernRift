@@ -5248,6 +5248,32 @@ fn check_accepts_mmio_raw_literal_with_opt_in_fixture() {
 }
 
 #[test]
+fn check_accepts_raw_mmio_with_opt_in_fixture() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("raw_mmio_with_cap.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    cmd.assert().success();
+}
+
+#[test]
+fn check_accepts_raw_mmio_bypass_register_checks_fixture() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("raw_mmio_bypass_register_checks.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    cmd.assert().success();
+}
+
+#[test]
 fn check_rejects_symbolic_mmio_base_without_offset_zero_register_fixture() {
     let root = repo_root();
     let fixture = root
@@ -5444,6 +5470,24 @@ fn check_rejects_mmio_raw_literal_without_opt_in_fixture() {
         Some(
             "unresolved raw mmio address '0x1014'; declare a matching mmio_reg or enable raw mmio access"
         )
+    );
+}
+
+#[test]
+fn check_rejects_raw_mmio_without_opt_in_fixture() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("raw_mmio_without_cap.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("raw_mmio_write<u32>(0x1014, x) requires @module_caps(MmioRaw)")
     );
 }
 

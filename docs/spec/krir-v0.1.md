@@ -68,6 +68,8 @@ Notes:
   - `yieldpoint()`
   - `mmio_read<T>(addr)` where `T in {u8,u16,u32,u64}`
   - `mmio_write<T>(addr, value)` where `T in {u8,u16,u32,u64}`
+  - `raw_mmio_read<T>(addr)` where `T in {u8,u16,u32,u64}`
+  - `raw_mmio_write<T>(addr, value)` where `T in {u8,u16,u32,u64}`
     - `addr` must be one of:
       - identifier
       - integer literal
@@ -75,7 +77,7 @@ Notes:
     - `value` must be one of:
       - identifier
       - integer literal
-  - `mmio_read()` / `mmio_write()` are rejected as legacy non-addressful forms
+  - `mmio_read()` / `mmio_write()` / `raw_mmio_read()` / `raw_mmio_write()` are rejected as legacy non-addressful forms
   - otherwise `call(callee)`.
 
 ## KRIR v0.1 Semantics
@@ -100,7 +102,7 @@ Notes:
 - `acquire/release` define lock stack transitions and lock ordering edges.
 - `yieldpoint()` marks a scheduler yield point and contributes to yield analysis.
 - `call()` adds call-graph edges and participates in interprocedural checks.
-- `mmio_read/mmio_write` mark `mmio` effect usage.
+- `mmio_read/mmio_write/raw_mmio_read/raw_mmio_write` mark `mmio` effect usage.
 - Typed MMIO scalar width and operands are preserved in KRIR ops as `ty`, structured `addr`, and structured `value` (write only).
 - When an MMIO address uses an identifier base (`IDENT` or `IDENT + OFFSET`), that base must resolve to a declared module MMIO base.
 - When an MMIO address uses `IDENT` or `IDENT + OFFSET`, the access resolves against declared MMIO registers for that base.
@@ -116,6 +118,10 @@ Notes:
   - If no exact absolute match exists and the module declares no MMIO structure (`mmio` / `mmio_reg`), integer-literal MMIO behavior remains unchanged.
   - If the module declares MMIO structure and no exact absolute match exists, unmatched raw integer-literal MMIO requires `@module_caps(MmioRaw)`.
   - Without `@module_caps(MmioRaw)`, unmatched raw integer-literal MMIO is rejected deterministically.
+- `raw_mmio_read/raw_mmio_write` are explicit escape-hatch operations:
+  - they require `@module_caps(MmioRaw)`,
+  - they preserve typed/structured operand forms,
+  - they bypass MMIO register lookup/access/width validation.
 
 ### Check/analyze semantics
 

@@ -86,6 +86,15 @@ pub enum Stmt {
         addr: MmioAddrExpr,
         value: MmioValueExpr,
     },
+    RawMmioRead {
+        ty: MmioScalarType,
+        addr: MmioAddrExpr,
+    },
+    RawMmioWrite {
+        ty: MmioScalarType,
+        addr: MmioAddrExpr,
+        value: MmioValueExpr,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -776,6 +785,17 @@ fn parse_typed_mmio_stmt(name: &str, args: &str) -> Result<Option<Stmt>, String>
             "mmio_write() legacy form is unsupported; use mmio_write<T>(addr, value)".to_string(),
         );
     }
+    if lowered == "raw_mmio_read" {
+        return Err(
+            "raw_mmio_read() legacy form is unsupported; use raw_mmio_read<T>(addr)".to_string(),
+        );
+    }
+    if lowered == "raw_mmio_write" {
+        return Err(
+            "raw_mmio_write() legacy form is unsupported; use raw_mmio_write<T>(addr, value)"
+                .to_string(),
+        );
+    }
 
     if let Some(ty) = parse_mmio_scalar_from_name(name, "mmio_read")? {
         let parts = split_csv(args);
@@ -797,6 +817,28 @@ fn parse_typed_mmio_stmt(name: &str, args: &str) -> Result<Option<Stmt>, String>
         let addr = parse_mmio_addr_operand(parts[0].trim())?;
         let value = parse_mmio_value_operand(parts[1].trim())?;
         return Ok(Some(Stmt::MmioWrite { ty, addr, value }));
+    }
+
+    if let Some(ty) = parse_mmio_scalar_from_name(name, "raw_mmio_read")? {
+        let parts = split_csv(args);
+        if parts.len() != 1 {
+            return Err("raw_mmio_read<T>(addr) requires exactly one address argument".to_string());
+        }
+        let addr = parse_mmio_addr_operand(parts[0].trim())?;
+        return Ok(Some(Stmt::RawMmioRead { ty, addr }));
+    }
+
+    if let Some(ty) = parse_mmio_scalar_from_name(name, "raw_mmio_write")? {
+        let parts = split_csv(args);
+        if parts.len() != 2 {
+            return Err(
+                "raw_mmio_write<T>(addr, value) requires exactly two arguments: address and value"
+                    .to_string(),
+            );
+        }
+        let addr = parse_mmio_addr_operand(parts[0].trim())?;
+        let value = parse_mmio_value_operand(parts[1].trim())?;
+        return Ok(Some(Stmt::RawMmioWrite { ty, addr, value }));
     }
 
     Ok(None)
@@ -1017,6 +1059,39 @@ mod tests {
     }
 
     #[test]
+    fn parse_typed_raw_mmio_statements() {
+        let src = r#"
+        fn entry() {
+          raw_mmio_read<u16>(uart0 + 0x10);
+          raw_mmio_write<u64>(0x1000, value0);
+        }
+        "#;
+        let ast = parse_module(src).expect("parse");
+        let entry = ast
+            .items
+            .iter()
+            .find(|item| item.name == "entry")
+            .expect("entry function");
+        assert_eq!(
+            entry.body,
+            vec![
+                Stmt::RawMmioRead {
+                    ty: MmioScalarType::U16,
+                    addr: MmioAddrExpr::IdentPlusOffset {
+                        base: "uart0".to_string(),
+                        offset: "0x10".to_string()
+                    }
+                },
+                Stmt::RawMmioWrite {
+                    ty: MmioScalarType::U64,
+                    addr: MmioAddrExpr::IntLiteral("0x1000".to_string()),
+                    value: MmioValueExpr::Ident("value0".to_string())
+                }
+            ]
+        );
+    }
+
+    #[test]
     fn parse_typed_mmio_operands_are_structured() {
         let src = r#"
         fn entry() {
@@ -1227,6 +1302,21 @@ mod tests {
     }
 
     #[test]
+    fn parse_rejects_legacy_zero_arg_raw_mmio_forms() {
+        let src = "fn entry() { raw_mmio_read(); raw_mmio_write(); }";
+        let err = parse_module(src).expect_err("legacy zero-arg raw mmio should fail");
+        assert_eq!(
+            err,
+            vec![
+                "raw_mmio_read() legacy form is unsupported; use raw_mmio_read<T>(addr) at byte 29"
+                    .to_string(),
+                "raw_mmio_write() legacy form is unsupported; use raw_mmio_write<T>(addr, value) at byte 47"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
     fn parse_rejects_unsupported_typed_mmio_element() {
         let src = "fn entry() { mmio_read<u128>(); }";
         let err = parse_module(src).expect_err("invalid mmio element type should fail");
@@ -1280,6 +1370,30 @@ mod tests {
             err_extra,
             vec![
                 "mmio_write<T>(addr, value) requires exactly two arguments: address and value at byte 49"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_rejects_typed_raw_mmio_write_wrong_arity() {
+        let src_missing = "fn entry() { raw_mmio_write<u32>(addr); }";
+        let err_missing =
+            parse_module(src_missing).expect_err("missing raw mmio value arg should fail");
+        assert_eq!(
+            err_missing,
+            vec![
+                "raw_mmio_write<T>(addr, value) requires exactly two arguments: address and value at byte 39"
+                    .to_string()
+            ]
+        );
+
+        let src_extra = "fn entry() { raw_mmio_write<u32>(addr, value, extra); }";
+        let err_extra = parse_module(src_extra).expect_err("extra raw mmio value arg should fail");
+        assert_eq!(
+            err_extra,
+            vec![
+                "raw_mmio_write<T>(addr, value) requires exactly two arguments: address and value at byte 53"
                     .to_string()
             ]
         );
