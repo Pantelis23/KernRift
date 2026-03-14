@@ -5222,6 +5222,19 @@ fn check_accepts_mmio_register_mixed_offset_literal_fixture() {
 }
 
 #[test]
+fn check_accepts_mmio_register_absolute_literal_fixture() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("mmio_reg_absolute_literal_declared.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    cmd.assert().success();
+}
+
+#[test]
 fn check_rejects_symbolic_mmio_base_without_offset_zero_register_fixture() {
     let root = repo_root();
     let fixture = root
@@ -5312,6 +5325,24 @@ fn check_rejects_duplicate_mmio_register_semantic_offset_fixture() {
 }
 
 #[test]
+fn check_rejects_duplicate_mmio_register_absolute_address_fixture() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("mmio_reg_duplicate_absolute_address.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("duplicate mmio register absolute address '0x1004' between 'A.R0' and 'B.R1'")
+    );
+}
+
+#[test]
 fn check_rejects_mmio_register_access_mismatch_fixture() {
     let root = repo_root();
     let fixture = root
@@ -5330,6 +5361,24 @@ fn check_rejects_mmio_register_access_mismatch_fixture() {
 }
 
 #[test]
+fn check_rejects_mmio_register_absolute_literal_access_mismatch_fixture() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("mmio_reg_absolute_literal_access_mismatch.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("mmio_write<u32>(0x1004, x) violates register access: 'UART0.SR' is read-only")
+    );
+}
+
+#[test]
 fn check_rejects_mmio_register_width_mismatch_fixture() {
     let root = repo_root();
     let fixture = root
@@ -5344,6 +5393,24 @@ fn check_rejects_mmio_register_width_mismatch_fixture() {
     assert_eq!(
         stderr.lines().next(),
         Some("mmio_write<u32>(UART0 + 0x08, x) width mismatch: register 'UART0.CR' is u16")
+    );
+}
+
+#[test]
+fn check_rejects_mmio_register_absolute_literal_width_mismatch_fixture() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("mmio_reg_absolute_literal_width_mismatch.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("mmio_write<u32>(0x1008, x) width mismatch: register 'UART0.CR' is u16")
     );
 }
 

@@ -90,6 +90,8 @@ where each entry comes from source `mmio NAME = INT_LITERAL;` declarations.
 where each entry comes from source `mmio_reg BASE.REG = INT_LITERAL : TYPE ACCESS;` declarations.
 Register offsets are semantically matched by normalized numeric value (`4 == 0x04`), and duplicate semantic offsets per base are rejected.
 Symbolic MMIO base operands (`mmio_*<T>(BASE, ...)`) are resolved as offset `0` against this register table.
+If an integer-literal MMIO address exactly matches `BASE_ADDR + OFFSET` for a declared register, access and width checks are enforced against that register.
+Duplicate absolute register addresses are rejected deterministically when two declarations compute the same numeric `BASE_ADDR + OFFSET`.
 
 ### Defaults (MVP)
 

@@ -1,0 +1,8 @@
+mmio A = 0x1000;
+mmio B = 0x0FFC;
+mmio_reg A.R0 = 0x04 : u32 rw;
+mmio_reg B.R1 = 0x08 : u32 rw;
+
+fn entry() {
+  mmio_read<u32>(A + 4);
+}

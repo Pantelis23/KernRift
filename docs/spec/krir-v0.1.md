@@ -107,10 +107,13 @@ Notes:
   - `IDENT` is interpreted as `IDENT + 0` for register validation.
   - Register offsets are matched by normalized numeric value (for example `4`, `0x04`, and `0X4` are equivalent).
   - Duplicate semantic offsets under a base are rejected even when literal spellings differ.
+  - Duplicate absolute register addresses are rejected deterministically even across different bases when `BASE_ADDR + OFFSET` collides numerically.
   - `mmio_read<T>(IDENT + OFFSET)` and `mmio_read<T>(IDENT)` require register access `ro` or `rw`.
   - `mmio_write<T>(IDENT + OFFSET, value)` and `mmio_write<T>(IDENT, value)` require register access `wo` or `rw`.
   - `T` must match the declared register `TYPE`.
 - Integer-literal MMIO addresses remain valid without declaration.
+  - If an integer literal exactly matches a declared register absolute address (`BASE_ADDR + OFFSET`), access and width checks are enforced for that register.
+  - If no exact absolute match exists, integer-literal MMIO behavior remains unchanged.
 
 ### Check/analyze semantics
 

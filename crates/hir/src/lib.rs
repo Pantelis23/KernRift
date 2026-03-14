@@ -966,8 +966,9 @@ pub fn lower_to_krir_with_surface(
     let mut functions = Vec::new();
     let mut names = BTreeSet::new();
     let (mmio_bases, mmio_base_names, mmio_errors) = collect_mmio_bases(ast);
-    let (mmio_registers, mmio_register_rules, mmio_register_errors) =
-        collect_mmio_registers(ast, &mmio_base_names);
+    let mmio_base_numeric_addrs = collect_mmio_base_numeric_addrs(&mmio_bases);
+    let (mmio_registers, mmio_register_rules, mmio_absolute_register_rules, mmio_register_errors) =
+        collect_mmio_registers(ast, &mmio_base_names, &mmio_base_numeric_addrs);
     errors.extend(mmio_errors);
     errors.extend(mmio_register_errors);
 
@@ -982,6 +983,7 @@ pub fn lower_to_krir_with_surface(
             &item.body,
             &mmio_base_names,
             &mmio_register_rules,
+            &mmio_absolute_register_rules,
             &mut errors,
         );
     }
@@ -1029,6 +1031,15 @@ pub fn lower_to_krir_with_surface(
     };
     module.canonicalize();
     Ok(module)
+}
+
+fn collect_mmio_base_numeric_addrs(mmio_bases: &[KrirMmioBaseDecl]) -> BTreeMap<String, u128> {
+    mmio_bases
+        .iter()
+        .filter_map(|base| {
+            int_literal_numeric_value(&base.addr).map(|addr| (base.name.clone(), addr))
+        })
+        .collect()
 }
 
 fn lower_function(item: &FnAst, surface_profile: SurfaceProfile) -> Result<Function, Vec<String>> {
@@ -1092,15 +1103,23 @@ impl MmioOffsetKey {
 }
 
 type MmioRegisterRules = BTreeMap<String, BTreeMap<MmioOffsetKey, MmioRegisterRule>>;
+type MmioAbsoluteRegisterRules = BTreeMap<u128, MmioRegisterRule>;
 const MMIO_SYMBOLIC_BASE_ZERO_OFFSET: &str = "0";
 
 fn collect_mmio_registers(
     ast: &ModuleAst,
     declared_bases: &BTreeSet<String>,
-) -> (Vec<KrirMmioRegisterDecl>, MmioRegisterRules, Vec<String>) {
+    declared_base_numeric_addrs: &BTreeMap<String, u128>,
+) -> (
+    Vec<KrirMmioRegisterDecl>,
+    MmioRegisterRules,
+    MmioAbsoluteRegisterRules,
+    Vec<String>,
+) {
     let mut out = Vec::new();
     let mut names = BTreeSet::new();
     let mut by_base_and_offset = MmioRegisterRules::new();
+    let mut by_absolute_addr = MmioAbsoluteRegisterRules::new();
     let mut errors = Vec::new();
 
     for ParserMmioRegisterDecl {
@@ -1133,14 +1152,36 @@ fn collect_mmio_registers(
             ));
             continue;
         }
-        per_base.insert(
-            normalized_offset,
-            MmioRegisterRule {
-                full_name,
-                ty: *ty,
-                access: *access,
-            },
-        );
+        let rule = MmioRegisterRule {
+            full_name: full_name.clone(),
+            ty: *ty,
+            access: *access,
+        };
+
+        if let (Some(base_addr), Some(reg_offset)) = (
+            declared_base_numeric_addrs.get(base).copied(),
+            int_literal_numeric_value(offset),
+        ) {
+            let Some(abs_addr) = base_addr.checked_add(reg_offset) else {
+                errors.push(format!(
+                    "mmio register absolute address overflow for '{}'",
+                    full_name
+                ));
+                continue;
+            };
+            if let Some(existing) = by_absolute_addr.get(&abs_addr) {
+                errors.push(format!(
+                    "duplicate mmio register absolute address '{}' between '{}' and '{}'",
+                    format_mmio_absolute_addr(abs_addr),
+                    existing.full_name,
+                    full_name
+                ));
+                continue;
+            }
+            by_absolute_addr.insert(abs_addr, rule.clone());
+        }
+
+        per_base.insert(normalized_offset, rule);
         out.push(KrirMmioRegisterDecl {
             base: base.clone(),
             name: name.clone(),
@@ -1150,13 +1191,14 @@ fn collect_mmio_registers(
         });
     }
 
-    (out, by_base_and_offset, errors)
+    (out, by_base_and_offset, by_absolute_addr, errors)
 }
 
 fn validate_mmio_address_bases_in_stmts(
     stmts: &[Stmt],
     declared_bases: &BTreeSet<String>,
     declared_registers: &MmioRegisterRules,
+    declared_absolute_registers: &MmioAbsoluteRegisterRules,
     errors: &mut Vec<String>,
 ) {
     for stmt in stmts {
@@ -1165,6 +1207,7 @@ fn validate_mmio_address_bases_in_stmts(
                 inner,
                 declared_bases,
                 declared_registers,
+                declared_absolute_registers,
                 errors,
             ),
             Stmt::MmioRead { ty, addr } => {
@@ -1196,7 +1239,15 @@ fn validate_mmio_address_bases_in_stmts(
                                 errors,
                             );
                         }
-                        ParserMmioAddrExpr::IntLiteral(_) => {}
+                        ParserMmioAddrExpr::IntLiteral(literal) => {
+                            validate_mmio_register_read_absolute(
+                                literal,
+                                *ty,
+                                addr,
+                                declared_absolute_registers,
+                                errors,
+                            );
+                        }
                     }
                 }
             }
@@ -1231,7 +1282,16 @@ fn validate_mmio_address_bases_in_stmts(
                                 errors,
                             );
                         }
-                        ParserMmioAddrExpr::IntLiteral(_) => {}
+                        ParserMmioAddrExpr::IntLiteral(literal) => {
+                            validate_mmio_register_write_absolute(
+                                literal,
+                                *ty,
+                                addr,
+                                value,
+                                declared_absolute_registers,
+                                errors,
+                            );
+                        }
                     }
                 }
             }
@@ -1261,20 +1321,7 @@ fn validate_mmio_register_read(
         return;
     };
 
-    if rule.access == ParserMmioRegAccess::Wo {
-        errors.push(format!(
-            "{} violates register access: '{}' is write-only",
-            invocation, rule.full_name
-        ));
-    }
-    if ty != rule.ty {
-        errors.push(format!(
-            "{} width mismatch: register '{}' is {}",
-            invocation,
-            rule.full_name,
-            rule.ty.as_str()
-        ));
-    }
+    validate_mmio_read_rule(rule, &invocation, ty, errors);
 }
 
 fn validate_mmio_register_write(
@@ -1299,6 +1346,72 @@ fn validate_mmio_register_write(
         return;
     };
 
+    validate_mmio_write_rule(rule, &invocation, ty, errors);
+}
+
+fn validate_mmio_register_read_absolute(
+    literal: &str,
+    ty: ParserMmioScalarType,
+    addr: &ParserMmioAddrExpr,
+    declared_absolute_registers: &MmioAbsoluteRegisterRules,
+    errors: &mut Vec<String>,
+) {
+    let Some(addr_numeric) = int_literal_numeric_value(literal) else {
+        return;
+    };
+    let Some(rule) = declared_absolute_registers.get(&addr_numeric) else {
+        return;
+    };
+    let invocation = format_mmio_read_invocation(ty, addr);
+    validate_mmio_read_rule(rule, &invocation, ty, errors);
+}
+
+fn validate_mmio_register_write_absolute(
+    literal: &str,
+    ty: ParserMmioScalarType,
+    addr: &ParserMmioAddrExpr,
+    value: &ParserMmioValueExpr,
+    declared_absolute_registers: &MmioAbsoluteRegisterRules,
+    errors: &mut Vec<String>,
+) {
+    let Some(addr_numeric) = int_literal_numeric_value(literal) else {
+        return;
+    };
+    let Some(rule) = declared_absolute_registers.get(&addr_numeric) else {
+        return;
+    };
+    let invocation = format_mmio_write_invocation(ty, addr, value);
+    validate_mmio_write_rule(rule, &invocation, ty, errors);
+}
+
+fn validate_mmio_read_rule(
+    rule: &MmioRegisterRule,
+    invocation: &str,
+    ty: ParserMmioScalarType,
+    errors: &mut Vec<String>,
+) {
+    if rule.access == ParserMmioRegAccess::Wo {
+        errors.push(format!(
+            "{} violates register access: '{}' is write-only",
+            invocation, rule.full_name
+        ));
+    }
+    if ty != rule.ty {
+        errors.push(format!(
+            "{} width mismatch: register '{}' is {}",
+            invocation,
+            rule.full_name,
+            rule.ty.as_str()
+        ));
+    }
+}
+
+fn validate_mmio_write_rule(
+    rule: &MmioRegisterRule,
+    invocation: &str,
+    ty: ParserMmioScalarType,
+    errors: &mut Vec<String>,
+) {
     if rule.access == ParserMmioRegAccess::Ro {
         errors.push(format!(
             "{} violates register access: '{}' is read-only",
@@ -1313,6 +1426,10 @@ fn validate_mmio_register_write(
             rule.ty.as_str()
         ));
     }
+}
+
+fn format_mmio_absolute_addr(addr: u128) -> String {
+    format!("0x{addr:x}")
 }
 
 fn mmio_addr_base_name(addr: &ParserMmioAddrExpr) -> Option<&str> {
@@ -1986,6 +2103,47 @@ mod tests {
     }
 
     #[test]
+    fn analysis_krir_lowering_allows_int_literal_mmio_address_when_matching_declared_register() {
+        let ast = parse_module(
+            "mmio UART0 = 0x1000;\nmmio_reg UART0.DR = 0x00 : u32 rw;\nfn entry() { mmio_write<u32>(0x1000, x); }",
+        )
+        .expect("parse");
+        let lowered = lower_to_krir_with_surface(&ast, SurfaceProfile::Stable).expect("lower");
+        let entry = lowered
+            .functions
+            .iter()
+            .find(|function| function.name == "entry")
+            .expect("entry function");
+        assert_eq!(
+            serde_json::to_value(&entry.ops).expect("serialize ops"),
+            json!([{
+                "op": "mmio_write",
+                "ty": "u32",
+                "addr": {"kind": "int_literal", "value": "0x1000"},
+                "value": {"kind": "ident", "name": "x"}
+            }])
+        );
+    }
+
+    #[test]
+    fn analysis_krir_lowering_rejects_int_literal_mmio_address_access_and_width_mismatch() {
+        let ast = parse_module(
+            "mmio UART0 = 0x1000;\nmmio_reg UART0.SR = 0x04 : u32 ro;\nmmio_reg UART0.CR = 0x08 : u16 rw;\nfn entry() { mmio_write<u32>(0x1004, x); mmio_write<u32>(0x1008, x); }",
+        )
+        .expect("parse");
+        let errs =
+            lower_to_krir_with_surface(&ast, SurfaceProfile::Stable).expect_err("should reject");
+        assert_eq!(
+            errs,
+            vec![
+                "mmio_write<u32>(0x1004, x) violates register access: 'UART0.SR' is read-only"
+                    .to_string(),
+                "mmio_write<u32>(0x1008, x) width mismatch: register 'UART0.CR' is u16".to_string()
+            ]
+        );
+    }
+
+    #[test]
     fn analysis_krir_lowering_matches_mmio_register_offsets_across_literal_spellings() {
         let ast = parse_module(
             "mmio UART0 = 0x1000;\nmmio_reg UART0.DR = 4 : u32 rw;\nfn entry() { mmio_write<u32>(UART0 + 0x04, value); }",
@@ -2019,6 +2177,23 @@ mod tests {
         assert_eq!(
             errs,
             vec!["duplicate mmio register offset '0x04' for base 'UART0'".to_string()]
+        );
+    }
+
+    #[test]
+    fn analysis_krir_lowering_rejects_duplicate_mmio_register_absolute_address_collision() {
+        let ast = parse_module(
+            "mmio A = 0x1000;\nmmio B = 0x0FFC;\nmmio_reg A.R0 = 0x04 : u32 rw;\nmmio_reg B.R1 = 0x08 : u32 rw;\nfn entry() { mmio_read<u32>(A + 4); }",
+        )
+        .expect("parse");
+        let errs =
+            lower_to_krir_with_surface(&ast, SurfaceProfile::Stable).expect_err("should reject");
+        assert_eq!(
+            errs,
+            vec![
+                "duplicate mmio register absolute address '0x1004' between 'A.R0' and 'B.R1'"
+                    .to_string()
+            ]
         );
     }
 

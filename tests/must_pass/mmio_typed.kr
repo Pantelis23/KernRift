@@ -5,7 +5,7 @@ mmio_reg UART0.DR = 4 : u8 rw;
 
 fn entry() {
   mmio_read<u8>(UART0);
-  mmio_read<u32>(0x1000);
+  mmio_read<u32>(0x1010);
   mmio_read<u32>(UART0 + 0x10);
   mmio_write<u8>(UART0, value);
   mmio_write<u8>(UART0 + 4, 0xff);

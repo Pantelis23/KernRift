@@ -500,6 +500,24 @@ fn golden_mmio_typed_slice_checks_are_stable() {
         reg_mixed_offset.stderr
     );
 
+    let reg_absolute_literal_fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("mmio_reg_absolute_literal_declared.kr");
+    let reg_absolute_literal = run_cmd(
+        bin,
+        &root,
+        &[
+            "check".to_string(),
+            reg_absolute_literal_fixture.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        reg_absolute_literal.code, 0,
+        "absolute literal mmio register fixture should pass, stderr={}",
+        reg_absolute_literal.stderr
+    );
+
     let reg_offset_fail_fixture = root
         .join("tests")
         .join("must_fail")
@@ -566,6 +584,28 @@ fn golden_mmio_typed_slice_checks_are_stable() {
         Some("duplicate mmio register offset '0x04' for base 'UART0'")
     );
 
+    let reg_duplicate_absolute_fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("mmio_reg_duplicate_absolute_address.kr");
+    let reg_duplicate_absolute = run_cmd(
+        bin,
+        &root,
+        &[
+            "check".to_string(),
+            reg_duplicate_absolute_fixture.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        reg_duplicate_absolute.code, 1,
+        "duplicate absolute address fixture should fail, stderr={}",
+        reg_duplicate_absolute.stderr
+    );
+    assert_eq!(
+        reg_duplicate_absolute.stderr.lines().next(),
+        Some("duplicate mmio register absolute address '0x1004' between 'A.R0' and 'B.R1'")
+    );
+
     let reg_access_fail_fixture = root
         .join("tests")
         .join("must_fail")
@@ -586,6 +626,28 @@ fn golden_mmio_typed_slice_checks_are_stable() {
     assert_eq!(
         reg_access_fail.stderr.lines().next(),
         Some("mmio_write<u32>(UART0 + 0x04, x) violates register access: 'UART0.SR' is read-only")
+    );
+
+    let reg_abs_access_fail_fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("mmio_reg_absolute_literal_access_mismatch.kr");
+    let reg_abs_access_fail = run_cmd(
+        bin,
+        &root,
+        &[
+            "check".to_string(),
+            reg_abs_access_fail_fixture.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        reg_abs_access_fail.code, 1,
+        "absolute literal access mismatch fixture should fail, stderr={}",
+        reg_abs_access_fail.stderr
+    );
+    assert_eq!(
+        reg_abs_access_fail.stderr.lines().next(),
+        Some("mmio_write<u32>(0x1004, x) violates register access: 'UART0.SR' is read-only")
     );
 
     let reg_base_zero_access_fixture = root
@@ -630,6 +692,28 @@ fn golden_mmio_typed_slice_checks_are_stable() {
     assert_eq!(
         reg_width_fail.stderr.lines().next(),
         Some("mmio_write<u32>(UART0 + 0x08, x) width mismatch: register 'UART0.CR' is u16")
+    );
+
+    let reg_abs_width_fail_fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("mmio_reg_absolute_literal_width_mismatch.kr");
+    let reg_abs_width_fail = run_cmd(
+        bin,
+        &root,
+        &[
+            "check".to_string(),
+            reg_abs_width_fail_fixture.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        reg_abs_width_fail.code, 1,
+        "absolute literal width mismatch fixture should fail, stderr={}",
+        reg_abs_width_fail.stderr
+    );
+    assert_eq!(
+        reg_abs_width_fail.stderr.lines().next(),
+        Some("mmio_write<u32>(0x1008, x) width mismatch: register 'UART0.CR' is u16")
     );
 
     let reg_base_zero_width_fixture = root
