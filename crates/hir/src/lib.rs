@@ -12,7 +12,7 @@ use parser::{
     FnAst, MmioAddrExpr as ParserMmioAddrExpr, MmioBaseDecl as ParserMmioBaseDecl,
     MmioRegAccess as ParserMmioRegAccess, MmioRegisterDecl as ParserMmioRegisterDecl,
     MmioScalarType as ParserMmioScalarType, MmioValueExpr as ParserMmioValueExpr, ModuleAst,
-    RawAttr, Stmt, split_csv,
+    RawAttr, Stmt, int_literal_numeric_value, split_csv,
 };
 use serde::Serialize;
 
@@ -1077,7 +1077,21 @@ struct MmioRegisterRule {
     access: ParserMmioRegAccess,
 }
 
-type MmioRegisterRules = BTreeMap<String, BTreeMap<String, MmioRegisterRule>>;
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum MmioOffsetKey {
+    Numeric(u128),
+    Raw(String),
+}
+
+impl MmioOffsetKey {
+    fn from_literal(raw: &str) -> Self {
+        int_literal_numeric_value(raw)
+            .map(Self::Numeric)
+            .unwrap_or_else(|| Self::Raw(raw.to_string()))
+    }
+}
+
+type MmioRegisterRules = BTreeMap<String, BTreeMap<MmioOffsetKey, MmioRegisterRule>>;
 
 fn collect_mmio_registers(
     ast: &ModuleAst,
@@ -1109,6 +1123,23 @@ fn collect_mmio_registers(
             continue;
         }
 
+        let normalized_offset = MmioOffsetKey::from_literal(offset);
+        let per_base = by_base_and_offset.entry(base.clone()).or_default();
+        if per_base.contains_key(&normalized_offset) {
+            errors.push(format!(
+                "duplicate mmio register offset '{}' for base '{}'",
+                offset, base
+            ));
+            continue;
+        }
+        per_base.insert(
+            normalized_offset,
+            MmioRegisterRule {
+                full_name,
+                ty: *ty,
+                access: *access,
+            },
+        );
         out.push(KrirMmioRegisterDecl {
             base: base.clone(),
             name: name.clone(),
@@ -1116,14 +1147,6 @@ fn collect_mmio_registers(
             ty: lower_mmio_scalar_type(*ty),
             access: lower_mmio_reg_access(*access),
         });
-        by_base_and_offset.entry(base.clone()).or_default().insert(
-            offset.clone(),
-            MmioRegisterRule {
-                full_name,
-                ty: *ty,
-                access: *access,
-            },
-        );
     }
 
     (out, by_base_and_offset, errors)
@@ -1198,9 +1221,10 @@ fn validate_mmio_register_read(
     errors: &mut Vec<String>,
 ) {
     let invocation = format_mmio_read_invocation(ty, addr);
+    let normalized_offset = MmioOffsetKey::from_literal(offset);
     let Some(rule) = declared_registers
         .get(base)
-        .and_then(|offsets| offsets.get(offset))
+        .and_then(|offsets| offsets.get(&normalized_offset))
     else {
         errors.push(format!(
             "undeclared mmio register offset '{}' for base '{}'",
@@ -1235,9 +1259,10 @@ fn validate_mmio_register_write(
     errors: &mut Vec<String>,
 ) {
     let invocation = format_mmio_write_invocation(ty, addr, value);
+    let normalized_offset = MmioOffsetKey::from_literal(offset);
     let Some(rule) = declared_registers
         .get(base)
-        .and_then(|offsets| offsets.get(offset))
+        .and_then(|offsets| offsets.get(&normalized_offset))
     else {
         errors.push(format!(
             "undeclared mmio register offset '{}' for base '{}'",
@@ -1861,6 +1886,43 @@ mod tests {
                 name: "UART0".to_string(),
                 addr: "0x1000".to_string()
             }]
+        );
+    }
+
+    #[test]
+    fn analysis_krir_lowering_matches_mmio_register_offsets_across_literal_spellings() {
+        let ast = parse_module(
+            "mmio UART0 = 0x1000;\nmmio_reg UART0.DR = 4 : u32 rw;\nfn entry() { mmio_write<u32>(UART0 + 0x04, value); }",
+        )
+        .expect("parse");
+        let lowered = lower_to_krir_with_surface(&ast, SurfaceProfile::Stable).expect("lower");
+        let entry = lowered
+            .functions
+            .iter()
+            .find(|function| function.name == "entry")
+            .expect("entry function");
+        assert_eq!(
+            serde_json::to_value(&entry.ops).expect("serialize ops"),
+            json!([{
+                "op": "mmio_write",
+                "ty": "u32",
+                "addr": {"kind": "ident_plus_offset", "base": "UART0", "offset": "0x04"},
+                "value": {"kind": "ident", "name": "value"}
+            }])
+        );
+    }
+
+    #[test]
+    fn analysis_krir_lowering_rejects_duplicate_mmio_register_semantic_offset() {
+        let ast = parse_module(
+            "mmio UART0 = 0x1000;\nmmio_reg UART0.DR = 4 : u32 rw;\nmmio_reg UART0.SR = 0x04 : u32 ro;\nfn entry() { mmio_read<u32>(UART0 + 4); }",
+        )
+        .expect("parse");
+        let errs =
+            lower_to_krir_with_surface(&ast, SurfaceProfile::Stable).expect_err("should reject");
+        assert_eq!(
+            errs,
+            vec!["duplicate mmio register offset '0x04' for base 'UART0'".to_string()]
         );
     }
 

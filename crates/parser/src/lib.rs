@@ -843,6 +843,22 @@ fn parse_mmio_value_operand(raw: &str) -> Result<MmioValueExpr, String> {
     ))
 }
 
+pub fn int_literal_numeric_value(raw: &str) -> Option<u128> {
+    if raw.starts_with("0x") || raw.starts_with("0X") {
+        let suffix = raw[2..].replace('_', "");
+        if suffix.is_empty() {
+            return None;
+        }
+        return u128::from_str_radix(&suffix, 16).ok();
+    }
+
+    let digits = raw.replace('_', "");
+    if digits.is_empty() {
+        return None;
+    }
+    digits.parse::<u128>().ok()
+}
+
 fn is_ident_token(raw: &str) -> bool {
     let mut chars = raw.chars();
     let Some(first) = chars.next() else {
@@ -939,7 +955,7 @@ fn parse_invocation(stmt: &str) -> Result<(String, String), String> {
 mod tests {
     use super::{
         MmioAddrExpr, MmioBaseDecl, MmioRegAccess, MmioRegisterDecl, MmioScalarType, MmioValueExpr,
-        Stmt, parse_module,
+        Stmt, int_literal_numeric_value, parse_module,
     };
     use proptest::prelude::*;
 
@@ -1176,6 +1192,23 @@ mod tests {
             err,
             vec!["mmio_reg declarations are only allowed at module scope at byte 47".to_string()]
         );
+    }
+
+    #[test]
+    fn int_literal_numeric_value_normalizes_decimal_hex_and_underscores() {
+        assert_eq!(int_literal_numeric_value("4"), Some(4));
+        assert_eq!(int_literal_numeric_value("0x04"), Some(4));
+        assert_eq!(int_literal_numeric_value("0X4"), Some(4));
+        assert_eq!(int_literal_numeric_value("0_4"), Some(4));
+        assert_eq!(int_literal_numeric_value("0x1_0"), Some(16));
+    }
+
+    #[test]
+    fn int_literal_numeric_value_rejects_invalid_tokens() {
+        assert_eq!(int_literal_numeric_value(""), None);
+        assert_eq!(int_literal_numeric_value("0x"), None);
+        assert_eq!(int_literal_numeric_value("foo"), None);
+        assert_eq!(int_literal_numeric_value("0xgg"), None);
     }
 
     #[test]

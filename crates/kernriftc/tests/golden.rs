@@ -464,6 +464,24 @@ fn golden_mmio_typed_slice_checks_are_stable() {
         reg_pass.stderr
     );
 
+    let reg_mixed_offset_fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("mmio_reg_offset_mixed_literal.kr");
+    let reg_mixed_offset = run_cmd(
+        bin,
+        &root,
+        &[
+            "check".to_string(),
+            reg_mixed_offset_fixture.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        reg_mixed_offset.code, 0,
+        "mixed literal mmio register fixture should pass, stderr={}",
+        reg_mixed_offset.stderr
+    );
+
     let reg_offset_fail_fixture = root
         .join("tests")
         .join("must_fail")
@@ -484,6 +502,28 @@ fn golden_mmio_typed_slice_checks_are_stable() {
     assert_eq!(
         reg_offset_fail.stderr.lines().next(),
         Some("undeclared mmio register offset '0x44' for base 'UART0'")
+    );
+
+    let reg_duplicate_offset_fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("mmio_reg_duplicate_semantic_offset.kr");
+    let reg_duplicate_offset = run_cmd(
+        bin,
+        &root,
+        &[
+            "check".to_string(),
+            reg_duplicate_offset_fixture.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        reg_duplicate_offset.code, 1,
+        "duplicate semantic offset fixture should fail, stderr={}",
+        reg_duplicate_offset.stderr
+    );
+    assert_eq!(
+        reg_duplicate_offset.stderr.lines().next(),
+        Some("duplicate mmio register offset '0x04' for base 'UART0'")
     );
 
     let reg_access_fail_fixture = root

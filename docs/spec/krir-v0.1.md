@@ -104,6 +104,8 @@ Notes:
 - Typed MMIO scalar width and operands are preserved in KRIR ops as `ty`, structured `addr`, and structured `value` (write only).
 - When an MMIO address uses an identifier base (`IDENT` or `IDENT + OFFSET`), that base must resolve to a declared module MMIO base.
 - When an MMIO address uses `IDENT + OFFSET`, the pair must resolve to a declared MMIO register for that base.
+  - Register offsets are matched by normalized numeric value (for example `4`, `0x04`, and `0X4` are equivalent).
+  - Duplicate semantic offsets under a base are rejected even when literal spellings differ.
   - `mmio_read<T>(IDENT + OFFSET)` requires register access `ro` or `rw`.
   - `mmio_write<T>(IDENT + OFFSET, value)` requires register access `wo` or `rw`.
   - `T` must match the declared register `TYPE`.

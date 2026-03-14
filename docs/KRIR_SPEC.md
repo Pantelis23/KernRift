@@ -88,6 +88,7 @@ where each entry comes from source `mmio NAME = INT_LITERAL;` declarations.
 - `mmio_registers: [{ base, name, offset, ty, access }]`
 
 where each entry comes from source `mmio_reg BASE.REG = INT_LITERAL : TYPE ACCESS;` declarations.
+Register offsets are semantically matched by normalized numeric value (`4 == 0x04`), and duplicate semantic offsets per base are rejected.
 
 ### Defaults (MVP)
 

@@ -5196,6 +5196,19 @@ fn check_accepts_mmio_register_declared_fixture() {
 }
 
 #[test]
+fn check_accepts_mmio_register_mixed_offset_literal_fixture() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("mmio_reg_offset_mixed_literal.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    cmd.assert().success();
+}
+
+#[test]
 fn check_rejects_undeclared_mmio_register_offset_fixture() {
     let root = repo_root();
     let fixture = root
@@ -5210,6 +5223,24 @@ fn check_rejects_undeclared_mmio_register_offset_fixture() {
     assert_eq!(
         stderr.lines().next(),
         Some("undeclared mmio register offset '0x44' for base 'UART0'")
+    );
+}
+
+#[test]
+fn check_rejects_duplicate_mmio_register_semantic_offset_fixture() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("mmio_reg_duplicate_semantic_offset.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("duplicate mmio register offset '0x04' for base 'UART0'")
     );
 }
 
