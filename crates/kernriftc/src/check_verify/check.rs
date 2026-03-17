@@ -6,12 +6,12 @@ use ed25519_dalek::Signer;
 use emit::{ContractsSchema as EmitContractsSchema, emit_contracts_json_canonical_with_schema};
 use kernriftc::{analyze, check_file_with_surface, check_module, compile_file_with_surface};
 
-use super::args::{CheckArgs, CheckProfile, ContractsSchemaArg};
+use super::args::{CheckArgs, CheckProfile, ContractsSchemaArg, PolicyOutputFormat};
 use super::crypto::{load_signing_key_hex, sha256_hex};
 use super::output::write_output_files;
 use crate::policy_engine::{
-    decode_contracts_bundle, evaluate_policy, load_policy_file, materialize_kernel_profile_policy,
-    print_policy_violations,
+    decode_contracts_bundle, emit_policy_violations_json, evaluate_policy, load_policy_file,
+    materialize_kernel_profile_policy, print_policy_violations,
 };
 use crate::{EXIT_INVALID_INPUT, EXIT_POLICY_VIOLATION, print_errors};
 
@@ -106,7 +106,18 @@ pub(crate) fn run_check(args: &CheckArgs) -> ExitCode {
     if !policy_violations.is_empty() {
         policy_violations.sort();
         policy_violations.dedup();
-        print_policy_violations(&policy_violations, false);
+        match args.format {
+            PolicyOutputFormat::Text => print_policy_violations(&policy_violations, false),
+            PolicyOutputFormat::Json => {
+                match emit_policy_violations_json(&policy_violations, EXIT_POLICY_VIOLATION) {
+                    Ok(text) => print!("{}", text),
+                    Err(err) => {
+                        eprintln!("failed to serialize policy JSON: {}", err);
+                        return ExitCode::from(EXIT_INVALID_INPUT);
+                    }
+                }
+            }
+        }
     }
     if !semantic_errs.is_empty() || !policy_violations.is_empty() {
         return ExitCode::from(EXIT_POLICY_VIOLATION);

@@ -954,6 +954,7 @@ fn print_usage() {
     eprintln!("  kernriftc check --contracts-schema v2 <file.kr>");
     eprintln!("  kernriftc check --profile kernel --contracts-schema v2 <file.kr>");
     eprintln!("  kernriftc check --policy <policy.toml> <file.kr>");
+    eprintln!("  kernriftc check --format json --policy <policy.toml> <file.kr>");
     eprintln!("  kernriftc check --contracts-out <contracts.json> <file.kr>");
     eprintln!(
         "  kernriftc check --policy <policy.toml> --contracts-out <contracts.json> <file.kr>"
