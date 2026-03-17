@@ -1,7 +1,7 @@
 use super::super::{
-    CONTRACTS_SCHEMA_VERSION_V2, ContractsCriticalViolation, ContractsProvenance, PolicyFamily,
-    PolicyRule, PolicyViolation, PolicyViolationBinderKind, policy_rule_binder_kind,
-    policy_rule_spec,
+    CONTRACTS_SCHEMA_VERSION_V2, ContractsCriticalViolation, ContractsProvenance,
+    PolicyEvidenceField, PolicyFamily, PolicyRule, PolicyViolation, PolicyViolationBinderKind,
+    policy_rule_binder_kind, policy_rule_spec,
 };
 use super::common::{
     canonicalize_provenance_fields, format_bracketed_list, format_optional_provenance,
@@ -209,8 +209,8 @@ pub(crate) fn print_policy_violations(violations: &[PolicyViolation], evidence: 
     for violation in violations {
         eprintln!("{}", format_policy_violation(violation));
         if evidence {
-            for line in &violation.evidence {
-                eprintln!("{}", line);
+            for field in &violation.evidence {
+                eprintln!("{}", render_policy_evidence_field(field));
             }
         }
     }
@@ -323,7 +323,7 @@ fn bind_irq_capability_observation(observation: IrqCapabilityObservation<'_>) ->
 fn policy_violation_with_evidence(
     rule: PolicyRule,
     msg: String,
-    evidence: Vec<String>,
+    evidence: Vec<PolicyEvidenceField>,
 ) -> PolicyViolation {
     let spec = policy_rule_spec(rule);
     PolicyViolation {
@@ -516,14 +516,33 @@ fn violation_kernel_irq_cap_forbid(
     )
 }
 
-fn evidence_line(key: &str, value: String) -> String {
-    format!("evidence: {}={}", key, value)
+fn evidence_scalar(key: &str, value: impl Into<String>) -> PolicyEvidenceField {
+    PolicyEvidenceField::Scalar {
+        key: key.to_string(),
+        value: value.into(),
+    }
 }
 
-fn evidence_lines_irq_path(symbol_name: &str, irq_path: &[String]) -> Vec<String> {
+fn evidence_list(key: &str, values: &[String]) -> PolicyEvidenceField {
+    PolicyEvidenceField::List {
+        key: key.to_string(),
+        values: values.to_vec(),
+    }
+}
+
+fn render_policy_evidence_field(field: &PolicyEvidenceField) -> String {
+    match field {
+        PolicyEvidenceField::Scalar { key, value } => format!("evidence: {}={}", key, value),
+        PolicyEvidenceField::List { key, values } => {
+            format!("evidence: {}={}", key, format_bracketed_list(values))
+        }
+    }
+}
+
+fn evidence_lines_irq_path(symbol_name: &str, irq_path: &[String]) -> Vec<PolicyEvidenceField> {
     vec![
-        evidence_line("symbol", symbol_name.to_string()),
-        evidence_line("irq_path", format_bracketed_list(irq_path)),
+        evidence_scalar("symbol", symbol_name),
+        evidence_list("irq_path", irq_path),
     ]
 }
 
@@ -531,14 +550,14 @@ fn evidence_lines_irq_effect(
     symbol_name: &str,
     effect: &str,
     provenance: Option<&ContractsProvenance>,
-) -> Vec<String> {
+) -> Vec<PolicyEvidenceField> {
     let (direct, via_callee, via_extern) = canonicalize_provenance_fields(provenance);
     vec![
-        evidence_line("symbol", symbol_name.to_string()),
-        evidence_line("effect", effect.to_string()),
-        evidence_line("direct", direct.to_string()),
-        evidence_line("via_callee", format!("[{}]", via_callee.join(","))),
-        evidence_line("via_extern", format!("[{}]", via_extern.join(","))),
+        evidence_scalar("symbol", symbol_name),
+        evidence_scalar("effect", effect),
+        evidence_scalar("direct", direct.to_string()),
+        evidence_list("via_callee", &via_callee),
+        evidence_list("via_extern", &via_extern),
     ]
 }
 
@@ -546,14 +565,14 @@ fn evidence_lines_irq_capability(
     symbol_name: &str,
     capability: &str,
     provenance: Option<&ContractsProvenance>,
-) -> Vec<String> {
+) -> Vec<PolicyEvidenceField> {
     let (direct, via_callee, via_extern) = canonicalize_provenance_fields(provenance);
     vec![
-        evidence_line("symbol", symbol_name.to_string()),
-        evidence_line("capability", capability.to_string()),
-        evidence_line("direct", direct.to_string()),
-        evidence_line("via_callee", format!("[{}]", via_callee.join(","))),
-        evidence_line("via_extern", format!("[{}]", via_extern.join(","))),
+        evidence_scalar("symbol", symbol_name),
+        evidence_scalar("capability", capability),
+        evidence_scalar("direct", direct.to_string()),
+        evidence_list("via_callee", &via_callee),
+        evidence_list("via_extern", &via_extern),
     ]
 }
 
@@ -561,14 +580,14 @@ fn evidence_lines_critical_region(
     function: &str,
     effect: &str,
     provenance: &ContractsProvenance,
-) -> Vec<String> {
+) -> Vec<PolicyEvidenceField> {
     let (direct, via_callee, via_extern) = canonicalize_provenance_fields(Some(provenance));
     vec![
-        evidence_line("function", function.to_string()),
-        evidence_line("effect", effect.to_string()),
-        evidence_line("direct", direct.to_string()),
-        evidence_line("via_callee", format!("[{}]", via_callee.join(","))),
-        evidence_line("via_extern", format!("[{}]", via_extern.join(","))),
+        evidence_scalar("function", function),
+        evidence_scalar("effect", effect),
+        evidence_scalar("direct", direct.to_string()),
+        evidence_list("via_callee", &via_callee),
+        evidence_list("via_extern", &via_extern),
     ]
 }
 
@@ -594,4 +613,68 @@ fn format_capability_violation(violation: &PolicyViolation) -> String {
 
 fn format_limit_violation(violation: &PolicyViolation) -> String {
     format!("policy: {}: {}", violation.code, violation.msg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        PolicyEvidenceField, render_policy_evidence_field, violation_kernel_irq_raw_mmio_forbid,
+    };
+
+    #[test]
+    fn policy_evidence_scalar_rendering_is_stable() {
+        assert_eq!(
+            render_policy_evidence_field(&PolicyEvidenceField::Scalar {
+                key: "symbol".to_string(),
+                value: "helper".to_string(),
+            }),
+            "evidence: symbol=helper"
+        );
+    }
+
+    #[test]
+    fn policy_evidence_list_rendering_is_stable() {
+        assert_eq!(
+            render_policy_evidence_field(&PolicyEvidenceField::List {
+                key: "irq_path".to_string(),
+                values: vec![
+                    "entry".to_string(),
+                    "dispatch".to_string(),
+                    "helper".to_string(),
+                ],
+            }),
+            "evidence: irq_path=[entry,dispatch,helper]"
+        );
+    }
+
+    #[test]
+    fn policy_evidence_empty_list_rendering_is_stable() {
+        assert_eq!(
+            render_policy_evidence_field(&PolicyEvidenceField::List {
+                key: "via_extern".to_string(),
+                values: Vec::new(),
+            }),
+            "evidence: via_extern=[]"
+        );
+    }
+
+    #[test]
+    fn policy_evidence_ordering_is_preserved_by_field_sequence() {
+        let violation = violation_kernel_irq_raw_mmio_forbid(
+            "helper",
+            &["entry".to_string(), "helper".to_string()],
+        );
+        let rendered = violation
+            .evidence
+            .iter()
+            .map(render_policy_evidence_field)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rendered,
+            vec![
+                "evidence: symbol=helper".to_string(),
+                "evidence: irq_path=[entry,helper]".to_string(),
+            ]
+        );
+    }
 }
