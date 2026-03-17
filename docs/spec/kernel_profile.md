@@ -124,6 +124,21 @@ Policy family structure (kernel policy evaluation):
 Policy consumes contracts artifacts directly (v2 facts/report) and does not reconstruct
 hidden call-graph semantics when those facts are already present in the artifact.
 
+Policy JSON output:
+- `kernriftc policy --format json --policy <policy.toml> --contracts <contracts.json>` emits the
+  versioned envelope `kernrift_policy_violations_v1`
+- the contract is locked by `docs/schemas/kernrift_policy_violations_v1.schema.json`
+- top-level fields are:
+  - `schema_version`
+  - `result`
+  - `exit_code`
+  - `violations`
+- evidence variants are typed, not ad hoc text:
+  - `{"kind":"scalar","key":"...","value":"..."}`
+  - `{"kind":"list","key":"...","values":["...", ...]}`
+- text-mode `policy:` / `evidence:` stderr remains the operator-facing surface and is unchanged by
+  the JSON contract
+
 Runtime responsibilities (outside KR0.x compiler checks):
 
 - lock implementation correctness
