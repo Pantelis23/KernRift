@@ -305,6 +305,11 @@ fn kernel_profile_does_not_need_irq_specific_raw_mmio_rule_by_default() {
         "kernel profile should not enable irq-specific raw-mmio rule by default, got:\n{}",
         stderr
     );
+    assert!(
+        !stderr.contains("KERNEL_IRQ_RAW_MMIO_SITE_LIMIT"),
+        "kernel profile should not enable irq raw-mmio site-limit rule by default, got:\n{}",
+        stderr
+    );
 }
 
 #[test]

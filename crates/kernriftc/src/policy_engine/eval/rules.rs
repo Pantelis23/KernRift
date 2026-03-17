@@ -5,8 +5,8 @@ use super::super::{
     ContractsProvenance, PolicyConditionDescriptor, PolicyFamily, PolicyFile, PolicyRule,
     PolicyViolation, policy_family_specs, policy_rule_conditions, policy_rule_effect_condition,
     policy_rule_forbid_raw_mmio_in_irq, policy_rule_forbidden_lock_edges,
-    policy_rule_irq_capability_lists, policy_rule_is_enabled, policy_rule_max_lock_depth,
-    policy_rule_max_no_yield_span, policy_rule_module_cap_allowlist,
+    policy_rule_irq_capability_lists, policy_rule_irq_raw_mmio_site_limit, policy_rule_is_enabled,
+    policy_rule_max_lock_depth, policy_rule_max_no_yield_span, policy_rule_module_cap_allowlist,
     policy_rule_raw_mmio_allow_global, policy_rule_raw_mmio_site_limit,
     policy_rule_raw_mmio_symbol_allowlist, policy_rule_spec,
 };
@@ -215,6 +215,18 @@ pub(super) fn evaluate_effect_rules(
                         ));
                     }
                 }
+                PolicyConditionDescriptor::IrqRawMmioSitesCountAboveConfiguredLimit
+                    if kernel_v2_allowed =>
+                {
+                    if let Some(observation) =
+                        policy_rule_irq_raw_mmio_site_limit_violation(policy, view, spec.rule)
+                    {
+                        violations.push(bind_effect_rule_violation(
+                            spec.rule,
+                            EffectRuleObservation::IrqRawMmioSiteLimit(observation),
+                        ));
+                    }
+                }
                 _ => {}
             }
         }
@@ -339,6 +351,12 @@ pub(super) struct RawMmioSiteLimitObservation {
     pub(super) limit: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct IrqRawMmioSiteLimitObservation {
+    pub(super) observed: u64,
+    pub(super) limit: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct RawMmioSymbolObservation<'a> {
     pub(super) symbol_name: &'a str,
@@ -373,6 +391,7 @@ pub(super) enum EffectRuleObservation<'a> {
     RawMmioSiteLimit(RawMmioSiteLimitObservation),
     RawMmioSymbol(RawMmioSymbolObservation<'a>),
     IrqRawMmioForbidden(IrqRawMmioForbiddenObservation),
+    IrqRawMmioSiteLimit(IrqRawMmioSiteLimitObservation),
 }
 
 pub(super) enum CapabilityRuleObservation<'a> {
@@ -579,6 +598,23 @@ fn policy_rule_irq_raw_mmio_forbid_violations(
         .then_some(IrqRawMmioForbiddenObservation)
         .into_iter()
         .collect()
+}
+
+fn policy_rule_irq_raw_mmio_site_limit_violation(
+    policy: &PolicyFile,
+    view: &PolicyEvalView<'_>,
+    rule: PolicyRule,
+) -> Option<IrqRawMmioSiteLimitObservation> {
+    let observed = view
+        .irq_symbol_names
+        .iter()
+        .filter_map(|symbol_name| view.symbol_by_name.get(*symbol_name))
+        .map(|symbol| symbol.raw_mmio_sites_count)
+        .sum::<u64>();
+
+    policy_rule_irq_raw_mmio_site_limit(policy, rule)
+        .filter(|limit| observed > *limit)
+        .map(|limit| IrqRawMmioSiteLimitObservation { observed, limit })
 }
 
 fn policy_region_rule_observations() -> Vec<CriticalRegionRuleObservation> {
