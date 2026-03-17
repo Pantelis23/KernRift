@@ -931,7 +931,13 @@ pub(crate) struct PolicyViolation {
     diagnostic_template_id: &'static str,
     code: &'static str,
     msg: String,
-    evidence: Vec<String>,
+    evidence: Vec<PolicyEvidenceField>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum PolicyEvidenceField {
+    Scalar { key: String, value: String },
+    List { key: String, values: Vec<String> },
 }
 
 impl Ord for PolicyViolation {
