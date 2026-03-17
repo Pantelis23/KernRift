@@ -651,6 +651,185 @@ fn golden_mmio_typed_slice_checks_are_stable() {
     );
     fs::remove_file(&mixed_contracts_path).ok();
 
+    let raw_policy_contracts_path = std::env::temp_dir().join(format!(
+        "kernrift-golden-raw-mmio-policy-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time")
+            .as_nanos()
+    ));
+    let raw_policy_path = std::env::temp_dir().join(format!(
+        "kernrift-golden-raw-mmio-policy-{}.toml",
+        std::process::id()
+    ));
+    fs::remove_file(&raw_policy_contracts_path).ok();
+    fs::remove_file(&raw_policy_path).ok();
+    fs::write(&raw_policy_path, "[kernel]\nallow_raw_mmio = false\n").expect("write raw policy");
+    let raw_policy_contracts = run_cmd(
+        bin,
+        &root,
+        &[
+            "check".to_string(),
+            "--contracts-schema".to_string(),
+            "v2".to_string(),
+            "--contracts-out".to_string(),
+            raw_policy_contracts_path.display().to_string(),
+            raw_mmio_opt_in_fixture.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        raw_policy_contracts.code, 0,
+        "raw mmio contracts emission should succeed before policy evaluation, stderr={}",
+        raw_policy_contracts.stderr
+    );
+    let raw_policy_deny = run_cmd(
+        bin,
+        &root,
+        &[
+            "policy".to_string(),
+            "--policy".to_string(),
+            raw_policy_path.display().to_string(),
+            "--contracts".to_string(),
+            raw_policy_contracts_path.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        raw_policy_deny.code, 1,
+        "deny-raw policy should reject raw_mmio fixture, stderr={}",
+        raw_policy_deny.stderr
+    );
+    assert_eq!(
+        raw_policy_deny.stderr.lines().next(),
+        Some("policy: KERNEL_RAW_MMIO_FORBID: raw_mmio is not allowed")
+    );
+    fs::remove_file(&raw_policy_contracts_path).ok();
+    fs::remove_file(&raw_policy_path).ok();
+
+    let raw_site_contracts_path = std::env::temp_dir().join(format!(
+        "kernrift-golden-raw-mmio-site-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time")
+            .as_nanos()
+    ));
+    let raw_site_policy_path = std::env::temp_dir().join(format!(
+        "kernrift-golden-raw-mmio-site-{}.toml",
+        std::process::id()
+    ));
+    fs::remove_file(&raw_site_contracts_path).ok();
+    fs::remove_file(&raw_site_policy_path).ok();
+    fs::write(
+        &raw_site_policy_path,
+        "[kernel]\nallow_raw_mmio = true\nmax_raw_mmio_sites = 1\n",
+    )
+    .expect("write raw site policy");
+    let raw_site_contracts = run_cmd(
+        bin,
+        &root,
+        &[
+            "check".to_string(),
+            "--contracts-schema".to_string(),
+            "v2".to_string(),
+            "--contracts-out".to_string(),
+            raw_site_contracts_path.display().to_string(),
+            raw_mmio_bypass_fixture.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        raw_site_contracts.code, 0,
+        "raw site contracts emission should succeed before policy evaluation, stderr={}",
+        raw_site_contracts.stderr
+    );
+    let raw_site_deny = run_cmd(
+        bin,
+        &root,
+        &[
+            "policy".to_string(),
+            "--policy".to_string(),
+            raw_site_policy_path.display().to_string(),
+            "--contracts".to_string(),
+            raw_site_contracts_path.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        raw_site_deny.code, 1,
+        "raw site cap policy should reject excess raw_mmio sites, stderr={}",
+        raw_site_deny.stderr
+    );
+    assert_eq!(
+        raw_site_deny.stderr.lines().next(),
+        Some(
+            "policy: KERNEL_RAW_MMIO_SITE_LIMIT: raw_mmio_sites_count 2 exceeds allowed maximum 1"
+        )
+    );
+    fs::remove_file(&raw_site_contracts_path).ok();
+    fs::remove_file(&raw_site_policy_path).ok();
+
+    let raw_symbol_fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("raw_mmio_two_symbols.kr");
+    let raw_symbol_contracts_path = std::env::temp_dir().join(format!(
+        "kernrift-golden-raw-mmio-symbol-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time")
+            .as_nanos()
+    ));
+    let raw_symbol_policy_path = std::env::temp_dir().join(format!(
+        "kernrift-golden-raw-mmio-symbol-{}.toml",
+        std::process::id()
+    ));
+    fs::remove_file(&raw_symbol_contracts_path).ok();
+    fs::remove_file(&raw_symbol_policy_path).ok();
+    fs::write(
+        &raw_symbol_policy_path,
+        "[kernel]\nallow_raw_mmio_symbols = [\"entry\"]\n",
+    )
+    .expect("write raw symbol policy");
+    let raw_symbol_contracts = run_cmd(
+        bin,
+        &root,
+        &[
+            "check".to_string(),
+            "--contracts-schema".to_string(),
+            "v2".to_string(),
+            "--contracts-out".to_string(),
+            raw_symbol_contracts_path.display().to_string(),
+            raw_symbol_fixture.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        raw_symbol_contracts.code, 0,
+        "raw symbol contracts emission should succeed before policy evaluation, stderr={}",
+        raw_symbol_contracts.stderr
+    );
+    let raw_symbol_deny = run_cmd(
+        bin,
+        &root,
+        &[
+            "policy".to_string(),
+            "--policy".to_string(),
+            raw_symbol_policy_path.display().to_string(),
+            "--contracts".to_string(),
+            raw_symbol_contracts_path.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        raw_symbol_deny.code, 1,
+        "raw symbol allowlist policy should reject helper, stderr={}",
+        raw_symbol_deny.stderr
+    );
+    assert_eq!(
+        raw_symbol_deny.stderr.lines().next(),
+        Some("policy: KERNEL_RAW_MMIO_SYMBOL_ALLOWLIST: raw_mmio symbol 'helper' is not allowed")
+    );
+    fs::remove_file(&raw_symbol_contracts_path).ok();
+    fs::remove_file(&raw_symbol_policy_path).ok();
+
     let reg_offset_fail_fixture = root
         .join("tests")
         .join("must_fail")

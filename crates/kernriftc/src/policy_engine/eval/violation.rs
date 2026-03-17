@@ -9,7 +9,8 @@ use super::common::{
 use super::rules::{
     CapabilityRuleObservation, EffectRuleObservation, IrqCapabilityObservation,
     IrqEffectObservation, LockDepthObservation, LockRuleObservation, ModuleCapabilityObservation,
-    NoYieldLimitObservation, NoYieldUnboundedObservation, SchemaMismatchObservation,
+    NoYieldLimitObservation, NoYieldUnboundedObservation, RawMmioForbiddenObservation,
+    RawMmioSiteLimitObservation, RawMmioSymbolObservation, SchemaMismatchObservation,
 };
 
 pub(super) fn bind_context_rule_violation(
@@ -81,6 +82,33 @@ pub(super) fn bind_effect_rule_violation(
             match binder_kind {
                 PolicyViolationBinderKind::IrqEffect => {
                     bind_irq_effect_observation(rule, effect, observation)
+                }
+                _ => unreachable!("unexpected binder kind for {:?}", rule),
+            }
+        }
+        EffectRuleObservation::RawMmioForbidden(observation) => {
+            debug_assert_eq!(binder_kind, PolicyViolationBinderKind::RawMmioForbidden);
+            match binder_kind {
+                PolicyViolationBinderKind::RawMmioForbidden => {
+                    bind_raw_mmio_forbidden_observation(observation)
+                }
+                _ => unreachable!("unexpected binder kind for {:?}", rule),
+            }
+        }
+        EffectRuleObservation::RawMmioSiteLimit(observation) => {
+            debug_assert_eq!(binder_kind, PolicyViolationBinderKind::RawMmioSiteLimit);
+            match binder_kind {
+                PolicyViolationBinderKind::RawMmioSiteLimit => {
+                    bind_raw_mmio_site_limit_observation(observation)
+                }
+                _ => unreachable!("unexpected binder kind for {:?}", rule),
+            }
+        }
+        EffectRuleObservation::RawMmioSymbol(observation) => {
+            debug_assert_eq!(binder_kind, PolicyViolationBinderKind::RawMmioSymbol);
+            match binder_kind {
+                PolicyViolationBinderKind::RawMmioSymbol => {
+                    bind_raw_mmio_symbol_observation(observation)
                 }
                 _ => unreachable!("unexpected binder kind for {:?}", rule),
             }
@@ -204,6 +232,22 @@ fn bind_irq_effect_observation(
     )
 }
 
+fn bind_raw_mmio_forbidden_observation(
+    _observation: RawMmioForbiddenObservation,
+) -> PolicyViolation {
+    violation_kernel_raw_mmio_forbid()
+}
+
+fn bind_raw_mmio_site_limit_observation(
+    observation: RawMmioSiteLimitObservation,
+) -> PolicyViolation {
+    violation_kernel_raw_mmio_site_limit(observation.observed, observation.limit)
+}
+
+fn bind_raw_mmio_symbol_observation(observation: RawMmioSymbolObservation<'_>) -> PolicyViolation {
+    violation_kernel_raw_mmio_symbol_allowlist(observation.symbol_name)
+}
+
 fn bind_critical_region_violation(
     rule: PolicyRule,
     violation: &ContractsCriticalViolation,
@@ -313,6 +357,30 @@ fn violation_kernel_irq_effect(
             format_optional_provenance(provenance)
         ),
         evidence_lines_irq_effect(symbol_name, effect, provenance),
+    )
+}
+
+fn violation_kernel_raw_mmio_forbid() -> PolicyViolation {
+    policy_violation(
+        PolicyRule::KernelRawMmioForbid,
+        "raw_mmio is not allowed".to_string(),
+    )
+}
+
+fn violation_kernel_raw_mmio_site_limit(observed: u64, limit: u64) -> PolicyViolation {
+    policy_violation(
+        PolicyRule::KernelRawMmioSiteLimit,
+        format!(
+            "raw_mmio_sites_count {} exceeds allowed maximum {}",
+            observed, limit
+        ),
+    )
+}
+
+fn violation_kernel_raw_mmio_symbol_allowlist(symbol_name: &str) -> PolicyViolation {
+    policy_violation(
+        PolicyRule::KernelRawMmioSymbolAllowlist,
+        format!("raw_mmio symbol '{}' is not allowed", symbol_name),
     )
 }
 

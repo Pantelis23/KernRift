@@ -6,7 +6,8 @@ use super::super::{
     PolicyViolation, policy_family_specs, policy_rule_conditions, policy_rule_effect_condition,
     policy_rule_forbidden_lock_edges, policy_rule_irq_capability_lists, policy_rule_is_enabled,
     policy_rule_max_lock_depth, policy_rule_max_no_yield_span, policy_rule_module_cap_allowlist,
-    policy_rule_spec,
+    policy_rule_raw_mmio_allow_global, policy_rule_raw_mmio_site_limit,
+    policy_rule_raw_mmio_symbol_allowlist, policy_rule_spec,
 };
 use super::violation::{
     bind_capability_rule_violation, bind_context_rule_violation, bind_effect_rule_violation,
@@ -16,6 +17,7 @@ use super::violation::{
 pub(super) struct PolicyEvalView<'a> {
     symbol_by_name: BTreeMap<&'a str, &'a ContractsFactSymbol>,
     irq_symbol_names: Vec<&'a str>,
+    raw_mmio_symbol_names: Vec<&'a str>,
 }
 
 impl<'a> PolicyEvalView<'a> {
@@ -37,9 +39,20 @@ impl<'a> PolicyEvalView<'a> {
         irq_symbol_names.sort();
         irq_symbol_names.dedup();
 
+        let mut raw_mmio_symbol_names = contracts
+            .facts
+            .symbols
+            .iter()
+            .filter(|symbol| symbol.has_raw_mmio_usage())
+            .map(|symbol| symbol.name.as_str())
+            .collect::<Vec<_>>();
+        raw_mmio_symbol_names.sort();
+        raw_mmio_symbol_names.dedup();
+
         Self {
             symbol_by_name,
             irq_symbol_names,
+            raw_mmio_symbol_names,
         }
     }
 }
@@ -159,6 +172,38 @@ pub(super) fn evaluate_effect_rules(
                         ));
                     }
                 }
+                PolicyConditionDescriptor::RawMmioObserved if kernel_v2_allowed => {
+                    for observation in
+                        policy_rule_raw_mmio_forbid_violations(policy, view, spec.rule)
+                    {
+                        violations.push(bind_effect_rule_violation(
+                            spec.rule,
+                            EffectRuleObservation::RawMmioForbidden(observation),
+                        ));
+                    }
+                }
+                PolicyConditionDescriptor::RawMmioSitesCountAboveConfiguredLimit
+                    if kernel_v2_allowed =>
+                {
+                    if let Some(observation) =
+                        policy_rule_raw_mmio_site_limit_violation(policy, contracts, spec.rule)
+                    {
+                        violations.push(bind_effect_rule_violation(
+                            spec.rule,
+                            EffectRuleObservation::RawMmioSiteLimit(observation),
+                        ));
+                    }
+                }
+                PolicyConditionDescriptor::RawMmioSymbolNotAllowed if kernel_v2_allowed => {
+                    for observation in
+                        policy_rule_raw_mmio_symbol_violations(policy, view, spec.rule)
+                    {
+                        violations.push(bind_effect_rule_violation(
+                            spec.rule,
+                            EffectRuleObservation::RawMmioSymbol(observation),
+                        ));
+                    }
+                }
                 _ => {}
             }
         }
@@ -271,6 +316,20 @@ pub(super) struct IrqEffectObservation<'a> {
     pub(super) provenance: Option<&'a ContractsProvenance>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct RawMmioForbiddenObservation;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct RawMmioSiteLimitObservation {
+    pub(super) observed: u64,
+    pub(super) limit: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct RawMmioSymbolObservation<'a> {
+    pub(super) symbol_name: &'a str,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct CriticalRegionRuleObservation {
     effect: &'static str,
@@ -296,6 +355,9 @@ pub(super) enum EffectRuleObservation<'a> {
         effect: &'a str,
         observation: IrqEffectObservation<'a>,
     },
+    RawMmioForbidden(RawMmioForbiddenObservation),
+    RawMmioSiteLimit(RawMmioSiteLimitObservation),
+    RawMmioSymbol(RawMmioSymbolObservation<'a>),
 }
 
 pub(super) enum CapabilityRuleObservation<'a> {
@@ -424,6 +486,63 @@ fn policy_rule_irq_effect_violations<'a>(
         }
     }
     violations
+}
+
+fn policy_rule_raw_mmio_forbid_violations<'a>(
+    policy: &PolicyFile,
+    view: &'a PolicyEvalView<'a>,
+    rule: PolicyRule,
+) -> Vec<RawMmioForbiddenObservation> {
+    if policy_rule_raw_mmio_allow_global(policy, rule) {
+        return Vec::new();
+    }
+    if !policy.kernel.allow_raw_mmio_symbols.is_empty() {
+        return Vec::new();
+    }
+    (!view.raw_mmio_symbol_names.is_empty())
+        .then_some(RawMmioForbiddenObservation)
+        .into_iter()
+        .collect()
+}
+
+fn policy_rule_raw_mmio_site_limit_violation(
+    policy: &PolicyFile,
+    contracts: &ContractsBundle,
+    rule: PolicyRule,
+) -> Option<RawMmioSiteLimitObservation> {
+    policy_rule_raw_mmio_site_limit(policy, rule)
+        .filter(|limit| contracts.report.effects.raw_mmio_sites_count > *limit)
+        .map(|limit| RawMmioSiteLimitObservation {
+            observed: contracts.report.effects.raw_mmio_sites_count,
+            limit,
+        })
+}
+
+fn policy_rule_raw_mmio_symbol_violations<'a>(
+    policy: &PolicyFile,
+    view: &'a PolicyEvalView<'a>,
+    rule: PolicyRule,
+) -> Vec<RawMmioSymbolObservation<'a>> {
+    if policy_rule_raw_mmio_allow_global(policy, rule) {
+        return Vec::new();
+    }
+    let Some(allowlist) = policy_rule_raw_mmio_symbol_allowlist(policy, rule) else {
+        return Vec::new();
+    };
+    if allowlist.is_empty() {
+        return Vec::new();
+    }
+
+    let allowed = allowlist
+        .iter()
+        .map(|symbol| symbol.as_str())
+        .collect::<BTreeSet<_>>();
+    view.raw_mmio_symbol_names
+        .iter()
+        .copied()
+        .filter(|symbol_name| !allowed.contains(symbol_name))
+        .map(|symbol_name| RawMmioSymbolObservation { symbol_name })
+        .collect()
 }
 
 fn policy_region_rule_observations() -> Vec<CriticalRegionRuleObservation> {

@@ -67,6 +67,18 @@ pub(super) fn normalize_policy(
     policy.kernel.forbid_effects_in_critical.sort();
     policy.kernel.forbid_effects_in_critical.dedup();
 
+    for symbol in &mut policy.kernel.allow_raw_mmio_symbols {
+        *symbol = symbol.trim().to_string();
+        if symbol.is_empty() {
+            return Err(format!(
+                "invalid policy '{}': allow_raw_mmio_symbols entries must be non-empty strings",
+                source_name
+            ));
+        }
+    }
+    policy.kernel.allow_raw_mmio_symbols.sort();
+    policy.kernel.allow_raw_mmio_symbols.dedup();
+
     for cap in &mut policy.kernel.forbid_caps_in_irq {
         *cap = cap.trim().to_string();
         if cap.is_empty() {

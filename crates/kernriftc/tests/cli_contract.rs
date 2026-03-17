@@ -117,6 +117,17 @@ fn write_v2_contracts_for_fixture(root: &Path, fixture: &Path, label: &str) -> P
     contracts_path
 }
 
+fn write_temp_policy_file(label: &str, policy_text: &str) -> PathBuf {
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let policy_path = std::env::temp_dir().join(format!("kernrift-policy-{}-{}.toml", label, ts));
+    fs::remove_file(&policy_path).ok();
+    fs::write(&policy_path, policy_text).expect("write policy");
+    policy_path
+}
+
 fn inject_single_critical_violation(
     contracts_json: &mut Value,
     function: &str,
@@ -6093,6 +6104,204 @@ fn inspect_contracts_v2_summary_includes_raw_mmio_signals() {
     );
 
     fs::remove_file(&contracts_path).ok();
+}
+
+#[test]
+fn policy_denies_raw_mmio_by_default_when_configured() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("raw_mmio_with_cap.kr");
+    let contracts_path = write_v2_contracts_for_fixture(&root, &fixture, "raw-mmio-deny");
+    let policy_path = write_temp_policy_file("raw-mmio-deny", "[kernel]\nallow_raw_mmio = false\n");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let lines = stderr
+        .lines()
+        .filter(|line| line.starts_with("policy: "))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lines,
+        vec!["policy: KERNEL_RAW_MMIO_FORBID: raw_mmio is not allowed"]
+    );
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn policy_allows_raw_mmio_when_explicitly_enabled() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("raw_mmio_with_cap.kr");
+    let contracts_path = write_v2_contracts_for_fixture(&root, &fixture, "raw-mmio-allow");
+    let policy_path = write_temp_policy_file("raw-mmio-allow", "[kernel]\nallow_raw_mmio = true\n");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    cmd.assert().success();
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn policy_allows_structured_mmio_when_raw_mmio_is_denied() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("mmio_register_declared.kr");
+    let contracts_path =
+        write_v2_contracts_for_fixture(&root, &fixture, "raw-mmio-structured-pass");
+    let policy_path = write_temp_policy_file(
+        "raw-mmio-structured-pass",
+        "[kernel]\nallow_raw_mmio = false\n",
+    );
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    cmd.assert().success();
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn policy_enforces_raw_mmio_site_limit() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("raw_mmio_bypass_register_checks.kr");
+    let contracts_path = write_v2_contracts_for_fixture(&root, &fixture, "raw-mmio-site-limit");
+    let policy_path = write_temp_policy_file(
+        "raw-mmio-site-limit",
+        "[kernel]\nallow_raw_mmio = true\nmax_raw_mmio_sites = 1\n",
+    );
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let lines = stderr
+        .lines()
+        .filter(|line| line.starts_with("policy: "))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lines,
+        vec![
+            "policy: KERNEL_RAW_MMIO_SITE_LIMIT: raw_mmio_sites_count 2 exceeds allowed maximum 1"
+        ]
+    );
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn policy_enforces_raw_mmio_symbol_allowlist() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("raw_mmio_two_symbols.kr");
+    let contracts_path =
+        write_v2_contracts_for_fixture(&root, &fixture, "raw-mmio-symbol-allowlist");
+    let policy_path = write_temp_policy_file(
+        "raw-mmio-symbol-allowlist",
+        "[kernel]\nallow_raw_mmio_symbols = [\"entry\"]\n",
+    );
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let lines = stderr
+        .lines()
+        .filter(|line| line.starts_with("policy: "))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lines,
+        vec!["policy: KERNEL_RAW_MMIO_SYMBOL_ALLOWLIST: raw_mmio symbol 'helper' is not allowed"]
+    );
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn check_with_policy_denies_raw_mmio_and_suppresses_contract_output() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("raw_mmio_with_cap.kr");
+    let contracts_path = unique_temp_output_path("check-policy-raw-mmio-deny-contracts", "json");
+    let policy_path = write_temp_policy_file(
+        "check-policy-raw-mmio-deny",
+        "[kernel]\nallow_raw_mmio = false\n",
+    );
+    fs::remove_file(&contracts_path).ok();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts-schema")
+        .arg("v2")
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let lines = stderr
+        .lines()
+        .filter(|line| line.starts_with("policy: "))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lines,
+        vec!["policy: KERNEL_RAW_MMIO_FORBID: raw_mmio is not allowed"]
+    );
+    assert!(
+        !contracts_path.exists(),
+        "contracts output should not be written when raw mmio policy denies"
+    );
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
 }
 
 #[test]

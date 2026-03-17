@@ -56,6 +56,10 @@ Current mapping:
 - report remains aggregate-only; symbol-level semantics stay in `facts.symbols[*]`.
 - contracts v2 `facts.symbols[*].raw_mmio_used` and `raw_mmio_sites_count` distinguish raw MMIO sites
   from ordinary structured `mmio_*` usage for governance/reporting consumers.
+- kernel policy now consumes those raw-MMIO fields directly for:
+  - deny-all raw MMIO
+  - per-symbol raw-MMIO allowlists
+  - aggregate raw-MMIO site caps
 - contracts v2 `facts.symbols[*].eff_transitive` is derived by SCC-aware call-graph closure:
   - `eff_transitive(fn) = eff_used(fn) ∪ union(eff_transitive(callee))`
   - SCCs are collapsed first, then effects are propagated over the component DAG.

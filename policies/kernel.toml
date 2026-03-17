@@ -15,6 +15,7 @@ forbid_edges = [
 allow_module = []
 
 [kernel]
+allow_raw_mmio = false
 forbid_alloc_in_irq = true
 forbid_block_in_irq = true
 forbid_yield_in_irq = false

@@ -35,6 +35,9 @@ pub(super) fn apply_policy_materialization_action(
     action: PolicyMaterializationAction,
 ) {
     match action {
+        PolicyMaterializationAction::SetAllowRawMmio(allow) => {
+            policy.kernel.allow_raw_mmio = Some(allow);
+        }
         PolicyMaterializationAction::AppendCriticalEffect(effect) => policy
             .kernel
             .forbid_effects_in_critical
@@ -72,6 +75,15 @@ pub(super) fn policy_rule_is_enabled(policy: &PolicyFile, rule: PolicyRule) -> b
 
 fn policy_enablement_probe_enabled(policy: &PolicyFile, probe: PolicyEnablementProbe) -> bool {
     match probe {
+        PolicyEnablementProbe::KernelRawMmioForbidConfigured => {
+            policy.kernel.allow_raw_mmio.is_some()
+        }
+        PolicyEnablementProbe::KernelRawMmioSiteLimitConfigured => {
+            policy.kernel.max_raw_mmio_sites.is_some()
+        }
+        PolicyEnablementProbe::KernelRawMmioSymbolAllowlistConfigured => {
+            !policy.kernel.allow_raw_mmio_symbols.is_empty()
+        }
         PolicyEnablementProbe::CapsAllowModuleNonEmpty => !policy.caps.allow_module.is_empty(),
         PolicyEnablementProbe::KernelCriticalEffectPresent(effect) => policy
             .kernel

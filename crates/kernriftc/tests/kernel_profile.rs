@@ -257,6 +257,29 @@ fn kernel_profile_denies_alloc_in_irq() {
 }
 
 #[test]
+fn kernel_profile_denies_raw_mmio_by_default() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("raw_mmio_with_cap.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--profile")
+        .arg("kernel")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.contains("policy: KERNEL_RAW_MMIO_FORBID: raw_mmio is not allowed"),
+        "expected raw mmio deny violation, got:\n{}",
+        stderr
+    );
+}
+
+#[test]
 fn kernel_profile_denies_alloc_in_irq_transitive() {
     let root = repo_root();
     let fixture = root
