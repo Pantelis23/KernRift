@@ -15,6 +15,25 @@ use super::rules::{
     RawMmioForbiddenObservation, RawMmioSiteLimitObservation, RawMmioSymbolObservation,
     SchemaMismatchObservation,
 };
+use serde::Serialize;
+
+const POLICY_VIOLATIONS_SCHEMA_VERSION: &str = "kernrift_policy_violations_v1";
+
+#[derive(Serialize)]
+struct PolicyViolationJsonReport<'a> {
+    schema_version: &'static str,
+    result: &'static str,
+    exit_code: u8,
+    violations: Vec<PolicyViolationJson<'a>>,
+}
+
+#[derive(Serialize)]
+struct PolicyViolationJson<'a> {
+    rule: &'static str,
+    family: &'static str,
+    message: &'a str,
+    evidence: &'a [PolicyEvidenceField],
+}
 
 pub(super) fn bind_context_rule_violation(
     rule: PolicyRule,
@@ -214,6 +233,33 @@ pub(crate) fn print_policy_violations(violations: &[PolicyViolation], evidence: 
             }
         }
     }
+}
+
+pub(crate) fn emit_policy_violations_json(
+    violations: &[PolicyViolation],
+    exit_code: u8,
+) -> Result<String, serde_json::Error> {
+    let report = PolicyViolationJsonReport {
+        schema_version: POLICY_VIOLATIONS_SCHEMA_VERSION,
+        result: if violations.is_empty() {
+            "pass"
+        } else {
+            "deny"
+        },
+        exit_code,
+        violations: violations
+            .iter()
+            .map(|violation| PolicyViolationJson {
+                rule: violation.code,
+                family: policy_family_name(violation.family),
+                message: &violation.msg,
+                evidence: &violation.evidence,
+            })
+            .collect(),
+    };
+    let mut text = serde_json::to_string_pretty(&report)?;
+    text.push('\n');
+    Ok(text)
 }
 
 fn bind_schema_mismatch_observation(_observation: SchemaMismatchObservation) -> PolicyViolation {
@@ -474,6 +520,17 @@ fn format_symbol_path(path: &[String]) -> String {
     }
 }
 
+fn policy_family_name(family: PolicyFamily) -> &'static str {
+    match family {
+        PolicyFamily::Context => "context",
+        PolicyFamily::Lock => "lock",
+        PolicyFamily::Effect => "effect",
+        PolicyFamily::Region => "region",
+        PolicyFamily::Capability => "capability",
+        PolicyFamily::Limit => "limit",
+    }
+}
+
 fn violation_kernel_critical_region_effect(
     rule: PolicyRule,
     function: &str,
@@ -618,8 +675,10 @@ fn format_limit_violation(violation: &PolicyViolation) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        PolicyEvidenceField, render_policy_evidence_field, violation_kernel_irq_raw_mmio_forbid,
+        PolicyEvidenceField, emit_policy_violations_json, render_policy_evidence_field,
+        violation_kernel_irq_raw_mmio_forbid,
     };
+    use serde_json::json;
 
     #[test]
     fn policy_evidence_scalar_rendering_is_stable() {
@@ -675,6 +734,85 @@ mod tests {
                 "evidence: symbol=helper".to_string(),
                 "evidence: irq_path=[entry,helper]".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn policy_evidence_scalar_json_serialization_is_stable() {
+        assert_eq!(
+            serde_json::to_value(PolicyEvidenceField::Scalar {
+                key: "symbol".to_string(),
+                value: "helper".to_string(),
+            })
+            .expect("serialize scalar evidence"),
+            json!({
+                "kind": "scalar",
+                "key": "symbol",
+                "value": "helper"
+            })
+        );
+    }
+
+    #[test]
+    fn policy_evidence_list_json_serialization_is_stable() {
+        assert_eq!(
+            serde_json::to_value(PolicyEvidenceField::List {
+                key: "irq_path".to_string(),
+                values: vec![
+                    "entry".to_string(),
+                    "dispatch".to_string(),
+                    "helper".to_string(),
+                ],
+            })
+            .expect("serialize list evidence"),
+            json!({
+                "kind": "list",
+                "key": "irq_path",
+                "values": ["entry", "dispatch", "helper"]
+            })
+        );
+    }
+
+    #[test]
+    fn policy_evidence_empty_list_json_serialization_is_stable() {
+        assert_eq!(
+            serde_json::to_value(PolicyEvidenceField::List {
+                key: "via_extern".to_string(),
+                values: Vec::new(),
+            })
+            .expect("serialize empty list evidence"),
+            json!({
+                "kind": "list",
+                "key": "via_extern",
+                "values": []
+            })
+        );
+    }
+
+    #[test]
+    fn policy_json_report_preserves_typed_evidence_order() {
+        let violation = violation_kernel_irq_raw_mmio_forbid(
+            "helper",
+            &["entry".to_string(), "helper".to_string()],
+        );
+        let text =
+            emit_policy_violations_json(&[violation], 1).expect("serialize policy violations");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&text).expect("parse policy json"),
+            json!({
+                "schema_version": "kernrift_policy_violations_v1",
+                "result": "deny",
+                "exit_code": 1,
+                "violations": [{
+                    "rule": "KERNEL_IRQ_RAW_MMIO_FORBID",
+                    "family": "effect",
+                    "message": "raw_mmio is not allowed in irq context (via entry -> helper)",
+                    "evidence": [
+                        {"kind": "scalar", "key": "symbol", "value": "helper"},
+                        {"kind": "list", "key": "irq_path", "values": ["entry", "helper"]}
+                    ]
+                }]
+            })
         );
     }
 }

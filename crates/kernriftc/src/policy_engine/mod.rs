@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 mod eval;
@@ -6,8 +6,8 @@ mod parse;
 mod profile;
 
 pub(crate) use eval::{
-    contracts_bundle_schema_version, evaluate_policy, format_contracts_inspect_summary,
-    format_policy_violation, print_policy_violations,
+    contracts_bundle_schema_version, emit_policy_violations_json, evaluate_policy,
+    format_contracts_inspect_summary, format_policy_violation, print_policy_violations,
 };
 pub(crate) use parse::{
     decode_contracts_bundle, load_policy_file, parse_policy_text, validate_json_against_schema_text,
@@ -934,7 +934,8 @@ pub(crate) struct PolicyViolation {
     evidence: Vec<PolicyEvidenceField>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum PolicyEvidenceField {
     Scalar { key: String, value: String },
     List { key: String, values: Vec<String> },

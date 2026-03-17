@@ -6,6 +6,26 @@ pub(crate) struct PolicyArgs {
     pub(crate) policy_path: String,
     pub(crate) contracts_path: String,
     pub(crate) evidence: bool,
+    pub(crate) format: PolicyOutputFormat,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PolicyOutputFormat {
+    Text,
+    Json,
+}
+
+impl PolicyOutputFormat {
+    pub(crate) fn parse(raw: &str) -> Result<Self, String> {
+        match raw {
+            "text" => Ok(Self::Text),
+            "json" => Ok(Self::Json),
+            other => Err(format!(
+                "invalid policy mode: unsupported --format '{}' (expected 'text' or 'json')",
+                other
+            )),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -224,10 +244,25 @@ pub(crate) fn parse_policy_args(args: &[String]) -> Result<PolicyArgs, String> {
     let mut policy_path = None::<String>;
     let mut contracts_path = None::<String>;
     let mut evidence = false;
+    let mut format = PolicyOutputFormat::Text;
+    let mut format_set = false;
 
     let mut idx = 0usize;
     while idx < args.len() {
         match args[idx].as_str() {
+            "--format" => {
+                if format_set {
+                    return Err("invalid policy mode: duplicate --format".to_string());
+                }
+                idx += 1;
+                if idx >= args.len() {
+                    return Err(
+                        "invalid policy mode: --format requires 'text' or 'json'".to_string()
+                    );
+                }
+                format = PolicyOutputFormat::parse(&args[idx])?;
+                format_set = true;
+            }
             "--policy" => {
                 if policy_path.is_some() {
                     return Err("invalid policy mode: duplicate --policy".to_string());
@@ -275,6 +310,7 @@ pub(crate) fn parse_policy_args(args: &[String]) -> Result<PolicyArgs, String> {
         policy_path,
         contracts_path,
         evidence,
+        format,
     })
 }
 

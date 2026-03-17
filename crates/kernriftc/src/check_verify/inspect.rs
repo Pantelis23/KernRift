@@ -5,14 +5,20 @@ use std::process::ExitCode;
 use emit::emit_report_json;
 use kernriftc::{analyze, compile_file};
 
+use super::PolicyOutputFormat;
 use super::verify::{decode_verify_report, format_verify_report_inspect_summary};
 use crate::policy_engine::{
-    decode_contracts_bundle, evaluate_policy, format_contracts_inspect_summary, load_policy_file,
-    print_policy_violations,
+    decode_contracts_bundle, emit_policy_violations_json, evaluate_policy,
+    format_contracts_inspect_summary, load_policy_file, print_policy_violations,
 };
 use crate::{EXIT_INVALID_INPUT, EXIT_POLICY_VIOLATION, print_errors, print_usage};
 
-pub(crate) fn run_policy(policy_path: &str, contracts_path: &str, evidence: bool) -> ExitCode {
+pub(crate) fn run_policy(
+    policy_path: &str,
+    contracts_path: &str,
+    evidence: bool,
+    format: PolicyOutputFormat,
+) -> ExitCode {
     let policy = match load_policy_file(policy_path) {
         Ok(policy) => policy,
         Err(err) => {
@@ -38,10 +44,38 @@ pub(crate) fn run_policy(policy_path: &str, contracts_path: &str, evidence: bool
 
     let violations = evaluate_policy(&policy, &contracts);
     if violations.is_empty() {
-        ExitCode::SUCCESS
+        match format {
+            PolicyOutputFormat::Text => ExitCode::SUCCESS,
+            PolicyOutputFormat::Json => match emit_policy_violations_json(&violations, 0) {
+                Ok(text) => {
+                    print!("{}", text);
+                    ExitCode::SUCCESS
+                }
+                Err(err) => {
+                    eprintln!("failed to serialize policy JSON: {}", err);
+                    ExitCode::from(EXIT_INVALID_INPUT)
+                }
+            },
+        }
     } else {
-        print_policy_violations(&violations, evidence);
-        ExitCode::from(EXIT_POLICY_VIOLATION)
+        match format {
+            PolicyOutputFormat::Text => {
+                print_policy_violations(&violations, evidence);
+                ExitCode::from(EXIT_POLICY_VIOLATION)
+            }
+            PolicyOutputFormat::Json => {
+                match emit_policy_violations_json(&violations, EXIT_POLICY_VIOLATION) {
+                    Ok(text) => {
+                        print!("{}", text);
+                        ExitCode::from(EXIT_POLICY_VIOLATION)
+                    }
+                    Err(err) => {
+                        eprintln!("failed to serialize policy JSON: {}", err);
+                        ExitCode::from(EXIT_INVALID_INPUT)
+                    }
+                }
+            }
+        }
     }
 }
 

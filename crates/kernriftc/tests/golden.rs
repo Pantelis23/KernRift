@@ -947,6 +947,55 @@ fn golden_mmio_typed_slice_checks_are_stable() {
             "evidence: irq_path=[entry]",
         ]
     );
+    let raw_irq_deny_json = run_cmd(
+        bin,
+        &root,
+        &[
+            "policy".to_string(),
+            "--format".to_string(),
+            "json".to_string(),
+            "--policy".to_string(),
+            raw_irq_policy_path.display().to_string(),
+            "--contracts".to_string(),
+            raw_irq_contracts_path.display().to_string(),
+        ],
+    );
+    let tmp_dir = std::env::temp_dir();
+    assert_eq!(
+        normalize_command_snapshot(&raw_irq_deny_json, &root, &tmp_dir),
+        concat!(
+            "exit=1\n",
+            "stdout:\n",
+            "{\n",
+            "  \"schema_version\": \"kernrift_policy_violations_v1\",\n",
+            "  \"result\": \"deny\",\n",
+            "  \"exit_code\": 1,\n",
+            "  \"violations\": [\n",
+            "    {\n",
+            "      \"rule\": \"KERNEL_IRQ_RAW_MMIO_FORBID\",\n",
+            "      \"family\": \"effect\",\n",
+            "      \"message\": \"raw_mmio is not allowed in irq context (via entry)\",\n",
+            "      \"evidence\": [\n",
+            "        {\n",
+            "          \"kind\": \"scalar\",\n",
+            "          \"key\": \"symbol\",\n",
+            "          \"value\": \"entry\"\n",
+            "        },\n",
+            "        {\n",
+            "          \"kind\": \"list\",\n",
+            "          \"key\": \"irq_path\",\n",
+            "          \"values\": [\n",
+            "            \"entry\"\n",
+            "          ]\n",
+            "        }\n",
+            "      ]\n",
+            "    }\n",
+            "  ]\n",
+            "}\n",
+            "stderr:\n",
+            "<empty>\n"
+        )
+    );
 
     let raw_irq_helper_contracts = run_cmd(
         bin,

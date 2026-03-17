@@ -294,6 +294,9 @@ fn usage_includes_artifact_json_consumer_commands() {
 
     assert!(stderr.contains("kernriftc inspect-artifact <artifact-path> --format json"));
     assert!(stderr.contains("kernriftc verify-artifact-meta --format json <artifact> <meta.json>"));
+    assert!(stderr.contains(
+        "kernriftc policy --format json --policy <policy.toml> --contracts <contracts.json>"
+    ));
 }
 
 #[test]
@@ -6909,6 +6912,157 @@ fn policy_evidence_irq_raw_mmio_symbol_allowlist_is_structured_and_deterministic
         ]
     );
 
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn policy_json_irq_raw_mmio_forbid_is_exact_and_structured() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("raw_mmio_irq_direct.kr");
+    let contracts_path =
+        write_v2_contracts_for_fixture(&root, &fixture, "raw-mmio-irq-forbid-json-direct");
+    let policy_path = write_temp_policy_file(
+        "raw-mmio-irq-forbid-json-direct",
+        "[kernel]\nallow_raw_mmio = true\nforbid_raw_mmio_in_irq = true\n",
+    );
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("policy")
+        .arg("--format")
+        .arg("json")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.is_empty(),
+        "json policy mode must not write stderr: {}",
+        stderr
+    );
+    assert_eq!(
+        stdout,
+        concat!(
+            "{\n",
+            "  \"schema_version\": \"kernrift_policy_violations_v1\",\n",
+            "  \"result\": \"deny\",\n",
+            "  \"exit_code\": 1,\n",
+            "  \"violations\": [\n",
+            "    {\n",
+            "      \"rule\": \"KERNEL_IRQ_RAW_MMIO_FORBID\",\n",
+            "      \"family\": \"effect\",\n",
+            "      \"message\": \"raw_mmio is not allowed in irq context (via entry)\",\n",
+            "      \"evidence\": [\n",
+            "        {\n",
+            "          \"kind\": \"scalar\",\n",
+            "          \"key\": \"symbol\",\n",
+            "          \"value\": \"entry\"\n",
+            "        },\n",
+            "        {\n",
+            "          \"kind\": \"list\",\n",
+            "          \"key\": \"irq_path\",\n",
+            "          \"values\": [\n",
+            "            \"entry\"\n",
+            "          ]\n",
+            "        }\n",
+            "      ]\n",
+            "    }\n",
+            "  ]\n",
+            "}\n"
+        )
+    );
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn policy_json_irq_raw_mmio_allowlist_deep_path_is_exact_and_structured() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("raw_mmio_irq_helper.kr");
+    let emitted_contracts =
+        write_v2_contracts_for_fixture(&root, &fixture, "raw-mmio-irq-allowlist-json-deep");
+    let mut contracts: Value =
+        serde_json::from_str(&fs::read_to_string(&emitted_contracts).expect("contracts text"))
+            .expect("contracts json");
+    let helper = contracts["facts"]["symbols"]
+        .as_array_mut()
+        .expect("facts symbols")
+        .iter_mut()
+        .find(|sym| sym["name"] == "helper")
+        .expect("helper symbol");
+    helper["ctx_path_provenance"] = json!([{
+        "ctx": "irq",
+        "path": ["entry", "dispatch", "helper"]
+    }]);
+    let contracts_path = write_temp_contracts_file("raw-mmio-irq-allowlist-json-deep", &contracts);
+    let policy_path = write_temp_policy_file(
+        "raw-mmio-irq-allowlist-json-deep",
+        "[kernel]\nallow_raw_mmio = true\nallow_raw_mmio_in_irq_symbols = [\"entry\"]\n",
+    );
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("policy")
+        .arg("--format")
+        .arg("json")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.is_empty(),
+        "json policy mode must not write stderr: {}",
+        stderr
+    );
+    assert_eq!(
+        stdout,
+        concat!(
+            "{\n",
+            "  \"schema_version\": \"kernrift_policy_violations_v1\",\n",
+            "  \"result\": \"deny\",\n",
+            "  \"exit_code\": 1,\n",
+            "  \"violations\": [\n",
+            "    {\n",
+            "      \"rule\": \"KERNEL_IRQ_RAW_MMIO_SYMBOL_ALLOWLIST\",\n",
+            "      \"family\": \"effect\",\n",
+            "      \"message\": \"irq raw_mmio symbol 'helper' is not allowed (via entry -> dispatch -> helper)\",\n",
+            "      \"evidence\": [\n",
+            "        {\n",
+            "          \"kind\": \"scalar\",\n",
+            "          \"key\": \"symbol\",\n",
+            "          \"value\": \"helper\"\n",
+            "        },\n",
+            "        {\n",
+            "          \"kind\": \"list\",\n",
+            "          \"key\": \"irq_path\",\n",
+            "          \"values\": [\n",
+            "            \"entry\",\n",
+            "            \"dispatch\",\n",
+            "            \"helper\"\n",
+            "          ]\n",
+            "        }\n",
+            "      ]\n",
+            "    }\n",
+            "  ]\n",
+            "}\n"
+        )
+    );
+
+    fs::remove_file(&emitted_contracts).ok();
     fs::remove_file(&contracts_path).ok();
     fs::remove_file(&policy_path).ok();
 }

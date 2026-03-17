@@ -146,7 +146,12 @@ fn main() -> ExitCode {
             }
         },
         "policy" => match parse_policy_args(&args[2..]) {
-            Ok(parsed) => run_policy(&parsed.policy_path, &parsed.contracts_path, parsed.evidence),
+            Ok(parsed) => run_policy(
+                &parsed.policy_path,
+                &parsed.contracts_path,
+                parsed.evidence,
+                parsed.format,
+            ),
             Err(err) => {
                 eprintln!("{}", err);
                 print_usage();
@@ -961,6 +966,9 @@ fn print_usage() {
     );
     eprintln!("  kernriftc policy --policy <policy.toml> --contracts <contracts.json>");
     eprintln!("  kernriftc policy --evidence --policy <policy.toml> --contracts <contracts.json>");
+    eprintln!(
+        "  kernriftc policy --format json --policy <policy.toml> --contracts <contracts.json>"
+    );
     eprintln!("  kernriftc features --surface stable");
     eprintln!("  kernriftc features --surface experimental");
     eprintln!("  kernriftc proposals");

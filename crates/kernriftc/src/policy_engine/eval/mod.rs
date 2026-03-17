@@ -8,7 +8,9 @@ mod violation;
 pub(crate) use summary::{contracts_bundle_schema_version, format_contracts_inspect_summary};
 #[cfg(test)]
 pub(in crate::policy_engine) use violation::policy_violation;
-pub(crate) use violation::{format_policy_violation, print_policy_violations};
+pub(crate) use violation::{
+    emit_policy_violations_json, format_policy_violation, print_policy_violations,
+};
 
 pub(crate) fn evaluate_policy(
     policy: &PolicyFile,
