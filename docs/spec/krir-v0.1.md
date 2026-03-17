@@ -241,6 +241,15 @@ Transport invariants:
 - exit codes remain command-specific and are authoritative alongside the payload
 - when the payload has a versioned schema, `schema_version` must be present
 
+Contributor lock for future JSON-capable commands:
+
+- new JSON-capable commands must add `cli_contract` transport assertions
+- prefer reusing `assert_json_transport` in
+  `crates/kernriftc/tests/cli_contract.rs`
+- new tests must lock `stdout`-only JSON transport, empty `stderr`, trailing
+  newline termination, and `schema_version` presence when the payload is
+  versioned
+
 These rules lock transport behavior only. They do not redefine command payload schemas.
 
 ## Verify Exit Codes

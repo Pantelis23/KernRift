@@ -21,6 +21,7 @@ const POLICY_VIOLATIONS_SCHEMA_V1: &str =
     include_str!("../../../docs/schemas/kernrift_policy_violations_v1.schema.json");
 const VERIFY_REPORT_SCHEMA_V1: &str =
     include_str!("../../../docs/schemas/kernrift_verify_report_v1.schema.json");
+const KRIR_SPEC_TEXT: &str = include_str!("../../../docs/spec/krir-v0.1.md");
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -30,6 +31,8 @@ fn repo_root() -> PathBuf {
         .expect("repo root")
 }
 
+// Contributor lock for future JSON-capable commands: reuse this helper from
+// cli_contract coverage instead of creating command-specific transport rules.
 fn assert_json_transport(stdout: &str, stderr: &str, schema_version: &str) {
     assert!(
         stderr.is_empty(),
@@ -46,6 +49,32 @@ fn assert_json_transport(stdout: &str, stderr: &str, schema_version: &str) {
         json["schema_version"],
         json!(schema_version),
         "json mode must include stable schema_version"
+    );
+}
+
+#[test]
+fn structured_output_conventions_spec_locks_future_json_command_transport_tests() {
+    assert!(
+        KRIR_SPEC_TEXT
+            .contains("new JSON-capable commands must add `cli_contract` transport assertions"),
+        "structured output conventions spec must require cli_contract transport assertions"
+    );
+    assert!(
+        KRIR_SPEC_TEXT.contains("prefer reusing `assert_json_transport`"),
+        "structured output conventions spec must point contributors at assert_json_transport"
+    );
+    assert!(
+        KRIR_SPEC_TEXT.contains("stdout` only") || KRIR_SPEC_TEXT.contains("`stdout` only"),
+        "structured output conventions spec must lock stdout-only JSON transport"
+    );
+    assert!(
+        KRIR_SPEC_TEXT.contains("empty `stderr`"),
+        "structured output conventions spec must lock empty stderr in JSON mode"
+    );
+    assert!(
+        KRIR_SPEC_TEXT.contains("trailing\n  newline termination")
+            || KRIR_SPEC_TEXT.contains("trailing newline"),
+        "structured output conventions spec must lock trailing-newline JSON termination"
     );
 }
 
