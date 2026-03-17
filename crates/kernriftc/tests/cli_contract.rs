@@ -308,6 +308,7 @@ fn usage_includes_artifact_json_consumer_commands() {
     assert!(stderr.contains(
         "kernriftc policy --format json --policy <policy.toml> --contracts <contracts.json>"
     ));
+    assert!(stderr.contains("kernriftc check --format json --policy <policy.toml> <file.kr>"));
 }
 
 #[test]
@@ -7162,6 +7163,176 @@ fn policy_json_schema_accepts_scalar_list_and_empty_list_evidence_variants() {
             details.join(" | ")
         );
     }
+}
+
+#[test]
+fn check_json_policy_irq_raw_mmio_forbid_matches_policy_json_contract_exactly() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("raw_mmio_irq_direct.kr");
+    let contracts_path = unique_temp_output_path("check-policy-json-direct-contracts", "json");
+    let denied_contracts_path =
+        unique_temp_output_path("check-policy-json-direct-denied-contracts", "json");
+    let policy_path = write_temp_policy_file(
+        "check-policy-json-direct",
+        "[kernel]\nallow_raw_mmio = true\nforbid_raw_mmio_in_irq = true\n",
+    );
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&denied_contracts_path).ok();
+
+    let mut emit_cmd: Command = cargo_bin_cmd!("kernriftc");
+    emit_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--contracts-schema")
+        .arg("v2")
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg(fixture.as_os_str());
+    emit_cmd.assert().success();
+
+    let mut policy_cmd: Command = cargo_bin_cmd!("kernriftc");
+    policy_cmd
+        .current_dir(&root)
+        .arg("policy")
+        .arg("--format")
+        .arg("json")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    let policy_assert = policy_cmd.assert().failure().code(1);
+    let policy_stdout =
+        String::from_utf8(policy_assert.get_output().stdout.clone()).expect("policy stdout utf8");
+    let policy_stderr =
+        String::from_utf8(policy_assert.get_output().stderr.clone()).expect("policy stderr utf8");
+    assert!(
+        policy_stderr.is_empty(),
+        "policy json mode must not write stderr: {}",
+        policy_stderr
+    );
+
+    let mut check_cmd: Command = cargo_bin_cmd!("kernriftc");
+    check_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--format")
+        .arg("json")
+        .arg("--contracts-schema")
+        .arg("v2")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts-out")
+        .arg(denied_contracts_path.as_os_str())
+        .arg(fixture.as_os_str());
+    let check_assert = check_cmd.assert().failure().code(1);
+    let check_stdout =
+        String::from_utf8(check_assert.get_output().stdout.clone()).expect("check stdout utf8");
+    let check_stderr =
+        String::from_utf8(check_assert.get_output().stderr.clone()).expect("check stderr utf8");
+    assert!(
+        check_stderr.is_empty(),
+        "check json policy deny must not write stderr: {}",
+        check_stderr
+    );
+    assert_eq!(
+        check_stdout, policy_stdout,
+        "check json policy deny must reuse exact policy JSON envelope"
+    );
+    let json: Value = serde_json::from_str(&check_stdout).expect("policy json");
+    validate_policy_violations_schema(&json);
+    assert!(
+        !denied_contracts_path.exists(),
+        "contracts output should not be written when policy denies in json mode"
+    );
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&denied_contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn check_json_policy_irq_raw_mmio_allowlist_helper_path_matches_policy_json_contract_exactly() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("raw_mmio_irq_helper.kr");
+    let contracts_path = unique_temp_output_path("check-policy-json-helper-contracts", "json");
+    let policy_path = write_temp_policy_file(
+        "check-policy-json-helper",
+        "[kernel]\nallow_raw_mmio = true\nallow_raw_mmio_in_irq_symbols = [\"entry\"]\n",
+    );
+    fs::remove_file(&contracts_path).ok();
+
+    let mut emit_cmd: Command = cargo_bin_cmd!("kernriftc");
+    emit_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--contracts-schema")
+        .arg("v2")
+        .arg("--contracts-out")
+        .arg(contracts_path.as_os_str())
+        .arg(fixture.as_os_str());
+    emit_cmd.assert().success();
+
+    let mut policy_cmd: Command = cargo_bin_cmd!("kernriftc");
+    policy_cmd
+        .current_dir(&root)
+        .arg("policy")
+        .arg("--format")
+        .arg("json")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    let policy_assert = policy_cmd.assert().failure().code(1);
+    let policy_stdout =
+        String::from_utf8(policy_assert.get_output().stdout.clone()).expect("policy stdout utf8");
+    let policy_stderr =
+        String::from_utf8(policy_assert.get_output().stderr.clone()).expect("policy stderr utf8");
+    assert!(
+        policy_stderr.is_empty(),
+        "policy json mode must not write stderr: {}",
+        policy_stderr
+    );
+
+    let mut check_cmd: Command = cargo_bin_cmd!("kernriftc");
+    check_cmd
+        .current_dir(&root)
+        .arg("check")
+        .arg("--format")
+        .arg("json")
+        .arg("--contracts-schema")
+        .arg("v2")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg(fixture.as_os_str());
+    let check_assert = check_cmd.assert().failure().code(1);
+    let check_stdout =
+        String::from_utf8(check_assert.get_output().stdout.clone()).expect("check stdout utf8");
+    let check_stderr =
+        String::from_utf8(check_assert.get_output().stderr.clone()).expect("check stderr utf8");
+    assert!(
+        check_stderr.is_empty(),
+        "check json policy deny must not write stderr: {}",
+        check_stderr
+    );
+    assert_eq!(
+        check_stdout, policy_stdout,
+        "check json policy deny must reuse exact policy JSON envelope"
+    );
+    let json: Value = serde_json::from_str(&check_stdout).expect("policy json");
+    validate_policy_violations_schema(&json);
+    assert_eq!(
+        json["violations"][0]["message"],
+        json!("irq raw_mmio symbol 'helper' is not allowed (via helper)")
+    );
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
 }
 
 #[test]

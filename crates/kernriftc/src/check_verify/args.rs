@@ -42,6 +42,7 @@ pub(crate) struct InspectReportArgs {
 pub(crate) struct CheckArgs {
     pub(crate) path: String,
     pub(crate) surface: SurfaceProfile,
+    pub(crate) format: PolicyOutputFormat,
     pub(crate) profile: Option<CheckProfile>,
     pub(crate) contracts_schema: Option<ContractsSchemaArg>,
     pub(crate) contracts_out: Option<String>,
@@ -106,6 +107,8 @@ pub(crate) struct VerifyArgs {
 pub(crate) fn parse_check_args(args: &[String]) -> Result<CheckArgs, String> {
     let mut surface = SurfaceProfile::Stable;
     let mut saw_surface = false;
+    let mut format = PolicyOutputFormat::Text;
+    let mut format_set = false;
     let mut profile = None::<CheckProfile>;
     let mut contracts_schema = None::<ContractsSchemaArg>;
     let mut contracts_out = None::<String>;
@@ -138,6 +141,20 @@ pub(crate) fn parse_check_args(args: &[String]) -> Result<CheckArgs, String> {
                     return Err("invalid check mode: --profile requires a value".to_string());
                 };
                 profile = Some(CheckProfile::parse(value)?);
+                idx += 2;
+            }
+            "--format" => {
+                if format_set {
+                    return Err("invalid check mode: duplicate --format".to_string());
+                }
+                let Some(value) = args.get(idx + 1) else {
+                    return Err(
+                        "invalid check mode: --format requires 'text' or 'json'".to_string()
+                    );
+                };
+                format = PolicyOutputFormat::parse(value)
+                    .map_err(|err| err.replacen("invalid policy mode", "invalid check mode", 1))?;
+                format_set = true;
                 idx += 2;
             }
             "--contracts-schema" => {
@@ -230,6 +247,7 @@ pub(crate) fn parse_check_args(args: &[String]) -> Result<CheckArgs, String> {
     Ok(CheckArgs {
         path: positionals.remove(0),
         surface,
+        format,
         profile,
         contracts_schema,
         contracts_out,
