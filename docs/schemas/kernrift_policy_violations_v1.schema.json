@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kernrift.dev/schemas/kernrift_policy_violations_v1.schema.json",
+  "title": "KernRift Policy Violations v1",
+  "description": "Deterministic structured policy output emitted by `kernriftc policy --format json`.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "result",
+    "exit_code",
+    "violations"
+  ],
+  "properties": {
+    "schema_version": {
+      "description": "Policy violation schema identifier.",
+      "const": "kernrift_policy_violations_v1"
+    },
+    "result": {
+      "description": "Final policy verdict.",
+      "type": "string",
+      "enum": [
+        "pass",
+        "deny"
+      ]
+    },
+    "exit_code": {
+      "description": "Process exit code returned by `kernriftc policy` in JSON mode.",
+      "type": "integer",
+      "enum": [
+        0,
+        1
+      ]
+    },
+    "violations": {
+      "description": "Deterministic policy violations in stable order.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "rule",
+          "family",
+          "message",
+          "evidence"
+        ],
+        "properties": {
+          "rule": {
+            "description": "Stable policy rule code.",
+            "type": "string"
+          },
+          "family": {
+            "description": "Stable policy family identifier.",
+            "type": "string"
+          },
+          "message": {
+            "description": "Deterministic human-readable violation message.",
+            "type": "string"
+          },
+          "evidence": {
+            "description": "Typed evidence fields in deterministic render order.",
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "key",
+                    "value"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "scalar"
+                    },
+                    "key": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "string"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "key",
+                    "values"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "list"
+                    },
+                    "key": {
+                      "type": "string"
+                    },
+                    "values": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}

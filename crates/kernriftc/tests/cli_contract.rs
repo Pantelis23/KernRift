@@ -17,6 +17,8 @@ const CONTRACTS_SCHEMA_V1: &str =
     include_str!("../../../docs/schemas/kernrift_contracts_v1.schema.json");
 const CONTRACTS_SCHEMA_V2: &str =
     include_str!("../../../docs/schemas/kernrift_contracts_v2.schema.json");
+const POLICY_VIOLATIONS_SCHEMA_V1: &str =
+    include_str!("../../../docs/schemas/kernrift_policy_violations_v1.schema.json");
 const VERIFY_REPORT_SCHEMA_V1: &str =
     include_str!("../../../docs/schemas/kernrift_verify_report_v1.schema.json");
 
@@ -26,6 +28,15 @@ fn repo_root() -> PathBuf {
         .join("..")
         .canonicalize()
         .expect("repo root")
+}
+
+fn object_keys(value: &Value) -> BTreeSet<String> {
+    value
+        .as_object()
+        .expect("json object")
+        .keys()
+        .cloned()
+        .collect()
 }
 
 fn unique_temp_output_path(label: &str, ext: &str) -> PathBuf {
@@ -6978,6 +6989,29 @@ fn policy_json_irq_raw_mmio_forbid_is_exact_and_structured() {
             "}\n"
         )
     );
+    let json: Value = serde_json::from_str(&stdout).expect("policy json");
+    validate_policy_violations_schema(&json);
+    assert_eq!(
+        object_keys(&json),
+        BTreeSet::from([
+            "exit_code".to_string(),
+            "result".to_string(),
+            "schema_version".to_string(),
+            "violations".to_string(),
+        ]),
+        "policy json envelope drifted"
+    );
+    let violation = json["violations"][0].as_object().expect("violation object");
+    assert_eq!(
+        violation.keys().cloned().collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            "evidence".to_string(),
+            "family".to_string(),
+            "message".to_string(),
+            "rule".to_string(),
+        ]),
+        "policy json violation shape drifted"
+    );
 
     fs::remove_file(&contracts_path).ok();
     fs::remove_file(&policy_path).ok();
@@ -7061,10 +7095,73 @@ fn policy_json_irq_raw_mmio_allowlist_deep_path_is_exact_and_structured() {
             "}\n"
         )
     );
+    let json: Value = serde_json::from_str(&stdout).expect("policy json");
+    validate_policy_violations_schema(&json);
+    let evidence = json["violations"][0]["evidence"]
+        .as_array()
+        .expect("evidence array");
+    assert_eq!(
+        evidence[0]["kind"],
+        json!("scalar"),
+        "scalar evidence variant drifted"
+    );
+    assert_eq!(
+        evidence[1]["kind"],
+        json!("list"),
+        "list evidence variant drifted"
+    );
 
     fs::remove_file(&emitted_contracts).ok();
     fs::remove_file(&contracts_path).ok();
     fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn policy_json_schema_accepts_scalar_list_and_empty_list_evidence_variants() {
+    let compiled = compile_policy_violations_schema();
+
+    let scalar_and_list = json!({
+        "schema_version": "kernrift_policy_violations_v1",
+        "result": "deny",
+        "exit_code": 1,
+        "violations": [{
+            "rule": "KERNEL_IRQ_RAW_MMIO_SYMBOL_ALLOWLIST",
+            "family": "effect",
+            "message": "irq raw_mmio symbol 'helper' is not allowed (via entry -> helper)",
+            "evidence": [
+                { "kind": "scalar", "key": "symbol", "value": "helper" },
+                { "kind": "list", "key": "irq_path", "values": ["entry", "helper"] }
+            ]
+        }]
+    });
+    if let Err(errors) = compiled.validate(&scalar_and_list) {
+        let details = errors.map(|e| e.to_string()).collect::<Vec<_>>();
+        panic!(
+            "scalar/list policy evidence must validate against schema: {}",
+            details.join(" | ")
+        );
+    }
+
+    let empty_list = json!({
+        "schema_version": "kernrift_policy_violations_v1",
+        "result": "deny",
+        "exit_code": 1,
+        "violations": [{
+            "rule": "KERNEL_RAW_MMIO_SYMBOL_ALLOWLIST",
+            "family": "effect",
+            "message": "raw_mmio symbol 'helper' is not allowed",
+            "evidence": [
+                { "kind": "list", "key": "irq_path", "values": [] }
+            ]
+        }]
+    });
+    if let Err(errors) = compiled.validate(&empty_list) {
+        let details = errors.map(|e| e.to_string()).collect::<Vec<_>>();
+        panic!(
+            "empty-list policy evidence must validate against schema: {}",
+            details.join(" | ")
+        );
+    }
 }
 
 #[test]
@@ -8163,6 +8260,23 @@ fn validate_contracts_schema_v2(instance: &Value) {
 fn compile_verify_report_schema() -> JSONSchema {
     let schema_json: Value = serde_json::from_str(VERIFY_REPORT_SCHEMA_V1).expect("schema json");
     JSONSchema::compile(&schema_json).expect("compile schema")
+}
+
+fn compile_policy_violations_schema() -> JSONSchema {
+    let schema_json: Value =
+        serde_json::from_str(POLICY_VIOLATIONS_SCHEMA_V1).expect("schema json");
+    JSONSchema::compile(&schema_json).expect("compile schema")
+}
+
+fn validate_policy_violations_schema(instance: &Value) {
+    let compiled = compile_policy_violations_schema();
+    if let Err(errors) = compiled.validate(instance) {
+        let details = errors.map(|e| e.to_string()).collect::<Vec<_>>();
+        panic!(
+            "policy JSON must validate against policy violations v1 schema: {}",
+            details.join(" | ")
+        );
+    }
 }
 
 fn assert_schema_rejects(compiled: &JSONSchema, instance: &Value, needle: &str) {
