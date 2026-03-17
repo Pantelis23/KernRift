@@ -157,6 +157,8 @@ struct ContractsFactSymbol {
     #[serde(default)]
     ctx_provenance: Vec<ContractsContextProvenance>,
     #[serde(default)]
+    ctx_path_provenance: Vec<ContractsContextPathProvenance>,
+    #[serde(default)]
     eff_transitive: Vec<String>,
     #[serde(default)]
     eff_provenance: Vec<ContractsEffectProvenance>,
@@ -213,6 +215,13 @@ impl ContractsFactSymbol {
             .find(|entry| entry.ctx == ctx)
             .map(|entry| entry.sources.as_slice())
     }
+
+    fn ctx_path(&self, ctx: &str) -> Option<&[String]> {
+        self.ctx_path_provenance
+            .iter()
+            .find(|entry| entry.ctx == ctx)
+            .map(|entry| entry.path.as_slice())
+    }
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -251,6 +260,13 @@ struct ContractsContextProvenance {
     ctx: String,
     #[serde(default)]
     sources: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ContractsContextPathProvenance {
+    ctx: String,
+    #[serde(default)]
+    path: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq, PartialOrd, Ord)]

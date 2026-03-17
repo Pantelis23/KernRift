@@ -289,6 +289,23 @@ fn facts_manifest_value(
                     })
                     .collect::<Vec<_>>();
                 symbol.insert("ctx_provenance".to_string(), Value::Array(entries));
+                let path_entries = semantics
+                    .path_provenance
+                    .into_iter()
+                    .map(|(ctx, path)| {
+                        let mut entry = Map::new();
+                        entry.insert("ctx".to_string(), Value::String(ctx.as_str().to_string()));
+                        entry.insert(
+                            "path".to_string(),
+                            Value::Array(path.into_iter().map(Value::String).collect()),
+                        );
+                        Value::Object(entry)
+                    })
+                    .collect::<Vec<_>>();
+                symbol.insert(
+                    "ctx_path_provenance".to_string(),
+                    Value::Array(path_entries),
+                );
             }
             symbol.insert(
                 "eff_used".to_string(),
@@ -552,6 +569,7 @@ struct FunctionCapabilitySemantics {
 struct FunctionContextReachability {
     reachable: BTreeSet<Ctx>,
     provenance: BTreeMap<Ctx, Vec<String>>,
+    path_provenance: BTreeMap<Ctx, Vec<String>>,
 }
 
 fn critical_region_findings(
@@ -901,6 +919,7 @@ fn ctx_reachability_by_function(
 
     let mut ctx_sets = vec![BTreeSet::<Ctx>::new(); names.len()];
     let mut source_sets = vec![BTreeMap::<Ctx, BTreeSet<String>>::new(); names.len()];
+    let mut path_maps = vec![BTreeMap::<Ctx, Vec<String>>::new(); names.len()];
     for function in &module.functions {
         if let Some(&idx) = index_by_name.get(&function.name) {
             ctx_sets[idx].extend(function.ctx_ok.iter().copied());
@@ -909,6 +928,7 @@ fn ctx_reachability_by_function(
                     .entry(*ctx)
                     .or_default()
                     .insert(function.name.clone());
+                update_ctx_path(&mut path_maps[idx], *ctx, vec![function.name.clone()]);
             }
         }
     }
@@ -940,6 +960,15 @@ fn ctx_reachability_by_function(
                 if after_sources != before_sources {
                     changed = true;
                 }
+                let caller_path = path_maps[caller_idx]
+                    .get(ctx)
+                    .cloned()
+                    .unwrap_or_else(|| vec![names[caller_idx].clone()]);
+                let mut candidate_path = caller_path;
+                candidate_path.push(names[callee_idx].clone());
+                if update_ctx_path(&mut path_maps[callee_idx], *ctx, candidate_path) {
+                    changed = true;
+                }
             }
             if ctx_sets[callee_idx].len() != before || changed {
                 work.push_back(callee_idx);
@@ -957,10 +986,34 @@ fn ctx_reachability_by_function(
                     .iter()
                     .map(|(ctx, sources)| (*ctx, sources.iter().cloned().collect::<Vec<_>>()))
                     .collect(),
+                path_provenance: path_maps[idx].clone(),
             },
         );
     }
     by_name
+}
+
+fn update_ctx_path(
+    path_map: &mut BTreeMap<Ctx, Vec<String>>,
+    ctx: Ctx,
+    candidate: Vec<String>,
+) -> bool {
+    match path_map.get(&ctx) {
+        None => {
+            path_map.insert(ctx, candidate);
+            true
+        }
+        Some(existing) if is_better_ctx_path(&candidate, existing) => {
+            path_map.insert(ctx, candidate);
+            true
+        }
+        _ => false,
+    }
+}
+
+fn is_better_ctx_path(candidate: &[String], existing: &[String]) -> bool {
+    candidate.len() < existing.len()
+        || (candidate.len() == existing.len() && candidate.iter().cmp(existing.iter()).is_lt())
 }
 
 #[cfg(test)]
@@ -1411,6 +1464,13 @@ mod tests {
                 "sources": ["isr"],
             }])
         );
+        assert_eq!(
+            isr["ctx_path_provenance"],
+            serde_json::json!([{
+                "ctx": "irq",
+                "path": ["isr"],
+            }])
+        );
     }
 
     #[test]
@@ -1471,6 +1531,171 @@ mod tests {
                 {
                     "ctx": "thread",
                     "sources": ["helper"],
+                }
+            ])
+        );
+        assert_eq!(
+            helper["ctx_path_provenance"],
+            serde_json::json!([
+                {
+                    "ctx": "irq",
+                    "path": ["entry", "helper"],
+                },
+                {
+                    "ctx": "thread",
+                    "path": ["helper"],
+                }
+            ])
+        );
+    }
+
+    #[test]
+    fn contracts_v2_ctx_path_provenance_tracks_shortest_irq_chain() {
+        let module = KrirModule {
+            module_caps: vec![],
+            mmio_bases: Vec::new(),
+            mmio_registers: Vec::new(),
+            functions: vec![
+                Function {
+                    name: "entry".to_string(),
+                    is_extern: false,
+                    ctx_ok: vec![Ctx::Irq],
+                    eff_used: vec![],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![KrirOp::Call {
+                        callee: "dispatch".to_string(),
+                    }],
+                },
+                Function {
+                    name: "dispatch".to_string(),
+                    is_extern: false,
+                    ctx_ok: vec![Ctx::Thread],
+                    eff_used: vec![],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![KrirOp::Call {
+                        callee: "helper".to_string(),
+                    }],
+                },
+                Function {
+                    name: "helper".to_string(),
+                    is_extern: false,
+                    ctx_ok: vec![Ctx::Thread],
+                    eff_used: vec![],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                    ops: Vec::new(),
+                },
+            ],
+            call_edges: vec![
+                CallEdge {
+                    caller: "entry".to_string(),
+                    callee: "dispatch".to_string(),
+                },
+                CallEdge {
+                    caller: "dispatch".to_string(),
+                    callee: "helper".to_string(),
+                },
+            ],
+        };
+        let report = AnalysisReport::default();
+
+        let json = emit_contracts_json_with_schema(&module, &report, ContractsSchema::V2)
+            .expect("emit contracts v2");
+        let value: Value = serde_json::from_str(&json).expect("parse contracts");
+        let symbols = value["facts"]["symbols"].as_array().expect("symbols array");
+        let helper = symbols
+            .iter()
+            .find(|sym| sym["name"] == "helper")
+            .expect("helper symbol");
+
+        assert_eq!(
+            helper["ctx_path_provenance"],
+            serde_json::json!([
+                {
+                    "ctx": "irq",
+                    "path": ["entry", "dispatch", "helper"],
+                },
+                {
+                    "ctx": "thread",
+                    "path": ["helper"],
+                }
+            ])
+        );
+    }
+
+    #[test]
+    fn contracts_v2_ctx_path_provenance_chooses_lexicographically_smallest_shortest_path() {
+        let module = KrirModule {
+            module_caps: vec![],
+            mmio_bases: Vec::new(),
+            mmio_registers: Vec::new(),
+            functions: vec![
+                Function {
+                    name: "z_entry".to_string(),
+                    is_extern: false,
+                    ctx_ok: vec![Ctx::Irq],
+                    eff_used: vec![],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![KrirOp::Call {
+                        callee: "helper".to_string(),
+                    }],
+                },
+                Function {
+                    name: "a_entry".to_string(),
+                    is_extern: false,
+                    ctx_ok: vec![Ctx::Irq],
+                    eff_used: vec![],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                    ops: vec![KrirOp::Call {
+                        callee: "helper".to_string(),
+                    }],
+                },
+                Function {
+                    name: "helper".to_string(),
+                    is_extern: false,
+                    ctx_ok: vec![Ctx::Thread],
+                    eff_used: vec![],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                    ops: Vec::new(),
+                },
+            ],
+            call_edges: vec![
+                CallEdge {
+                    caller: "z_entry".to_string(),
+                    callee: "helper".to_string(),
+                },
+                CallEdge {
+                    caller: "a_entry".to_string(),
+                    callee: "helper".to_string(),
+                },
+            ],
+        };
+        let report = AnalysisReport::default();
+
+        let json = emit_contracts_json_with_schema(&module, &report, ContractsSchema::V2)
+            .expect("emit contracts v2");
+        let value: Value = serde_json::from_str(&json).expect("parse contracts");
+        let symbols = value["facts"]["symbols"].as_array().expect("symbols array");
+        let helper = symbols
+            .iter()
+            .find(|sym| sym["name"] == "helper")
+            .expect("helper symbol");
+
+        assert_eq!(
+            helper["ctx_path_provenance"],
+            serde_json::json!([
+                {
+                    "ctx": "irq",
+                    "path": ["a_entry", "helper"],
+                },
+                {
+                    "ctx": "thread",
+                    "path": ["helper"],
                 }
             ])
         );

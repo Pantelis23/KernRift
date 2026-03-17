@@ -280,7 +280,7 @@ fn bind_raw_mmio_symbol_observation(observation: RawMmioSymbolObservation<'_>) -
 fn bind_irq_raw_mmio_forbidden_observation(
     observation: IrqRawMmioForbiddenObservation<'_>,
 ) -> PolicyViolation {
-    violation_kernel_irq_raw_mmio_forbid(observation.symbol_name, observation.irq_source_symbol)
+    violation_kernel_irq_raw_mmio_forbid(observation.symbol_name, &observation.irq_path)
 }
 
 fn bind_irq_raw_mmio_site_limit_observation(
@@ -292,10 +292,7 @@ fn bind_irq_raw_mmio_site_limit_observation(
 fn bind_irq_raw_mmio_symbol_observation(
     observation: IrqRawMmioSymbolObservation<'_>,
 ) -> PolicyViolation {
-    violation_kernel_irq_raw_mmio_symbol_allowlist(
-        observation.symbol_name,
-        observation.irq_source_symbol,
-    )
+    violation_kernel_irq_raw_mmio_symbol_allowlist(observation.symbol_name, &observation.irq_path)
 }
 
 fn bind_critical_region_violation(
@@ -434,19 +431,14 @@ fn violation_kernel_raw_mmio_symbol_allowlist(symbol_name: &str) -> PolicyViolat
     )
 }
 
-fn violation_kernel_irq_raw_mmio_forbid(
-    symbol_name: &str,
-    irq_source_symbol: &str,
-) -> PolicyViolation {
+fn violation_kernel_irq_raw_mmio_forbid(symbol_name: &str, irq_path: &[String]) -> PolicyViolation {
+    let path_text = format_symbol_path(irq_path);
     policy_violation_with_evidence(
         PolicyRule::KernelIrqRawMmioForbid,
-        format!(
-            "raw_mmio is not allowed in irq context (reachable from irq symbol '{}')",
-            irq_source_symbol
-        ),
+        format!("raw_mmio is not allowed in irq context (via {})", path_text),
         vec![
             evidence_line("symbol", symbol_name.to_string()),
-            evidence_line("irq_source_symbol", irq_source_symbol.to_string()),
+            evidence_line("irq_path", path_text),
         ],
     )
 }
@@ -463,19 +455,28 @@ fn violation_kernel_irq_raw_mmio_site_limit(observed: u64, limit: u64) -> Policy
 
 fn violation_kernel_irq_raw_mmio_symbol_allowlist(
     symbol_name: &str,
-    irq_source_symbol: &str,
+    irq_path: &[String],
 ) -> PolicyViolation {
+    let path_text = format_symbol_path(irq_path);
     policy_violation_with_evidence(
         PolicyRule::KernelIrqRawMmioSymbolAllowlist,
         format!(
-            "irq raw_mmio symbol '{}' is not allowed (reachable from irq symbol '{}')",
-            symbol_name, irq_source_symbol
+            "irq raw_mmio symbol '{}' is not allowed (via {})",
+            symbol_name, path_text
         ),
         vec![
             evidence_line("symbol", symbol_name.to_string()),
-            evidence_line("irq_source_symbol", irq_source_symbol.to_string()),
+            evidence_line("irq_path", path_text),
         ],
     )
+}
+
+fn format_symbol_path(path: &[String]) -> String {
+    if path.is_empty() {
+        "<unknown>".to_string()
+    } else {
+        path.join(" -> ")
+    }
 }
 
 fn violation_kernel_critical_region_effect(

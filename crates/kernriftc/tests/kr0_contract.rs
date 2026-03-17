@@ -234,6 +234,7 @@ fn contracts_v2_abi_shape_is_locked_for_kernel_semantics_fields() {
             "caps_provenance".to_string(),
             "caps_req".to_string(),
             "caps_transitive".to_string(),
+            "ctx_path_provenance".to_string(),
             "ctx_ok".to_string(),
             "ctx_provenance".to_string(),
             "ctx_reachable".to_string(),
@@ -254,6 +255,10 @@ fn contracts_v2_abi_shape_is_locked_for_kernel_semantics_fields() {
     assert!(
         entry["ctx_provenance"].is_array(),
         "ctx_provenance must be array"
+    );
+    assert!(
+        entry["ctx_path_provenance"].is_array(),
+        "ctx_path_provenance must be array"
     );
     assert!(
         entry["eff_transitive"].is_array(),
@@ -320,6 +325,16 @@ fn contracts_v2_abi_shape_is_locked_for_kernel_semantics_fields() {
         object_keys(ctx_prov),
         BTreeSet::from(["ctx".to_string(), "sources".to_string()]),
         "ctx_provenance entry keys drifted"
+    );
+    let ctx_path_prov = entry["ctx_path_provenance"]
+        .as_array()
+        .expect("ctx_path_provenance array")
+        .first()
+        .expect("at least one ctx path provenance entry");
+    assert_eq!(
+        object_keys(ctx_path_prov),
+        BTreeSet::from(["ctx".to_string(), "path".to_string()]),
+        "ctx_path_provenance entry keys drifted"
     );
 
     assert!(

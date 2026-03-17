@@ -68,13 +68,15 @@ Compile-time enforcement in KR0.x:
 - context reachability checks from call graph via `facts.symbols[*].ctx_reachable`
   - contracts v2 also emits `facts.symbols[*].ctx_provenance[]` with deterministic source symbols
     per reachable context for policy diagnostics
+  - contracts v2 also emits `facts.symbols[*].ctx_path_provenance[]` with one deterministic
+    shortest path per reachable context
 - critical region analysis:
   - max region nesting depth
   - deterministic per-function violation facts with normalized provenance (`direct`, `via_callee[]`, `via_extern[]`)
 - deterministic diagnostics and artifacts
 
 Contracts v2 semantic split:
-- `facts.symbols[*]`: symbol semantics (`ctx_ok`, `ctx_reachable`, `ctx_provenance`, `eff_used`, `eff_transitive`, `eff_provenance`, caps, attrs)
+- `facts.symbols[*]`: symbol semantics (`ctx_ok`, `ctx_reachable`, `ctx_provenance`, `ctx_path_provenance`, `eff_used`, `eff_transitive`, `eff_provenance`, caps, attrs)
 - `report.*`: aggregate/violation summaries (`max_lock_depth`, `no_yield_spans`, effect site counts, critical findings)
 - MMIO reporting split:
   - structured `mmio_*` continues to contribute regular `mmio` effect semantics.
@@ -90,12 +92,12 @@ Contracts v2 semantic split:
     - cap aggregate raw-MMIO sites (`max_raw_mmio_sites = N`)
     - deny raw MMIO only in irq-reachable symbols (`forbid_raw_mmio_in_irq = true`)
       - this consumes the intersection of `facts.symbols[*].ctx_reachable` and raw-MMIO symbol facts
-      - diagnostics can cite a source irq symbol from `facts.symbols[*].ctx_provenance`
+      - diagnostics can cite a deterministic shortest irq path from `facts.symbols[*].ctx_path_provenance`
     - cap irq-only raw-MMIO sites (`max_raw_mmio_sites_in_irq = N`)
       - this sums `facts.symbols[*].raw_mmio_sites_count` only for symbols whose `ctx_reachable` contains `irq`
     - allow raw MMIO only for named irq-reachable symbols (`allow_raw_mmio_in_irq_symbols = [...]`)
       - this filters raw-MMIO symbols through `facts.symbols[*].ctx_reachable`
-      - diagnostics can cite a source irq symbol from `facts.symbols[*].ctx_provenance`
+      - diagnostics can cite a deterministic shortest irq path from `facts.symbols[*].ctx_path_provenance`
 
 Capability semantics in contracts v2:
 - `caps_req`: direct declared capability requirements

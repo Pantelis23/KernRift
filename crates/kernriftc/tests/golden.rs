@@ -916,7 +916,7 @@ fn golden_mmio_typed_slice_checks_are_stable() {
     assert_eq!(
         raw_irq_deny.stderr.lines().next(),
         Some(
-            "policy: KERNEL_IRQ_RAW_MMIO_FORBID: raw_mmio is not allowed in irq context (reachable from irq symbol 'entry')"
+            "policy: KERNEL_IRQ_RAW_MMIO_FORBID: raw_mmio is not allowed in irq context (via entry)"
         )
     );
 
@@ -956,7 +956,7 @@ fn golden_mmio_typed_slice_checks_are_stable() {
     assert_eq!(
         raw_irq_helper_deny.stderr.lines().next(),
         Some(
-            "policy: KERNEL_IRQ_RAW_MMIO_FORBID: raw_mmio is not allowed in irq context (reachable from irq symbol 'entry')"
+            "policy: KERNEL_IRQ_RAW_MMIO_FORBID: raw_mmio is not allowed in irq context (via helper)"
         )
     );
 
@@ -1123,7 +1123,7 @@ fn golden_mmio_typed_slice_checks_are_stable() {
     assert_eq!(
         raw_irq_helper_symbol_allowlist_deny.stderr.lines().next(),
         Some(
-            "policy: KERNEL_IRQ_RAW_MMIO_SYMBOL_ALLOWLIST: irq raw_mmio symbol 'helper' is not allowed (reachable from irq symbol 'entry')"
+            "policy: KERNEL_IRQ_RAW_MMIO_SYMBOL_ALLOWLIST: irq raw_mmio symbol 'helper' is not allowed (via helper)"
         )
     );
 
@@ -1163,7 +1163,7 @@ fn golden_mmio_typed_slice_checks_are_stable() {
     assert_eq!(
         raw_irq_symbol_allowlist_direct_deny.stderr.lines().next(),
         Some(
-            "policy: KERNEL_IRQ_RAW_MMIO_SYMBOL_ALLOWLIST: irq raw_mmio symbol 'entry' is not allowed (reachable from irq symbol 'entry')"
+            "policy: KERNEL_IRQ_RAW_MMIO_SYMBOL_ALLOWLIST: irq raw_mmio symbol 'entry' is not allowed (via entry)"
         )
     );
 
@@ -1184,12 +1184,114 @@ fn golden_mmio_typed_slice_checks_are_stable() {
         structured_irq_symbol_allowlist_pass.stderr
     );
 
+    let mut helper_contracts_with_path: Value = serde_json::from_str(
+        &fs::read_to_string(&raw_irq_helper_contracts_path).expect("raw irq helper contracts"),
+    )
+    .expect("raw irq helper contracts json");
+    let helper_symbol = helper_contracts_with_path["facts"]["symbols"]
+        .as_array_mut()
+        .expect("facts symbols")
+        .iter_mut()
+        .find(|sym| sym["name"] == "helper")
+        .expect("helper symbol");
+    helper_symbol["ctx_path_provenance"] = serde_json::json!([{
+        "ctx": "irq",
+        "path": ["entry", "helper"]
+    }]);
+    let helper_path_contracts_path = std::env::temp_dir().join(format!(
+        "kernrift-golden-raw-mmio-irq-helper-path-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time")
+            .as_nanos()
+    ));
+    fs::remove_file(&helper_path_contracts_path).ok();
+    fs::write(
+        &helper_path_contracts_path,
+        serde_json::to_vec_pretty(&helper_contracts_with_path).expect("serialize helper path"),
+    )
+    .expect("write helper path contracts");
+    let helper_path_deny = run_cmd(
+        bin,
+        &root,
+        &[
+            "policy".to_string(),
+            "--policy".to_string(),
+            raw_irq_policy_path.display().to_string(),
+            "--contracts".to_string(),
+            helper_path_contracts_path.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        helper_path_deny.code, 1,
+        "irq raw-mmio policy should render multihop helper path when present in contracts, stderr={}",
+        helper_path_deny.stderr
+    );
+    assert_eq!(
+        helper_path_deny.stderr.lines().next(),
+        Some(
+            "policy: KERNEL_IRQ_RAW_MMIO_FORBID: raw_mmio is not allowed in irq context (via entry -> helper)"
+        )
+    );
+
+    let mut helper_contracts_with_deep_path = helper_contracts_with_path.clone();
+    let deep_helper_symbol = helper_contracts_with_deep_path["facts"]["symbols"]
+        .as_array_mut()
+        .expect("facts symbols")
+        .iter_mut()
+        .find(|sym| sym["name"] == "helper")
+        .expect("helper symbol");
+    deep_helper_symbol["ctx_path_provenance"] = serde_json::json!([{
+        "ctx": "irq",
+        "path": ["entry", "dispatch", "helper"]
+    }]);
+    let helper_deep_path_contracts_path = std::env::temp_dir().join(format!(
+        "kernrift-golden-raw-mmio-irq-helper-deep-path-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time")
+            .as_nanos()
+    ));
+    fs::remove_file(&helper_deep_path_contracts_path).ok();
+    fs::write(
+        &helper_deep_path_contracts_path,
+        serde_json::to_vec_pretty(&helper_contracts_with_deep_path)
+            .expect("serialize helper deep path"),
+    )
+    .expect("write helper deep path contracts");
+    let helper_deep_path_allowlist_deny = run_cmd(
+        bin,
+        &root,
+        &[
+            "policy".to_string(),
+            "--policy".to_string(),
+            raw_irq_symbol_allowlist_policy_path.display().to_string(),
+            "--contracts".to_string(),
+            helper_deep_path_contracts_path.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        helper_deep_path_allowlist_deny.code, 1,
+        "irq raw-mmio allowlist should render deep helper path when present in contracts, stderr={}",
+        helper_deep_path_allowlist_deny.stderr
+    );
+    assert_eq!(
+        helper_deep_path_allowlist_deny.stderr.lines().next(),
+        Some(
+            "policy: KERNEL_IRQ_RAW_MMIO_SYMBOL_ALLOWLIST: irq raw_mmio symbol 'helper' is not allowed (via entry -> dispatch -> helper)"
+        )
+    );
+
     fs::remove_file(&raw_irq_policy_path).ok();
     fs::remove_file(&raw_irq_site_limit_policy_path).ok();
     fs::remove_file(&raw_irq_symbol_allowlist_policy_path).ok();
     fs::remove_file(&raw_irq_symbol_allowlist_direct_deny_policy_path).ok();
     fs::remove_file(&raw_irq_contracts_path).ok();
     fs::remove_file(&raw_irq_helper_contracts_path).ok();
+    fs::remove_file(&helper_path_contracts_path).ok();
+    fs::remove_file(&helper_deep_path_contracts_path).ok();
     fs::remove_file(&structured_irq_contracts_path).ok();
 
     let reg_offset_fail_fixture = root

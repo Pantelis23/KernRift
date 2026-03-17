@@ -353,10 +353,10 @@ pub(super) struct IrqEffectObservation<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct RawMmioForbiddenObservation;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct IrqRawMmioForbiddenObservation<'a> {
     pub(super) symbol_name: &'a str,
-    pub(super) irq_source_symbol: &'a str,
+    pub(super) irq_path: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -371,10 +371,10 @@ pub(super) struct IrqRawMmioSiteLimitObservation {
     pub(super) limit: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct IrqRawMmioSymbolObservation<'a> {
     pub(super) symbol_name: &'a str,
-    pub(super) irq_source_symbol: &'a str,
+    pub(super) irq_path: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -616,14 +616,9 @@ fn policy_rule_irq_raw_mmio_forbid_violations<'a>(
             if !symbol.has_raw_mmio_usage() {
                 return None;
             }
-            let irq_source_symbol = symbol
-                .ctx_sources("irq")
-                .and_then(|sources| sources.first())
-                .map(|source| source.as_str())
-                .unwrap_or(*symbol_name);
             Some(IrqRawMmioForbiddenObservation {
                 symbol_name,
-                irq_source_symbol,
+                irq_path: irq_ctx_path(symbol, symbol_name),
             })
         })
         .into_iter()
@@ -671,18 +666,26 @@ fn policy_rule_irq_raw_mmio_symbol_violations<'a>(
             if !symbol.has_raw_mmio_usage() {
                 return None;
             }
-            let irq_source_symbol = symbol
-                .ctx_sources("irq")
-                .and_then(|sources| sources.first())
-                .map(|source| source.as_str())
-                .unwrap_or(*symbol_name);
             Some(IrqRawMmioSymbolObservation {
                 symbol_name,
-                irq_source_symbol,
+                irq_path: irq_ctx_path(symbol, symbol_name),
             })
         })
         .filter(|observation| !allowed.contains(observation.symbol_name))
         .collect()
+}
+
+fn irq_ctx_path(symbol: &ContractsFactSymbol, fallback_symbol_name: &str) -> Vec<String> {
+    symbol
+        .ctx_path("irq")
+        .map(|path| path.to_vec())
+        .or_else(|| {
+            symbol
+                .ctx_sources("irq")
+                .and_then(|sources| sources.first().cloned())
+                .map(|source| vec![source])
+        })
+        .unwrap_or_else(|| vec![fallback_symbol_name.to_string()])
 }
 
 fn policy_region_rule_observations() -> Vec<CriticalRegionRuleObservation> {

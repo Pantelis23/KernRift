@@ -240,6 +240,7 @@
         "ctx_ok",
         "ctx_reachable",
         "ctx_provenance",
+        "ctx_path_provenance",
         "eff_used",
         "eff_transitive",
         "eff_provenance",
@@ -275,6 +276,12 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/context_provenance"
+          }
+        },
+        "ctx_path_provenance": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/context_path_provenance"
           }
         },
         "eff_used": {
@@ -362,6 +369,25 @@
             "type": "string"
           },
           "uniqueItems": true
+        }
+      }
+    },
+    "context_path_provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ctx",
+        "path"
+      ],
+      "properties": {
+        "ctx": {
+          "$ref": "#/$defs/context"
+        },
+        "path": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       }
     },
