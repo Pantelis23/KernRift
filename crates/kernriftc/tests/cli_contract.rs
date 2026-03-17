@@ -6388,6 +6388,136 @@ fn policy_denies_irq_reachable_helper_that_uses_raw_mmio() {
 }
 
 #[test]
+fn policy_irq_raw_mmio_site_limit_ignores_non_irq_raw_mmio() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("raw_mmio_bypass_register_checks.kr");
+    let contracts_path =
+        write_v2_contracts_for_fixture(&root, &fixture, "raw-mmio-irq-site-limit-non-irq-pass");
+    let policy_path = write_temp_policy_file(
+        "raw-mmio-irq-site-limit-non-irq-pass",
+        "[kernel]\nallow_raw_mmio = true\nmax_raw_mmio_sites_in_irq = 0\n",
+    );
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    cmd.assert().success();
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn policy_enforces_irq_raw_mmio_site_limit_for_direct_irq_usage() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("raw_mmio_irq_direct.kr");
+    let contracts_path =
+        write_v2_contracts_for_fixture(&root, &fixture, "raw-mmio-irq-site-limit-direct");
+    let policy_path = write_temp_policy_file(
+        "raw-mmio-irq-site-limit-direct",
+        "[kernel]\nallow_raw_mmio = true\nmax_raw_mmio_sites_in_irq = 0\n",
+    );
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let lines = stderr
+        .lines()
+        .filter(|line| line.starts_with("policy: "))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lines,
+        vec![
+            "policy: KERNEL_IRQ_RAW_MMIO_SITE_LIMIT: irq raw_mmio_sites_count 1 exceeds allowed maximum 0"
+        ]
+    );
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn policy_enforces_irq_raw_mmio_site_limit_for_irq_reachable_helper() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("raw_mmio_irq_helper.kr");
+    let contracts_path =
+        write_v2_contracts_for_fixture(&root, &fixture, "raw-mmio-irq-site-limit-helper");
+    let policy_path = write_temp_policy_file(
+        "raw-mmio-irq-site-limit-helper",
+        "[kernel]\nallow_raw_mmio = true\nmax_raw_mmio_sites_in_irq = 0\n",
+    );
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let lines = stderr
+        .lines()
+        .filter(|line| line.starts_with("policy: "))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lines,
+        vec![
+            "policy: KERNEL_IRQ_RAW_MMIO_SITE_LIMIT: irq raw_mmio_sites_count 1 exceeds allowed maximum 0"
+        ]
+    );
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn policy_irq_raw_mmio_site_limit_does_not_affect_structured_irq_mmio() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("irq_ctx_chain.kr");
+    let contracts_path =
+        write_v2_contracts_for_fixture(&root, &fixture, "raw-mmio-irq-site-limit-structured");
+    let policy_path = write_temp_policy_file(
+        "raw-mmio-irq-site-limit-structured",
+        "[kernel]\nallow_raw_mmio = true\nmax_raw_mmio_sites_in_irq = 0\n",
+    );
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("policy")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    cmd.assert().success();
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
 fn check_with_policy_denies_raw_mmio_and_suppresses_contract_output() {
     let root = repo_root();
     let fixture = root

@@ -990,7 +990,86 @@ fn golden_mmio_typed_slice_checks_are_stable() {
         structured_irq_pass.stderr
     );
 
+    let raw_irq_site_limit_policy_path = std::env::temp_dir().join(format!(
+        "kernrift-golden-raw-mmio-irq-site-limit-{}-{}.toml",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time")
+            .as_nanos()
+    ));
+    fs::remove_file(&raw_irq_site_limit_policy_path).ok();
+    fs::write(
+        &raw_irq_site_limit_policy_path,
+        "[kernel]\nallow_raw_mmio = true\nmax_raw_mmio_sites_in_irq = 0\n",
+    )
+    .expect("write raw irq site-limit policy");
+
+    let raw_irq_site_limit_deny = run_cmd(
+        bin,
+        &root,
+        &[
+            "policy".to_string(),
+            "--policy".to_string(),
+            raw_irq_site_limit_policy_path.display().to_string(),
+            "--contracts".to_string(),
+            raw_irq_contracts_path.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        raw_irq_site_limit_deny.code, 1,
+        "irq raw-mmio site-limit policy should reject direct irq raw usage, stderr={}",
+        raw_irq_site_limit_deny.stderr
+    );
+    assert_eq!(
+        raw_irq_site_limit_deny.stderr.lines().next(),
+        Some(
+            "policy: KERNEL_IRQ_RAW_MMIO_SITE_LIMIT: irq raw_mmio_sites_count 1 exceeds allowed maximum 0"
+        )
+    );
+
+    let raw_irq_helper_site_limit_deny = run_cmd(
+        bin,
+        &root,
+        &[
+            "policy".to_string(),
+            "--policy".to_string(),
+            raw_irq_site_limit_policy_path.display().to_string(),
+            "--contracts".to_string(),
+            raw_irq_helper_contracts_path.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        raw_irq_helper_site_limit_deny.code, 1,
+        "irq raw-mmio site-limit policy should reject irq-reachable helper raw usage, stderr={}",
+        raw_irq_helper_site_limit_deny.stderr
+    );
+    assert_eq!(
+        raw_irq_helper_site_limit_deny.stderr.lines().next(),
+        Some(
+            "policy: KERNEL_IRQ_RAW_MMIO_SITE_LIMIT: irq raw_mmio_sites_count 1 exceeds allowed maximum 0"
+        )
+    );
+
+    let structured_irq_site_limit_pass = run_cmd(
+        bin,
+        &root,
+        &[
+            "policy".to_string(),
+            "--policy".to_string(),
+            raw_irq_site_limit_policy_path.display().to_string(),
+            "--contracts".to_string(),
+            structured_irq_contracts_path.display().to_string(),
+        ],
+    );
+    assert_eq!(
+        structured_irq_site_limit_pass.code, 0,
+        "irq raw-mmio site-limit policy should not reject structured irq mmio, stderr={}",
+        structured_irq_site_limit_pass.stderr
+    );
+
     fs::remove_file(&raw_irq_policy_path).ok();
+    fs::remove_file(&raw_irq_site_limit_policy_path).ok();
     fs::remove_file(&raw_irq_contracts_path).ok();
     fs::remove_file(&raw_irq_helper_contracts_path).ok();
     fs::remove_file(&structured_irq_contracts_path).ok();

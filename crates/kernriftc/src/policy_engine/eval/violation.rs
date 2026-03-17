@@ -8,10 +8,10 @@ use super::common::{
 };
 use super::rules::{
     CapabilityRuleObservation, EffectRuleObservation, IrqCapabilityObservation,
-    IrqEffectObservation, IrqRawMmioForbiddenObservation, LockDepthObservation,
-    LockRuleObservation, ModuleCapabilityObservation, NoYieldLimitObservation,
-    NoYieldUnboundedObservation, RawMmioForbiddenObservation, RawMmioSiteLimitObservation,
-    RawMmioSymbolObservation, SchemaMismatchObservation,
+    IrqEffectObservation, IrqRawMmioForbiddenObservation, IrqRawMmioSiteLimitObservation,
+    LockDepthObservation, LockRuleObservation, ModuleCapabilityObservation,
+    NoYieldLimitObservation, NoYieldUnboundedObservation, RawMmioForbiddenObservation,
+    RawMmioSiteLimitObservation, RawMmioSymbolObservation, SchemaMismatchObservation,
 };
 
 pub(super) fn bind_context_rule_violation(
@@ -119,6 +119,15 @@ pub(super) fn bind_effect_rule_violation(
             match binder_kind {
                 PolicyViolationBinderKind::IrqRawMmioForbidden => {
                     bind_irq_raw_mmio_forbidden_observation(observation)
+                }
+                _ => unreachable!("unexpected binder kind for {:?}", rule),
+            }
+        }
+        EffectRuleObservation::IrqRawMmioSiteLimit(observation) => {
+            debug_assert_eq!(binder_kind, PolicyViolationBinderKind::IrqRawMmioSiteLimit);
+            match binder_kind {
+                PolicyViolationBinderKind::IrqRawMmioSiteLimit => {
+                    bind_irq_raw_mmio_site_limit_observation(observation)
                 }
                 _ => unreachable!("unexpected binder kind for {:?}", rule),
             }
@@ -264,6 +273,12 @@ fn bind_irq_raw_mmio_forbidden_observation(
     violation_kernel_irq_raw_mmio_forbid()
 }
 
+fn bind_irq_raw_mmio_site_limit_observation(
+    observation: IrqRawMmioSiteLimitObservation,
+) -> PolicyViolation {
+    violation_kernel_irq_raw_mmio_site_limit(observation.observed, observation.limit)
+}
+
 fn bind_critical_region_violation(
     rule: PolicyRule,
     violation: &ContractsCriticalViolation,
@@ -404,6 +419,16 @@ fn violation_kernel_irq_raw_mmio_forbid() -> PolicyViolation {
     policy_violation(
         PolicyRule::KernelIrqRawMmioForbid,
         "raw_mmio is not allowed in irq context".to_string(),
+    )
+}
+
+fn violation_kernel_irq_raw_mmio_site_limit(observed: u64, limit: u64) -> PolicyViolation {
+    policy_violation(
+        PolicyRule::KernelIrqRawMmioSiteLimit,
+        format!(
+            "irq raw_mmio_sites_count {} exceeds allowed maximum {}",
+            observed, limit
+        ),
     )
 }
 

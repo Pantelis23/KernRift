@@ -85,6 +85,9 @@ fn policy_enablement_probe_enabled(policy: &PolicyFile, probe: PolicyEnablementP
             !policy.kernel.allow_raw_mmio_symbols.is_empty()
         }
         PolicyEnablementProbe::KernelForbidRawMmioInIrq => policy.kernel.forbid_raw_mmio_in_irq,
+        PolicyEnablementProbe::KernelIrqRawMmioSiteLimitConfigured => {
+            policy.kernel.max_raw_mmio_sites_in_irq.is_some()
+        }
         PolicyEnablementProbe::CapsAllowModuleNonEmpty => !policy.caps.allow_module.is_empty(),
         PolicyEnablementProbe::KernelCriticalEffectPresent(effect) => policy
             .kernel
