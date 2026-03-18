@@ -105,6 +105,26 @@ fn structured_output_command_matrix_spec_lists_current_json_capable_commands() {
     }
 }
 
+#[test]
+fn structured_output_test_coverage_matrix_spec_lists_current_json_capable_commands() {
+    assert!(
+        KRIR_SPEC_TEXT.contains("### Structured Output Test Coverage Matrix"),
+        "structured output spec must include the test coverage matrix section"
+    );
+    for surface in [
+        "kernriftc inspect-artifact <artifact> --format json",
+        "kernriftc verify-artifact-meta --format json <artifact> <meta.json>",
+        "kernriftc policy --format json --policy <policy.toml> --contracts <contracts.json>",
+        "kernriftc check --format json --policy <policy.toml> <file.kr>",
+    ] {
+        assert!(
+            KRIR_SPEC_TEXT.contains(surface),
+            "structured output test coverage matrix must list '{}'",
+            surface
+        );
+    }
+}
+
 fn object_keys(value: &Value) -> BTreeSet<String> {
     value
         .as_object()

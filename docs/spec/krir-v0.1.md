@@ -259,6 +259,17 @@ Contributor lock for future JSON-capable commands:
 | `kernriftc policy --format json --policy <policy.toml> --contracts <contracts.json>` | `--format json` | `kernrift_policy_violations_v1` | `stdout` only, empty `stderr`, trailing newline, `schema_version` present | `0` pass, `1` deny, `2` invalid input | pass and deny |
 | `kernriftc check --format json --policy <policy.toml> <file.kr>` | `--format json` | `kernrift_policy_violations_v1` on policy denial | `stdout` only, empty `stderr`, trailing newline, `schema_version` present when JSON is emitted | `1` on policy deny with JSON payload; other check failures remain command-specific | policy deny only today |
 
+### Structured Output Test Coverage Matrix
+
+Representative `cli_contract` coverage for the current JSON-capable commands:
+
+| Command surface | Exact payload lock | Schema validation lock | Transport lock | Parity lock |
+|---|---|---|---|---|
+| `kernriftc inspect-artifact <artifact> --format json` | yes: `inspect_artifact_json_outputs_are_exact_for_fixture_matrix` | yes: `inspect_artifact_json_contract_shape_is_stable_across_krbo_elf_and_asm` | yes: `inspect_artifact_json_transport_is_stdout_only_and_newline_terminated` | n/a |
+| `kernriftc verify-artifact-meta --format json <artifact> <meta.json>` | yes: `verify_artifact_meta_json_reports_success_with_schema_marker`, `verify_artifact_meta_json_reports_mismatch_with_schema_marker`, `verify_artifact_meta_json_reports_invalid_input_with_schema_marker` | yes: same tests lock `schema_version` and envelope shape | yes: `verify_artifact_meta_json_transport_is_stdout_only_and_newline_terminated` | n/a |
+| `kernriftc policy --format json --policy <policy.toml> --contracts <contracts.json>` | yes: `policy_json_irq_raw_mmio_forbid_is_exact_and_structured`, `policy_json_irq_raw_mmio_allowlist_deep_path_is_exact_and_structured` | yes: `policy_json_schema_accepts_scalar_list_and_empty_list_evidence_variants` | yes: transport is asserted inside the exact JSON tests via `assert_json_transport` | n/a |
+| `kernriftc check --format json --policy <policy.toml> <file.kr>` | yes: check-policy JSON is byte-compared against standalone policy JSON in `check_json_policy_irq_raw_mmio_forbid_matches_policy_json_contract_exactly` and `check_json_policy_irq_raw_mmio_allowlist_helper_path_matches_policy_json_contract_exactly` | yes: same parity tests validate against `kernrift_policy_violations_v1` schema | yes: same parity tests assert stdout-only transport via `assert_json_transport` | yes: exact parity to `kernriftc policy --format json` on policy denial |
+
 These rules lock transport behavior only. They do not redefine command payload schemas.
 
 ## Verify Exit Codes
