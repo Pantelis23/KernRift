@@ -239,6 +239,7 @@ fn kr0_authoring_reference_covers_canonical_templates() {
         "@module_caps(PhysMap);",
         "@ctx(thread, boot,)",
         "@module_caps(PhysMap,)",
+        "kernriftc check --canonical <file.kr>",
         "mmio UART0 = 0x1000;",
         "mmio_reg UART0.DR = 0x00 : u32 rw;",
         "mmio_read<u32>(UART0 + 0x04);",
@@ -609,6 +610,7 @@ fn usage_includes_artifact_json_consumer_commands() {
         "kernriftc policy --format json --policy <policy.toml> --contracts <contracts.json>"
     ));
     assert!(stderr.contains("kernriftc check --format json --policy <policy.toml> <file.kr>"));
+    assert!(stderr.contains("kernriftc check --canonical <file.kr>"));
 }
 
 #[test]
@@ -4131,6 +4133,147 @@ fn check_rejects_legacy_yieldpoint_attribute_with_canonical_guidance() {
             "  1 | @yieldpoint",
             "  = help: did you mean the canonical spelling yieldpoint()? control-point markers use statement form, not attributes.",
         ]
+    );
+}
+
+#[test]
+fn check_canonical_reports_legacy_unary_shorthands_exactly() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("living_compiler")
+        .join("migration_preview_legacy_unary.kr");
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--canonical")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.is_empty(),
+        "canonical check must report via stdout only"
+    );
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        vec![
+            "surface: stable",
+            "canonical_findings: 5",
+            "function: alloc_worker",
+            "classification: compatibility_alias",
+            "surface_form: @alloc",
+            "canonical_replacement: @eff(alloc)",
+            "migration_safe: true",
+            "function: block_worker",
+            "classification: compatibility_alias",
+            "surface_form: @block",
+            "canonical_replacement: @eff(block)",
+            "migration_safe: true",
+            "function: irq_entry",
+            "classification: compatibility_alias",
+            "surface_form: @irq",
+            "canonical_replacement: @ctx(irq)",
+            "migration_safe: true",
+            "function: noirq_worker",
+            "classification: compatibility_alias",
+            "surface_form: @noirq",
+            "canonical_replacement: @ctx(thread, boot)",
+            "migration_safe: true",
+            "function: preempt_guarded",
+            "classification: compatibility_alias",
+            "surface_form: @preempt_off",
+            "canonical_replacement: @eff(preempt_off)",
+            "migration_safe: true",
+        ]
+    );
+}
+
+#[test]
+fn check_canonical_reports_accepted_aliases_under_experimental_surface() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("living_compiler")
+        .join("canonical_check_aliases.kr");
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--canonical")
+        .arg("--surface")
+        .arg("experimental")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.is_empty(),
+        "canonical check must report via stdout only"
+    );
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        vec![
+            "surface: experimental",
+            "canonical_findings: 3",
+            "function: blocker",
+            "classification: compatibility_alias",
+            "surface_form: @may_block",
+            "canonical_replacement: @eff(block)",
+            "migration_safe: true",
+            "function: isr",
+            "classification: compatibility_alias",
+            "surface_form: @irq_handler",
+            "canonical_replacement: @ctx(irq)",
+            "migration_safe: true",
+            "function: worker",
+            "classification: compatibility_alias",
+            "surface_form: @thread_entry",
+            "canonical_replacement: @ctx(thread)",
+            "migration_safe: true",
+        ]
+    );
+}
+
+#[test]
+fn check_canonical_succeeds_cleanly_for_canonical_source() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--canonical")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.is_empty(),
+        "canonical check success must keep stderr empty"
+    );
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        vec!["surface: stable", "canonical_findings: 0"]
+    );
+}
+
+#[test]
+fn check_canonical_rejects_policy_and_output_flags() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--canonical")
+        .arg("--policy")
+        .arg("policies/kernel.toml")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some(
+            "invalid check mode: --canonical cannot be combined with --format, --profile, --contracts-schema, --contracts-out, --policy, --hash-out, --sign-ed25519, or --sig-out"
+        )
     );
 }
 

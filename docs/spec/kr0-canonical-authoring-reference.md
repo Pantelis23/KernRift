@@ -16,6 +16,7 @@ Use `docs/spec/krir-v0.1.md` when you need the full accepted-surface grammar and
 - Keep `raw_mmio_*` visually loud and gated behind `@module_caps(MmioRaw)`.
 - Alias fixtures under `tests/living_compiler/*alias*.kr` are compatibility locks, not preferred authoring style.
 - Only empty parameter lists `()` are supported today.
+- Use `kernriftc check --canonical <file.kr>` when you want the compiler to reject accepted non-canonical frontend spellings in authoring/CI flows.
 
 ## Canonical Function Forms
 

@@ -958,6 +958,7 @@ fn print_usage() {
     eprintln!("usage:");
     eprintln!("  kernriftc --version");
     eprintln!("  kernriftc check <file.kr>");
+    eprintln!("  kernriftc check --canonical <file.kr>");
     eprintln!("  kernriftc check --surface stable <file.kr>");
     eprintln!("  kernriftc check --surface experimental <file.kr>");
     eprintln!("  kernriftc check --profile kernel <file.kr>");

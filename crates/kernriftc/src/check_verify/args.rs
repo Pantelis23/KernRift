@@ -42,6 +42,7 @@ pub(crate) struct InspectReportArgs {
 pub(crate) struct CheckArgs {
     pub(crate) path: String,
     pub(crate) surface: SurfaceProfile,
+    pub(crate) canonical: bool,
     pub(crate) format: PolicyOutputFormat,
     pub(crate) profile: Option<CheckProfile>,
     pub(crate) contracts_schema: Option<ContractsSchemaArg>,
@@ -107,6 +108,7 @@ pub(crate) struct VerifyArgs {
 pub(crate) fn parse_check_args(args: &[String]) -> Result<CheckArgs, String> {
     let mut surface = SurfaceProfile::Stable;
     let mut saw_surface = false;
+    let mut canonical = false;
     let mut format = PolicyOutputFormat::Text;
     let mut format_set = false;
     let mut profile = None::<CheckProfile>;
@@ -132,6 +134,13 @@ pub(crate) fn parse_check_args(args: &[String]) -> Result<CheckArgs, String> {
                     .map_err(|err| format!("invalid check mode: {}", err))?;
                 saw_surface = true;
                 idx += 2;
+            }
+            "--canonical" => {
+                if canonical {
+                    return Err("invalid check mode: duplicate --canonical".to_string());
+                }
+                canonical = true;
+                idx += 1;
             }
             "--profile" => {
                 if profile.is_some() {
@@ -237,6 +246,22 @@ pub(crate) fn parse_check_args(args: &[String]) -> Result<CheckArgs, String> {
         return Err("invalid check mode: expected exactly one <file.kr> input".to_string());
     }
 
+    if canonical
+        && (format_set
+            || profile.is_some()
+            || contracts_schema.is_some()
+            || contracts_out.is_some()
+            || policy_path.is_some()
+            || hash_out.is_some()
+            || sign_key_path.is_some()
+            || sig_out.is_some())
+    {
+        return Err(
+            "invalid check mode: --canonical cannot be combined with --format, --profile, --contracts-schema, --contracts-out, --policy, --hash-out, --sign-ed25519, or --sig-out"
+                .to_string(),
+        );
+    }
+
     if sign_key_path.is_some() ^ sig_out.is_some() {
         return Err(
             "invalid check mode: --sign-ed25519 and --sig-out must be provided together"
@@ -247,6 +272,7 @@ pub(crate) fn parse_check_args(args: &[String]) -> Result<CheckArgs, String> {
     Ok(CheckArgs {
         path: positionals.remove(0),
         surface,
+        canonical,
         format,
         profile,
         contracts_schema,

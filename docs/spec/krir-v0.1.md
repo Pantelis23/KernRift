@@ -112,6 +112,7 @@ Compatibility aliases that remain accepted today are non-canonical:
 Additional frontend conventions:
 
 - Compiler diagnostics and migration surfaces classify non-canonical spellings as `compatibility aliases` or `deprecated aliases`, and always point to the canonical replacement.
+- `kernriftc check --canonical <file.kr>` is the opt-in authoring gate for accepted non-canonical frontend spellings; it reports deterministic canonicalization findings without changing lowering semantics.
 - Accepted legacy unary fact shorthands remain non-canonical:
   - `@irq` -> `@ctx(irq)`
   - `@noirq` -> `@ctx(thread, boot)`

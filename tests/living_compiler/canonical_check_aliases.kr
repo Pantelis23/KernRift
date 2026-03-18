@@ -1,0 +1,8 @@
+@may_block
+fn blocker() { }
+
+@irq_handler
+fn isr() { }
+
+@thread_entry
+fn worker() { }

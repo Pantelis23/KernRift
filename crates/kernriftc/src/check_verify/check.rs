@@ -4,7 +4,10 @@ use std::process::ExitCode;
 use base64::Engine;
 use ed25519_dalek::Signer;
 use emit::{ContractsSchema as EmitContractsSchema, emit_contracts_json_canonical_with_schema};
-use kernriftc::{analyze, check_file_with_surface, check_module, compile_file_with_surface};
+use kernriftc::{
+    analyze, canonical_check_file_with_surface, check_file_with_surface, check_module,
+    compile_file_with_surface,
+};
 
 use super::args::{CheckArgs, CheckProfile, ContractsSchemaArg, PolicyOutputFormat};
 use super::crypto::{load_signing_key_hex, sha256_hex};
@@ -16,6 +19,10 @@ use crate::policy_engine::{
 use crate::{EXIT_INVALID_INPUT, EXIT_POLICY_VIOLATION, print_errors};
 
 pub(crate) fn run_check(args: &CheckArgs) -> ExitCode {
+    if args.canonical {
+        return run_canonical_check(args);
+    }
+
     if args.profile.is_none()
         && args.contracts_schema.is_none()
         && args.contracts_out.is_none()
@@ -158,6 +165,39 @@ pub(crate) fn run_check(args: &CheckArgs) -> ExitCode {
     }
 
     ExitCode::SUCCESS
+}
+
+fn run_canonical_check(args: &CheckArgs) -> ExitCode {
+    let path = Path::new(&args.path);
+    if let Err(errs) = check_file_with_surface(path, args.surface) {
+        print_errors(&errs);
+        return ExitCode::from(EXIT_POLICY_VIOLATION);
+    }
+
+    let findings = match canonical_check_file_with_surface(path, args.surface) {
+        Ok(findings) => findings,
+        Err(errs) => {
+            print_errors(&errs);
+            return ExitCode::from(EXIT_POLICY_VIOLATION);
+        }
+    };
+
+    let finding_count = findings.len();
+    println!("surface: {}", args.surface.as_str());
+    println!("canonical_findings: {}", finding_count);
+    for finding in findings {
+        println!("function: {}", finding.function_name);
+        println!("classification: {}", finding.classification.as_str());
+        println!("surface_form: @{}", finding.surface_form);
+        println!("canonical_replacement: {}", finding.canonical_replacement);
+        println!("migration_safe: {}", finding.migration_safe);
+    }
+
+    if finding_count == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(EXIT_POLICY_VIOLATION)
+    }
 }
 
 fn resolve_contracts_schema(

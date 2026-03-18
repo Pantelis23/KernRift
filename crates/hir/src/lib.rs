@@ -171,6 +171,15 @@ pub struct FrontendMigrationPreviewEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrontendCanonicalFinding {
+    pub function_name: String,
+    pub classification: AdaptiveAliasClassification,
+    pub surface_form: &'static str,
+    pub canonical_replacement: &'static str,
+    pub migration_safe: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdaptiveFeatureProposalSummary {
     pub feature: &'static AdaptiveSurfaceFeature,
     pub proposal: &'static AdaptiveFeatureProposal,
@@ -497,6 +506,23 @@ pub fn frontend_migration_preview(
                 enabled_under_surface,
             },
         )
+        .collect()
+}
+
+pub fn frontend_canonical_findings(
+    ast: &ModuleAst,
+    surface_profile: SurfaceProfile,
+) -> Vec<FrontendCanonicalFinding> {
+    frontend_migration_preview(ast, surface_profile)
+        .into_iter()
+        .filter(|entry| entry.enabled_under_surface)
+        .map(|entry| FrontendCanonicalFinding {
+            function_name: entry.function_name,
+            classification: entry.feature.classification,
+            surface_form: entry.feature.surface_form,
+            canonical_replacement: entry.feature.canonical_replacement,
+            migration_safe: entry.feature.migration_safe,
+        })
         .collect()
 }
 
@@ -2247,10 +2273,11 @@ mod tests {
         AdaptiveSurfaceFeature, CanonicalExecutableTerminator, SurfaceProfile,
         adaptive_feature_promotion_plan_with, adaptive_feature_promotion_readiness_with,
         adaptive_feature_proposal, adaptive_feature_proposals, adaptive_surface_features,
-        frontend_migration_features_for_profile, frontend_migration_preview,
-        lower_canonical_executable_to_krir, lower_to_canonical_executable_with_surface,
-        lower_to_krir, lower_to_krir_with_surface, surface_profile_enables_feature,
-        validate_adaptive_feature_governance, validate_adaptive_feature_governance_with,
+        frontend_canonical_findings, frontend_migration_features_for_profile,
+        frontend_migration_preview, lower_canonical_executable_to_krir,
+        lower_to_canonical_executable_with_surface, lower_to_krir, lower_to_krir_with_surface,
+        surface_profile_enables_feature, validate_adaptive_feature_governance,
+        validate_adaptive_feature_governance_with,
     };
     use parser::parse_module;
     use proptest::prelude::*;
@@ -3236,6 +3263,78 @@ mod tests {
                     true,
                 ),
             ]
+        );
+    }
+
+    #[test]
+    fn frontend_canonical_findings_include_accepted_legacy_unary_shorthands() {
+        let ast = parse_module(
+            "@alloc fn alloc_worker() { }\n@block fn block_worker() { }\n@irq fn irq_entry() { }\n@noirq fn noirq_worker() { }\n@preempt_off fn preempt_guarded() { }",
+        )
+        .expect("parse");
+        let findings = frontend_canonical_findings(&ast, SurfaceProfile::Stable);
+        assert_eq!(
+            findings
+                .iter()
+                .map(|finding| (
+                    finding.function_name.as_str(),
+                    finding.classification.as_str(),
+                    finding.surface_form,
+                    finding.canonical_replacement,
+                    finding.migration_safe,
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "alloc_worker",
+                    "compatibility_alias",
+                    "alloc",
+                    "@eff(alloc)",
+                    true,
+                ),
+                (
+                    "block_worker",
+                    "compatibility_alias",
+                    "block",
+                    "@eff(block)",
+                    true,
+                ),
+                ("irq_entry", "compatibility_alias", "irq", "@ctx(irq)", true,),
+                (
+                    "noirq_worker",
+                    "compatibility_alias",
+                    "noirq",
+                    "@ctx(thread, boot)",
+                    true,
+                ),
+                (
+                    "preempt_guarded",
+                    "compatibility_alias",
+                    "preempt_off",
+                    "@eff(preempt_off)",
+                    true,
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn frontend_canonical_findings_ignore_disabled_aliases_under_stable_surface() {
+        let ast = parse_module("@irq_handler fn isr() { }\n@thread_entry fn worker() { }")
+            .expect("parse");
+        let findings = frontend_canonical_findings(&ast, SurfaceProfile::Stable);
+        assert_eq!(
+            findings
+                .iter()
+                .map(|finding| {
+                    (
+                        finding.function_name.as_str(),
+                        finding.surface_form,
+                        finding.canonical_replacement,
+                    )
+                })
+                .collect::<Vec<_>>(),
+            vec![("worker", "thread_entry", "@ctx(thread)")]
         );
     }
 
