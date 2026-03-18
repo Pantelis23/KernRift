@@ -27,6 +27,8 @@ KRIR v0.1 in this document remains the analysis-first contract used by `check`, 
 
 The parser currently accepts the following minimal surface form.
 
+A frontend ergonomics audit and backlog for the current KR0 surface lives in `docs/design/kr0_frontend_ergonomics_inventory.md`.
+
 ```ebnf
 Module      := { Item }
 Item        := ModuleCapsDirective | FunctionDecl
