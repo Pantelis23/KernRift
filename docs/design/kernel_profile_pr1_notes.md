@@ -34,7 +34,7 @@ Already modeled and enforced:
 
 Not yet first-class in profile semantics:
 
-- explicit kernel profile context model (`@irq`, `@critical`, `@no_alloc`) wired into policy diagnostics
+- explicit kernel profile context/effect model (`@ctx(irq)`, `critical { ... }`, `@eff(alloc)` / `@eff(block)`) wired into policy diagnostics
 - alloc/blocking observability surfaced as stable contract report fields
 - explicit critical-section semantics and enforcement
 - deterministic kernel profile ABI versioning in contracts v2
@@ -67,4 +67,3 @@ KRIR v0.1 acceptance: PASS
 $ cargo run -q -p kernriftc -- --selftest
 selftest: PASS
 ```
-

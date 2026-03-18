@@ -6,7 +6,10 @@
 
 - Parser + type checker for structs, enums, pointers, slices
 - `unsafe` blocks
-- `mmio<T>` type with `volatile_load` and `volatile_store`
+- Structured MMIO declarations plus typed MMIO operations:
+  - `mmio NAME = INT_LITERAL;`
+  - `mmio_reg BASE.REG = INT_LITERAL : TYPE ACCESS;`
+  - `mmio_read<T>(addr)` / `mmio_write<T>(addr, value)`
 - Freestanding static library output (`.a`) and ELF object emission
 - Facts-only mode:
 - parse minimal syntax and attach `ctx_ok`, `eff_used`, `caps_req`
@@ -24,18 +27,18 @@
 
 ### Deliverables
 
-- Effect annotations: `@irq`, `@alloc`, `@block`, `@preempt_off`
+- Canonical frontend facts: `@ctx(...)`, `@eff(...)`, `@caps(...)`
 - Effect-aware call checking with builtin `eff_allowed(ctx)` policies
 - Basic capability declarations for privileged ops
-- `@yieldpoint`, `@noyield`, and `lock_budget(N)` semantics + checks
+- `yieldpoint()`, `@noyield`, `critical { ... }`, and `lock_budget(N)` semantics + checks
 - Negative-compile test suite (`must_fail`) for context/effect/capability violations
 
 ### Exit Criteria
 
 - Compiler rejects:
-  - blocking call from `@irq`
+  - blocking call from `@ctx(irq)`
   - allocation in disallowed context
-  - yield in `@irq`
+  - yield in `@ctx(irq)`
   - missing capability for privileged operation
   - yield under spinlock or in IRQ context
   - yield inside `@noyield` region

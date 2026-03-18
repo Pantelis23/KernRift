@@ -21,7 +21,13 @@ const POLICY_VIOLATIONS_SCHEMA_V1: &str =
     include_str!("../../../docs/schemas/kernrift_policy_violations_v1.schema.json");
 const VERIFY_REPORT_SCHEMA_V1: &str =
     include_str!("../../../docs/schemas/kernrift_verify_report_v1.schema.json");
+const ADAPTIVE_OS_CONTEXT_TEXT: &str = include_str!("../../../docs/ADAPTIVE_OS_CONTEXT.md");
+const ARCHITECTURE_DOC_TEXT: &str = include_str!("../../../docs/ARCHITECTURE.md");
+const KERNEL_PROFILE_NOTES_TEXT: &str =
+    include_str!("../../../docs/design/kernel_profile_pr1_notes.md");
+const KR0_KR3_PLAN_TEXT: &str = include_str!("../../../docs/KR0_KR3_PLAN.md");
 const KRIR_SPEC_TEXT: &str = include_str!("../../../docs/spec/krir-v0.1.md");
+const KERNEL_PROFILE_SPEC_TEXT: &str = include_str!("../../../docs/spec/kernel_profile.md");
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -181,6 +187,53 @@ fn kr0_frontend_spec_declares_canonical_spellings_and_alias_policy() {
     assert!(
         KRIR_SPEC_TEXT.contains("Compatibility fixtures under `tests/living_compiler/*alias*.kr`"),
         "kr0 frontend spec must explain that alias fixtures are compatibility locks"
+    );
+}
+
+#[test]
+fn kr0_general_teaching_docs_prefer_canonical_frontend_surface() {
+    let teaching_docs = [
+        ARCHITECTURE_DOC_TEXT,
+        KR0_KR3_PLAN_TEXT,
+        ADAPTIVE_OS_CONTEXT_TEXT,
+        KERNEL_PROFILE_SPEC_TEXT,
+        KERNEL_PROFILE_NOTES_TEXT,
+    ];
+
+    for legacy in [
+        "@irq",
+        "@noirq",
+        "@alloc",
+        "@block",
+        "@preempt_off",
+        "@yieldpoint",
+        "mmio<T>",
+        "volatile_load",
+        "volatile_store",
+    ] {
+        for doc in teaching_docs {
+            assert!(
+                !doc.contains(legacy),
+                "general teaching docs must not drift back to legacy/non-canonical surface '{}'",
+                legacy
+            );
+        }
+    }
+
+    assert!(
+        ARCHITECTURE_DOC_TEXT.contains("@ctx(...)")
+            && ARCHITECTURE_DOC_TEXT.contains("@eff(...)")
+            && ARCHITECTURE_DOC_TEXT.contains("@caps(...)"),
+        "architecture docs must teach canonical fact spellings"
+    );
+    assert!(
+        KR0_KR3_PLAN_TEXT.contains("yieldpoint()"),
+        "KR0/KR3 plan must teach the canonical yieldpoint() form"
+    );
+    assert!(
+        ADAPTIVE_OS_CONTEXT_TEXT.contains("mmio_read<T>(addr)")
+            && ADAPTIVE_OS_CONTEXT_TEXT.contains("mmio_write<T>(addr, value)"),
+        "adaptive OS context doc must teach current typed MMIO call forms"
     );
 }
 

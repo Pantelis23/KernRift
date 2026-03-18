@@ -25,7 +25,7 @@ This mapping is based on local project files in `C:\Users\pante\Desktop\Projects
 ## KernRift Responses
 
 1. Context safety by type/effect system
-- Enforce valid call edges across `@irq`, `@noirq`, `@block`, `@preempt_off`
+- Enforce valid call edges across canonical KR0 facts such as `@ctx(irq)`, `@ctx(thread)`, `@eff(block)`, and `@eff(preempt_off)`
 - Reject blocking or heap allocation where effects disallow it
 
 2. Lock correctness
@@ -33,7 +33,7 @@ This mapping is based on local project files in `C:\Users\pante\Desktop\Projects
 - Build compile-time lock-order graph and reject cycles
 
 3. MMIO and interrupt correctness
-- Typed `mmio<T>` operations with guaranteed volatile behavior
+- Structured MMIO declarations plus typed `mmio_read<T>(addr)` / `mmio_write<T>(addr, value)` operations
 - Enforce ordering/fence semantics through explicit primitives checked in KRIR
 
 4. Capability boundaries
@@ -43,7 +43,7 @@ This mapping is based on local project files in `C:\Users\pante\Desktop\Projects
 5. Code-shape + performance
 - Mark explicit hot paths and preserve layout/inline constraints through codegen
 - Validate stack bounds for IRQ/exception entry paths
-- Add `@yieldpoint` and `@noyield` to model cooperative-preemption constraints explicitly
+- Add `yieldpoint()` and `@noyield` to model cooperative-preemption constraints explicitly
 - Add `lock_budget(N)` and emit worst-case lock/yield spans as build reports
 
 ## Cooperative Preemption and Lock Limits
@@ -51,7 +51,7 @@ This mapping is based on local project files in `C:\Users\pante\Desktop\Projects
 To match current AOS behavior and constraints:
 
 - `@noyield` marks regions that must not call scheduler yield paths
-- `@yieldpoint` is explicit and compiler-checked
+- `yieldpoint()` is explicit and compiler-checked
 - `lock_budget(N)` uses call-count metric:
 - unit is 1 per call to a non-`@leaf` function
 - path from `Acquire` to matching `Release` must have call-count `<= N`
@@ -59,8 +59,8 @@ To match current AOS behavior and constraints:
 MVP checks:
 
 - No yield inside `@noyield` region
-- No `@yieldpoint` while holding spinlock
-- No `@yieldpoint` in IRQ context
+- No `yieldpoint()` while holding spinlock
+- No `yieldpoint()` in IRQ context
 - Emit report fields for `max_lock_depth` and `no_yield_spans`
 
 ## Acceptance Signals for AOS Integration

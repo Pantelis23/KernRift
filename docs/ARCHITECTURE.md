@@ -30,12 +30,15 @@ Freestanding, ahead-of-time language + compiler targeting kernel and driver deve
 ## Core Language Features (MVP)
 
 - `unsafe` blocks for explicit escape hatches
-- Typed `mmio<T>` with `volatile_load`/`volatile_store`
-- Surface annotations: `@irq`, `@noirq`, `@alloc`, `@block`, `@preempt_off`
-- Surface annotations lower into KRIR facts (`ctx_ok`, `eff_used`, `caps_req`)
+- Structured MMIO declarations plus typed MMIO operations:
+  - `mmio NAME = INT_LITERAL;`
+  - `mmio_reg BASE.REG = INT_LITERAL : TYPE ACCESS;`
+  - `mmio_read<T>(addr)` / `mmio_write<T>(addr, value)`
+- Canonical surface facts: `@ctx(...)`, `@eff(...)`, `@caps(...)`, `@module_caps(...)`
+- Canonical surface facts lower into KRIR facts (`ctx_ok`, `eff_used`, `caps_req`)
 - Capabilities for privileged operations (I/O ports, page-table writes, IRQ routing)
 - Lock-order declarations with compile-time cycle detection (or proof artifact emission)
-- Execution-shaping primitives: `@yieldpoint`, `@noyield`, `lock_budget(N)`
+- Execution-shaping primitives: `yieldpoint()`, `@noyield`, `lock_budget(N)`, `critical { ... }`
 
 ## Formal Semantics (KRIR Facts)
 
@@ -102,7 +105,7 @@ Verification policy for MVP:
 ### Yield/preemption semantics
 
 - `@noyield` regions forbid any yield op
-- `@yieldpoint` is legal only when not in IRQ context and not under a spinlock
+- `yieldpoint()` is legal only when not in IRQ context and not under a spinlock
 - `lock_budget(N)` uses call-count metric:
 - budget unit is 1 per call to a non-`@leaf` function
 - for every path from `Acquire` to matching `Release`, call-count must be `<= N`

@@ -147,8 +147,8 @@ Runtime responsibilities (outside KR0.x compiler checks):
 
 ## Kernel Invariants (Test Questions)
 
-- Can an `@irq` function allocate? (target answer: no)
-- Can an `@irq` function take locks? (policy-controlled; default no or allowlist only)
+- Can an `@ctx(irq)` function allocate? (target answer: no)
+- Can an `@ctx(irq)` function take locks? (policy-controlled; default no or allowlist only)
 - Can a `critical { ... }` region contain yield? (target answer: no)
 - Are lock acquisitions order-consistent across call graph? (target answer: yes)
 - Are no-yield spans bounded in kernel profile? (target answer: yes)
