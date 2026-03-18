@@ -3,11 +3,12 @@ use std::path::Path;
 pub use hir::{
     AdaptiveFeaturePromotionPlan, AdaptiveFeaturePromotionReadiness, AdaptiveFeatureProposal,
     AdaptiveFeatureProposalSummary, AdaptiveFeatureStatus, AdaptiveMigrationPreviewEntry,
-    AdaptiveSurfaceFeature, SurfaceProfile, adaptive_feature_promotion_plan,
-    adaptive_feature_promotion_readiness, adaptive_feature_proposal,
-    adaptive_feature_proposal_summaries, adaptive_feature_proposals, adaptive_surface_features,
-    adaptive_surface_features_for_profile, adaptive_surface_migration_preview,
-    irq_handler_alias_proposal, validate_adaptive_feature_governance,
+    AdaptiveSurfaceFeature, FrontendMigrationFeature, FrontendMigrationPreviewEntry,
+    SurfaceProfile, adaptive_feature_promotion_plan, adaptive_feature_promotion_readiness,
+    adaptive_feature_proposal, adaptive_feature_proposal_summaries, adaptive_feature_proposals,
+    adaptive_surface_features, adaptive_surface_features_for_profile,
+    adaptive_surface_migration_preview, frontend_migration_features_for_profile,
+    frontend_migration_preview, irq_handler_alias_proposal, validate_adaptive_feature_governance,
 };
 use hir::{
     lower_canonical_executable_to_krir, lower_to_canonical_executable_with_surface,
@@ -139,15 +140,15 @@ pub fn analyze_file(path: &Path) -> Result<(AnalysisReport, Vec<String>), Vec<St
 pub fn migrate_preview_source_with_surface(
     src: &str,
     surface_profile: SurfaceProfile,
-) -> Result<Vec<AdaptiveMigrationPreviewEntry>, Vec<String>> {
+) -> Result<Vec<FrontendMigrationPreviewEntry>, Vec<String>> {
     let ast = parse_module(src)?;
-    Ok(adaptive_surface_migration_preview(&ast, surface_profile))
+    Ok(frontend_migration_preview(&ast, surface_profile))
 }
 
 pub fn migrate_preview_file_with_surface(
     path: &Path,
     surface_profile: SurfaceProfile,
-) -> Result<Vec<AdaptiveMigrationPreviewEntry>, Vec<String>> {
+) -> Result<Vec<FrontendMigrationPreviewEntry>, Vec<String>> {
     let src = std::fs::read_to_string(path)
         .map_err(|e| vec![format!("failed to read '{}': {}", path.display(), e)])?;
     migrate_preview_source_with_surface(&src, surface_profile)

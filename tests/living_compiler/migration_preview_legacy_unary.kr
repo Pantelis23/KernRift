@@ -1,0 +1,14 @@
+@alloc
+fn alloc_worker() { }
+
+@block
+fn block_worker() { }
+
+@irq
+fn irq_entry() { }
+
+@noirq
+fn noirq_worker() { }
+
+@preempt_off
+fn preempt_guarded() { }

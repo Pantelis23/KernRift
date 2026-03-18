@@ -9,7 +9,7 @@ use emit::{
     emit_lockgraph_json, emit_report_json,
 };
 use kernriftc::{
-    SurfaceProfile, adaptive_surface_features_for_profile, analyze, check_file, compile_file,
+    SurfaceProfile, analyze, check_file, compile_file, frontend_migration_features_for_profile,
     migrate_preview_file_with_surface,
 };
 use serde_json::Value;
@@ -430,16 +430,13 @@ fn run_inspect_artifact(args: &InspectArtifactArgs) -> ExitCode {
 }
 
 fn run_features(surface: SurfaceProfile) -> ExitCode {
-    let features = adaptive_surface_features_for_profile(surface);
+    let features = frontend_migration_features_for_profile(surface);
     println!("surface: {}", surface.as_str());
     println!("features: {}", features.len());
     for feature in features {
         println!("feature: {}", feature.id);
         println!("status: {}", feature.status.as_str());
-        println!(
-            "classification: {}",
-            feature.alias_classification().as_str()
-        );
+        println!("classification: {}", feature.classification.as_str());
         println!("surface_form: @{}", feature.surface_form);
         println!("lowering_target: {}", feature.lowering_target);
         println!("proposal_id: {}", feature.proposal_id);
@@ -467,10 +464,7 @@ fn run_migrate_preview(args: &MigratePreviewArgs) -> ExitCode {
         println!("surface_form: @{}", entry.feature.surface_form);
         println!("feature: {}", entry.feature.id);
         println!("status: {}", entry.feature.status.as_str());
-        println!(
-            "classification: {}",
-            entry.feature.alias_classification().as_str()
-        );
+        println!("classification: {}", entry.feature.classification.as_str());
         println!("enabled_under_surface: {}", entry.enabled_under_surface);
         println!(
             "canonical_replacement: {}",

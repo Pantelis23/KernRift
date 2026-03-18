@@ -134,6 +134,42 @@ pub struct AdaptiveMigrationPreviewEntry {
     pub enabled_under_surface: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrontendMigrationFeature {
+    pub id: &'static str,
+    pub status: AdaptiveFeatureStatus,
+    pub classification: AdaptiveAliasClassification,
+    pub surface_form: &'static str,
+    pub lowering_target: &'static str,
+    pub proposal_id: &'static str,
+    pub migration_safe: bool,
+    pub canonical_replacement: &'static str,
+    pub rewrite_intent: &'static str,
+}
+
+impl FrontendMigrationFeature {
+    fn from_adaptive(feature: &'static AdaptiveSurfaceFeature) -> Self {
+        Self {
+            id: feature.id,
+            status: feature.status,
+            classification: feature.alias_classification(),
+            surface_form: feature.surface_form,
+            lowering_target: feature.lowering_target,
+            proposal_id: feature.proposal_id,
+            migration_safe: feature.migration_safe,
+            canonical_replacement: feature.canonical_replacement,
+            rewrite_intent: feature.rewrite_intent,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrontendMigrationPreviewEntry {
+    pub function_name: String,
+    pub feature: FrontendMigrationFeature,
+    pub enabled_under_surface: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdaptiveFeatureProposalSummary {
     pub feature: &'static AdaptiveSurfaceFeature,
@@ -302,6 +338,64 @@ const ADAPTIVE_SURFACE_FEATURES: [AdaptiveSurfaceFeature; 4] = [
     },
 ];
 
+const LEGACY_FRONTEND_MIGRATION_FEATURES: [FrontendMigrationFeature; 5] = [
+    FrontendMigrationFeature {
+        id: "legacy_alloc_effect_shorthand",
+        status: AdaptiveFeatureStatus::Stable,
+        classification: AdaptiveAliasClassification::CompatibilityAlias,
+        surface_form: "alloc",
+        lowering_target: "@eff(alloc)",
+        proposal_id: "-",
+        migration_safe: true,
+        canonical_replacement: "@eff(alloc)",
+        rewrite_intent: "Replace the attribute token `@alloc` with `@eff(alloc)`.",
+    },
+    FrontendMigrationFeature {
+        id: "legacy_block_effect_shorthand",
+        status: AdaptiveFeatureStatus::Stable,
+        classification: AdaptiveAliasClassification::CompatibilityAlias,
+        surface_form: "block",
+        lowering_target: "@eff(block)",
+        proposal_id: "-",
+        migration_safe: true,
+        canonical_replacement: "@eff(block)",
+        rewrite_intent: "Replace the attribute token `@block` with `@eff(block)`.",
+    },
+    FrontendMigrationFeature {
+        id: "legacy_irq_context_shorthand",
+        status: AdaptiveFeatureStatus::Stable,
+        classification: AdaptiveAliasClassification::CompatibilityAlias,
+        surface_form: "irq",
+        lowering_target: "@ctx(irq)",
+        proposal_id: "-",
+        migration_safe: true,
+        canonical_replacement: "@ctx(irq)",
+        rewrite_intent: "Replace the attribute token `@irq` with `@ctx(irq)`.",
+    },
+    FrontendMigrationFeature {
+        id: "legacy_noirq_context_shorthand",
+        status: AdaptiveFeatureStatus::Stable,
+        classification: AdaptiveAliasClassification::CompatibilityAlias,
+        surface_form: "noirq",
+        lowering_target: "@ctx(thread, boot)",
+        proposal_id: "-",
+        migration_safe: true,
+        canonical_replacement: "@ctx(thread, boot)",
+        rewrite_intent: "Replace the attribute token `@noirq` with `@ctx(thread, boot)`.",
+    },
+    FrontendMigrationFeature {
+        id: "legacy_preempt_off_effect_shorthand",
+        status: AdaptiveFeatureStatus::Stable,
+        classification: AdaptiveAliasClassification::CompatibilityAlias,
+        surface_form: "preempt_off",
+        lowering_target: "@eff(preempt_off)",
+        proposal_id: "-",
+        migration_safe: true,
+        canonical_replacement: "@eff(preempt_off)",
+        rewrite_intent: "Replace the attribute token `@preempt_off` with `@eff(preempt_off)`.",
+    },
+];
+
 pub fn adaptive_surface_features() -> &'static [AdaptiveSurfaceFeature] {
     &ADAPTIVE_SURFACE_FEATURES
 }
@@ -342,6 +436,62 @@ pub fn adaptive_surface_migration_preview(
         .into_iter()
         .map(
             |(function_name, feature, enabled_under_surface, _)| AdaptiveMigrationPreviewEntry {
+                function_name,
+                feature,
+                enabled_under_surface,
+            },
+        )
+        .collect()
+}
+
+fn legacy_frontend_migration_feature(attr_name: &str) -> Option<&'static FrontendMigrationFeature> {
+    LEGACY_FRONTEND_MIGRATION_FEATURES
+        .iter()
+        .find(|feature| feature.surface_form == attr_name)
+}
+
+pub fn frontend_migration_features_for_profile(
+    surface_profile: SurfaceProfile,
+) -> Vec<FrontendMigrationFeature> {
+    let mut features = ADAPTIVE_SURFACE_FEATURES
+        .iter()
+        .filter(|feature| surface_profile_enables_feature(surface_profile, feature))
+        .map(FrontendMigrationFeature::from_adaptive)
+        .chain(LEGACY_FRONTEND_MIGRATION_FEATURES.iter().copied())
+        .collect::<Vec<_>>();
+    features.sort_by(|a, b| a.id.cmp(b.id));
+    features
+}
+
+pub fn frontend_migration_preview(
+    ast: &ModuleAst,
+    surface_profile: SurfaceProfile,
+) -> Vec<FrontendMigrationPreviewEntry> {
+    let mut entries = Vec::new();
+
+    for item in &ast.items {
+        for (ordinal, attr) in item.attrs.iter().enumerate() {
+            if let Some(feature) = adaptive_surface_feature(&attr.name) {
+                entries.push((
+                    item.name.clone(),
+                    FrontendMigrationFeature::from_adaptive(feature),
+                    surface_profile_enables_feature(surface_profile, feature),
+                    ordinal,
+                ));
+                continue;
+            }
+            if let Some(feature) = legacy_frontend_migration_feature(&attr.name) {
+                entries.push((item.name.clone(), *feature, true, ordinal));
+            }
+        }
+    }
+
+    entries.sort_by(|a, b| (a.0.as_str(), a.1.id, a.3).cmp(&(b.0.as_str(), b.1.id, b.3)));
+
+    entries
+        .into_iter()
+        .map(
+            |(function_name, feature, enabled_under_surface, _)| FrontendMigrationPreviewEntry {
                 function_name,
                 feature,
                 enabled_under_surface,
@@ -2097,6 +2247,7 @@ mod tests {
         AdaptiveSurfaceFeature, CanonicalExecutableTerminator, SurfaceProfile,
         adaptive_feature_promotion_plan_with, adaptive_feature_promotion_readiness_with,
         adaptive_feature_proposal, adaptive_feature_proposals, adaptive_surface_features,
+        frontend_migration_features_for_profile, frontend_migration_preview,
         lower_canonical_executable_to_krir, lower_to_canonical_executable_with_surface,
         lower_to_krir, lower_to_krir_with_surface, surface_profile_enables_feature,
         validate_adaptive_feature_governance, validate_adaptive_feature_governance_with,
@@ -2999,6 +3150,91 @@ mod tests {
             errs,
             vec![
                 "legacy spelling '@yieldpoint' is non-canonical and is not accepted on function 'pump' at 1:1\n  1 | @yieldpoint fn pump() { }\n  = help: did you mean the canonical spelling yieldpoint()? control-point markers use statement form, not attributes."
+            ]
+        );
+    }
+
+    #[test]
+    fn frontend_migration_feature_registry_includes_accepted_legacy_unary_shorthands() {
+        let stable = frontend_migration_features_for_profile(SurfaceProfile::Stable);
+        let experimental = frontend_migration_features_for_profile(SurfaceProfile::Experimental);
+
+        for id in [
+            "legacy_alloc_effect_shorthand",
+            "legacy_block_effect_shorthand",
+            "legacy_irq_context_shorthand",
+            "legacy_noirq_context_shorthand",
+            "legacy_preempt_off_effect_shorthand",
+        ] {
+            assert!(
+                stable.iter().any(|feature| feature.id == id),
+                "stable migration features must include '{}'",
+                id
+            );
+            assert!(
+                experimental.iter().any(|feature| feature.id == id),
+                "experimental migration features must include '{}'",
+                id
+            );
+        }
+    }
+
+    #[test]
+    fn frontend_migration_preview_surfaces_legacy_unary_shorthands_deterministically() {
+        let ast = parse_module(
+            "@alloc fn alloc_worker() { }\n@block fn block_worker() { }\n@irq fn irq_entry() { }\n@noirq fn noirq_worker() { }\n@preempt_off fn preempt_guarded() { }",
+        )
+        .expect("parse");
+        let entries = frontend_migration_preview(&ast, SurfaceProfile::Stable);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| {
+                    (
+                        entry.function_name.as_str(),
+                        entry.feature.id,
+                        entry.feature.surface_form,
+                        entry.feature.canonical_replacement,
+                        entry.enabled_under_surface,
+                    )
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "alloc_worker",
+                    "legacy_alloc_effect_shorthand",
+                    "alloc",
+                    "@eff(alloc)",
+                    true,
+                ),
+                (
+                    "block_worker",
+                    "legacy_block_effect_shorthand",
+                    "block",
+                    "@eff(block)",
+                    true,
+                ),
+                (
+                    "irq_entry",
+                    "legacy_irq_context_shorthand",
+                    "irq",
+                    "@ctx(irq)",
+                    true,
+                ),
+                (
+                    "noirq_worker",
+                    "legacy_noirq_context_shorthand",
+                    "noirq",
+                    "@ctx(thread, boot)",
+                    true,
+                ),
+                (
+                    "preempt_guarded",
+                    "legacy_preempt_off_effect_shorthand",
+                    "preempt_off",
+                    "@eff(preempt_off)",
+                    true,
+                ),
             ]
         );
     }

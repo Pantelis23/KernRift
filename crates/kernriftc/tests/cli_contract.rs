@@ -4148,7 +4148,52 @@ fn features_surface_stable_output_is_exact() {
         stdout.lines().collect::<Vec<_>>(),
         vec![
             "surface: stable",
-            "features: 1",
+            "features: 6",
+            "feature: legacy_alloc_effect_shorthand",
+            "status: stable",
+            "classification: compatibility_alias",
+            "surface_form: @alloc",
+            "lowering_target: @eff(alloc)",
+            "proposal_id: -",
+            "migration_safe: true",
+            "canonical_replacement: @eff(alloc)",
+            "rewrite_intent: Replace the attribute token `@alloc` with `@eff(alloc)`.",
+            "feature: legacy_block_effect_shorthand",
+            "status: stable",
+            "classification: compatibility_alias",
+            "surface_form: @block",
+            "lowering_target: @eff(block)",
+            "proposal_id: -",
+            "migration_safe: true",
+            "canonical_replacement: @eff(block)",
+            "rewrite_intent: Replace the attribute token `@block` with `@eff(block)`.",
+            "feature: legacy_irq_context_shorthand",
+            "status: stable",
+            "classification: compatibility_alias",
+            "surface_form: @irq",
+            "lowering_target: @ctx(irq)",
+            "proposal_id: -",
+            "migration_safe: true",
+            "canonical_replacement: @ctx(irq)",
+            "rewrite_intent: Replace the attribute token `@irq` with `@ctx(irq)`.",
+            "feature: legacy_noirq_context_shorthand",
+            "status: stable",
+            "classification: compatibility_alias",
+            "surface_form: @noirq",
+            "lowering_target: @ctx(thread, boot)",
+            "proposal_id: -",
+            "migration_safe: true",
+            "canonical_replacement: @ctx(thread, boot)",
+            "rewrite_intent: Replace the attribute token `@noirq` with `@ctx(thread, boot)`.",
+            "feature: legacy_preempt_off_effect_shorthand",
+            "status: stable",
+            "classification: compatibility_alias",
+            "surface_form: @preempt_off",
+            "lowering_target: @eff(preempt_off)",
+            "proposal_id: -",
+            "migration_safe: true",
+            "canonical_replacement: @eff(preempt_off)",
+            "rewrite_intent: Replace the attribute token `@preempt_off` with `@eff(preempt_off)`.",
             "feature: thread_entry_alias",
             "status: stable",
             "classification: compatibility_alias",
@@ -4176,7 +4221,7 @@ fn features_surface_experimental_output_is_exact() {
         stdout.lines().collect::<Vec<_>>(),
         vec![
             "surface: experimental",
-            "features: 3",
+            "features: 8",
             "feature: irq_handler_alias",
             "status: experimental",
             "classification: compatibility_alias",
@@ -4186,6 +4231,51 @@ fn features_surface_experimental_output_is_exact() {
             "migration_safe: true",
             "canonical_replacement: @ctx(irq)",
             "rewrite_intent: Replace the attribute token `@irq_handler` with `@ctx(irq)`.",
+            "feature: legacy_alloc_effect_shorthand",
+            "status: stable",
+            "classification: compatibility_alias",
+            "surface_form: @alloc",
+            "lowering_target: @eff(alloc)",
+            "proposal_id: -",
+            "migration_safe: true",
+            "canonical_replacement: @eff(alloc)",
+            "rewrite_intent: Replace the attribute token `@alloc` with `@eff(alloc)`.",
+            "feature: legacy_block_effect_shorthand",
+            "status: stable",
+            "classification: compatibility_alias",
+            "surface_form: @block",
+            "lowering_target: @eff(block)",
+            "proposal_id: -",
+            "migration_safe: true",
+            "canonical_replacement: @eff(block)",
+            "rewrite_intent: Replace the attribute token `@block` with `@eff(block)`.",
+            "feature: legacy_irq_context_shorthand",
+            "status: stable",
+            "classification: compatibility_alias",
+            "surface_form: @irq",
+            "lowering_target: @ctx(irq)",
+            "proposal_id: -",
+            "migration_safe: true",
+            "canonical_replacement: @ctx(irq)",
+            "rewrite_intent: Replace the attribute token `@irq` with `@ctx(irq)`.",
+            "feature: legacy_noirq_context_shorthand",
+            "status: stable",
+            "classification: compatibility_alias",
+            "surface_form: @noirq",
+            "lowering_target: @ctx(thread, boot)",
+            "proposal_id: -",
+            "migration_safe: true",
+            "canonical_replacement: @ctx(thread, boot)",
+            "rewrite_intent: Replace the attribute token `@noirq` with `@ctx(thread, boot)`.",
+            "feature: legacy_preempt_off_effect_shorthand",
+            "status: stable",
+            "classification: compatibility_alias",
+            "surface_form: @preempt_off",
+            "lowering_target: @eff(preempt_off)",
+            "proposal_id: -",
+            "migration_safe: true",
+            "canonical_replacement: @eff(preempt_off)",
+            "rewrite_intent: Replace the attribute token `@preempt_off` with `@eff(preempt_off)`.",
             "feature: may_block_alias",
             "status: experimental",
             "classification: compatibility_alias",
@@ -4224,8 +4314,8 @@ fn features_surface_stable_and_experimental_differ_correctly() {
     let stable = run("stable");
     let experimental = run("experimental");
     assert_ne!(stable, experimental);
-    assert_eq!(stable.lines().nth(1), Some("features: 1"));
-    assert_eq!(experimental.lines().nth(1), Some("features: 3"));
+    assert_eq!(stable.lines().nth(1), Some("features: 6"));
+    assert_eq!(experimental.lines().nth(1), Some("features: 8"));
 }
 
 #[test]
@@ -5320,6 +5410,144 @@ fn migrate_preview_surface_experimental_output_is_exact() {
             "canonical_replacement: @ctx(thread)",
             "migration_safe: true",
             "rewrite_intent: Replace the attribute token `@thread_entry` with `@ctx(thread)`.",
+        ]
+    );
+}
+
+#[test]
+fn migrate_preview_legacy_unary_stable_output_is_exact() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("living_compiler")
+        .join("migration_preview_legacy_unary.kr");
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("migrate-preview")
+        .arg("--surface")
+        .arg("stable")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        vec![
+            "surface: stable",
+            "migrations: 5",
+            "function: alloc_worker",
+            "surface_form: @alloc",
+            "feature: legacy_alloc_effect_shorthand",
+            "status: stable",
+            "classification: compatibility_alias",
+            "enabled_under_surface: true",
+            "canonical_replacement: @eff(alloc)",
+            "migration_safe: true",
+            "rewrite_intent: Replace the attribute token `@alloc` with `@eff(alloc)`.",
+            "function: block_worker",
+            "surface_form: @block",
+            "feature: legacy_block_effect_shorthand",
+            "status: stable",
+            "classification: compatibility_alias",
+            "enabled_under_surface: true",
+            "canonical_replacement: @eff(block)",
+            "migration_safe: true",
+            "rewrite_intent: Replace the attribute token `@block` with `@eff(block)`.",
+            "function: irq_entry",
+            "surface_form: @irq",
+            "feature: legacy_irq_context_shorthand",
+            "status: stable",
+            "classification: compatibility_alias",
+            "enabled_under_surface: true",
+            "canonical_replacement: @ctx(irq)",
+            "migration_safe: true",
+            "rewrite_intent: Replace the attribute token `@irq` with `@ctx(irq)`.",
+            "function: noirq_worker",
+            "surface_form: @noirq",
+            "feature: legacy_noirq_context_shorthand",
+            "status: stable",
+            "classification: compatibility_alias",
+            "enabled_under_surface: true",
+            "canonical_replacement: @ctx(thread, boot)",
+            "migration_safe: true",
+            "rewrite_intent: Replace the attribute token `@noirq` with `@ctx(thread, boot)`.",
+            "function: preempt_guarded",
+            "surface_form: @preempt_off",
+            "feature: legacy_preempt_off_effect_shorthand",
+            "status: stable",
+            "classification: compatibility_alias",
+            "enabled_under_surface: true",
+            "canonical_replacement: @eff(preempt_off)",
+            "migration_safe: true",
+            "rewrite_intent: Replace the attribute token `@preempt_off` with `@eff(preempt_off)`.",
+        ]
+    );
+}
+
+#[test]
+fn migrate_preview_legacy_unary_experimental_output_is_exact() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("living_compiler")
+        .join("migration_preview_legacy_unary.kr");
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("migrate-preview")
+        .arg("--surface")
+        .arg("experimental")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        vec![
+            "surface: experimental",
+            "migrations: 5",
+            "function: alloc_worker",
+            "surface_form: @alloc",
+            "feature: legacy_alloc_effect_shorthand",
+            "status: stable",
+            "classification: compatibility_alias",
+            "enabled_under_surface: true",
+            "canonical_replacement: @eff(alloc)",
+            "migration_safe: true",
+            "rewrite_intent: Replace the attribute token `@alloc` with `@eff(alloc)`.",
+            "function: block_worker",
+            "surface_form: @block",
+            "feature: legacy_block_effect_shorthand",
+            "status: stable",
+            "classification: compatibility_alias",
+            "enabled_under_surface: true",
+            "canonical_replacement: @eff(block)",
+            "migration_safe: true",
+            "rewrite_intent: Replace the attribute token `@block` with `@eff(block)`.",
+            "function: irq_entry",
+            "surface_form: @irq",
+            "feature: legacy_irq_context_shorthand",
+            "status: stable",
+            "classification: compatibility_alias",
+            "enabled_under_surface: true",
+            "canonical_replacement: @ctx(irq)",
+            "migration_safe: true",
+            "rewrite_intent: Replace the attribute token `@irq` with `@ctx(irq)`.",
+            "function: noirq_worker",
+            "surface_form: @noirq",
+            "feature: legacy_noirq_context_shorthand",
+            "status: stable",
+            "classification: compatibility_alias",
+            "enabled_under_surface: true",
+            "canonical_replacement: @ctx(thread, boot)",
+            "migration_safe: true",
+            "rewrite_intent: Replace the attribute token `@noirq` with `@ctx(thread, boot)`.",
+            "function: preempt_guarded",
+            "surface_form: @preempt_off",
+            "feature: legacy_preempt_off_effect_shorthand",
+            "status: stable",
+            "classification: compatibility_alias",
+            "enabled_under_surface: true",
+            "canonical_replacement: @eff(preempt_off)",
+            "migration_safe: true",
+            "rewrite_intent: Replace the attribute token `@preempt_off` with `@eff(preempt_off)`.",
         ]
     );
 }
