@@ -125,6 +125,28 @@ fn structured_output_test_coverage_matrix_spec_lists_current_json_capable_comman
     }
 }
 
+#[test]
+fn structured_output_new_json_command_checklist_is_present() {
+    assert!(
+        KRIR_SPEC_TEXT.contains("### New JSON Command Checklist"),
+        "structured output spec must include the new JSON command checklist"
+    );
+    for line in [
+        "document the command surface in the structured-output command matrix",
+        "document its coverage in the structured-output test coverage matrix",
+        "add `cli_contract` transport assertions",
+        "reuse `assert_json_transport` where applicable",
+        "add or reference a schema when the payload is versioned",
+        "preserve `stdout`-only, empty-`stderr`, trailing-newline transport behavior",
+    ] {
+        assert!(
+            KRIR_SPEC_TEXT.contains(line),
+            "structured output checklist must include '{}'",
+            line
+        );
+    }
+}
+
 fn object_keys(value: &Value) -> BTreeSet<String> {
     value
         .as_object()

@@ -270,6 +270,17 @@ Representative `cli_contract` coverage for the current JSON-capable commands:
 | `kernriftc policy --format json --policy <policy.toml> --contracts <contracts.json>` | yes: `policy_json_irq_raw_mmio_forbid_is_exact_and_structured`, `policy_json_irq_raw_mmio_allowlist_deep_path_is_exact_and_structured` | yes: `policy_json_schema_accepts_scalar_list_and_empty_list_evidence_variants` | yes: transport is asserted inside the exact JSON tests via `assert_json_transport` | n/a |
 | `kernriftc check --format json --policy <policy.toml> <file.kr>` | yes: check-policy JSON is byte-compared against standalone policy JSON in `check_json_policy_irq_raw_mmio_forbid_matches_policy_json_contract_exactly` and `check_json_policy_irq_raw_mmio_allowlist_helper_path_matches_policy_json_contract_exactly` | yes: same parity tests validate against `kernrift_policy_violations_v1` schema | yes: same parity tests assert stdout-only transport via `assert_json_transport` | yes: exact parity to `kernriftc policy --format json` on policy denial |
 
+### New JSON Command Checklist
+
+When introducing a new JSON-capable command:
+
+- document the command surface in the structured-output command matrix
+- document its coverage in the structured-output test coverage matrix
+- add `cli_contract` transport assertions
+- reuse `assert_json_transport` where applicable
+- add or reference a schema when the payload is versioned
+- preserve `stdout`-only, empty-`stderr`, trailing-newline transport behavior
+
 These rules lock transport behavior only. They do not redefine command payload schemas.
 
 ## Verify Exit Codes
