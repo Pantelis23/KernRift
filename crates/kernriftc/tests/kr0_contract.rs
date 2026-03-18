@@ -540,8 +540,27 @@ fn extern_missing_eff_reports_hir_error() {
     let errs = check_file(&fixture).expect_err("extern_missing_eff should fail");
     assert_eq!(
         errs,
-        vec!["extern 'sleep' must declare @eff(...) facts explicitly".to_string()],
+        vec![
+            "extern 'sleep' must declare @eff(...) facts explicitly at 2:1\n  2 | extern @ctx(thread) @caps() fn sleep();\n  = help: use extern @ctx(...) @eff(...) @caps() fn sleep();".to_string()
+        ],
         "expected exact HIR extern missing @eff error"
+    );
+}
+
+#[test]
+fn extern_missing_ctx_reports_hir_error() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("extern_missing_ctx.kr");
+    let errs = check_file(&fixture).expect_err("extern_missing_ctx should fail");
+    assert_eq!(
+        errs,
+        vec![
+            "extern 'sleep' must declare @ctx(...) facts explicitly at 1:1\n  1 | extern @eff(block) @caps() fn sleep();\n  = help: use extern @ctx(...) @eff(...) @caps() fn sleep();".to_string()
+        ],
+        "expected exact HIR extern missing @ctx error"
     );
 }
 
@@ -556,7 +575,7 @@ fn extern_missing_caps_reports_hir_error() {
     assert_eq!(
         errs,
         vec![
-            "EXTERN_CAPS_CONTRACT_REQUIRED: extern 'sleep' must declare @caps(...) facts explicitly"
+            "EXTERN_CAPS_CONTRACT_REQUIRED: extern 'sleep' must declare @caps(...) facts explicitly at 1:1\n  1 | extern @ctx(thread) @eff(block) fn sleep();\n  = help: use extern @ctx(...) @eff(...) @caps() fn sleep();"
                 .to_string()
         ],
         "expected exact HIR extern missing @caps error"

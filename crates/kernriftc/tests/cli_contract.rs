@@ -3664,6 +3664,28 @@ fn check_unresolved_callee_exits_nonzero_with_hir_error() {
 }
 
 #[test]
+fn check_extern_missing_eff_includes_location_and_valid_template() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("extern_missing_eff.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec![
+            "extern 'sleep' must declare @eff(...) facts explicitly at 2:1",
+            "  2 | extern @ctx(thread) @caps() fn sleep();",
+            "  = help: use extern @ctx(...) @eff(...) @caps() fn sleep();",
+        ]
+    );
+}
+
+#[test]
 fn check_surface_stable_rejects_irq_handler_alias() {
     let root = repo_root();
     let fixture = root
@@ -3681,7 +3703,11 @@ fn check_surface_stable_rejects_irq_handler_alias() {
     let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
     assert_eq!(
         stderr.lines().collect::<Vec<_>>(),
-        vec!["surface feature '@irq_handler' requires --surface experimental for 'isr'"]
+        vec![
+            "surface feature '@irq_handler' requires --surface experimental for 'isr' at 1:1",
+            "  1 | @irq_handler",
+            "  = help: did you mean @ctx(irq)?",
+        ]
     );
 }
 
@@ -3826,7 +3852,11 @@ fn check_surface_stable_rejects_may_block_alias() {
     let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
     assert_eq!(
         stderr.lines().collect::<Vec<_>>(),
-        vec!["surface feature '@may_block' requires --surface experimental for 'worker'"]
+        vec![
+            "surface feature '@may_block' requires --surface experimental for 'worker' at 1:1",
+            "  1 | @may_block",
+            "  = help: did you mean @eff(block)?",
+        ]
     );
 }
 
@@ -3866,7 +3896,9 @@ fn check_surface_stable_rejects_deprecated_irq_legacy_alias() {
     assert_eq!(
         stderr.lines().collect::<Vec<_>>(),
         vec![
-            "surface feature '@irq_legacy' is deprecated and unavailable under --surface stable for 'legacy_isr'"
+            "surface feature '@irq_legacy' is deprecated and unavailable under --surface stable for 'legacy_isr' at 1:1",
+            "  1 | @irq_legacy",
+            "  = help: did you mean @ctx(irq)?",
         ]
     );
 }
@@ -3890,7 +3922,9 @@ fn check_surface_experimental_rejects_deprecated_irq_legacy_alias() {
     assert_eq!(
         stderr.lines().collect::<Vec<_>>(),
         vec![
-            "surface feature '@irq_legacy' is deprecated and unavailable under --surface experimental for 'legacy_isr'"
+            "surface feature '@irq_legacy' is deprecated and unavailable under --surface experimental for 'legacy_isr' at 1:1",
+            "  1 | @irq_legacy",
+            "  = help: did you mean @ctx(irq)?",
         ]
     );
 }
@@ -5281,11 +5315,12 @@ fn check_rejects_invalid_typed_mmio_element_fixture() {
     cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
     let assert = cmd.assert().failure().code(1);
     let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
-    let first = stderr.lines().next().expect("first stderr line");
-    assert!(
-        first.starts_with(
-            "unsupported mmio element type 'u128'; expected one of: u8, u16, u32, u64 at byte "
-        ),
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec![
+            "unsupported mmio element type 'u128'; expected one of: u8, u16, u32, u64 at 2:3",
+            "  2 |   mmio_read<u128>(mmio_base);",
+        ],
         "unexpected diagnostic: {}",
         stderr
     );
@@ -5303,11 +5338,12 @@ fn check_rejects_invalid_typed_mmio_arity_fixture() {
     cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
     let assert = cmd.assert().failure().code(1);
     let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
-    let first = stderr.lines().next().expect("first stderr line");
-    assert!(
-        first.starts_with(
-            "mmio_write<T>(addr, value) requires exactly two arguments: address and value at byte "
-        ),
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec![
+            "mmio_write<T>(addr, value) requires exactly two arguments: address and value at 2:3",
+            "  2 |   mmio_write<u32>(mmio_base);",
+        ],
         "unexpected diagnostic: {}",
         stderr
     );
@@ -5325,11 +5361,12 @@ fn check_rejects_invalid_typed_mmio_operand_fixture() {
     cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
     let assert = cmd.assert().failure().code(1);
     let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
-    let first = stderr.lines().next().expect("first stderr line");
-    assert!(
-        first.starts_with(
-            "unsupported mmio address operand 'a + b'; expected identifier, integer literal, or identifier + integer literal at byte "
-        ),
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec![
+            "unsupported mmio address operand 'a + b'; expected identifier, integer literal, or identifier + integer literal at 2:3",
+            "  2 |   mmio_read<u32>(a + b);",
+        ],
         "unexpected diagnostic: {}",
         stderr
     );
@@ -5378,11 +5415,12 @@ fn check_rejects_invalid_mmio_base_declaration_fixture() {
     cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
     let assert = cmd.assert().failure().code(1);
     let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
-    let first = stderr.lines().next().expect("first stderr line");
-    assert!(
-        first.starts_with(
-            "invalid mmio base declaration for 'UART0': expected integer literal at byte "
-        ),
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec![
+            "invalid mmio base declaration for 'UART0': expected integer literal at 1:23",
+            "  1 | mmio UART0 = BASE + 4;",
+        ],
         "unexpected diagnostic: {}",
         stderr
     );
@@ -5727,11 +5765,12 @@ fn check_rejects_invalid_mmio_register_declaration_fixture() {
     cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
     let assert = cmd.assert().failure().code(1);
     let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
-    let first = stderr.lines().next().expect("first stderr line");
-    assert!(
-        first.starts_with(
-            "invalid mmio register declaration for 'UART0.DR': expected integer literal offset at byte "
-        ),
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec![
+            "invalid mmio register declaration for 'UART0.DR': expected integer literal offset at 2:31",
+            "  2 | mmio_reg UART0.DR = BASE + 4 : u32 rw;",
+        ],
         "unexpected diagnostic: {}",
         stderr
     );

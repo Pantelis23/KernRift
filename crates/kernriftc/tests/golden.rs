@@ -322,11 +322,12 @@ fn golden_mmio_typed_slice_checks_are_stable() {
         "invalid typed mmio fixture should fail, stderr={}",
         fail.stderr
     );
-    let first = fail.stderr.lines().next().unwrap_or_default();
-    assert!(
-        first.starts_with(
-            "unsupported mmio element type 'u128'; expected one of: u8, u16, u32, u64 at byte "
-        ),
+    assert_eq!(
+        fail.stderr.lines().collect::<Vec<_>>(),
+        vec![
+            "unsupported mmio element type 'u128'; expected one of: u8, u16, u32, u64 at 2:3",
+            "  2 |   mmio_read<u128>(mmio_base);",
+        ],
         "unexpected invalid typed mmio diagnostic: {}",
         fail.stderr
     );
@@ -348,11 +349,12 @@ fn golden_mmio_typed_slice_checks_are_stable() {
         "invalid typed mmio arity fixture should fail, stderr={}",
         arity_fail.stderr
     );
-    let first = arity_fail.stderr.lines().next().unwrap_or_default();
-    assert!(
-        first.starts_with(
-            "mmio_write<T>(addr, value) requires exactly two arguments: address and value at byte "
-        ),
+    assert_eq!(
+        arity_fail.stderr.lines().collect::<Vec<_>>(),
+        vec![
+            "mmio_write<T>(addr, value) requires exactly two arguments: address and value at 2:3",
+            "  2 |   mmio_write<u32>(mmio_base);",
+        ],
         "unexpected invalid typed mmio arity diagnostic: {}",
         arity_fail.stderr
     );
@@ -374,11 +376,12 @@ fn golden_mmio_typed_slice_checks_are_stable() {
         "invalid typed mmio operand fixture should fail, stderr={}",
         operand_fail.stderr
     );
-    let first = operand_fail.stderr.lines().next().unwrap_or_default();
-    assert!(
-        first.starts_with(
-            "unsupported mmio address operand 'a + b'; expected identifier, integer literal, or identifier + integer literal at byte "
-        ),
+    assert_eq!(
+        operand_fail.stderr.lines().collect::<Vec<_>>(),
+        vec![
+            "unsupported mmio address operand 'a + b'; expected identifier, integer literal, or identifier + integer literal at 2:3",
+            "  2 |   mmio_read<u32>(a + b);",
+        ],
         "unexpected invalid typed mmio operand diagnostic: {}",
         operand_fail.stderr
     );
@@ -440,11 +443,12 @@ fn golden_mmio_typed_slice_checks_are_stable() {
         "invalid mmio declaration fixture should fail, stderr={}",
         invalid_decl.stderr
     );
-    let first = invalid_decl.stderr.lines().next().unwrap_or_default();
-    assert!(
-        first.starts_with(
-            "invalid mmio base declaration for 'UART0': expected integer literal at byte "
-        ),
+    assert_eq!(
+        invalid_decl.stderr.lines().collect::<Vec<_>>(),
+        vec![
+            "invalid mmio base declaration for 'UART0': expected integer literal at 1:23",
+            "  1 | mmio UART0 = BASE + 4;",
+        ],
         "unexpected invalid mmio declaration diagnostic: {}",
         invalid_decl.stderr
     );
@@ -1704,11 +1708,12 @@ fn golden_mmio_typed_slice_checks_are_stable() {
         "invalid mmio register declaration fixture should fail, stderr={}",
         reg_invalid_decl.stderr
     );
-    let first = reg_invalid_decl.stderr.lines().next().unwrap_or_default();
-    assert!(
-        first.starts_with(
-            "invalid mmio register declaration for 'UART0.DR': expected integer literal offset at byte "
-        ),
+    assert_eq!(
+        reg_invalid_decl.stderr.lines().collect::<Vec<_>>(),
+        vec![
+            "invalid mmio register declaration for 'UART0.DR': expected integer literal offset at 2:31",
+            "  2 | mmio_reg UART0.DR = BASE + 4 : u32 rw;",
+        ],
         "unexpected invalid mmio register declaration diagnostic: {}",
         reg_invalid_decl.stderr
     );

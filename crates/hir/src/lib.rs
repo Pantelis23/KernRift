@@ -12,7 +12,7 @@ use parser::{
     FnAst, MmioAddrExpr as ParserMmioAddrExpr, MmioBaseDecl as ParserMmioBaseDecl,
     MmioRegAccess as ParserMmioRegAccess, MmioRegisterDecl as ParserMmioRegisterDecl,
     MmioScalarType as ParserMmioScalarType, MmioValueExpr as ParserMmioValueExpr, ModuleAst,
-    RawAttr, Stmt, int_literal_numeric_value, split_csv,
+    RawAttr, Stmt, format_source_diagnostic, int_literal_numeric_value, split_csv,
 };
 use serde::Serialize;
 
@@ -731,6 +731,23 @@ fn feature_unavailability_error(
             function_name
         ),
     }
+}
+
+fn format_function_diagnostic(item: &FnAst, message: &str, help: Option<&str>) -> String {
+    format_source_diagnostic(&item.source, message, help)
+}
+
+fn format_attr_diagnostic(
+    _item: &FnAst,
+    attr: &RawAttr,
+    message: &str,
+    help: Option<&str>,
+) -> String {
+    format_source_diagnostic(&attr.source, message, help)
+}
+
+fn extern_template_help(name: &str) -> String {
+    format!("use extern @ctx(...) @eff(...) @caps() fn {}();", name)
 }
 
 pub fn irq_handler_alias_proposal() -> AdaptiveFeatureProposal {
@@ -1535,14 +1552,24 @@ fn normalize_function_facts(
                 saw_ctx = true;
                 match parse_ctx_attr(attr) {
                     Ok(values) => ctx_ok.extend(values),
-                    Err(msg) => errors.push(format!("{} for '{}'", msg, item.name)),
+                    Err(msg) => errors.push(format_attr_diagnostic(
+                        item,
+                        attr,
+                        &format!("{} for '{}'", msg, item.name),
+                        None,
+                    )),
                 }
             }
             "eff" => {
                 saw_eff = true;
                 match parse_eff_attr(attr) {
                     Ok(values) => eff_used.extend(values),
-                    Err(msg) => errors.push(format!("{} for '{}'", msg, item.name)),
+                    Err(msg) => errors.push(format_attr_diagnostic(
+                        item,
+                        attr,
+                        &format!("{} for '{}'", msg, item.name),
+                        None,
+                    )),
                 }
             }
             "caps" => {
@@ -1580,16 +1607,22 @@ fn normalize_function_facts(
             "hotpath" => attrs.hotpath = true,
             "lock_budget" => match parse_lock_budget(attr) {
                 Ok(v) => attrs.lock_budget = Some(v),
-                Err(msg) => errors.push(format!("{} for '{}'", msg, item.name)),
+                Err(msg) => errors.push(format_attr_diagnostic(
+                    item,
+                    attr,
+                    &format!("{} for '{}'", msg, item.name),
+                    None,
+                )),
             },
             "module_caps" => {}
             other => {
                 if let Some(feature) = adaptive_surface_feature(other) {
                     if !surface_profile_enables_feature(surface_profile, feature) {
-                        errors.push(feature_unavailability_error(
-                            surface_profile,
-                            feature,
-                            &item.name,
+                        errors.push(format_attr_diagnostic(
+                            item,
+                            attr,
+                            &feature_unavailability_error(surface_profile, feature, &item.name),
+                            Some(&format!("did you mean {}?", feature.canonical_replacement)),
                         ));
                         continue;
                     }
@@ -1605,9 +1638,11 @@ fn normalize_function_facts(
                         }
                     }
                 } else {
-                    errors.push(format!(
-                        "unknown attribute '@{}' on function '{}'",
-                        other, item.name
+                    errors.push(format_attr_diagnostic(
+                        item,
+                        attr,
+                        &format!("unknown attribute '@{}' on function '{}'", other, item.name),
+                        None,
                     ));
                 }
             }
@@ -1616,21 +1651,36 @@ fn normalize_function_facts(
 
     if item.is_extern {
         if !saw_ctx {
-            errors.push(format!(
-                "extern '{}' must declare @ctx(...) facts explicitly",
-                item.name
+            let help = extern_template_help(&item.name);
+            errors.push(format_function_diagnostic(
+                item,
+                &format!(
+                    "extern '{}' must declare @ctx(...) facts explicitly",
+                    item.name
+                ),
+                Some(&help),
             ));
         }
         if !saw_eff {
-            errors.push(format!(
-                "extern '{}' must declare @eff(...) facts explicitly",
-                item.name
+            let help = extern_template_help(&item.name);
+            errors.push(format_function_diagnostic(
+                item,
+                &format!(
+                    "extern '{}' must declare @eff(...) facts explicitly",
+                    item.name
+                ),
+                Some(&help),
             ));
         }
         if !saw_caps {
-            errors.push(format!(
-                "EXTERN_CAPS_CONTRACT_REQUIRED: extern '{}' must declare @caps(...) facts explicitly",
-                item.name
+            let help = extern_template_help(&item.name);
+            errors.push(format_function_diagnostic(
+                item,
+                &format!(
+                    "EXTERN_CAPS_CONTRACT_REQUIRED: extern '{}' must declare @caps(...) facts explicitly",
+                    item.name
+                ),
+                Some(&help),
             ));
         }
     } else {
@@ -2006,7 +2056,9 @@ mod tests {
             .expect_err("stable surface must reject irq_handler");
         assert_eq!(
             errs,
-            vec!["surface feature '@irq_handler' requires --surface experimental for 'isr'"]
+            vec![
+                "surface feature '@irq_handler' requires --surface experimental for 'isr' at 1:1\n  1 | @irq_handler fn isr() { }\n  = help: did you mean @ctx(irq)?"
+            ]
         );
     }
 
@@ -2786,7 +2838,7 @@ mod tests {
     fn additional_adaptive_aliases_are_rejected_in_stable_surface() {
         let cases = [(
             "@may_block fn worker() { }",
-            "surface feature '@may_block' requires --surface experimental for 'worker'",
+            "surface feature '@may_block' requires --surface experimental for 'worker' at 1:1\n  1 | @may_block fn worker() { }\n  = help: did you mean @eff(block)?",
         )];
 
         for (src, expected) in cases {
@@ -2813,13 +2865,13 @@ mod tests {
         assert_eq!(
             stable_errs,
             vec![
-                "surface feature '@irq_legacy' is deprecated and unavailable under --surface stable for 'legacy_isr'"
+                "surface feature '@irq_legacy' is deprecated and unavailable under --surface stable for 'legacy_isr' at 1:1\n  1 | @irq_legacy fn legacy_isr() { }\n  = help: did you mean @ctx(irq)?"
             ]
         );
         assert_eq!(
             experimental_errs,
             vec![
-                "surface feature '@irq_legacy' is deprecated and unavailable under --surface experimental for 'legacy_isr'"
+                "surface feature '@irq_legacy' is deprecated and unavailable under --surface experimental for 'legacy_isr' at 1:1\n  1 | @irq_legacy fn legacy_isr() { }\n  = help: did you mean @ctx(irq)?"
             ]
         );
     }

@@ -1,7 +1,48 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceNote {
+    pub byte_offset: usize,
+    pub line: usize,
+    pub column: usize,
+    pub line_text: String,
+}
+
+impl SourceNote {
+    pub fn from_source(src: &str, byte_offset: usize) -> Self {
+        let clamped = byte_offset.min(src.len());
+        let prefix = &src[..clamped];
+        let line = prefix.bytes().filter(|b| *b == b'\n').count() + 1;
+        let line_start = prefix.rfind('\n').map(|idx| idx + 1).unwrap_or(0);
+        let line_end = src[clamped..]
+            .find('\n')
+            .map(|idx| clamped + idx)
+            .unwrap_or(src.len());
+        let line_text = src[line_start..line_end].trim_end_matches('\r').to_string();
+        let column = src[line_start..clamped].chars().count() + 1;
+        Self {
+            byte_offset: clamped,
+            line,
+            column,
+            line_text,
+        }
+    }
+}
+
+pub fn format_source_diagnostic(source: &SourceNote, message: &str, help: Option<&str>) -> String {
+    let mut rendered = format!("{} at {}:{}", message, source.line, source.column);
+    rendered.push('\n');
+    rendered.push_str(&format!("  {} | {}", source.line, source.line_text));
+    if let Some(help) = help {
+        rendered.push('\n');
+        rendered.push_str(&format!("  = help: {}", help));
+    }
+    rendered
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawAttr {
     pub name: String,
     pub args: Option<String>,
+    pub source: SourceNote,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,6 +144,7 @@ pub struct FnAst {
     pub is_extern: bool,
     pub attrs: Vec<RawAttr>,
     pub body: Vec<Stmt>,
+    pub source: SourceNote,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -207,6 +249,7 @@ impl<'a> Parser<'a> {
             if self.eof() {
                 break;
             }
+            let item_start = self.pos;
 
             if self.consume_keyword("mmio") {
                 match self.parse_mmio_base_decl() {
@@ -220,7 +263,7 @@ impl<'a> Parser<'a> {
                     }
                     Err(msg) => {
                         self.error_here(&msg);
-                        self.recover_to_next_item();
+                        self.recover_to_next_module_item();
                     }
                 }
                 continue;
@@ -239,7 +282,7 @@ impl<'a> Parser<'a> {
                     }
                     Err(msg) => {
                         self.error_here(&msg);
-                        self.recover_to_next_item();
+                        self.recover_to_next_module_item();
                     }
                 }
                 continue;
@@ -269,7 +312,7 @@ impl<'a> Parser<'a> {
             if attrs.len() == 1 && attrs[0].name == "module_caps" && !is_extern {
                 if !self.consume_char(';') {
                     self.error_here("expected ';' after @module_caps(...) directive");
-                    self.recover_to_next_item();
+                    self.recover_to_next_module_item();
                     continue;
                 }
                 let caps = attrs[0].args.as_deref().map(split_csv).unwrap_or_default();
@@ -281,20 +324,20 @@ impl<'a> Parser<'a> {
                 self.error_here(
                     "expected 'fn', 'mmio', 'mmio_reg', or @module_caps(...) at item boundary",
                 );
-                self.recover_to_next_item();
+                self.recover_to_next_module_item();
                 continue;
             }
 
             let Some(name) = self.parse_ident() else {
                 self.error_here("expected function name after 'fn'");
-                self.recover_to_next_item();
+                self.recover_to_next_module_item();
                 continue;
             };
 
             self.skip_ws_comments();
             if !self.consume_char('(') || !self.consume_char(')') {
                 self.error_here("expected empty parameter list '()' in KR0");
-                self.recover_to_next_item();
+                self.recover_to_next_module_item();
                 continue;
             }
 
@@ -302,7 +345,7 @@ impl<'a> Parser<'a> {
                 self.skip_ws_comments();
                 if !self.consume_char(';') {
                     self.error_here("expected ';' after extern declaration");
-                    self.recover_to_next_item();
+                    self.recover_to_next_module_item();
                     continue;
                 }
                 module.items.push(FnAst {
@@ -310,6 +353,7 @@ impl<'a> Parser<'a> {
                     is_extern: true,
                     attrs,
                     body: Vec::new(),
+                    source: self.source_note(item_start),
                 });
                 continue;
             }
@@ -317,7 +361,7 @@ impl<'a> Parser<'a> {
             self.skip_ws_comments();
             if !self.consume_char('{') {
                 self.error_here("expected '{' to start function body");
-                self.recover_to_next_item();
+                self.recover_to_next_module_item();
                 continue;
             }
 
@@ -327,6 +371,7 @@ impl<'a> Parser<'a> {
                 is_extern: false,
                 attrs,
                 body,
+                source: self.source_note(item_start),
             });
         }
 
@@ -523,6 +568,7 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
+            let stmt_start = self.pos;
             match self.read_statement_text() {
                 Some(text) => {
                     if text.trim().is_empty() {
@@ -531,7 +577,11 @@ impl<'a> Parser<'a> {
                     match parse_stmt(text.trim()) {
                         Ok(Some(stmt)) => body.push(stmt),
                         Ok(None) => {}
-                        Err(msg) => self.errors.push(format!("{} at byte {}", msg, self.pos)),
+                        Err(msg) => self.errors.push(self.format_diagnostic_at(
+                            stmt_start,
+                            &msg,
+                            None::<&str>,
+                        )),
                     }
                 }
                 None => {
@@ -573,6 +623,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_attr(&mut self) -> Option<RawAttr> {
+        let attr_start = self.pos;
         if !self.consume_char('@') {
             return None;
         }
@@ -589,7 +640,11 @@ impl<'a> Parser<'a> {
             None
         };
 
-        Some(RawAttr { name, args })
+        Some(RawAttr {
+            name,
+            args,
+            source: self.source_note(attr_start),
+        })
     }
 
     fn read_balanced_parens(&mut self) -> String {
@@ -703,8 +758,36 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn recover_to_next_module_item(&mut self) {
+        while !self.eof() {
+            self.skip_ws_comments();
+            let rest = &self.src[self.pos..];
+            if rest.starts_with("fn")
+                || rest.starts_with("extern")
+                || rest.starts_with("mmio_reg")
+                || rest.starts_with("mmio")
+                || rest.starts_with('@')
+            {
+                break;
+            }
+            let Some(ch) = self.peek_char() else {
+                break;
+            };
+            self.pos += ch.len_utf8();
+        }
+    }
+
     fn error_here(&mut self, msg: &str) {
-        self.errors.push(format!("{} at byte {}", msg, self.pos));
+        self.errors
+            .push(self.format_diagnostic_at(self.pos, msg, None::<&str>));
+    }
+
+    fn format_diagnostic_at(&self, byte_offset: usize, msg: &str, help: Option<&str>) -> String {
+        format_source_diagnostic(&self.source_note(byte_offset), msg, help)
+    }
+
+    fn source_note(&self, byte_offset: usize) -> SourceNote {
+        SourceNote::from_source(self.src, byte_offset)
     }
 
     fn eof(&self) -> bool {
@@ -997,9 +1080,13 @@ fn parse_invocation(stmt: &str) -> Result<(String, String), String> {
 mod tests {
     use super::{
         MmioAddrExpr, MmioBaseDecl, MmioRegAccess, MmioRegisterDecl, MmioScalarType, MmioValueExpr,
-        Stmt, int_literal_numeric_value, parse_module,
+        SourceNote, Stmt, format_source_diagnostic, int_literal_numeric_value, parse_module,
     };
     use proptest::prelude::*;
+
+    fn diagnostic_at(src: &str, byte_offset: usize, message: &str) -> String {
+        format_source_diagnostic(&SourceNote::from_source(src, byte_offset), message, None)
+    }
 
     #[test]
     fn parse_critical_block_statement() {
@@ -1191,10 +1278,11 @@ mod tests {
         let err = parse_module(src).expect_err("invalid register rhs should fail");
         assert_eq!(
             err,
-            vec![
-                "invalid mmio register declaration for 'UART0.DR': expected integer literal offset at byte 51"
-                    .to_string()
-            ]
+            vec![diagnostic_at(
+                src,
+                51,
+                "invalid mmio register declaration for 'UART0.DR': expected integer literal offset",
+            )]
         );
     }
 
@@ -1204,10 +1292,11 @@ mod tests {
         let err_type = parse_module(invalid_type).expect_err("invalid register type should fail");
         assert_eq!(
             err_type,
-            vec![
-                "invalid mmio register declaration for 'UART0.DR': unsupported type 'u128' at byte 52"
-                    .to_string()
-            ]
+            vec![diagnostic_at(
+                invalid_type,
+                52,
+                "invalid mmio register declaration for 'UART0.DR': unsupported type 'u128'",
+            )]
         );
 
         let invalid_access = "mmio UART0 = 0x1000; mmio_reg UART0.DR = 0x00 : u32 xx;";
@@ -1215,10 +1304,11 @@ mod tests {
             parse_module(invalid_access).expect_err("invalid register access should fail");
         assert_eq!(
             err_access,
-            vec![
-                "invalid mmio register declaration for 'UART0.DR': unsupported access 'xx' at byte 54"
-                    .to_string()
-            ]
+            vec![diagnostic_at(
+                invalid_access,
+                54,
+                "invalid mmio register declaration for 'UART0.DR': unsupported access 'xx'",
+            )]
         );
     }
 
@@ -1235,10 +1325,11 @@ mod tests {
         let err = parse_module(src).expect_err("invalid rhs should fail");
         assert_eq!(
             err,
-            vec![
-                "invalid mmio base declaration for 'UART0': expected integer literal at byte 22"
-                    .to_string()
-            ]
+            vec![diagnostic_at(
+                src,
+                22,
+                "invalid mmio base declaration for 'UART0': expected integer literal",
+            )]
         );
     }
 
@@ -1255,7 +1346,11 @@ mod tests {
         let err = parse_module(src).expect_err("nested declaration should fail");
         assert_eq!(
             err,
-            vec!["mmio declarations are only allowed at module scope at byte 33".to_string()]
+            vec![diagnostic_at(
+                src,
+                13,
+                "mmio declarations are only allowed at module scope",
+            )]
         );
     }
 
@@ -1265,7 +1360,11 @@ mod tests {
         let err = parse_module(src).expect_err("nested register declaration should fail");
         assert_eq!(
             err,
-            vec!["mmio_reg declarations are only allowed at module scope at byte 47".to_string()]
+            vec![diagnostic_at(
+                src,
+                13,
+                "mmio_reg declarations are only allowed at module scope",
+            )]
         );
     }
 
@@ -1293,10 +1392,16 @@ mod tests {
         assert_eq!(
             err,
             vec![
-                "mmio_read() legacy form is unsupported; use mmio_read<T>(addr) at byte 25"
-                    .to_string(),
-                "mmio_write() legacy form is unsupported; use mmio_write<T>(addr, value) at byte 39"
-                    .to_string()
+                diagnostic_at(
+                    src,
+                    13,
+                    "mmio_read() legacy form is unsupported; use mmio_read<T>(addr)",
+                ),
+                diagnostic_at(
+                    src,
+                    26,
+                    "mmio_write() legacy form is unsupported; use mmio_write<T>(addr, value)",
+                )
             ]
         );
     }
@@ -1308,10 +1413,16 @@ mod tests {
         assert_eq!(
             err,
             vec![
-                "raw_mmio_read() legacy form is unsupported; use raw_mmio_read<T>(addr) at byte 29"
-                    .to_string(),
-                "raw_mmio_write() legacy form is unsupported; use raw_mmio_write<T>(addr, value) at byte 47"
-                    .to_string()
+                diagnostic_at(
+                    src,
+                    13,
+                    "raw_mmio_read() legacy form is unsupported; use raw_mmio_read<T>(addr)",
+                ),
+                diagnostic_at(
+                    src,
+                    30,
+                    "raw_mmio_write() legacy form is unsupported; use raw_mmio_write<T>(addr, value)",
+                )
             ]
         );
     }
@@ -1322,10 +1433,11 @@ mod tests {
         let err = parse_module(src).expect_err("invalid mmio element type should fail");
         assert_eq!(
             err,
-            vec![
-                "unsupported mmio element type 'u128'; expected one of: u8, u16, u32, u64 at byte 31"
-                    .to_string()
-            ]
+            vec![diagnostic_at(
+                src,
+                13,
+                "unsupported mmio element type 'u128'; expected one of: u8, u16, u32, u64",
+            )]
         );
     }
 
@@ -1335,10 +1447,11 @@ mod tests {
         let err = parse_module(src).expect_err("malformed mmio invocation should fail");
         assert_eq!(
             err,
-            vec![
-                "malformed mmio_write typed invocation 'mmio_write<u32'; expected mmio_write<T>() at byte 31"
-                    .to_string()
-            ]
+            vec![diagnostic_at(
+                src,
+                13,
+                "malformed mmio_write typed invocation 'mmio_write<u32'; expected mmio_write<T>()",
+            )]
         );
     }
 
@@ -1348,7 +1461,11 @@ mod tests {
         let err = parse_module(src).expect_err("missing mmio read arg should fail");
         assert_eq!(
             err,
-            vec!["mmio_read<T>(addr) requires exactly one address argument at byte 30".to_string()]
+            vec![diagnostic_at(
+                src,
+                13,
+                "mmio_read<T>(addr) requires exactly one address argument",
+            )]
         );
     }
 
@@ -1358,20 +1475,22 @@ mod tests {
         let err_missing = parse_module(src_missing).expect_err("missing value arg should fail");
         assert_eq!(
             err_missing,
-            vec![
-                "mmio_write<T>(addr, value) requires exactly two arguments: address and value at byte 35"
-                    .to_string()
-            ]
+            vec![diagnostic_at(
+                src_missing,
+                13,
+                "mmio_write<T>(addr, value) requires exactly two arguments: address and value",
+            )]
         );
 
         let src_extra = "fn entry() { mmio_write<u32>(addr, value, extra); }";
         let err_extra = parse_module(src_extra).expect_err("extra value arg should fail");
         assert_eq!(
             err_extra,
-            vec![
-                "mmio_write<T>(addr, value) requires exactly two arguments: address and value at byte 49"
-                    .to_string()
-            ]
+            vec![diagnostic_at(
+                src_extra,
+                13,
+                "mmio_write<T>(addr, value) requires exactly two arguments: address and value",
+            )]
         );
     }
 
@@ -1382,20 +1501,22 @@ mod tests {
             parse_module(src_missing).expect_err("missing raw mmio value arg should fail");
         assert_eq!(
             err_missing,
-            vec![
-                "raw_mmio_write<T>(addr, value) requires exactly two arguments: address and value at byte 39"
-                    .to_string()
-            ]
+            vec![diagnostic_at(
+                src_missing,
+                13,
+                "raw_mmio_write<T>(addr, value) requires exactly two arguments: address and value",
+            )]
         );
 
         let src_extra = "fn entry() { raw_mmio_write<u32>(addr, value, extra); }";
         let err_extra = parse_module(src_extra).expect_err("extra raw mmio value arg should fail");
         assert_eq!(
             err_extra,
-            vec![
-                "raw_mmio_write<T>(addr, value) requires exactly two arguments: address and value at byte 53"
-                    .to_string()
-            ]
+            vec![diagnostic_at(
+                src_extra,
+                13,
+                "raw_mmio_write<T>(addr, value) requires exactly two arguments: address and value",
+            )]
         );
     }
 
@@ -1405,10 +1526,11 @@ mod tests {
         let err_read_add = parse_module(read_add).expect_err("unsupported addr shape should fail");
         assert_eq!(
             err_read_add,
-            vec![
-                "unsupported mmio address operand 'a + b'; expected identifier, integer literal, or identifier + integer literal at byte 35"
-                    .to_string()
-            ]
+            vec![diagnostic_at(
+                read_add,
+                13,
+                "unsupported mmio address operand 'a + b'; expected identifier, integer literal, or identifier + integer literal",
+            )]
         );
 
         let read_chain = "fn entry() { mmio_read<u32>(a + 1 + 2); }";
@@ -1416,10 +1538,11 @@ mod tests {
             parse_module(read_chain).expect_err("unsupported chained addr shape should fail");
         assert_eq!(
             err_read_chain,
-            vec![
-                "unsupported mmio address operand 'a + 1 + 2'; expected identifier, integer literal, or identifier + integer literal at byte 39"
-                    .to_string()
-            ]
+            vec![diagnostic_at(
+                read_chain,
+                13,
+                "unsupported mmio address operand 'a + 1 + 2'; expected identifier, integer literal, or identifier + integer literal",
+            )]
         );
 
         let write_value = "fn entry() { mmio_write<u32>(addr, a + b); }";
@@ -1427,10 +1550,11 @@ mod tests {
             parse_module(write_value).expect_err("unsupported value shape should fail");
         assert_eq!(
             err_write_value,
-            vec![
-                "unsupported mmio value operand 'a + b'; expected identifier or integer literal at byte 42"
-                    .to_string()
-            ]
+            vec![diagnostic_at(
+                write_value,
+                13,
+                "unsupported mmio value operand 'a + b'; expected identifier or integer literal",
+            )]
         );
     }
 
