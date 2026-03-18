@@ -34,6 +34,12 @@ pub struct CanonicalFixResult {
     pub rewrites: Vec<FrontendCanonicalRewrite>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanonicalFixPreviewResult {
+    pub would_change: bool,
+    pub rewrites: Vec<FrontendCanonicalRewrite>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendArtifactKind {
     Krbo,
@@ -205,8 +211,7 @@ pub fn canonical_fix_file_with_surface(
 ) -> Result<CanonicalFixResult, Vec<String>> {
     let src = std::fs::read_to_string(path)
         .map_err(|e| vec![format!("failed to read '{}': {}", path.display(), e)])?;
-    let ast = parse_module(&src)?;
-    let rewrites = frontend_canonical_rewrites(&ast, surface_profile);
+    let rewrites = canonical_rewrites_for_source_with_surface(&src, surface_profile)?;
 
     if rewrites.is_empty() {
         return Ok(CanonicalFixResult {
@@ -231,6 +236,27 @@ pub fn canonical_fix_file_with_surface(
         changed: true,
         rewrites,
     })
+}
+
+pub fn canonical_fix_preview_file_with_surface(
+    path: &Path,
+    surface_profile: SurfaceProfile,
+) -> Result<CanonicalFixPreviewResult, Vec<String>> {
+    let src = std::fs::read_to_string(path)
+        .map_err(|e| vec![format!("failed to read '{}': {}", path.display(), e)])?;
+    let rewrites = canonical_rewrites_for_source_with_surface(&src, surface_profile)?;
+    Ok(CanonicalFixPreviewResult {
+        would_change: !rewrites.is_empty(),
+        rewrites,
+    })
+}
+
+fn canonical_rewrites_for_source_with_surface(
+    src: &str,
+    surface_profile: SurfaceProfile,
+) -> Result<Vec<FrontendCanonicalRewrite>, Vec<String>> {
+    let ast = parse_module(src)?;
+    Ok(frontend_canonical_rewrites(&ast, surface_profile))
 }
 
 fn apply_canonical_rewrites(
