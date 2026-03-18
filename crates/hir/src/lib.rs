@@ -180,6 +180,16 @@ pub struct FrontendCanonicalFinding {
     pub migration_safe: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FrontendCanonicalEditPlanEntry {
+    pub function_name: String,
+    pub classification: AdaptiveAliasClassification,
+    pub surface_form: &'static str,
+    pub canonical_replacement: &'static str,
+    pub migration_safe: bool,
+    pub rewrite_intent: &'static str,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdaptiveFeatureProposalSummary {
     pub feature: &'static AdaptiveSurfaceFeature,
@@ -523,6 +533,24 @@ pub fn frontend_canonical_findings(
             surface_form: entry.feature.surface_form,
             canonical_replacement: entry.feature.canonical_replacement,
             migration_safe: entry.feature.migration_safe,
+        })
+        .collect()
+}
+
+pub fn frontend_canonical_edit_plan(
+    ast: &ModuleAst,
+    surface_profile: SurfaceProfile,
+) -> Vec<FrontendCanonicalEditPlanEntry> {
+    frontend_migration_preview(ast, surface_profile)
+        .into_iter()
+        .filter(|entry| entry.enabled_under_surface && entry.feature.migration_safe)
+        .map(|entry| FrontendCanonicalEditPlanEntry {
+            function_name: entry.function_name,
+            classification: entry.feature.classification,
+            surface_form: entry.feature.surface_form,
+            canonical_replacement: entry.feature.canonical_replacement,
+            migration_safe: entry.feature.migration_safe,
+            rewrite_intent: entry.feature.rewrite_intent,
         })
         .collect()
 }
@@ -2274,11 +2302,11 @@ mod tests {
         AdaptiveSurfaceFeature, CanonicalExecutableTerminator, SurfaceProfile,
         adaptive_feature_promotion_plan_with, adaptive_feature_promotion_readiness_with,
         adaptive_feature_proposal, adaptive_feature_proposals, adaptive_surface_features,
-        frontend_canonical_findings, frontend_migration_features_for_profile,
-        frontend_migration_preview, lower_canonical_executable_to_krir,
-        lower_to_canonical_executable_with_surface, lower_to_krir, lower_to_krir_with_surface,
-        surface_profile_enables_feature, validate_adaptive_feature_governance,
-        validate_adaptive_feature_governance_with,
+        frontend_canonical_edit_plan, frontend_canonical_findings,
+        frontend_migration_features_for_profile, frontend_migration_preview,
+        lower_canonical_executable_to_krir, lower_to_canonical_executable_with_surface,
+        lower_to_krir, lower_to_krir_with_surface, surface_profile_enables_feature,
+        validate_adaptive_feature_governance, validate_adaptive_feature_governance_with,
     };
     use parser::parse_module;
     use proptest::prelude::*;
@@ -3336,6 +3364,96 @@ mod tests {
                 })
                 .collect::<Vec<_>>(),
             vec![("worker", "thread_entry", "@ctx(thread)")]
+        );
+    }
+
+    #[test]
+    fn frontend_canonical_edit_plan_includes_safe_rewrite_metadata() {
+        let ast = parse_module(
+            "@alloc fn alloc_worker() { }\n@block fn block_worker() { }\n@irq fn irq_entry() { }\n@noirq fn noirq_worker() { }\n@preempt_off fn preempt_guarded() { }",
+        )
+        .expect("parse");
+        let edits = frontend_canonical_edit_plan(&ast, SurfaceProfile::Stable);
+        assert_eq!(
+            edits
+                .iter()
+                .map(|edit| (
+                    edit.function_name.as_str(),
+                    edit.classification.as_str(),
+                    edit.surface_form,
+                    edit.canonical_replacement,
+                    edit.migration_safe,
+                    edit.rewrite_intent,
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "alloc_worker",
+                    "compatibility_alias",
+                    "alloc",
+                    "@eff(alloc)",
+                    true,
+                    "Replace the attribute token `@alloc` with `@eff(alloc)`.",
+                ),
+                (
+                    "block_worker",
+                    "compatibility_alias",
+                    "block",
+                    "@eff(block)",
+                    true,
+                    "Replace the attribute token `@block` with `@eff(block)`.",
+                ),
+                (
+                    "irq_entry",
+                    "compatibility_alias",
+                    "irq",
+                    "@ctx(irq)",
+                    true,
+                    "Replace the attribute token `@irq` with `@ctx(irq)`.",
+                ),
+                (
+                    "noirq_worker",
+                    "compatibility_alias",
+                    "noirq",
+                    "@ctx(thread, boot)",
+                    true,
+                    "Replace the attribute token `@noirq` with `@ctx(thread, boot)`.",
+                ),
+                (
+                    "preempt_guarded",
+                    "compatibility_alias",
+                    "preempt_off",
+                    "@eff(preempt_off)",
+                    true,
+                    "Replace the attribute token `@preempt_off` with `@eff(preempt_off)`.",
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn frontend_canonical_edit_plan_ignores_disabled_aliases_under_stable_surface() {
+        let ast = parse_module("@irq_handler fn isr() { }\n@thread_entry fn worker() { }")
+            .expect("parse");
+        let edits = frontend_canonical_edit_plan(&ast, SurfaceProfile::Stable);
+        assert_eq!(
+            edits
+                .iter()
+                .map(|edit| {
+                    (
+                        edit.function_name.as_str(),
+                        edit.surface_form,
+                        edit.canonical_replacement,
+                        edit.rewrite_intent,
+                    )
+                })
+                .collect::<Vec<_>>(),
+            vec![(
+                "worker",
+                "thread_entry",
+                "@ctx(thread)",
+                "Replace the attribute token `@thread_entry` with `@ctx(thread)`.",
+            )]
         );
     }
 

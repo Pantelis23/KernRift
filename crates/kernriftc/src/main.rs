@@ -9,8 +9,8 @@ use emit::{
     emit_lockgraph_json, emit_report_json,
 };
 use kernriftc::{
-    SurfaceProfile, analyze, check_file, compile_file, frontend_migration_features_for_profile,
-    migrate_preview_file_with_surface,
+    SurfaceProfile, analyze, canonical_edit_plan_file_with_surface, check_file, compile_file,
+    frontend_migration_features_for_profile, migrate_preview_file_with_surface,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -77,7 +77,27 @@ struct FeaturesArgs {
 #[derive(Debug)]
 struct MigratePreviewArgs {
     surface: SurfaceProfile,
+    canonical_edits: bool,
     input_path: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MigratePreviewFormat {
+    Text,
+    Json,
+}
+
+impl MigratePreviewFormat {
+    fn parse(raw: &str) -> Result<Self, String> {
+        match raw {
+            "text" => Ok(Self::Text),
+            "json" => Ok(Self::Json),
+            other => Err(format!(
+                "invalid migrate-preview mode: unsupported --format '{}' (expected 'text' or 'json')",
+                other
+            )),
+        }
+    }
 }
 
 fn main() -> ExitCode {
@@ -343,6 +363,9 @@ fn parse_features_args(args: &[String]) -> Result<FeaturesArgs, String> {
 
 fn parse_migrate_preview_args(args: &[String]) -> Result<MigratePreviewArgs, String> {
     let mut surface = None::<SurfaceProfile>;
+    let mut canonical_edits = false;
+    let mut format = MigratePreviewFormat::Text;
+    let mut format_set = false;
     let mut input_path = None::<String>;
     let mut idx = 0usize;
     while idx < args.len() {
@@ -361,6 +384,28 @@ fn parse_migrate_preview_args(args: &[String]) -> Result<MigratePreviewArgs, Str
                     SurfaceProfile::parse(&args[idx])
                         .map_err(|err| format!("invalid migrate-preview mode: {}", err))?,
                 );
+            }
+            "--canonical-edits" => {
+                if canonical_edits {
+                    return Err(
+                        "invalid migrate-preview mode: duplicate --canonical-edits".to_string()
+                    );
+                }
+                canonical_edits = true;
+            }
+            "--format" => {
+                if format_set {
+                    return Err("invalid migrate-preview mode: duplicate --format".to_string());
+                }
+                idx += 1;
+                if idx >= args.len() {
+                    return Err(
+                        "invalid migrate-preview mode: --format requires 'text' or 'json'"
+                            .to_string(),
+                    );
+                }
+                format = MigratePreviewFormat::parse(&args[idx])?;
+                format_set = true;
             }
             other if other.starts_with('-') => {
                 return Err(format!(
@@ -388,8 +433,22 @@ fn parse_migrate_preview_args(args: &[String]) -> Result<MigratePreviewArgs, Str
         return Err("invalid migrate-preview mode: missing input file".to_string());
     };
 
+    if !canonical_edits && format_set {
+        return Err(
+            "invalid migrate-preview mode: --format is only supported with --canonical-edits"
+                .to_string(),
+        );
+    }
+
+    if canonical_edits && format != MigratePreviewFormat::Json {
+        return Err(
+            "invalid migrate-preview mode: --canonical-edits requires --format json".to_string(),
+        );
+    }
+
     Ok(MigratePreviewArgs {
         surface,
+        canonical_edits,
         input_path,
     })
 }
@@ -448,6 +507,10 @@ fn run_features(surface: SurfaceProfile) -> ExitCode {
 }
 
 fn run_migrate_preview(args: &MigratePreviewArgs) -> ExitCode {
+    if args.canonical_edits {
+        return run_canonical_edit_preview(args);
+    }
+
     let entries = match migrate_preview_file_with_surface(Path::new(&args.input_path), args.surface)
     {
         Ok(entries) => entries,
@@ -474,6 +537,73 @@ fn run_migrate_preview(args: &MigratePreviewArgs) -> ExitCode {
         println!("rewrite_intent: {}", entry.feature.rewrite_intent);
     }
     ExitCode::SUCCESS
+}
+
+#[derive(Debug, serde::Serialize)]
+struct CanonicalEditPlanJsonReport<'a> {
+    schema_version: &'static str,
+    surface: &'static str,
+    edits_count: usize,
+    edits: Vec<CanonicalEditJson<'a>>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct CanonicalEditJson<'a> {
+    function: &'a str,
+    classification: &'a str,
+    surface_form: String,
+    canonical_replacement: &'a str,
+    migration_safe: bool,
+    rewrite_intent: &'a str,
+}
+
+const CANONICAL_EDIT_PLAN_SCHEMA_VERSION: &str = "kernrift_canonical_edit_plan_v1";
+
+fn run_canonical_edit_preview(args: &MigratePreviewArgs) -> ExitCode {
+    let edits =
+        match canonical_edit_plan_file_with_surface(Path::new(&args.input_path), args.surface) {
+            Ok(edits) => edits,
+            Err(errs) => {
+                print_errors(&errs);
+                return ExitCode::from(1);
+            }
+        };
+
+    match emit_canonical_edit_plan_json(args.surface, &edits) {
+        Ok(text) => {
+            print!("{}", text);
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("failed to serialize canonical edit-plan JSON: {}", err);
+            ExitCode::from(EXIT_INVALID_INPUT)
+        }
+    }
+}
+
+fn emit_canonical_edit_plan_json(
+    surface: SurfaceProfile,
+    edits: &[kernriftc::FrontendCanonicalEditPlanEntry],
+) -> Result<String, serde_json::Error> {
+    let report = CanonicalEditPlanJsonReport {
+        schema_version: CANONICAL_EDIT_PLAN_SCHEMA_VERSION,
+        surface: surface.as_str(),
+        edits_count: edits.len(),
+        edits: edits
+            .iter()
+            .map(|edit| CanonicalEditJson {
+                function: &edit.function_name,
+                classification: edit.classification.as_str(),
+                surface_form: format!("@{}", edit.surface_form),
+                canonical_replacement: edit.canonical_replacement,
+                migration_safe: edit.migration_safe,
+                rewrite_intent: edit.rewrite_intent,
+            })
+            .collect(),
+    };
+    let mut text = serde_json::to_string_pretty(&report)?;
+    text.push('\n');
+    Ok(text)
 }
 
 fn run_selftest() -> ExitCode {
@@ -993,6 +1123,12 @@ fn print_usage() {
     eprintln!("  kernriftc proposals --promote <feature-id> --dry-run --diff");
     eprintln!("  kernriftc migrate-preview --surface stable <file.kr>");
     eprintln!("  kernriftc migrate-preview --surface experimental <file.kr>");
+    eprintln!(
+        "  kernriftc migrate-preview --canonical-edits --format json --surface stable <file.kr>"
+    );
+    eprintln!(
+        "  kernriftc migrate-preview --canonical-edits --format json --surface experimental <file.kr>"
+    );
     eprintln!("  kernriftc inspect --contracts <contracts.json>");
     eprintln!("  kernriftc inspect-report --report <verify-report.json>");
     eprintln!("  kernriftc inspect-artifact <artifact-path>");

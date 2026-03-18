@@ -280,6 +280,9 @@ Current JSON-capable command surfaces:
 - `kernriftc check --canonical --format json <file.kr>`
   - this emits structured canonical findings under
     `kernrift_canonical_findings_v1`
+- `kernriftc migrate-preview --canonical-edits --format json --surface stable <file.kr>`
+  - this emits a non-mutating canonical edit-plan preview under
+    `kernrift_canonical_edit_plan_v1`
 
 Transport invariants:
 
@@ -308,6 +311,7 @@ Contributor lock for future JSON-capable commands:
 | `kernriftc policy --format json --policy <policy.toml> --contracts <contracts.json>` | `--format json` | `kernrift_policy_violations_v1` | `stdout` only, empty `stderr`, trailing newline, `schema_version` present | `0` pass, `1` deny, `2` invalid input | pass and deny |
 | `kernriftc check --format json --policy <policy.toml> <file.kr>` | `--format json` | `kernrift_policy_violations_v1` on policy denial | `stdout` only, empty `stderr`, trailing newline, `schema_version` present when JSON is emitted | `1` on policy deny with JSON payload; other check failures remain command-specific | policy deny only today |
 | `kernriftc check --canonical --format json <file.kr>` | `--format json` | `kernrift_canonical_findings_v1` | `stdout` only, empty `stderr`, trailing newline, `schema_version` present | `0` when no canonical findings exist, `1` when findings are emitted, `2` invalid input | canonical pass and canonical-findings deny |
+| `kernriftc migrate-preview --canonical-edits --format json --surface stable <file.kr>` | `--format json` | `kernrift_canonical_edit_plan_v1` | `stdout` only, empty `stderr`, trailing newline, `schema_version` present | `0` on successful preview emission, `1` parse/frontend failure, `2` invalid input | canonical edit-plan preview only |
 
 ### Structured Output Test Coverage Matrix
 
@@ -320,6 +324,7 @@ Representative `cli_contract` coverage for the current JSON-capable commands:
 | `kernriftc policy --format json --policy <policy.toml> --contracts <contracts.json>` | yes: `policy_json_irq_raw_mmio_forbid_is_exact_and_structured`, `policy_json_irq_raw_mmio_allowlist_deep_path_is_exact_and_structured` | yes: `policy_json_schema_accepts_scalar_list_and_empty_list_evidence_variants` | yes: transport is asserted inside the exact JSON tests via `assert_json_transport` | n/a |
 | `kernriftc check --format json --policy <policy.toml> <file.kr>` | yes: check-policy JSON is byte-compared against standalone policy JSON in `check_json_policy_irq_raw_mmio_forbid_matches_policy_json_contract_exactly` and `check_json_policy_irq_raw_mmio_allowlist_helper_path_matches_policy_json_contract_exactly` | yes: same parity tests validate against `kernrift_policy_violations_v1` schema | yes: same parity tests assert stdout-only transport via `assert_json_transport` | yes: exact parity to `kernriftc policy --format json` on policy denial |
 | `kernriftc check --canonical --format json <file.kr>` | yes: `check_canonical_json_reports_legacy_unary_shorthands_exactly` and `check_canonical_json_reports_accepted_aliases_under_experimental_surface` | yes: `canonical_findings_json_schema_accepts_empty_and_nonempty_reports` plus the same exact JSON tests | yes: the exact JSON tests assert stdout-only transport via `assert_json_transport` | n/a |
+| `kernriftc migrate-preview --canonical-edits --format json --surface stable <file.kr>` | yes: `migrate_preview_canonical_edits_json_reports_legacy_unary_exactly` and `migrate_preview_canonical_edits_json_reports_experimental_aliases_exactly` | yes: `canonical_edit_plan_json_schema_accepts_empty_and_nonempty_reports` plus the same exact JSON tests | yes: the exact JSON tests assert stdout-only transport via `assert_json_transport` | n/a |
 
 ### New JSON Command Checklist
 
