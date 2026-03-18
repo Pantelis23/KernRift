@@ -26,6 +26,8 @@ const ARCHITECTURE_DOC_TEXT: &str = include_str!("../../../docs/ARCHITECTURE.md"
 const KERNEL_PROFILE_NOTES_TEXT: &str =
     include_str!("../../../docs/design/kernel_profile_pr1_notes.md");
 const KR0_KR3_PLAN_TEXT: &str = include_str!("../../../docs/KR0_KR3_PLAN.md");
+const KR0_AUTHORING_REFERENCE_TEXT: &str =
+    include_str!("../../../docs/spec/kr0-canonical-authoring-reference.md");
 const KRIR_SPEC_TEXT: &str = include_str!("../../../docs/spec/krir-v0.1.md");
 const KERNEL_PROFILE_SPEC_TEXT: &str = include_str!("../../../docs/spec/kernel_profile.md");
 
@@ -193,6 +195,50 @@ fn kr0_frontend_spec_declares_canonical_spellings_and_alias_policy() {
             "classify non-canonical spellings as `compatibility aliases` or `deprecated aliases`"
         ),
         "kr0 frontend spec must describe alias classification guidance"
+    );
+}
+
+#[test]
+fn kr0_authoring_reference_covers_canonical_templates() {
+    assert!(
+        KRIR_SPEC_TEXT.contains("docs/spec/kr0-canonical-authoring-reference.md"),
+        "krir spec must point readers at the canonical KR0 authoring reference"
+    );
+    for section in [
+        "## Canonical Function Forms",
+        "## Canonical Extern Form",
+        "## Canonical Context, Effect, and Capability Facts",
+        "## Canonical MMIO Declaration and Use",
+        "## Canonical Critical and Yield Usage",
+        "## Common Mistakes -> Canonical Replacement",
+        "## Alias Fixture Note",
+    ] {
+        assert!(
+            KR0_AUTHORING_REFERENCE_TEXT.contains(section),
+            "kr0 authoring reference must contain '{}'",
+            section
+        );
+    }
+    for template in [
+        "fn entry() { }",
+        "extern @ctx(thread, boot) @eff(block) @caps() fn sleep();",
+        "@module_caps(PhysMap);",
+        "mmio UART0 = 0x1000;",
+        "mmio_reg UART0.DR = 0x00 : u32 rw;",
+        "mmio_read<u32>(UART0 + 0x04);",
+        "raw_mmio_write<u32>(0x1014, x);",
+        "critical {",
+        "yieldpoint();",
+    ] {
+        assert!(
+            KR0_AUTHORING_REFERENCE_TEXT.contains(template),
+            "kr0 authoring reference must contain template '{}'",
+            template
+        );
+    }
+    assert!(
+        KR0_AUTHORING_REFERENCE_TEXT.contains("tests/living_compiler/*alias*.kr"),
+        "kr0 authoring reference must explain that alias fixtures are compatibility locks"
     );
 }
 
