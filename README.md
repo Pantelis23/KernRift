@@ -115,6 +115,9 @@ For the repo-owned full serialized low-memory validation path, use:
 
 - `bash tools/validation/full_serial.sh`
 
+This wrapper is intentionally split into explicit per-crate serialized test steps instead of
+`cargo test --workspace` so the local full-validation path stays usable on 32 GB class machines.
+
 Current acceptance smoke covers downstream artifact compatibility for KRBO/ELF/ASM export paths. Tool-dependent checks are optional and skip explicitly when required host tools are unavailable. Hosted runtime smoke is Linux x86_64 only and can skip when binary execution is unavailable (for example, `noexec` temporary directories).
 
 Useful acceptance toggles:

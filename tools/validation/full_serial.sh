@@ -12,10 +12,11 @@ run_step() {
 }
 
 run_step cargo fmt --all
-run_step cargo test --workspace -- --test-threads=1
+run_step cargo test -p parser -- --test-threads=1
+run_step cargo test -p hir -- --test-threads=1
+run_step cargo test -p krir -- --test-threads=1
 run_step cargo test -p kernriftc --test cli_contract -- --test-threads=1
 run_step cargo test -p kernriftc --test golden -- --test-threads=1
-run_step cargo test -p krir -- --test-threads=1
 run_step cargo test -p kernriftc -- --test-threads=1
 run_step cargo clippy --workspace --all-targets -- -D warnings
 run_step ./tools/acceptance/krir_v0_1.sh

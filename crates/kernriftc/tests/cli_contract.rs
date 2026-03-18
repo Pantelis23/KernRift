@@ -37,6 +37,7 @@ const KR0_AUTHORING_REFERENCE_TEXT: &str =
 const KRIR_SPEC_TEXT: &str = include_str!("../../../docs/spec/krir-v0.1.md");
 const KERNEL_PROFILE_SPEC_TEXT: &str = include_str!("../../../docs/spec/kernel_profile.md");
 const README_TEXT: &str = include_str!("../../../README.md");
+const FULL_SERIAL_WRAPPER_TEXT: &str = include_str!("../../../tools/validation/full_serial.sh");
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -177,6 +178,33 @@ fn readme_points_to_full_serial_low_memory_validation_wrapper() {
         README_TEXT.contains("bash tools/validation/full_serial.sh"),
         "README must point contributors at the repo-owned full serialized validation wrapper"
     );
+    assert!(
+        README_TEXT.contains("per-crate serialized test steps")
+            && README_TEXT.contains("32 GB class machines"),
+        "README must describe the full_serial wrapper as the safer local low-memory path"
+    );
+}
+
+#[test]
+fn full_serial_wrapper_avoids_workspace_test_aggregation() {
+    assert!(
+        !FULL_SERIAL_WRAPPER_TEXT.contains("cargo test --workspace -- --test-threads=1"),
+        "full_serial wrapper must not use the workspace-wide test aggregation step locally"
+    );
+    for step in [
+        "run_step cargo test -p parser -- --test-threads=1",
+        "run_step cargo test -p hir -- --test-threads=1",
+        "run_step cargo test -p krir -- --test-threads=1",
+        "run_step cargo test -p kernriftc --test cli_contract -- --test-threads=1",
+        "run_step cargo test -p kernriftc --test golden -- --test-threads=1",
+        "run_step cargo test -p kernriftc -- --test-threads=1",
+    ] {
+        assert!(
+            FULL_SERIAL_WRAPPER_TEXT.contains(step),
+            "full_serial wrapper must include '{}'",
+            step
+        );
+    }
 }
 
 #[test]
