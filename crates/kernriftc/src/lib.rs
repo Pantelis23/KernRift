@@ -1,4 +1,5 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use hir::{
     AdaptiveFeaturePromotionPlan, AdaptiveFeaturePromotionReadiness, AdaptiveFeatureProposal,
@@ -24,6 +25,12 @@ use krir::{
 use parser::parse_module;
 pub use passes::{AnalysisReport, NoYieldSpan};
 use passes::{CheckError, analyze_module, run_checks};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanonicalFixResult {
+    pub changed: bool,
+    pub rewrites: Vec<FrontendCanonicalRewrite>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendArtifactKind {
@@ -193,14 +200,17 @@ pub fn canonical_edit_plan_file_with_surface(
 pub fn canonical_fix_file_with_surface(
     path: &Path,
     surface_profile: SurfaceProfile,
-) -> Result<Vec<FrontendCanonicalRewrite>, Vec<String>> {
+) -> Result<CanonicalFixResult, Vec<String>> {
     let src = std::fs::read_to_string(path)
         .map_err(|e| vec![format!("failed to read '{}': {}", path.display(), e)])?;
     let ast = parse_module(&src)?;
     let rewrites = frontend_canonical_rewrites(&ast, surface_profile);
 
     if rewrites.is_empty() {
-        return Ok(Vec::new());
+        return Ok(CanonicalFixResult {
+            changed: false,
+            rewrites: Vec::new(),
+        });
     }
 
     let rewritten = apply_canonical_rewrites(&src, &rewrites)?;
@@ -213,10 +223,12 @@ pub fn canonical_fix_file_with_surface(
         )]);
     }
 
-    std::fs::write(path, rewritten)
-        .map_err(|e| vec![format!("failed to write '{}': {}", path.display(), e)])?;
+    write_atomic_file(path, &rewritten)?;
 
-    Ok(rewrites)
+    Ok(CanonicalFixResult {
+        changed: true,
+        rewrites,
+    })
 }
 
 fn apply_canonical_rewrites(
@@ -245,6 +257,47 @@ fn apply_canonical_rewrites(
     }
 
     Ok(rewritten)
+}
+
+fn write_atomic_file(path: &Path, contents: &str) -> Result<(), Vec<String>> {
+    let temp_path = atomic_temp_path_for(path);
+
+    if let Err(err) = std::fs::write(&temp_path, contents) {
+        return Err(vec![format!(
+            "failed to write temporary file '{}' before replacing '{}': {}",
+            temp_path.display(),
+            path.display(),
+            err
+        )]);
+    }
+
+    if let Err(err) = std::fs::rename(&temp_path, path) {
+        std::fs::remove_file(&temp_path).ok();
+        return Err(vec![format!(
+            "failed to atomically replace '{}' with '{}': {}",
+            path.display(),
+            temp_path.display(),
+            err
+        )]);
+    }
+
+    Ok(())
+}
+
+fn atomic_temp_path_for(path: &Path) -> PathBuf {
+    let parent = path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("kernrift-fix-target");
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    parent.join(format!(".{}.kernrift-fix-{}.tmp", file_name, timestamp))
 }
 
 fn format_check_errors(mut errs: Vec<CheckError>) -> Vec<String> {

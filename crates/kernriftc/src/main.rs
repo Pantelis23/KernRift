@@ -9,7 +9,7 @@ use emit::{
     emit_lockgraph_json, emit_report_json,
 };
 use kernriftc::{
-    SurfaceProfile, analyze, canonical_edit_plan_file_with_surface,
+    CanonicalFixResult, SurfaceProfile, analyze, canonical_edit_plan_file_with_surface,
     canonical_fix_file_with_surface, check_file, compile_file,
     frontend_migration_features_for_profile, migrate_preview_file_with_surface,
 };
@@ -87,6 +87,7 @@ struct FixArgs {
     surface: SurfaceProfile,
     canonical: bool,
     write: bool,
+    format: FixFormat,
     input_path: String,
 }
 
@@ -103,6 +104,25 @@ impl MigratePreviewFormat {
             "json" => Ok(Self::Json),
             other => Err(format!(
                 "invalid migrate-preview mode: unsupported --format '{}' (expected 'text' or 'json')",
+                other
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FixFormat {
+    Text,
+    Json,
+}
+
+impl FixFormat {
+    fn parse(raw: &str) -> Result<Self, String> {
+        match raw {
+            "text" => Ok(Self::Text),
+            "json" => Ok(Self::Json),
+            other => Err(format!(
+                "invalid fix mode: unsupported --format '{}' (expected 'text' or 'json')",
                 other
             )),
         }
@@ -475,6 +495,8 @@ fn parse_fix_args(args: &[String]) -> Result<FixArgs, String> {
     let mut surface_set = false;
     let mut canonical = false;
     let mut write = false;
+    let mut format = FixFormat::Text;
+    let mut format_set = false;
     let mut input_path = None::<String>;
     let mut idx = 0usize;
 
@@ -491,6 +513,17 @@ fn parse_fix_args(args: &[String]) -> Result<FixArgs, String> {
                 surface = SurfaceProfile::parse(&args[idx])
                     .map_err(|err| format!("invalid fix mode: {}", err))?;
                 surface_set = true;
+            }
+            "--format" => {
+                if format_set {
+                    return Err("invalid fix mode: duplicate --format".to_string());
+                }
+                idx += 1;
+                if idx >= args.len() {
+                    return Err("invalid fix mode: --format requires 'text' or 'json'".to_string());
+                }
+                format = FixFormat::parse(&args[idx])?;
+                format_set = true;
             }
             "--canonical" => {
                 if canonical {
@@ -532,6 +565,7 @@ fn parse_fix_args(args: &[String]) -> Result<FixArgs, String> {
         surface,
         canonical,
         write,
+        format,
         input_path,
     })
 }
@@ -641,6 +675,7 @@ struct CanonicalEditJson<'a> {
 }
 
 const CANONICAL_EDIT_PLAN_SCHEMA_VERSION: &str = "kernrift_canonical_edit_plan_v1";
+const CANONICAL_FIX_SCHEMA_VERSION: &str = "kernrift_canonical_fix_result_v1";
 
 fn run_canonical_edit_preview(args: &MigratePreviewArgs) -> ExitCode {
     let edits =
@@ -667,25 +702,37 @@ fn run_canonical_edit_preview(args: &MigratePreviewArgs) -> ExitCode {
 fn run_fix(args: &FixArgs) -> ExitCode {
     debug_assert!(args.canonical && args.write);
 
-    let rewrites = match canonical_fix_file_with_surface(Path::new(&args.input_path), args.surface)
-    {
-        Ok(rewrites) => rewrites,
+    let result = match canonical_fix_file_with_surface(Path::new(&args.input_path), args.surface) {
+        Ok(result) => result,
         Err(errs) => {
             print_errors(&errs);
             return ExitCode::from(1);
         }
     };
 
-    println!("surface: {}", args.surface.as_str());
-    println!("rewrites_applied: {}", rewrites.len());
-    println!("file: {}", args.input_path);
-    for rewrite in rewrites {
-        println!("function: {}", rewrite.function_name);
-        println!("surface_form: @{}", rewrite.surface_form);
-        println!("canonical_replacement: {}", rewrite.canonical_replacement);
+    match args.format {
+        FixFormat::Text => {
+            println!("surface: {}", args.surface.as_str());
+            println!("rewrites_applied: {}", result.rewrites.len());
+            println!("file: {}", args.input_path);
+            for rewrite in result.rewrites {
+                println!("function: {}", rewrite.function_name);
+                println!("surface_form: @{}", rewrite.surface_form);
+                println!("canonical_replacement: {}", rewrite.canonical_replacement);
+            }
+            ExitCode::SUCCESS
+        }
+        FixFormat::Json => match emit_canonical_fix_json(args.surface, &args.input_path, &result) {
+            Ok(text) => {
+                print!("{}", text);
+                ExitCode::SUCCESS
+            }
+            Err(err) => {
+                eprintln!("failed to serialize canonical fix JSON: {}", err);
+                ExitCode::from(EXIT_INVALID_INPUT)
+            }
+        },
     }
-
-    ExitCode::SUCCESS
 }
 
 fn emit_canonical_edit_plan_json(
@@ -705,6 +752,53 @@ fn emit_canonical_edit_plan_json(
                 canonical_replacement: edit.canonical_replacement,
                 migration_safe: edit.migration_safe,
                 rewrite_intent: edit.rewrite_intent,
+            })
+            .collect(),
+    };
+    let mut text = serde_json::to_string_pretty(&report)?;
+    text.push('\n');
+    Ok(text)
+}
+
+#[derive(Debug, serde::Serialize)]
+struct CanonicalFixJsonReport<'a> {
+    schema_version: &'static str,
+    surface: &'static str,
+    file: &'a str,
+    rewrites_applied: usize,
+    changed: bool,
+    rewrites: Vec<CanonicalFixJson<'a>>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct CanonicalFixJson<'a> {
+    function: &'a str,
+    classification: &'a str,
+    surface_form: String,
+    canonical_replacement: &'a str,
+    migration_safe: bool,
+}
+
+fn emit_canonical_fix_json(
+    surface: SurfaceProfile,
+    file: &str,
+    result: &CanonicalFixResult,
+) -> Result<String, serde_json::Error> {
+    let report = CanonicalFixJsonReport {
+        schema_version: CANONICAL_FIX_SCHEMA_VERSION,
+        surface: surface.as_str(),
+        file,
+        rewrites_applied: result.rewrites.len(),
+        changed: result.changed,
+        rewrites: result
+            .rewrites
+            .iter()
+            .map(|rewrite| CanonicalFixJson {
+                function: &rewrite.function_name,
+                classification: rewrite.classification.as_str(),
+                surface_form: format!("@{}", rewrite.surface_form),
+                canonical_replacement: rewrite.canonical_replacement,
+                migration_safe: rewrite.migration_safe,
             })
             .collect(),
     };
@@ -1238,6 +1332,7 @@ fn print_usage() {
     );
     eprintln!("  kernriftc fix --canonical --write <file.kr>");
     eprintln!("  kernriftc fix --canonical --write --surface experimental <file.kr>");
+    eprintln!("  kernriftc fix --canonical --write --format json <file.kr>");
     eprintln!("  kernriftc inspect --contracts <contracts.json>");
     eprintln!("  kernriftc inspect-report --report <verify-report.json>");
     eprintln!("  kernriftc inspect-artifact <artifact-path>");

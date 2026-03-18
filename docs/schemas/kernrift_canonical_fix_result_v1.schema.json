@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kernrift.dev/schemas/kernrift_canonical_fix_result_v1.schema.json",
+  "title": "kernrift canonical fix result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "surface",
+    "file",
+    "rewrites_applied",
+    "changed",
+    "rewrites"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "kernrift_canonical_fix_result_v1"
+    },
+    "surface": {
+      "enum": ["stable", "experimental"]
+    },
+    "file": {
+      "type": "string",
+      "minLength": 1
+    },
+    "rewrites_applied": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "changed": {
+      "type": "boolean"
+    },
+    "rewrites": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "function",
+          "classification",
+          "surface_form",
+          "canonical_replacement",
+          "migration_safe"
+        ],
+        "properties": {
+          "function": {
+            "type": "string",
+            "minLength": 1
+          },
+          "classification": {
+            "enum": ["compatibility_alias", "deprecated_alias"]
+          },
+          "surface_form": {
+            "type": "string",
+            "pattern": "^@"
+          },
+          "canonical_replacement": {
+            "type": "string",
+            "minLength": 1
+          },
+          "migration_safe": {
+            "type": "boolean"
+          }
+        }
+      }
+    }
+  }
+}
