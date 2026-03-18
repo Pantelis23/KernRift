@@ -25,6 +25,12 @@ Highest-friction areas today:
 - MMIO declaration and operand ceremony, which is intentionally explicit but still hard to memorize
 - deterministic diagnostics that still lean on byte offsets and rarely suggest the canonical replacement
 
+Current canonicalization direction for KR0 frontend syntax:
+
+- prefer `@ctx(...)`, `@eff(...)`, `@caps(...)`, `@module_caps(...)`, and `critical { ... }`
+- keep accepted aliases as compatibility spellings only
+- make diagnostics explicitly steer users back to the canonical spelling
+
 ## Syntax Inventory
 
 | Family | Current surface | Classification | Ergonomics read |

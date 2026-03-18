@@ -579,13 +579,13 @@ fn selftest_exact_diagnostics() -> Result<(), String> {
         (
             "tests/must_fail/extern_missing_eff.kr",
             &[
-                "extern 'sleep' must declare @eff(...) facts explicitly at 2:1\n  2 | extern @ctx(thread) @caps() fn sleep();\n  = help: use extern @ctx(...) @eff(...) @caps() fn sleep();",
+                "extern 'sleep' must declare @eff(...) facts explicitly at 2:1\n  2 | extern @ctx(thread) @caps() fn sleep();\n  = help: use the canonical extern skeleton: extern @ctx(...) @eff(...) @caps() fn sleep();",
             ],
         ),
         (
             "tests/must_fail/extern_missing_caps.kr",
             &[
-                "EXTERN_CAPS_CONTRACT_REQUIRED: extern 'sleep' must declare @caps(...) facts explicitly at 1:1\n  1 | extern @ctx(thread) @eff(block) fn sleep();\n  = help: use extern @ctx(...) @eff(...) @caps() fn sleep();",
+                "EXTERN_CAPS_CONTRACT_REQUIRED: extern 'sleep' must declare @caps(...) facts explicitly at 1:1\n  1 | extern @ctx(thread) @eff(block) fn sleep();\n  = help: use the canonical extern skeleton: extern @ctx(...) @eff(...) @caps() fn sleep();",
             ],
         ),
         (

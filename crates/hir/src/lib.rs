@@ -746,8 +746,15 @@ fn format_attr_diagnostic(
     format_source_diagnostic(&attr.source, message, help)
 }
 
+fn canonical_spelling_help(spelling: &str) -> String {
+    format!("did you mean the canonical spelling {}?", spelling)
+}
+
 fn extern_template_help(name: &str) -> String {
-    format!("use extern @ctx(...) @eff(...) @caps() fn {}();", name)
+    format!(
+        "use the canonical extern skeleton: extern @ctx(...) @eff(...) @caps() fn {}();",
+        name
+    )
 }
 
 pub fn irq_handler_alias_proposal() -> AdaptiveFeatureProposal {
@@ -1026,7 +1033,7 @@ pub fn lower_to_krir_with_surface(
             if let KrirOp::Call { callee } = op {
                 if !names.contains(callee) {
                     errors.push(format!(
-                        "undefined symbol '{}': add extern declaration with facts (@ctx/@eff/@caps)",
+                        "undefined symbol '{}': add extern declaration with canonical facts (@ctx/@eff/@caps)",
                         callee
                     ));
                     continue;
@@ -1622,7 +1629,7 @@ fn normalize_function_facts(
                             item,
                             attr,
                             &feature_unavailability_error(surface_profile, feature, &item.name),
-                            Some(&format!("did you mean {}?", feature.canonical_replacement)),
+                            Some(&canonical_spelling_help(feature.canonical_replacement)),
                         ));
                         continue;
                     }
@@ -1769,7 +1776,7 @@ fn lower_stmts_to_canonical_executable(
                     });
                 } else if !all_names.contains(callee) {
                     errors.push(format!(
-                        "undefined symbol '{}': add extern declaration with facts (@ctx/@eff/@caps)",
+                        "undefined symbol '{}': add extern declaration with canonical facts (@ctx/@eff/@caps)",
                         callee
                     ));
                 } else {
@@ -2057,7 +2064,7 @@ mod tests {
         assert_eq!(
             errs,
             vec![
-                "surface feature '@irq_handler' requires --surface experimental for 'isr' at 1:1\n  1 | @irq_handler fn isr() { }\n  = help: did you mean @ctx(irq)?"
+                "surface feature '@irq_handler' requires --surface experimental for 'isr' at 1:1\n  1 | @irq_handler fn isr() { }\n  = help: did you mean the canonical spelling @ctx(irq)?"
             ]
         );
     }
@@ -2605,7 +2612,9 @@ mod tests {
             .expect_err("undeclared call target must be rejected");
         assert_eq!(
             errs,
-            vec!["undefined symbol 'missing': add extern declaration with facts (@ctx/@eff/@caps)"]
+            vec![
+                "undefined symbol 'missing': add extern declaration with canonical facts (@ctx/@eff/@caps)"
+            ]
         );
     }
 
@@ -2838,7 +2847,7 @@ mod tests {
     fn additional_adaptive_aliases_are_rejected_in_stable_surface() {
         let cases = [(
             "@may_block fn worker() { }",
-            "surface feature '@may_block' requires --surface experimental for 'worker' at 1:1\n  1 | @may_block fn worker() { }\n  = help: did you mean @eff(block)?",
+            "surface feature '@may_block' requires --surface experimental for 'worker' at 1:1\n  1 | @may_block fn worker() { }\n  = help: did you mean the canonical spelling @eff(block)?",
         )];
 
         for (src, expected) in cases {
@@ -2865,13 +2874,13 @@ mod tests {
         assert_eq!(
             stable_errs,
             vec![
-                "surface feature '@irq_legacy' is deprecated and unavailable under --surface stable for 'legacy_isr' at 1:1\n  1 | @irq_legacy fn legacy_isr() { }\n  = help: did you mean @ctx(irq)?"
+                "surface feature '@irq_legacy' is deprecated and unavailable under --surface stable for 'legacy_isr' at 1:1\n  1 | @irq_legacy fn legacy_isr() { }\n  = help: did you mean the canonical spelling @ctx(irq)?"
             ]
         );
         assert_eq!(
             experimental_errs,
             vec![
-                "surface feature '@irq_legacy' is deprecated and unavailable under --surface experimental for 'legacy_isr' at 1:1\n  1 | @irq_legacy fn legacy_isr() { }\n  = help: did you mean @ctx(irq)?"
+                "surface feature '@irq_legacy' is deprecated and unavailable under --surface experimental for 'legacy_isr' at 1:1\n  1 | @irq_legacy fn legacy_isr() { }\n  = help: did you mean the canonical spelling @ctx(irq)?"
             ]
         );
     }

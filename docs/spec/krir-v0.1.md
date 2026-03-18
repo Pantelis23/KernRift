@@ -82,6 +82,34 @@ Notes:
   - `mmio_read()` / `mmio_write()` / `raw_mmio_read()` / `raw_mmio_write()` are rejected as legacy non-addressful forms
   - otherwise `call(callee)`.
 
+### Canonical KR0 Frontend Spellings
+
+This spec treats the following spellings as canonical for frontend-facing KR0 code:
+
+- `@ctx(...)`
+- `@eff(...)`
+- `@caps(...)`
+- `@module_caps(...)`
+- `critical { ... }`
+
+This spec uses those spellings by default in examples and guidance, even when a compatibility alias is still accepted by the compiler.
+
+Compatibility aliases that remain accepted today are non-canonical:
+
+| Compatibility surface | Canonical spelling | Status |
+|---|---|---|
+| `@thread_entry` | `@ctx(thread)` | accepted stable alias |
+| `@irq_handler` | `@ctx(irq)` | accepted experimental alias |
+| `@may_block` | `@eff(block)` | accepted experimental alias |
+| `@irq_legacy` | `@ctx(irq)` | deprecated alias; diagnostics should steer users back to the canonical spelling |
+
+Additional frontend conventions:
+
+- `@critical` is a whole-function attribute; `critical { ... }` is the canonical block-scoped critical-region form.
+- `extern` declarations should use the canonical fact skeleton:
+  - `extern @ctx(...) @eff(...) @caps() fn name();`
+- Compatibility fixtures under `tests/living_compiler/*alias*.kr` exist to lock accepted alias behavior; they are not the recommended spelling for new code.
+
 ## KRIR v0.1 Semantics
 
 ### Module semantics

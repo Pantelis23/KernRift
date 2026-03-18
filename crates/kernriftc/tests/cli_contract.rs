@@ -147,6 +147,43 @@ fn structured_output_new_json_command_checklist_is_present() {
     }
 }
 
+#[test]
+fn kr0_frontend_spec_declares_canonical_spellings_and_alias_policy() {
+    assert!(
+        KRIR_SPEC_TEXT.contains("### Canonical KR0 Frontend Spellings"),
+        "kr0 frontend spec must declare a canonical spelling section"
+    );
+    for spelling in [
+        "`@ctx(...)`",
+        "`@eff(...)`",
+        "`@caps(...)`",
+        "`@module_caps(...)`",
+        "`critical { ... }`",
+    ] {
+        assert!(
+            KRIR_SPEC_TEXT.contains(spelling),
+            "kr0 frontend spec must list canonical spelling '{}'",
+            spelling
+        );
+    }
+    for alias in [
+        "`@thread_entry`",
+        "`@irq_handler`",
+        "`@may_block`",
+        "`@irq_legacy`",
+    ] {
+        assert!(
+            KRIR_SPEC_TEXT.contains(alias),
+            "kr0 frontend spec must classify compatibility alias '{}'",
+            alias
+        );
+    }
+    assert!(
+        KRIR_SPEC_TEXT.contains("Compatibility fixtures under `tests/living_compiler/*alias*.kr`"),
+        "kr0 frontend spec must explain that alias fixtures are compatibility locks"
+    );
+}
+
 fn object_keys(value: &Value) -> BTreeSet<String> {
     value
         .as_object()
@@ -3680,7 +3717,7 @@ fn check_extern_missing_eff_includes_location_and_valid_template() {
         vec![
             "extern 'sleep' must declare @eff(...) facts explicitly at 2:1",
             "  2 | extern @ctx(thread) @caps() fn sleep();",
-            "  = help: use extern @ctx(...) @eff(...) @caps() fn sleep();",
+            "  = help: use the canonical extern skeleton: extern @ctx(...) @eff(...) @caps() fn sleep();",
         ]
     );
 }
@@ -3706,7 +3743,7 @@ fn check_surface_stable_rejects_irq_handler_alias() {
         vec![
             "surface feature '@irq_handler' requires --surface experimental for 'isr' at 1:1",
             "  1 | @irq_handler",
-            "  = help: did you mean @ctx(irq)?",
+            "  = help: did you mean the canonical spelling @ctx(irq)?",
         ]
     );
 }
@@ -3855,7 +3892,7 @@ fn check_surface_stable_rejects_may_block_alias() {
         vec![
             "surface feature '@may_block' requires --surface experimental for 'worker' at 1:1",
             "  1 | @may_block",
-            "  = help: did you mean @eff(block)?",
+            "  = help: did you mean the canonical spelling @eff(block)?",
         ]
     );
 }
@@ -3898,7 +3935,7 @@ fn check_surface_stable_rejects_deprecated_irq_legacy_alias() {
         vec![
             "surface feature '@irq_legacy' is deprecated and unavailable under --surface stable for 'legacy_isr' at 1:1",
             "  1 | @irq_legacy",
-            "  = help: did you mean @ctx(irq)?",
+            "  = help: did you mean the canonical spelling @ctx(irq)?",
         ]
     );
 }
@@ -3924,7 +3961,7 @@ fn check_surface_experimental_rejects_deprecated_irq_legacy_alias() {
         vec![
             "surface feature '@irq_legacy' is deprecated and unavailable under --surface experimental for 'legacy_isr' at 1:1",
             "  1 | @irq_legacy",
-            "  = help: did you mean @ctx(irq)?",
+            "  = help: did you mean the canonical spelling @ctx(irq)?",
         ]
     );
 }
