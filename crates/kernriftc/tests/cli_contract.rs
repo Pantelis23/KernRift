@@ -188,6 +188,12 @@ fn kr0_frontend_spec_declares_canonical_spellings_and_alias_policy() {
         KRIR_SPEC_TEXT.contains("Compatibility fixtures under `tests/living_compiler/*alias*.kr`"),
         "kr0 frontend spec must explain that alias fixtures are compatibility locks"
     );
+    assert!(
+        KRIR_SPEC_TEXT.contains(
+            "classify non-canonical spellings as `compatibility aliases` or `deprecated aliases`"
+        ),
+        "kr0 frontend spec must describe alias classification guidance"
+    );
 }
 
 #[test]
@@ -3794,9 +3800,9 @@ fn check_surface_stable_rejects_irq_handler_alias() {
     assert_eq!(
         stderr.lines().collect::<Vec<_>>(),
         vec![
-            "surface feature '@irq_handler' requires --surface experimental for 'isr' at 1:1",
+            "surface feature '@irq_handler' is a compatibility alias and requires --surface experimental for 'isr' at 1:1",
             "  1 | @irq_handler",
-            "  = help: did you mean the canonical spelling @ctx(irq)?",
+            "  = help: did you mean the canonical spelling @ctx(irq)? this compatibility alias is kept only for migration guidance.",
         ]
     );
 }
@@ -3943,9 +3949,9 @@ fn check_surface_stable_rejects_may_block_alias() {
     assert_eq!(
         stderr.lines().collect::<Vec<_>>(),
         vec![
-            "surface feature '@may_block' requires --surface experimental for 'worker' at 1:1",
+            "surface feature '@may_block' is a compatibility alias and requires --surface experimental for 'worker' at 1:1",
             "  1 | @may_block",
-            "  = help: did you mean the canonical spelling @eff(block)?",
+            "  = help: did you mean the canonical spelling @eff(block)? this compatibility alias is kept only for migration guidance.",
         ]
     );
 }
@@ -3986,9 +3992,9 @@ fn check_surface_stable_rejects_deprecated_irq_legacy_alias() {
     assert_eq!(
         stderr.lines().collect::<Vec<_>>(),
         vec![
-            "surface feature '@irq_legacy' is deprecated and unavailable under --surface stable for 'legacy_isr' at 1:1",
+            "surface feature '@irq_legacy' is a deprecated alias and is unavailable under --surface stable for 'legacy_isr' at 1:1",
             "  1 | @irq_legacy",
-            "  = help: did you mean the canonical spelling @ctx(irq)?",
+            "  = help: did you mean the canonical spelling @ctx(irq)? this deprecated alias is kept only for migration guidance.",
         ]
     );
 }
@@ -4012,9 +4018,9 @@ fn check_surface_experimental_rejects_deprecated_irq_legacy_alias() {
     assert_eq!(
         stderr.lines().collect::<Vec<_>>(),
         vec![
-            "surface feature '@irq_legacy' is deprecated and unavailable under --surface experimental for 'legacy_isr' at 1:1",
+            "surface feature '@irq_legacy' is a deprecated alias and is unavailable under --surface experimental for 'legacy_isr' at 1:1",
             "  1 | @irq_legacy",
-            "  = help: did you mean the canonical spelling @ctx(irq)?",
+            "  = help: did you mean the canonical spelling @ctx(irq)? this deprecated alias is kept only for migration guidance.",
         ]
     );
 }
@@ -4036,6 +4042,7 @@ fn features_surface_stable_output_is_exact() {
             "features: 1",
             "feature: thread_entry_alias",
             "status: stable",
+            "classification: compatibility_alias",
             "surface_form: @thread_entry",
             "lowering_target: @ctx(thread)",
             "proposal_id: thread_entry_alias",
@@ -4063,6 +4070,7 @@ fn features_surface_experimental_output_is_exact() {
             "features: 3",
             "feature: irq_handler_alias",
             "status: experimental",
+            "classification: compatibility_alias",
             "surface_form: @irq_handler",
             "lowering_target: @ctx(irq)",
             "proposal_id: irq_handler_alias",
@@ -4071,6 +4079,7 @@ fn features_surface_experimental_output_is_exact() {
             "rewrite_intent: Replace the attribute token `@irq_handler` with `@ctx(irq)`.",
             "feature: may_block_alias",
             "status: experimental",
+            "classification: compatibility_alias",
             "surface_form: @may_block",
             "lowering_target: @eff(block)",
             "proposal_id: may_block_alias",
@@ -4079,6 +4088,7 @@ fn features_surface_experimental_output_is_exact() {
             "rewrite_intent: Replace the attribute token `@may_block` with `@eff(block)`.",
             "feature: thread_entry_alias",
             "status: stable",
+            "classification: compatibility_alias",
             "surface_form: @thread_entry",
             "lowering_target: @ctx(thread)",
             "proposal_id: thread_entry_alias",
@@ -5109,6 +5119,7 @@ fn migrate_preview_surface_stable_output_is_exact() {
             "surface_form: @may_block",
             "feature: may_block_alias",
             "status: experimental",
+            "classification: compatibility_alias",
             "enabled_under_surface: false",
             "canonical_replacement: @eff(block)",
             "migration_safe: true",
@@ -5117,6 +5128,7 @@ fn migrate_preview_surface_stable_output_is_exact() {
             "surface_form: @irq_handler",
             "feature: irq_handler_alias",
             "status: experimental",
+            "classification: compatibility_alias",
             "enabled_under_surface: false",
             "canonical_replacement: @ctx(irq)",
             "migration_safe: true",
@@ -5125,6 +5137,7 @@ fn migrate_preview_surface_stable_output_is_exact() {
             "surface_form: @irq_legacy",
             "feature: irq_legacy_alias",
             "status: deprecated",
+            "classification: deprecated_alias",
             "enabled_under_surface: false",
             "canonical_replacement: @ctx(irq)",
             "migration_safe: true",
@@ -5133,6 +5146,7 @@ fn migrate_preview_surface_stable_output_is_exact() {
             "surface_form: @thread_entry",
             "feature: thread_entry_alias",
             "status: stable",
+            "classification: compatibility_alias",
             "enabled_under_surface: true",
             "canonical_replacement: @ctx(thread)",
             "migration_safe: true",
@@ -5165,6 +5179,7 @@ fn migrate_preview_surface_experimental_output_is_exact() {
             "surface_form: @may_block",
             "feature: may_block_alias",
             "status: experimental",
+            "classification: compatibility_alias",
             "enabled_under_surface: true",
             "canonical_replacement: @eff(block)",
             "migration_safe: true",
@@ -5173,6 +5188,7 @@ fn migrate_preview_surface_experimental_output_is_exact() {
             "surface_form: @irq_handler",
             "feature: irq_handler_alias",
             "status: experimental",
+            "classification: compatibility_alias",
             "enabled_under_surface: true",
             "canonical_replacement: @ctx(irq)",
             "migration_safe: true",
@@ -5181,6 +5197,7 @@ fn migrate_preview_surface_experimental_output_is_exact() {
             "surface_form: @irq_legacy",
             "feature: irq_legacy_alias",
             "status: deprecated",
+            "classification: deprecated_alias",
             "enabled_under_surface: false",
             "canonical_replacement: @ctx(irq)",
             "migration_safe: true",
@@ -5189,6 +5206,7 @@ fn migrate_preview_surface_experimental_output_is_exact() {
             "surface_form: @thread_entry",
             "feature: thread_entry_alias",
             "status: stable",
+            "classification: compatibility_alias",
             "enabled_under_surface: true",
             "canonical_replacement: @ctx(thread)",
             "migration_safe: true",

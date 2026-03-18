@@ -436,6 +436,10 @@ fn run_features(surface: SurfaceProfile) -> ExitCode {
     for feature in features {
         println!("feature: {}", feature.id);
         println!("status: {}", feature.status.as_str());
+        println!(
+            "classification: {}",
+            feature.alias_classification().as_str()
+        );
         println!("surface_form: @{}", feature.surface_form);
         println!("lowering_target: {}", feature.lowering_target);
         println!("proposal_id: {}", feature.proposal_id);
@@ -463,6 +467,10 @@ fn run_migrate_preview(args: &MigratePreviewArgs) -> ExitCode {
         println!("surface_form: @{}", entry.feature.surface_form);
         println!("feature: {}", entry.feature.id);
         println!("status: {}", entry.feature.status.as_str());
+        println!(
+            "classification: {}",
+            entry.feature.alias_classification().as_str()
+        );
         println!("enabled_under_surface: {}", entry.enabled_under_surface);
         println!(
             "canonical_replacement: {}",

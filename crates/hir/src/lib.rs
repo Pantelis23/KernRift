@@ -62,6 +62,28 @@ impl AdaptiveFeatureStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdaptiveAliasClassification {
+    CompatibilityAlias,
+    DeprecatedAlias,
+}
+
+impl AdaptiveAliasClassification {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CompatibilityAlias => "compatibility_alias",
+            Self::DeprecatedAlias => "deprecated_alias",
+        }
+    }
+
+    pub fn diagnostic_label(self) -> &'static str {
+        match self {
+            Self::CompatibilityAlias => "compatibility alias",
+            Self::DeprecatedAlias => "deprecated alias",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct AdaptiveSurfaceFeature {
     pub id: &'static str,
@@ -78,6 +100,17 @@ pub struct AdaptiveSurfaceFeature {
     pub surface_profile_gate: SurfaceProfile,
     #[serde(skip_serializing)]
     lowering_rule: AdaptiveLoweringRule,
+}
+
+impl AdaptiveSurfaceFeature {
+    pub fn alias_classification(self) -> AdaptiveAliasClassification {
+        match self.status {
+            AdaptiveFeatureStatus::Deprecated => AdaptiveAliasClassification::DeprecatedAlias,
+            AdaptiveFeatureStatus::Experimental | AdaptiveFeatureStatus::Stable => {
+                AdaptiveAliasClassification::CompatibilityAlias
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -709,11 +742,11 @@ fn feature_unavailability_error(
 ) -> String {
     match feature.status {
         AdaptiveFeatureStatus::Experimental => format!(
-            "surface feature '@{}' requires --surface experimental for '{}'",
+            "surface feature '@{}' is a compatibility alias and requires --surface experimental for '{}'",
             feature.surface_form, function_name
         ),
         AdaptiveFeatureStatus::Deprecated => format!(
-            "surface feature '@{}' is deprecated and unavailable under --surface {} for '{}'",
+            "surface feature '@{}' is a deprecated alias and is unavailable under --surface {} for '{}'",
             feature.surface_form,
             match surface_profile {
                 SurfaceProfile::Stable => "stable",
@@ -722,7 +755,7 @@ fn feature_unavailability_error(
             function_name
         ),
         AdaptiveFeatureStatus::Stable => format!(
-            "surface feature '@{}' is unavailable under --surface {} for '{}'",
+            "surface feature '@{}' is a compatibility alias and is unavailable under --surface {} for '{}'",
             feature.surface_form,
             match surface_profile {
                 SurfaceProfile::Stable => "stable",
@@ -746,8 +779,12 @@ fn format_attr_diagnostic(
     format_source_diagnostic(&attr.source, message, help)
 }
 
-fn canonical_spelling_help(spelling: &str) -> String {
-    format!("did you mean the canonical spelling {}?", spelling)
+fn canonical_spelling_help(spelling: &str, classification: AdaptiveAliasClassification) -> String {
+    format!(
+        "did you mean the canonical spelling {}? this {} is kept only for migration guidance.",
+        spelling,
+        classification.diagnostic_label()
+    )
 }
 
 fn extern_template_help(name: &str) -> String {
@@ -1629,7 +1666,10 @@ fn normalize_function_facts(
                             item,
                             attr,
                             &feature_unavailability_error(surface_profile, feature, &item.name),
-                            Some(&canonical_spelling_help(feature.canonical_replacement)),
+                            Some(&canonical_spelling_help(
+                                feature.canonical_replacement,
+                                feature.alias_classification(),
+                            )),
                         ));
                         continue;
                     }
@@ -2064,7 +2104,7 @@ mod tests {
         assert_eq!(
             errs,
             vec![
-                "surface feature '@irq_handler' requires --surface experimental for 'isr' at 1:1\n  1 | @irq_handler fn isr() { }\n  = help: did you mean the canonical spelling @ctx(irq)?"
+                "surface feature '@irq_handler' is a compatibility alias and requires --surface experimental for 'isr' at 1:1\n  1 | @irq_handler fn isr() { }\n  = help: did you mean the canonical spelling @ctx(irq)? this compatibility alias is kept only for migration guidance."
             ]
         );
     }
@@ -2847,7 +2887,7 @@ mod tests {
     fn additional_adaptive_aliases_are_rejected_in_stable_surface() {
         let cases = [(
             "@may_block fn worker() { }",
-            "surface feature '@may_block' requires --surface experimental for 'worker' at 1:1\n  1 | @may_block fn worker() { }\n  = help: did you mean the canonical spelling @eff(block)?",
+            "surface feature '@may_block' is a compatibility alias and requires --surface experimental for 'worker' at 1:1\n  1 | @may_block fn worker() { }\n  = help: did you mean the canonical spelling @eff(block)? this compatibility alias is kept only for migration guidance.",
         )];
 
         for (src, expected) in cases {
@@ -2874,13 +2914,13 @@ mod tests {
         assert_eq!(
             stable_errs,
             vec![
-                "surface feature '@irq_legacy' is deprecated and unavailable under --surface stable for 'legacy_isr' at 1:1\n  1 | @irq_legacy fn legacy_isr() { }\n  = help: did you mean the canonical spelling @ctx(irq)?"
+                "surface feature '@irq_legacy' is a deprecated alias and is unavailable under --surface stable for 'legacy_isr' at 1:1\n  1 | @irq_legacy fn legacy_isr() { }\n  = help: did you mean the canonical spelling @ctx(irq)? this deprecated alias is kept only for migration guidance."
             ]
         );
         assert_eq!(
             experimental_errs,
             vec![
-                "surface feature '@irq_legacy' is deprecated and unavailable under --surface experimental for 'legacy_isr' at 1:1\n  1 | @irq_legacy fn legacy_isr() { }\n  = help: did you mean the canonical spelling @ctx(irq)?"
+                "surface feature '@irq_legacy' is a deprecated alias and is unavailable under --surface experimental for 'legacy_isr' at 1:1\n  1 | @irq_legacy fn legacy_isr() { }\n  = help: did you mean the canonical spelling @ctx(irq)? this deprecated alias is kept only for migration guidance."
             ]
         );
     }
