@@ -191,6 +191,17 @@ pub struct FrontendCanonicalEditPlanEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrontendCanonicalRewrite {
+    pub function_name: String,
+    pub classification: AdaptiveAliasClassification,
+    pub surface_form: &'static str,
+    pub canonical_replacement: &'static str,
+    pub migration_safe: bool,
+    pub rewrite_intent: &'static str,
+    pub byte_offset: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdaptiveFeatureProposalSummary {
     pub feature: &'static AdaptiveSurfaceFeature,
     pub proposal: &'static AdaptiveFeatureProposal,
@@ -553,6 +564,50 @@ pub fn frontend_canonical_edit_plan(
             rewrite_intent: entry.feature.rewrite_intent,
         })
         .collect()
+}
+
+pub fn frontend_canonical_rewrites(
+    ast: &ModuleAst,
+    surface_profile: SurfaceProfile,
+) -> Vec<FrontendCanonicalRewrite> {
+    let mut rewrites = Vec::new();
+
+    for item in &ast.items {
+        for attr in &item.attrs {
+            let feature = if let Some(feature) = adaptive_surface_feature(&attr.name) {
+                let feature = FrontendMigrationFeature::from_adaptive(feature);
+                if !surface_profile_enables_feature(
+                    surface_profile,
+                    adaptive_surface_feature(feature.surface_form)
+                        .expect("adaptive feature lookup by surface form"),
+                ) {
+                    continue;
+                }
+                feature
+            } else if let Some(feature) = legacy_frontend_migration_feature(&attr.name) {
+                *feature
+            } else {
+                continue;
+            };
+
+            if !feature.migration_safe {
+                continue;
+            }
+
+            rewrites.push(FrontendCanonicalRewrite {
+                function_name: item.name.clone(),
+                classification: feature.classification,
+                surface_form: feature.surface_form,
+                canonical_replacement: feature.canonical_replacement,
+                migration_safe: feature.migration_safe,
+                rewrite_intent: feature.rewrite_intent,
+                byte_offset: attr.source.byte_offset,
+            });
+        }
+    }
+
+    rewrites.sort_by(|a, b| a.byte_offset.cmp(&b.byte_offset));
+    rewrites
 }
 
 pub fn adaptive_feature_proposal_summaries() -> Vec<AdaptiveFeatureProposalSummary> {

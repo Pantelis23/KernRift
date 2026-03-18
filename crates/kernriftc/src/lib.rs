@@ -4,13 +4,13 @@ pub use hir::{
     AdaptiveFeaturePromotionPlan, AdaptiveFeaturePromotionReadiness, AdaptiveFeatureProposal,
     AdaptiveFeatureProposalSummary, AdaptiveFeatureStatus, AdaptiveMigrationPreviewEntry,
     AdaptiveSurfaceFeature, FrontendCanonicalEditPlanEntry, FrontendCanonicalFinding,
-    FrontendMigrationFeature, FrontendMigrationPreviewEntry, SurfaceProfile,
-    adaptive_feature_promotion_plan, adaptive_feature_promotion_readiness,
+    FrontendCanonicalRewrite, FrontendMigrationFeature, FrontendMigrationPreviewEntry,
+    SurfaceProfile, adaptive_feature_promotion_plan, adaptive_feature_promotion_readiness,
     adaptive_feature_proposal, adaptive_feature_proposal_summaries, adaptive_feature_proposals,
     adaptive_surface_features, adaptive_surface_features_for_profile,
     adaptive_surface_migration_preview, frontend_canonical_edit_plan, frontend_canonical_findings,
-    frontend_migration_features_for_profile, frontend_migration_preview,
-    irq_handler_alias_proposal, validate_adaptive_feature_governance,
+    frontend_canonical_rewrites, frontend_migration_features_for_profile,
+    frontend_migration_preview, irq_handler_alias_proposal, validate_adaptive_feature_governance,
 };
 use hir::{
     lower_canonical_executable_to_krir, lower_to_canonical_executable_with_surface,
@@ -188,6 +188,63 @@ pub fn canonical_edit_plan_file_with_surface(
     let src = std::fs::read_to_string(path)
         .map_err(|e| vec![format!("failed to read '{}': {}", path.display(), e)])?;
     canonical_edit_plan_source_with_surface(&src, surface_profile)
+}
+
+pub fn canonical_fix_file_with_surface(
+    path: &Path,
+    surface_profile: SurfaceProfile,
+) -> Result<Vec<FrontendCanonicalRewrite>, Vec<String>> {
+    let src = std::fs::read_to_string(path)
+        .map_err(|e| vec![format!("failed to read '{}': {}", path.display(), e)])?;
+    let ast = parse_module(&src)?;
+    let rewrites = frontend_canonical_rewrites(&ast, surface_profile);
+
+    if rewrites.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let rewritten = apply_canonical_rewrites(&src, &rewrites)?;
+    let rewritten_ast = parse_module(&rewritten)?;
+    let remaining_findings = frontend_canonical_findings(&rewritten_ast, surface_profile);
+    if !remaining_findings.is_empty() {
+        return Err(vec![format!(
+            "canonical fix validation failed: rewritten file still contains {} canonical finding(s)",
+            remaining_findings.len()
+        )]);
+    }
+
+    std::fs::write(path, rewritten)
+        .map_err(|e| vec![format!("failed to write '{}': {}", path.display(), e)])?;
+
+    Ok(rewrites)
+}
+
+fn apply_canonical_rewrites(
+    src: &str,
+    rewrites: &[FrontendCanonicalRewrite],
+) -> Result<String, Vec<String>> {
+    let mut rewritten = src.to_string();
+
+    for rewrite in rewrites.iter().rev() {
+        let start = rewrite.byte_offset;
+        let old_text = format!("@{}", rewrite.surface_form);
+        let end = start + old_text.len();
+        if end > rewritten.len() {
+            return Err(vec![format!(
+                "canonical fix validation failed: rewrite for '{}' points outside the source buffer",
+                rewrite.function_name
+            )]);
+        }
+        if &rewritten[start..end] != old_text.as_str() {
+            return Err(vec![format!(
+                "canonical fix validation failed: expected '{}' at byte offset {} for function '{}'",
+                old_text, start, rewrite.function_name
+            )]);
+        }
+        rewritten.replace_range(start..end, rewrite.canonical_replacement);
+    }
+
+    Ok(rewritten)
 }
 
 fn format_check_errors(mut errs: Vec<CheckError>) -> Vec<String> {

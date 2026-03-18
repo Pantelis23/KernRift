@@ -9,7 +9,8 @@ use emit::{
     emit_lockgraph_json, emit_report_json,
 };
 use kernriftc::{
-    SurfaceProfile, analyze, canonical_edit_plan_file_with_surface, check_file, compile_file,
+    SurfaceProfile, analyze, canonical_edit_plan_file_with_surface,
+    canonical_fix_file_with_surface, check_file, compile_file,
     frontend_migration_features_for_profile, migrate_preview_file_with_surface,
 };
 use serde_json::Value;
@@ -78,6 +79,14 @@ struct FeaturesArgs {
 struct MigratePreviewArgs {
     surface: SurfaceProfile,
     canonical_edits: bool,
+    input_path: String,
+}
+
+#[derive(Debug)]
+struct FixArgs {
+    surface: SurfaceProfile,
+    canonical: bool,
+    write: bool,
     input_path: String,
 }
 
@@ -220,6 +229,14 @@ fn main() -> ExitCode {
         },
         "migrate-preview" => match parse_migrate_preview_args(&args[2..]) {
             Ok(parsed) => run_migrate_preview(&parsed),
+            Err(err) => {
+                eprintln!("{}", err);
+                print_usage();
+                ExitCode::from(EXIT_INVALID_INPUT)
+            }
+        },
+        "fix" => match parse_fix_args(&args[2..]) {
+            Ok(parsed) => run_fix(&parsed),
             Err(err) => {
                 eprintln!("{}", err);
                 print_usage();
@@ -453,6 +470,72 @@ fn parse_migrate_preview_args(args: &[String]) -> Result<MigratePreviewArgs, Str
     })
 }
 
+fn parse_fix_args(args: &[String]) -> Result<FixArgs, String> {
+    let mut surface = SurfaceProfile::Stable;
+    let mut surface_set = false;
+    let mut canonical = false;
+    let mut write = false;
+    let mut input_path = None::<String>;
+    let mut idx = 0usize;
+
+    while idx < args.len() {
+        match args[idx].as_str() {
+            "--surface" => {
+                if surface_set {
+                    return Err("invalid fix mode: duplicate --surface".to_string());
+                }
+                idx += 1;
+                if idx >= args.len() {
+                    return Err("invalid fix mode: --surface requires a value".to_string());
+                }
+                surface = SurfaceProfile::parse(&args[idx])
+                    .map_err(|err| format!("invalid fix mode: {}", err))?;
+                surface_set = true;
+            }
+            "--canonical" => {
+                if canonical {
+                    return Err("invalid fix mode: duplicate --canonical".to_string());
+                }
+                canonical = true;
+            }
+            "--write" => {
+                if write {
+                    return Err("invalid fix mode: duplicate --write".to_string());
+                }
+                write = true;
+            }
+            other if other.starts_with('-') => {
+                return Err(format!("invalid fix mode: unexpected argument '{}'", other));
+            }
+            other => {
+                if input_path.is_some() {
+                    return Err(format!("invalid fix mode: unexpected argument '{}'", other));
+                }
+                input_path = Some(other.to_string());
+            }
+        }
+        idx += 1;
+    }
+
+    if !canonical {
+        return Err("invalid fix mode: missing --canonical".to_string());
+    }
+    if !write {
+        return Err("invalid fix mode: missing --write".to_string());
+    }
+
+    let Some(input_path) = input_path else {
+        return Err("invalid fix mode: missing input file".to_string());
+    };
+
+    Ok(FixArgs {
+        surface,
+        canonical,
+        write,
+        input_path,
+    })
+}
+
 fn run_inspect_artifact(args: &InspectArtifactArgs) -> ExitCode {
     let artifact_bytes = match fs::read(Path::new(&args.artifact_path)) {
         Ok(bytes) => bytes,
@@ -579,6 +662,30 @@ fn run_canonical_edit_preview(args: &MigratePreviewArgs) -> ExitCode {
             ExitCode::from(EXIT_INVALID_INPUT)
         }
     }
+}
+
+fn run_fix(args: &FixArgs) -> ExitCode {
+    debug_assert!(args.canonical && args.write);
+
+    let rewrites = match canonical_fix_file_with_surface(Path::new(&args.input_path), args.surface)
+    {
+        Ok(rewrites) => rewrites,
+        Err(errs) => {
+            print_errors(&errs);
+            return ExitCode::from(1);
+        }
+    };
+
+    println!("surface: {}", args.surface.as_str());
+    println!("rewrites_applied: {}", rewrites.len());
+    println!("file: {}", args.input_path);
+    for rewrite in rewrites {
+        println!("function: {}", rewrite.function_name);
+        println!("surface_form: @{}", rewrite.surface_form);
+        println!("canonical_replacement: {}", rewrite.canonical_replacement);
+    }
+
+    ExitCode::SUCCESS
 }
 
 fn emit_canonical_edit_plan_json(
@@ -1129,6 +1236,8 @@ fn print_usage() {
     eprintln!(
         "  kernriftc migrate-preview --canonical-edits --format json --surface experimental <file.kr>"
     );
+    eprintln!("  kernriftc fix --canonical --write <file.kr>");
+    eprintln!("  kernriftc fix --canonical --write --surface experimental <file.kr>");
     eprintln!("  kernriftc inspect --contracts <contracts.json>");
     eprintln!("  kernriftc inspect-report --report <verify-report.json>");
     eprintln!("  kernriftc inspect-artifact <artifact-path>");
