@@ -12,7 +12,8 @@ use parser::{
     FnAst, MmioAddrExpr as ParserMmioAddrExpr, MmioBaseDecl as ParserMmioBaseDecl,
     MmioRegAccess as ParserMmioRegAccess, MmioRegisterDecl as ParserMmioRegisterDecl,
     MmioScalarType as ParserMmioScalarType, MmioValueExpr as ParserMmioValueExpr, ModuleAst,
-    RawAttr, Stmt, format_source_diagnostic, int_literal_numeric_value, split_csv,
+    RawAttr, Stmt, format_source_diagnostic, int_literal_numeric_value,
+    split_csv_allow_trailing_comma,
 };
 use serde::Serialize;
 
@@ -1619,7 +1620,18 @@ fn normalize_function_facts(
             "caps" => {
                 saw_caps = true;
                 if let Some(raw) = &attr.args {
-                    caps_req.extend(split_csv(raw));
+                    match split_csv_allow_trailing_comma(raw) {
+                        Ok(values) => caps_req.extend(values),
+                        Err(_) => errors.push(format_attr_diagnostic(
+                            item,
+                            attr,
+                            &format!(
+                                "@caps(...) contains an empty capability entry for '{}'",
+                                item.name
+                            ),
+                            None,
+                        )),
+                    }
                 }
             }
             "irq" => {
@@ -2016,7 +2028,9 @@ fn parse_ctx_attr(attr: &RawAttr) -> Result<Vec<Ctx>, String> {
     };
 
     let mut out = Vec::new();
-    for token in split_csv(args) {
+    let tokens = split_csv_allow_trailing_comma(args)
+        .map_err(|_| "@ctx(...) contains an empty context entry".to_string())?;
+    for token in tokens {
         let ctx = match token.trim().to_ascii_lowercase().as_str() {
             "boot" => Ctx::Boot,
             "thread" => Ctx::Thread,
@@ -2035,7 +2049,9 @@ fn parse_eff_attr(attr: &RawAttr) -> Result<Vec<Eff>, String> {
     };
 
     let mut out = Vec::new();
-    for token in split_csv(args) {
+    let tokens = split_csv_allow_trailing_comma(args)
+        .map_err(|_| "@eff(...) contains an empty effect entry".to_string())?;
+    for token in tokens {
         let eff = match token.trim().to_ascii_lowercase().as_str() {
             "alloc" => Eff::Alloc,
             "block" => Eff::Block,
@@ -2128,6 +2144,43 @@ mod tests {
             let canonical =
                 lower_to_krir_with_surface(&canonical_ast, SurfaceProfile::Stable).expect("lower");
             assert_eq!(alias, canonical, "alias '{}' drifted", alias_src);
+        }
+    }
+
+    #[test]
+    fn canonical_fact_lists_allow_optional_trailing_commas_without_semantic_drift() {
+        let trailing_src = "@module_caps(PhysMap,);\nextern @ctx(thread, boot,) @eff(block,) @caps() fn sleep();\n@ctx(thread, boot,)\n@caps(PhysMap,)\nfn entry() { helper(); }\n@ctx(thread,)\nfn helper() { sleep(); }";
+        let canonical_src = "@module_caps(PhysMap);\nextern @ctx(thread, boot) @eff(block) @caps() fn sleep();\n@ctx(thread, boot)\n@caps(PhysMap)\nfn entry() { helper(); }\n@ctx(thread)\nfn helper() { sleep(); }";
+
+        let trailing_ast = parse_module(trailing_src).expect("parse trailing comma facts");
+        let canonical_ast = parse_module(canonical_src).expect("parse canonical facts");
+        let trailing = lower_to_krir(&trailing_ast).expect("lower trailing comma facts");
+        let canonical = lower_to_krir(&canonical_ast).expect("lower canonical facts");
+
+        assert_eq!(trailing, canonical);
+    }
+
+    #[test]
+    fn malformed_canonical_fact_lists_reject_empty_entries_deterministically() {
+        let cases = [
+            (
+                "@ctx(,thread)\nfn entry() { }",
+                "@ctx(...) contains an empty context entry for 'entry' at 1:1\n  1 | @ctx(,thread)",
+            ),
+            (
+                "@eff(block,, yield)\nfn worker() { }",
+                "@eff(...) contains an empty effect entry for 'worker' at 1:1\n  1 | @eff(block,, yield)",
+            ),
+            (
+                "@caps(PhysMap, , MmioRaw)\nfn entry() { }",
+                "@caps(...) contains an empty capability entry for 'entry' at 1:1\n  1 | @caps(PhysMap, , MmioRaw)",
+            ),
+        ];
+
+        for (src, expected) in cases {
+            let ast = parse_module(src).expect("parse malformed attribute list");
+            let errs = lower_to_krir(&ast).expect_err("empty fact entries must fail");
+            assert_eq!(errs, vec![expected.to_string()], "source '{}'", src);
         }
     }
 

@@ -225,6 +225,50 @@ pub fn split_csv(input: &str) -> Vec<String> {
     out
 }
 
+pub fn split_csv_allow_trailing_comma(input: &str) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut depth = 0_i32;
+    let mut saw_top_level_comma = false;
+
+    for ch in input.chars() {
+        match ch {
+            '(' => {
+                depth += 1;
+                cur.push(ch);
+            }
+            ')' => {
+                depth -= 1;
+                cur.push(ch);
+            }
+            ',' if depth == 0 => {
+                saw_top_level_comma = true;
+                let piece = cur.trim();
+                if piece.is_empty() {
+                    return Err("expected list element before ','".to_string());
+                }
+                out.push(piece.to_string());
+                cur.clear();
+            }
+            _ => cur.push(ch),
+        }
+    }
+
+    let piece = cur.trim();
+    if piece.is_empty() {
+        if input.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        if saw_top_level_comma {
+            return Ok(out);
+        }
+        return Ok(Vec::new());
+    }
+
+    out.push(piece.to_string());
+    Ok(out)
+}
+
 struct Parser<'a> {
     src: &'a str,
     pos: usize,
@@ -315,7 +359,24 @@ impl<'a> Parser<'a> {
                     self.recover_to_next_module_item();
                     continue;
                 }
-                let caps = attrs[0].args.as_deref().map(split_csv).unwrap_or_default();
+                let caps = match attrs[0]
+                    .args
+                    .as_deref()
+                    .map(split_csv_allow_trailing_comma)
+                    .transpose()
+                {
+                    Ok(Some(caps)) => caps,
+                    Ok(None) => Vec::new(),
+                    Err(_) => {
+                        self.errors.push(format_source_diagnostic(
+                            &attrs[0].source,
+                            "@module_caps(...) contains an empty capability entry",
+                            None,
+                        ));
+                        self.recover_to_next_module_item();
+                        continue;
+                    }
+                };
                 module.module_caps = caps;
                 continue;
             }
@@ -1081,6 +1142,7 @@ mod tests {
     use super::{
         MmioAddrExpr, MmioBaseDecl, MmioRegAccess, MmioRegisterDecl, MmioScalarType, MmioValueExpr,
         SourceNote, Stmt, format_source_diagnostic, int_literal_numeric_value, parse_module,
+        split_csv_allow_trailing_comma,
     };
     use proptest::prelude::*;
 
@@ -1269,6 +1331,55 @@ mod tests {
                     access: MmioRegAccess::Ro,
                 }
             ]
+        );
+    }
+
+    #[test]
+    fn split_csv_allow_trailing_comma_accepts_single_and_multi_value_trailing_commas() {
+        assert_eq!(
+            split_csv_allow_trailing_comma("thread,").expect("single trailing comma"),
+            vec!["thread".to_string()]
+        );
+        assert_eq!(
+            split_csv_allow_trailing_comma("thread, boot,").expect("multi trailing comma"),
+            vec!["thread".to_string(), "boot".to_string()]
+        );
+        assert_eq!(
+            split_csv_allow_trailing_comma("").expect("empty list"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn split_csv_allow_trailing_comma_rejects_empty_entries() {
+        for input in [",thread", "thread,,boot", "thread, ,boot"] {
+            assert_eq!(
+                split_csv_allow_trailing_comma(input),
+                Err("expected list element before ','".to_string()),
+                "input '{}' should reject empty list element",
+                input
+            );
+        }
+    }
+
+    #[test]
+    fn parse_module_caps_accepts_trailing_comma() {
+        let src = "@module_caps(PhysMap,); fn entry() { }";
+        let ast = parse_module(src).expect("module caps with trailing comma should parse");
+        assert_eq!(ast.module_caps, vec!["PhysMap".to_string()]);
+    }
+
+    #[test]
+    fn parse_module_caps_rejects_empty_entry_with_diagnostic() {
+        let src = "@module_caps(PhysMap,, MmioRaw); fn entry() { }";
+        let err = parse_module(src).expect_err("empty module cap entry should fail");
+        assert_eq!(
+            err,
+            vec![diagnostic_at(
+                src,
+                0,
+                "@module_caps(...) contains an empty capability entry",
+            )]
         );
     }
 

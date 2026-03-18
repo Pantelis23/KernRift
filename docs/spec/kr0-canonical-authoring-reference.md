@@ -9,6 +9,7 @@ Use `docs/spec/krir-v0.1.md` when you need the full accepted-surface grammar and
 ## Quick Rules
 
 - Prefer `@ctx(...)`, `@eff(...)`, `@caps(...)`, and `@module_caps(...)`.
+- Canonical fact lists may use one optional trailing comma when that improves editability.
 - Prefer `critical { ... }` for block-scoped critical regions.
 - Use `extern @ctx(...) @eff(...) @caps() fn ...;` for every extern declaration.
 - Use structured MMIO declarations before symbolic MMIO reads/writes.
@@ -60,13 +61,17 @@ Canonical frontend facts:
 
 - `@ctx(thread)`
 - `@ctx(thread, boot)`
+- `@ctx(thread, boot,)`
 - `@ctx(irq)`
 - `@eff(block)`
+- `@eff(block,)`
 - `@eff(alloc)`
 - `@eff(yield)`
 - `@caps()`
 - `@caps(PhysMap)`
+- `@caps(PhysMap,)`
 - `@module_caps(PhysMap)`
+- `@module_caps(PhysMap,)`
 - `@module_caps(MmioRaw)`
 
 Copyable minimal module with module caps plus function facts:

@@ -47,7 +47,7 @@ Block       := "{" { Statement ";" } "}"
 Statement   := Invocation
 Invocation  := Ident "(" [RawTextBalancedParens] ")"
 
-CsvIdent    := Ident { "," Ident }
+CsvIdent    := Ident { "," Ident } [ "," ]
 Ident       := /[_A-Za-z][_A-Za-z0-9]*/
 ```
 
@@ -55,6 +55,11 @@ Notes:
 
 - Only empty parameter lists `()` are supported.
 - Comments use `// ...` to end-of-line.
+- Canonical fact lists accept one optional trailing comma:
+  - `@ctx(thread, boot,)`
+  - `@eff(block,)`
+  - `@caps(PhysMap,)`
+  - `@module_caps(PhysMap,)`
 - Module-level MMIO base declarations are supported in KR0 typed MMIO slice:
   - `mmio NAME = INT_LITERAL;`
   - `NAME` must be unique across module MMIO declarations.

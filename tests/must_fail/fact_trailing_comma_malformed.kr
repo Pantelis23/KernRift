@@ -1,0 +1,2 @@
+@ctx(thread,, boot)
+fn entry() { }

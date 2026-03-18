@@ -223,6 +223,8 @@ fn kr0_authoring_reference_covers_canonical_templates() {
         "fn entry() { }",
         "extern @ctx(thread, boot) @eff(block) @caps() fn sleep();",
         "@module_caps(PhysMap);",
+        "@ctx(thread, boot,)",
+        "@module_caps(PhysMap,)",
         "mmio UART0 = 0x1000;",
         "mmio_reg UART0.DR = 0x00 : u32 rw;",
         "mmio_read<u32>(UART0 + 0x04);",
@@ -240,6 +242,26 @@ fn kr0_authoring_reference_covers_canonical_templates() {
         KR0_AUTHORING_REFERENCE_TEXT.contains("tests/living_compiler/*alias*.kr"),
         "kr0 authoring reference must explain that alias fixtures are compatibility locks"
     );
+}
+
+#[test]
+fn kr0_spec_and_authoring_reference_document_trailing_comma_fact_lists() {
+    assert!(
+        KRIR_SPEC_TEXT.contains("CsvIdent    := Ident { \",\" Ident } [ \",\" ]"),
+        "krir spec must document optional trailing commas in canonical fact lists"
+    );
+    for example in [
+        "@ctx(thread, boot,)",
+        "@eff(block,)",
+        "@caps(PhysMap,)",
+        "@module_caps(PhysMap,)",
+    ] {
+        assert!(
+            KRIR_SPEC_TEXT.contains(example) || KR0_AUTHORING_REFERENCE_TEXT.contains(example),
+            "docs must mention trailing-comma example '{}'",
+            example
+        );
+    }
 }
 
 #[test]
@@ -5455,6 +5477,40 @@ fn check_accepts_typed_mmio_statement_fixture() {
     let mut cmd: Command = cargo_bin_cmd!("kernriftc");
     cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
     cmd.assert().success();
+}
+
+#[test]
+fn check_accepts_trailing_comma_canonical_fact_lists_fixture() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("fact_trailing_commas.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    cmd.assert().success();
+}
+
+#[test]
+fn check_rejects_malformed_trailing_comma_fact_list_fixture() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("fact_trailing_comma_malformed.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec![
+            "@ctx(...) contains an empty context entry for 'entry' at 1:1",
+            "  1 | @ctx(thread,, boot)",
+        ],
+    );
 }
 
 #[test]
