@@ -1,3 +1,5 @@
+use std::fs::{self, File};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -262,17 +264,39 @@ fn apply_canonical_rewrites(
 fn write_atomic_file(path: &Path, contents: &str) -> Result<(), Vec<String>> {
     let temp_path = atomic_temp_path_for(path);
 
-    if let Err(err) = std::fs::write(&temp_path, contents) {
-        return Err(vec![format!(
+    let mut temp_file = File::create(&temp_path).map_err(|err| {
+        vec![format!(
             "failed to write temporary file '{}' before replacing '{}': {}",
             temp_path.display(),
             path.display(),
             err
-        )]);
-    }
+        )]
+    })?;
 
-    if let Err(err) = std::fs::rename(&temp_path, path) {
-        std::fs::remove_file(&temp_path).ok();
+    temp_file.write_all(contents.as_bytes()).map_err(|err| {
+        fs::remove_file(&temp_path).ok();
+        vec![format!(
+            "failed to write temporary file '{}' before replacing '{}': {}",
+            temp_path.display(),
+            path.display(),
+            err
+        )]
+    })?;
+
+    temp_file.sync_all().map_err(|err| {
+        fs::remove_file(&temp_path).ok();
+        vec![format!(
+            "failed to flush temporary file '{}' before replacing '{}': {}",
+            temp_path.display(),
+            path.display(),
+            err
+        )]
+    })?;
+
+    drop(temp_file);
+
+    if let Err(err) = fs::rename(&temp_path, path) {
+        fs::remove_file(&temp_path).ok();
         return Err(vec![format!(
             "failed to atomically replace '{}' with '{}': {}",
             path.display(),
@@ -280,6 +304,8 @@ fn write_atomic_file(path: &Path, contents: &str) -> Result<(), Vec<String>> {
             err
         )]);
     }
+
+    sync_parent_directory_best_effort(path)?;
 
     Ok(())
 }
@@ -300,6 +326,32 @@ fn atomic_temp_path_for(path: &Path) -> PathBuf {
     parent.join(format!(".{}.kernrift-fix-{}.tmp", file_name, timestamp))
 }
 
+#[cfg(unix)]
+fn sync_parent_directory_best_effort(path: &Path) -> Result<(), Vec<String>> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let dir = File::open(parent).map_err(|err| {
+        vec![format!(
+            "failed to open parent directory '{}' for sync after replacing '{}': {}",
+            parent.display(),
+            path.display(),
+            err
+        )]
+    })?;
+    dir.sync_all().map_err(|err| {
+        vec![format!(
+            "failed to sync parent directory '{}' after replacing '{}': {}",
+            parent.display(),
+            path.display(),
+            err
+        )]
+    })
+}
+
+#[cfg(not(unix))]
+fn sync_parent_directory_best_effort(_path: &Path) -> Result<(), Vec<String>> {
+    Ok(())
+}
+
 fn format_check_errors(mut errs: Vec<CheckError>) -> Vec<String> {
     errs.sort_by(|a, b| (a.pass, a.message.as_str()).cmp(&(b.pass, b.message.as_str())));
     errs.iter().map(format_check_error).collect()
@@ -307,4 +359,62 @@ fn format_check_errors(mut errs: Vec<CheckError>) -> Vec<String> {
 
 fn format_check_error(err: &CheckError) -> String {
     format!("{}: {}", err.pass, err.message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{atomic_temp_path_for, write_atomic_file};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("kernrift-{}-{}", label, ts));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    #[test]
+    fn atomic_temp_path_stays_in_target_directory() {
+        let dir = unique_temp_dir("canonical-fix-path");
+        let target = dir.join("sample.kr");
+        let temp = atomic_temp_path_for(&target);
+
+        assert_eq!(temp.parent(), Some(dir.as_path()));
+        assert_ne!(temp, target);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn write_atomic_file_replaces_contents_without_leaving_temp_file() {
+        let dir = unique_temp_dir("canonical-fix-write");
+        let target = dir.join("sample.kr");
+        fs::write(&target, "@irq\nfn entry() { }\n").expect("seed target");
+
+        write_atomic_file(&target, "@ctx(irq)\nfn entry() { }\n").expect("atomic rewrite");
+
+        assert_eq!(
+            fs::read_to_string(&target).expect("read replaced target"),
+            "@ctx(irq)\nfn entry() { }\n"
+        );
+
+        let leftovers = fs::read_dir(&dir)
+            .expect("read dir")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".sample.kr.kernrift-fix-"))
+            .collect::<Vec<_>>();
+        assert!(
+            leftovers.is_empty(),
+            "atomic fix helper should not leave temp files behind: {:?}",
+            leftovers
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
 }
