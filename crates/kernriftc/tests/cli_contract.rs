@@ -690,8 +690,10 @@ fn usage_includes_artifact_json_consumer_commands() {
     assert!(stderr.contains("kernriftc fix --canonical --dry-run --format json <file.kr>"));
     assert!(stderr.contains("kernriftc fix --canonical --stdout <file.kr>"));
     assert!(stderr.contains("kernriftc fix --canonical --stdout --surface experimental <file.kr>"));
+    assert!(stderr.contains("kernriftc fix --canonical --stdout --stdin"));
     assert!(stderr.contains("kernriftc fix --canonical --diff <file.kr>"));
     assert!(stderr.contains("kernriftc fix --canonical --diff --surface experimental <file.kr>"));
+    assert!(stderr.contains("kernriftc fix --canonical --diff --stdin"));
 }
 
 #[test]
@@ -4940,6 +4942,36 @@ fn fix_canonical_stdout_rewrites_legacy_unary_shorthands_exactly() {
 }
 
 #[test]
+fn fix_canonical_stdout_from_stdin_rewrites_legacy_unary_exactly() {
+    let root = repo_root();
+    let input = fs::read_to_string(
+        root.join("tests")
+            .join("living_compiler")
+            .join("migration_preview_legacy_unary.kr"),
+    )
+    .expect("read legacy unary fixture");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("fix")
+        .arg("--canonical")
+        .arg("--stdout")
+        .arg("--stdin")
+        .write_stdin(input);
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.is_empty(),
+        "fix stdout stdin mode must keep stderr empty on success"
+    );
+    assert_eq!(
+        stdout,
+        "@eff(alloc)\nfn alloc_worker() { }\n\n@eff(block)\nfn block_worker() { }\n\n@ctx(irq)\nfn irq_entry() { }\n\n@ctx(thread, boot)\nfn noirq_worker() { }\n\n@eff(preempt_off)\nfn preempt_guarded() { }\n"
+    );
+}
+
+#[test]
 fn fix_canonical_stdout_rewrites_accepted_aliases_under_experimental_surface_exactly() {
     let root = repo_root();
     let fixture = root
@@ -4975,6 +5007,29 @@ fn fix_canonical_stdout_rewrites_accepted_aliases_under_experimental_surface_exa
 }
 
 #[test]
+fn fix_canonical_stdout_from_stdin_noops_cleanly_for_canonical_source() {
+    let root = repo_root();
+    let input = fs::read_to_string(root.join("tests").join("must_pass").join("basic.kr"))
+        .expect("read canonical fixture");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("fix")
+        .arg("--canonical")
+        .arg("--stdout")
+        .arg("--stdin")
+        .write_stdin(input.clone());
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.is_empty(),
+        "fix stdout stdin mode must keep stderr empty on success"
+    );
+    assert_eq!(stdout, input);
+}
+
+#[test]
 fn fix_canonical_stdout_noops_cleanly_for_canonical_source() {
     let root = repo_root();
     let fixture = root.join("tests").join("must_pass").join("basic.kr");
@@ -4998,6 +5053,36 @@ fn fix_canonical_stdout_noops_cleanly_for_canonical_source() {
     assert_eq!(
         fs::read_to_string(&temp_fixture).expect("read unchanged fixture"),
         original
+    );
+}
+
+#[test]
+fn fix_canonical_diff_from_stdin_rewrites_legacy_unary_exactly() {
+    let root = repo_root();
+    let input = fs::read_to_string(
+        root.join("tests")
+            .join("living_compiler")
+            .join("migration_preview_legacy_unary.kr"),
+    )
+    .expect("read legacy unary fixture");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("fix")
+        .arg("--canonical")
+        .arg("--diff")
+        .arg("--stdin")
+        .write_stdin(input);
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.is_empty(),
+        "fix diff stdin mode must keep stderr empty on success"
+    );
+    assert_eq!(
+        stdout,
+        "--- original\n+++ canonical\n@@ -1,14 +1,14 @@\n-@alloc\n-fn alloc_worker() { }\n-\n-@block\n-fn block_worker() { }\n-\n-@irq\n-fn irq_entry() { }\n-\n-@noirq\n-fn noirq_worker() { }\n-\n-@preempt_off\n-fn preempt_guarded() { }\n+@eff(alloc)\n+fn alloc_worker() { }\n+\n+@eff(block)\n+fn block_worker() { }\n+\n+@ctx(irq)\n+fn irq_entry() { }\n+\n+@ctx(thread, boot)\n+fn noirq_worker() { }\n+\n+@eff(preempt_off)\n+fn preempt_guarded() { }\n"
     );
 }
 
@@ -5032,6 +5117,29 @@ fn fix_canonical_diff_rewrites_legacy_unary_shorthands_exactly() {
         fs::read_to_string(&temp_fixture).expect("read unchanged fixture"),
         original
     );
+}
+
+#[test]
+fn fix_canonical_diff_from_stdin_noops_cleanly_for_canonical_source() {
+    let root = repo_root();
+    let input = fs::read_to_string(root.join("tests").join("must_pass").join("basic.kr"))
+        .expect("read canonical fixture");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("fix")
+        .arg("--canonical")
+        .arg("--diff")
+        .arg("--stdin")
+        .write_stdin(input);
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.is_empty(),
+        "fix diff stdin mode must keep stderr empty on success"
+    );
+    assert_eq!(stdout, "");
 }
 
 #[test]
@@ -5167,6 +5275,22 @@ fn fix_canonical_rejects_conflicting_write_and_diff_flags() {
 }
 
 #[test]
+fn fix_canonical_rejects_stdin_with_write() {
+    let root = repo_root();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("fix")
+        .arg("--canonical")
+        .arg("--write")
+        .arg("--stdin")
+        .write_stdin("@irq\nfn entry() { }\n");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(stderr.contains("invalid fix mode: --stdin cannot be combined with --write"));
+}
+
+#[test]
 fn fix_canonical_rejects_conflicting_dry_run_and_diff_flags() {
     let root = repo_root();
     let fixture = root.join("tests").join("must_pass").join("basic.kr");
@@ -5181,6 +5305,41 @@ fn fix_canonical_rejects_conflicting_dry_run_and_diff_flags() {
     let assert = cmd.assert().failure().code(2);
     let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
     assert!(stderr.contains("invalid fix mode: --diff cannot be combined with --dry-run"));
+}
+
+#[test]
+fn fix_canonical_rejects_duplicate_stdin_flag() {
+    let root = repo_root();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("fix")
+        .arg("--canonical")
+        .arg("--stdout")
+        .arg("--stdin")
+        .arg("--stdin")
+        .write_stdin("@irq\nfn entry() { }\n");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(stderr.contains("invalid fix mode: duplicate --stdin"));
+}
+
+#[test]
+fn fix_canonical_rejects_stdin_and_file_together() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("fix")
+        .arg("--canonical")
+        .arg("--stdout")
+        .arg("--stdin")
+        .arg(fixture.as_os_str())
+        .write_stdin("@irq\nfn entry() { }\n");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(stderr.contains("invalid fix mode: --stdin cannot be combined with an input file"));
 }
 
 #[test]

@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::fs;
+use std::io::{self, Read};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -11,8 +12,9 @@ use emit::{
 use kernriftc::{
     CanonicalFixPreviewResult, CanonicalFixResult, CanonicalFixSourceResult, SurfaceProfile,
     analyze, canonical_edit_plan_file_with_surface, canonical_fix_file_with_surface,
-    canonical_fix_preview_file_with_surface, canonical_fix_source_file_with_surface, check_file,
-    compile_file, frontend_migration_features_for_profile, migrate_preview_file_with_surface,
+    canonical_fix_preview_file_with_surface, canonical_fix_source_file_with_surface,
+    canonical_fix_source_text_with_surface, check_file, compile_file,
+    frontend_migration_features_for_profile, migrate_preview_file_with_surface,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -91,8 +93,9 @@ struct FixArgs {
     dry_run: bool,
     stdout: bool,
     diff: bool,
+    stdin: bool,
     format: FixFormat,
-    input_path: String,
+    input_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -502,6 +505,7 @@ fn parse_fix_args(args: &[String]) -> Result<FixArgs, String> {
     let mut dry_run = false;
     let mut stdout = false;
     let mut diff = false;
+    let mut stdin = false;
     let mut format = FixFormat::Text;
     let mut format_set = false;
     let mut input_path = None::<String>;
@@ -562,6 +566,12 @@ fn parse_fix_args(args: &[String]) -> Result<FixArgs, String> {
                 }
                 diff = true;
             }
+            "--stdin" => {
+                if stdin {
+                    return Err("invalid fix mode: duplicate --stdin".to_string());
+                }
+                stdin = true;
+            }
             other if other.starts_with('-') => {
                 return Err(format!("invalid fix mode: unexpected argument '{}'", other));
             }
@@ -598,6 +608,9 @@ fn parse_fix_args(args: &[String]) -> Result<FixArgs, String> {
     if diff && stdout {
         return Err("invalid fix mode: --diff cannot be combined with --stdout".to_string());
     }
+    if stdin && write {
+        return Err("invalid fix mode: --stdin cannot be combined with --write".to_string());
+    }
     if !write && !dry_run && !stdout && !diff {
         return Err(
             "invalid fix mode: exactly one of --write, --dry-run, --stdout, or --diff must be specified".to_string(),
@@ -609,10 +622,15 @@ fn parse_fix_args(args: &[String]) -> Result<FixArgs, String> {
     if diff && format_set {
         return Err("invalid fix mode: --diff does not accept --format".to_string());
     }
-
-    let Some(input_path) = input_path else {
+    if stdin && dry_run {
+        return Err("invalid fix mode: --stdin requires --stdout or --diff".to_string());
+    }
+    if stdin && input_path.is_some() {
+        return Err("invalid fix mode: --stdin cannot be combined with an input file".to_string());
+    }
+    if !stdin && input_path.is_none() {
         return Err("invalid fix mode: missing input file".to_string());
-    };
+    }
 
     Ok(FixArgs {
         surface,
@@ -621,6 +639,7 @@ fn parse_fix_args(args: &[String]) -> Result<FixArgs, String> {
         dry_run,
         stdout,
         diff,
+        stdin,
         format,
         input_path,
     })
@@ -776,7 +795,10 @@ fn run_fix(args: &FixArgs) -> ExitCode {
         return run_fix_diff(args);
     }
 
-    let result = match canonical_fix_file_with_surface(Path::new(&args.input_path), args.surface) {
+    let result = match canonical_fix_file_with_surface(
+        Path::new(args.input_path.as_deref().expect("input path")),
+        args.surface,
+    ) {
         Ok(result) => result,
         Err(errs) => {
             print_errors(&errs);
@@ -788,7 +810,7 @@ fn run_fix(args: &FixArgs) -> ExitCode {
         FixFormat::Text => {
             println!("surface: {}", args.surface.as_str());
             println!("rewrites_applied: {}", result.rewrites.len());
-            println!("file: {}", args.input_path);
+            println!("file: {}", args.input_path.as_deref().unwrap_or("<stdin>"));
             for rewrite in result.rewrites {
                 println!("function: {}", rewrite.function_name);
                 println!("surface_form: @{}", rewrite.surface_form);
@@ -796,7 +818,11 @@ fn run_fix(args: &FixArgs) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        FixFormat::Json => match emit_canonical_fix_json(args.surface, &args.input_path, &result) {
+        FixFormat::Json => match emit_canonical_fix_json(
+            args.surface,
+            args.input_path.as_deref().expect("input path"),
+            &result,
+        ) {
             Ok(text) => {
                 print!("{}", text);
                 ExitCode::SUCCESS
@@ -811,14 +837,13 @@ fn run_fix(args: &FixArgs) -> ExitCode {
 
 fn run_fix_stdout(args: &FixArgs) -> ExitCode {
     debug_assert!(args.stdout);
-    let result =
-        match canonical_fix_source_file_with_surface(Path::new(&args.input_path), args.surface) {
-            Ok(result) => result,
-            Err(errs) => {
-                print_errors(&errs);
-                return ExitCode::from(1);
-            }
-        };
+    let result = match canonical_fix_source_result_for_args(args) {
+        Ok(result) => result,
+        Err(errs) => {
+            print_errors(&errs);
+            return ExitCode::from(1);
+        }
+    };
 
     emit_canonical_fix_stdout(&result);
     ExitCode::SUCCESS
@@ -826,34 +851,35 @@ fn run_fix_stdout(args: &FixArgs) -> ExitCode {
 
 fn run_fix_diff(args: &FixArgs) -> ExitCode {
     debug_assert!(args.diff);
-    let result =
-        match canonical_fix_source_file_with_surface(Path::new(&args.input_path), args.surface) {
-            Ok(result) => result,
-            Err(errs) => {
-                print_errors(&errs);
-                return ExitCode::from(1);
-            }
-        };
+    let result = match canonical_fix_source_result_for_args(args) {
+        Ok(result) => result,
+        Err(errs) => {
+            print_errors(&errs);
+            return ExitCode::from(1);
+        }
+    };
 
     emit_canonical_fix_diff(&result);
     ExitCode::SUCCESS
 }
 
 fn run_fix_dry_run(args: &FixArgs) -> ExitCode {
-    let result =
-        match canonical_fix_preview_file_with_surface(Path::new(&args.input_path), args.surface) {
-            Ok(result) => result,
-            Err(errs) => {
-                print_errors(&errs);
-                return ExitCode::from(1);
-            }
-        };
+    let result = match canonical_fix_preview_file_with_surface(
+        Path::new(args.input_path.as_deref().expect("input path")),
+        args.surface,
+    ) {
+        Ok(result) => result,
+        Err(errs) => {
+            print_errors(&errs);
+            return ExitCode::from(1);
+        }
+    };
 
     match args.format {
         FixFormat::Text => {
             println!("surface: {}", args.surface.as_str());
             println!("rewrites_planned: {}", result.rewrites.len());
-            println!("file: {}", args.input_path);
+            println!("file: {}", args.input_path.as_deref().unwrap_or("<stdin>"));
             for rewrite in result.rewrites {
                 println!("function: {}", rewrite.function_name);
                 println!("surface_form: @{}", rewrite.surface_form);
@@ -862,7 +888,11 @@ fn run_fix_dry_run(args: &FixArgs) -> ExitCode {
             ExitCode::SUCCESS
         }
         FixFormat::Json => {
-            match emit_canonical_fix_preview_json(args.surface, &args.input_path, &result) {
+            match emit_canonical_fix_preview_json(
+                args.surface,
+                args.input_path.as_deref().expect("input path"),
+                &result,
+            ) {
                 Ok(text) => {
                     print!("{}", text);
                     ExitCode::SUCCESS
@@ -1038,6 +1068,28 @@ fn split_diff_lines(src: &str) -> Vec<&str> {
     } else {
         src.split_inclusive('\n').collect()
     }
+}
+
+fn canonical_fix_source_result_for_args(
+    args: &FixArgs,
+) -> Result<CanonicalFixSourceResult, Vec<String>> {
+    if args.stdin {
+        let src = read_stdin_source()?;
+        canonical_fix_source_text_with_surface(&src, args.surface)
+    } else {
+        canonical_fix_source_file_with_surface(
+            Path::new(args.input_path.as_deref().expect("input path")),
+            args.surface,
+        )
+    }
+}
+
+fn read_stdin_source() -> Result<String, Vec<String>> {
+    let mut src = String::new();
+    io::stdin()
+        .read_to_string(&mut src)
+        .map_err(|err| vec![format!("failed to read '<stdin>': {}", err)])?;
+    Ok(src)
 }
 
 fn run_selftest() -> ExitCode {
@@ -1571,8 +1623,10 @@ fn print_usage() {
     eprintln!("  kernriftc fix --canonical --dry-run --format json <file.kr>");
     eprintln!("  kernriftc fix --canonical --stdout <file.kr>");
     eprintln!("  kernriftc fix --canonical --stdout --surface experimental <file.kr>");
+    eprintln!("  kernriftc fix --canonical --stdout --stdin");
     eprintln!("  kernriftc fix --canonical --diff <file.kr>");
     eprintln!("  kernriftc fix --canonical --diff --surface experimental <file.kr>");
+    eprintln!("  kernriftc fix --canonical --diff --stdin");
     eprintln!("  kernriftc inspect --contracts <contracts.json>");
     eprintln!("  kernriftc inspect-report --report <verify-report.json>");
     eprintln!("  kernriftc inspect-artifact <artifact-path>");
