@@ -168,6 +168,11 @@ Use `critical { ... }` when only a local region is meant to be critical.
 | `@irq_handler` | `@ctx(irq)` |
 | `@may_block` | `@eff(block)` |
 | `@irq_legacy` | `@ctx(irq)` |
+| `@irq` | `@ctx(irq)` |
+| `@noirq` | `@ctx(thread, boot)` |
+| `@alloc` | `@eff(alloc)` |
+| `@block` | `@eff(block)` |
+| `@preempt_off` | `@eff(preempt_off)` |
 | `extern fn sleep();` | `extern @ctx(...) @eff(...) @caps() fn sleep();` |
 | `@yieldpoint` | `yieldpoint()` |
 | `mmio_read()` | `mmio_read<T>(addr)` |

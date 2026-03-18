@@ -196,6 +196,20 @@ fn kr0_frontend_spec_declares_canonical_spellings_and_alias_policy() {
         ),
         "kr0 frontend spec must describe alias classification guidance"
     );
+    for legacy in [
+        "`@irq` -> `@ctx(irq)`",
+        "`@noirq` -> `@ctx(thread, boot)`",
+        "`@alloc` -> `@eff(alloc)`",
+        "`@block` -> `@eff(block)`",
+        "`@preempt_off` -> `@eff(preempt_off)`",
+        "`@yieldpoint` -> `yieldpoint()`",
+    ] {
+        assert!(
+            KRIR_SPEC_TEXT.contains(legacy),
+            "kr0 frontend spec must document legacy-to-canonical mapping '{}'",
+            legacy
+        );
+    }
 }
 
 #[test]
@@ -231,6 +245,11 @@ fn kr0_authoring_reference_covers_canonical_templates() {
         "raw_mmio_write<u32>(0x1014, x);",
         "critical {",
         "yieldpoint();",
+        "| `@irq` | `@ctx(irq)` |",
+        "| `@noirq` | `@ctx(thread, boot)` |",
+        "| `@alloc` | `@eff(alloc)` |",
+        "| `@block` | `@eff(block)` |",
+        "| `@preempt_off` | `@eff(preempt_off)` |",
     ] {
         assert!(
             KR0_AUTHORING_REFERENCE_TEXT.contains(template),
@@ -4089,6 +4108,28 @@ fn check_surface_experimental_rejects_deprecated_irq_legacy_alias() {
             "surface feature '@irq_legacy' is a deprecated alias and is unavailable under --surface experimental for 'legacy_isr' at 1:1",
             "  1 | @irq_legacy",
             "  = help: did you mean the canonical spelling @ctx(irq)? this deprecated alias is kept only for migration guidance.",
+        ]
+    );
+}
+
+#[test]
+fn check_rejects_legacy_yieldpoint_attribute_with_canonical_guidance() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_fail")
+        .join("legacy_yieldpoint_attr.kr");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("check").arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec![
+            "legacy spelling '@yieldpoint' is non-canonical and is not accepted on function 'pump' at 1:1",
+            "  1 | @yieldpoint",
+            "  = help: did you mean the canonical spelling yieldpoint()? control-point markers use statement form, not attributes.",
         ]
     );
 }

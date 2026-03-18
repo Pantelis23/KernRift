@@ -583,7 +583,7 @@ fn selftest_fixture_suites() -> Result<(), String> {
 }
 
 fn selftest_exact_diagnostics() -> Result<(), String> {
-    let exact_cases: [(&str, &[&str]); 5] = [
+    let exact_cases: [(&str, &[&str]); 6] = [
         (
             "tests/must_fail/extern_missing_eff.kr",
             &[
@@ -610,6 +610,12 @@ fn selftest_exact_diagnostics() -> Result<(), String> {
             "tests/must_fail/yield_hidden_in_leaf_wrapper.kr",
             &[
                 "lockgraph: function 'outer' calls yielding callee 'wrapper' under lock(s): SchedLock",
+            ],
+        ),
+        (
+            "tests/must_fail/legacy_yieldpoint_attr.kr",
+            &[
+                "legacy spelling '@yieldpoint' is non-canonical and is not accepted on function 'pump' at 1:1\n  1 | @yieldpoint\n  = help: did you mean the canonical spelling yieldpoint()? control-point markers use statement form, not attributes.",
             ],
         ),
     ];

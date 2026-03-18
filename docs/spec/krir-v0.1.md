@@ -112,6 +112,14 @@ Compatibility aliases that remain accepted today are non-canonical:
 Additional frontend conventions:
 
 - Compiler diagnostics and migration surfaces classify non-canonical spellings as `compatibility aliases` or `deprecated aliases`, and always point to the canonical replacement.
+- Accepted legacy unary fact shorthands remain non-canonical:
+  - `@irq` -> `@ctx(irq)`
+  - `@noirq` -> `@ctx(thread, boot)`
+  - `@alloc` -> `@eff(alloc)`
+  - `@block` -> `@eff(block)`
+  - `@preempt_off` -> `@eff(preempt_off)`
+- Rejected legacy control-point spellings should also point to the canonical replacement:
+  - `@yieldpoint` -> `yieldpoint()`
 - `@critical` is a whole-function attribute; `critical { ... }` is the canonical block-scoped critical-region form.
 - `extern` declarations should use the canonical fact skeleton:
   - `extern @ctx(...) @eff(...) @caps() fn name();`

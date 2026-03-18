@@ -788,6 +788,15 @@ fn canonical_spelling_help(spelling: &str, classification: AdaptiveAliasClassifi
     )
 }
 
+fn legacy_noncanonical_spelling_help(attr_name: &str) -> Option<&'static str> {
+    match attr_name {
+        "yieldpoint" => Some(
+            "did you mean the canonical spelling yieldpoint()? control-point markers use statement form, not attributes.",
+        ),
+        _ => None,
+    }
+}
+
 fn extern_template_help(name: &str) -> String {
     format!(
         "use the canonical extern skeleton: extern @ctx(...) @eff(...) @caps() fn {}();",
@@ -1697,12 +1706,16 @@ fn normalize_function_facts(
                         }
                     }
                 } else {
-                    errors.push(format_attr_diagnostic(
-                        item,
-                        attr,
-                        &format!("unknown attribute '@{}' on function '{}'", other, item.name),
-                        None,
-                    ));
+                    let help = legacy_noncanonical_spelling_help(other);
+                    let message = if help.is_some() {
+                        format!(
+                            "legacy spelling '@{}' is non-canonical and is not accepted on function '{}'",
+                            other, item.name
+                        )
+                    } else {
+                        format!("unknown attribute '@{}' on function '{}'", other, item.name)
+                    };
+                    errors.push(format_attr_diagnostic(item, attr, &message, help));
                 }
             }
         }
@@ -2974,6 +2987,18 @@ mod tests {
             experimental_errs,
             vec![
                 "surface feature '@irq_legacy' is a deprecated alias and is unavailable under --surface experimental for 'legacy_isr' at 1:1\n  1 | @irq_legacy fn legacy_isr() { }\n  = help: did you mean the canonical spelling @ctx(irq)? this deprecated alias is kept only for migration guidance."
+            ]
+        );
+    }
+
+    #[test]
+    fn legacy_noncanonical_yieldpoint_attribute_reports_canonical_replacement() {
+        let ast = parse_module("@yieldpoint fn pump() { }").expect("parse");
+        let errs = lower_to_krir(&ast).expect_err("legacy attribute must reject");
+        assert_eq!(
+            errs,
+            vec![
+                "legacy spelling '@yieldpoint' is non-canonical and is not accepted on function 'pump' at 1:1\n  1 | @yieldpoint fn pump() { }\n  = help: did you mean the canonical spelling yieldpoint()? control-point markers use statement form, not attributes."
             ]
         );
     }
