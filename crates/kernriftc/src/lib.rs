@@ -43,6 +43,7 @@ pub struct CanonicalFixPreviewResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CanonicalFixSourceResult {
     pub changed: bool,
+    pub original_source: String,
     pub rewritten_source: String,
     pub rewrites: Vec<FrontendCanonicalRewrite>,
 }
@@ -274,6 +275,7 @@ fn canonical_fix_source_with_surface(
     if rewrites.is_empty() {
         return Ok(CanonicalFixSourceResult {
             changed: false,
+            original_source: src.to_string(),
             rewritten_source: src.to_string(),
             rewrites: Vec::new(),
         });
@@ -291,6 +293,7 @@ fn canonical_fix_source_with_surface(
 
     Ok(CanonicalFixSourceResult {
         changed: true,
+        original_source: src.to_string(),
         rewritten_source: rewritten,
         rewrites,
     })

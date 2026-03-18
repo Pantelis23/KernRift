@@ -90,6 +90,7 @@ struct FixArgs {
     write: bool,
     dry_run: bool,
     stdout: bool,
+    diff: bool,
     format: FixFormat,
     input_path: String,
 }
@@ -500,6 +501,7 @@ fn parse_fix_args(args: &[String]) -> Result<FixArgs, String> {
     let mut write = false;
     let mut dry_run = false;
     let mut stdout = false;
+    let mut diff = false;
     let mut format = FixFormat::Text;
     let mut format_set = false;
     let mut input_path = None::<String>;
@@ -554,6 +556,12 @@ fn parse_fix_args(args: &[String]) -> Result<FixArgs, String> {
                 }
                 stdout = true;
             }
+            "--diff" => {
+                if diff {
+                    return Err("invalid fix mode: duplicate --diff".to_string());
+                }
+                diff = true;
+            }
             other if other.starts_with('-') => {
                 return Err(format!("invalid fix mode: unexpected argument '{}'", other));
             }
@@ -581,14 +589,25 @@ fn parse_fix_args(args: &[String]) -> Result<FixArgs, String> {
     if stdout && dry_run {
         return Err("invalid fix mode: --stdout cannot be combined with --dry-run".to_string());
     }
-    if !write && !dry_run && !stdout {
+    if diff && write {
+        return Err("invalid fix mode: --diff cannot be combined with --write".to_string());
+    }
+    if diff && dry_run {
+        return Err("invalid fix mode: --diff cannot be combined with --dry-run".to_string());
+    }
+    if diff && stdout {
+        return Err("invalid fix mode: --diff cannot be combined with --stdout".to_string());
+    }
+    if !write && !dry_run && !stdout && !diff {
         return Err(
-            "invalid fix mode: exactly one of --write, --dry-run, or --stdout must be specified"
-                .to_string(),
+            "invalid fix mode: exactly one of --write, --dry-run, --stdout, or --diff must be specified".to_string(),
         );
     }
     if stdout && format_set {
         return Err("invalid fix mode: --stdout does not accept --format".to_string());
+    }
+    if diff && format_set {
+        return Err("invalid fix mode: --diff does not accept --format".to_string());
     }
 
     let Some(input_path) = input_path else {
@@ -601,6 +620,7 @@ fn parse_fix_args(args: &[String]) -> Result<FixArgs, String> {
         write,
         dry_run,
         stdout,
+        diff,
         format,
         input_path,
     })
@@ -739,7 +759,7 @@ fn run_canonical_edit_preview(args: &MigratePreviewArgs) -> ExitCode {
 fn run_fix(args: &FixArgs) -> ExitCode {
     debug_assert!(args.canonical);
     debug_assert_eq!(
-        [args.write, args.dry_run, args.stdout]
+        [args.write, args.dry_run, args.stdout, args.diff]
             .into_iter()
             .filter(|enabled| *enabled)
             .count(),
@@ -751,6 +771,9 @@ fn run_fix(args: &FixArgs) -> ExitCode {
     }
     if args.stdout {
         return run_fix_stdout(args);
+    }
+    if args.diff {
+        return run_fix_diff(args);
     }
 
     let result = match canonical_fix_file_with_surface(Path::new(&args.input_path), args.surface) {
@@ -798,6 +821,21 @@ fn run_fix_stdout(args: &FixArgs) -> ExitCode {
         };
 
     emit_canonical_fix_stdout(&result);
+    ExitCode::SUCCESS
+}
+
+fn run_fix_diff(args: &FixArgs) -> ExitCode {
+    debug_assert!(args.diff);
+    let result =
+        match canonical_fix_source_file_with_surface(Path::new(&args.input_path), args.surface) {
+            Ok(result) => result,
+            Err(errs) => {
+                print_errors(&errs);
+                return ExitCode::from(1);
+            }
+        };
+
+    emit_canonical_fix_diff(&result);
     ExitCode::SUCCESS
 }
 
@@ -950,6 +988,56 @@ fn emit_canonical_fix_preview_json(
 
 fn emit_canonical_fix_stdout(result: &CanonicalFixSourceResult) {
     print!("{}", result.rewritten_source);
+}
+
+fn emit_canonical_fix_diff(result: &CanonicalFixSourceResult) {
+    if !result.changed {
+        return;
+    }
+
+    let diff = render_full_file_unified_diff(&result.original_source, &result.rewritten_source);
+    print!("{}", diff);
+}
+
+fn render_full_file_unified_diff(original_source: &str, rewritten_source: &str) -> String {
+    let old_lines = split_diff_lines(original_source);
+    let new_lines = split_diff_lines(rewritten_source);
+
+    let old_count = old_lines.len();
+    let new_count = new_lines.len();
+    let old_start = if old_count == 0 { 0 } else { 1 };
+    let new_start = if new_count == 0 { 0 } else { 1 };
+
+    let mut out = String::new();
+    out.push_str("--- original\n");
+    out.push_str("+++ canonical\n");
+    out.push_str(&format!(
+        "@@ -{},{} +{},{} @@\n",
+        old_start, old_count, new_start, new_count
+    ));
+    for line in old_lines {
+        out.push('-');
+        out.push_str(line);
+        if !line.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    for line in new_lines {
+        out.push('+');
+        out.push_str(line);
+        if !line.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    out
+}
+
+fn split_diff_lines(src: &str) -> Vec<&str> {
+    if src.is_empty() {
+        Vec::new()
+    } else {
+        src.split_inclusive('\n').collect()
+    }
 }
 
 fn run_selftest() -> ExitCode {
@@ -1483,6 +1571,8 @@ fn print_usage() {
     eprintln!("  kernriftc fix --canonical --dry-run --format json <file.kr>");
     eprintln!("  kernriftc fix --canonical --stdout <file.kr>");
     eprintln!("  kernriftc fix --canonical --stdout --surface experimental <file.kr>");
+    eprintln!("  kernriftc fix --canonical --diff <file.kr>");
+    eprintln!("  kernriftc fix --canonical --diff --surface experimental <file.kr>");
     eprintln!("  kernriftc inspect --contracts <contracts.json>");
     eprintln!("  kernriftc inspect-report --report <verify-report.json>");
     eprintln!("  kernriftc inspect-artifact <artifact-path>");
