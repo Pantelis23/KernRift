@@ -63,7 +63,8 @@ impl AdaptiveFeatureStatus {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AdaptiveAliasClassification {
     CompatibilityAlias,
     DeprecatedAlias,
@@ -170,7 +171,7 @@ pub struct FrontendMigrationPreviewEntry {
     pub enabled_under_surface: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FrontendCanonicalFinding {
     pub function_name: String,
     pub classification: AdaptiveAliasClassification,

@@ -5,9 +5,10 @@ use base64::Engine;
 use ed25519_dalek::Signer;
 use emit::{ContractsSchema as EmitContractsSchema, emit_contracts_json_canonical_with_schema};
 use kernriftc::{
-    analyze, canonical_check_file_with_surface, check_file_with_surface, check_module,
-    compile_file_with_surface,
+    FrontendCanonicalFinding, SurfaceProfile, analyze, canonical_check_file_with_surface,
+    check_file_with_surface, check_module, compile_file_with_surface,
 };
+use serde::Serialize;
 
 use super::args::{CheckArgs, CheckProfile, ContractsSchemaArg, PolicyOutputFormat};
 use super::crypto::{load_signing_key_hex, sha256_hex};
@@ -183,14 +184,15 @@ fn run_canonical_check(args: &CheckArgs) -> ExitCode {
     };
 
     let finding_count = findings.len();
-    println!("surface: {}", args.surface.as_str());
-    println!("canonical_findings: {}", finding_count);
-    for finding in findings {
-        println!("function: {}", finding.function_name);
-        println!("classification: {}", finding.classification.as_str());
-        println!("surface_form: @{}", finding.surface_form);
-        println!("canonical_replacement: {}", finding.canonical_replacement);
-        println!("migration_safe: {}", finding.migration_safe);
+    match args.format {
+        PolicyOutputFormat::Text => print_canonical_findings_text(args.surface, &findings),
+        PolicyOutputFormat::Json => match emit_canonical_findings_json(args.surface, &findings) {
+            Ok(text) => print!("{}", text),
+            Err(err) => {
+                eprintln!("failed to serialize canonical findings JSON: {}", err);
+                return ExitCode::from(EXIT_INVALID_INPUT);
+            }
+        },
     }
 
     if finding_count == 0 {
@@ -198,6 +200,61 @@ fn run_canonical_check(args: &CheckArgs) -> ExitCode {
     } else {
         ExitCode::from(EXIT_POLICY_VIOLATION)
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CanonicalFindingsJsonReport<'a> {
+    schema_version: &'static str,
+    surface: &'static str,
+    canonical_findings: usize,
+    findings: Vec<CanonicalFindingJson<'a>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CanonicalFindingJson<'a> {
+    function: &'a str,
+    classification: &'a str,
+    surface_form: String,
+    canonical_replacement: &'a str,
+    migration_safe: bool,
+}
+
+const CANONICAL_FINDINGS_SCHEMA_VERSION: &str = "kernrift_canonical_findings_v1";
+
+fn print_canonical_findings_text(surface: SurfaceProfile, findings: &[FrontendCanonicalFinding]) {
+    println!("surface: {}", surface.as_str());
+    println!("canonical_findings: {}", findings.len());
+    for finding in findings {
+        println!("function: {}", finding.function_name);
+        println!("classification: {}", finding.classification.as_str());
+        println!("surface_form: @{}", finding.surface_form);
+        println!("canonical_replacement: {}", finding.canonical_replacement);
+        println!("migration_safe: {}", finding.migration_safe);
+    }
+}
+
+fn emit_canonical_findings_json(
+    surface: SurfaceProfile,
+    findings: &[FrontendCanonicalFinding],
+) -> Result<String, serde_json::Error> {
+    let report = CanonicalFindingsJsonReport {
+        schema_version: CANONICAL_FINDINGS_SCHEMA_VERSION,
+        surface: surface.as_str(),
+        canonical_findings: findings.len(),
+        findings: findings
+            .iter()
+            .map(|finding| CanonicalFindingJson {
+                function: &finding.function_name,
+                classification: finding.classification.as_str(),
+                surface_form: format!("@{}", finding.surface_form),
+                canonical_replacement: finding.canonical_replacement,
+                migration_safe: finding.migration_safe,
+            })
+            .collect(),
+    };
+    let mut text = serde_json::to_string_pretty(&report)?;
+    text.push('\n');
+    Ok(text)
 }
 
 fn resolve_contracts_schema(

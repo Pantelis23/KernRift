@@ -247,8 +247,7 @@ pub(crate) fn parse_check_args(args: &[String]) -> Result<CheckArgs, String> {
     }
 
     if canonical
-        && (format_set
-            || profile.is_some()
+        && (profile.is_some()
             || contracts_schema.is_some()
             || contracts_out.is_some()
             || policy_path.is_some()
@@ -257,7 +256,7 @@ pub(crate) fn parse_check_args(args: &[String]) -> Result<CheckArgs, String> {
             || sig_out.is_some())
     {
         return Err(
-            "invalid check mode: --canonical cannot be combined with --format, --profile, --contracts-schema, --contracts-out, --policy, --hash-out, --sign-ed25519, or --sig-out"
+            "invalid check mode: --canonical cannot be combined with --profile, --contracts-schema, --contracts-out, --policy, --hash-out, --sign-ed25519, or --sig-out"
                 .to_string(),
         );
     }

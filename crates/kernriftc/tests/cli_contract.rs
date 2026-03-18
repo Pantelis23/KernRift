@@ -19,6 +19,8 @@ const CONTRACTS_SCHEMA_V2: &str =
     include_str!("../../../docs/schemas/kernrift_contracts_v2.schema.json");
 const POLICY_VIOLATIONS_SCHEMA_V1: &str =
     include_str!("../../../docs/schemas/kernrift_policy_violations_v1.schema.json");
+const CANONICAL_FINDINGS_SCHEMA_V1: &str =
+    include_str!("../../../docs/schemas/kernrift_canonical_findings_v1.schema.json");
 const VERIFY_REPORT_SCHEMA_V1: &str =
     include_str!("../../../docs/schemas/kernrift_verify_report_v1.schema.json");
 const ADAPTIVE_OS_CONTEXT_TEXT: &str = include_str!("../../../docs/ADAPTIVE_OS_CONTEXT.md");
@@ -93,6 +95,7 @@ fn structured_output_command_matrix_spec_lists_current_json_capable_commands() {
         "kernriftc verify-artifact-meta --format json <artifact> <meta.json>",
         "kernriftc policy --format json --policy <policy.toml> --contracts <contracts.json>",
         "kernriftc check --format json --policy <policy.toml> <file.kr>",
+        "kernriftc check --canonical --format json <file.kr>",
     ] {
         assert!(
             KRIR_SPEC_TEXT.contains(surface),
@@ -104,6 +107,7 @@ fn structured_output_command_matrix_spec_lists_current_json_capable_commands() {
         "kernrift_inspect_artifact_v1",
         "kernrift_verify_artifact_meta_v1",
         "kernrift_policy_violations_v1",
+        "kernrift_canonical_findings_v1",
     ] {
         assert!(
             KRIR_SPEC_TEXT.contains(schema),
@@ -124,6 +128,7 @@ fn structured_output_test_coverage_matrix_spec_lists_current_json_capable_comman
         "kernriftc verify-artifact-meta --format json <artifact> <meta.json>",
         "kernriftc policy --format json --policy <policy.toml> --contracts <contracts.json>",
         "kernriftc check --format json --policy <policy.toml> <file.kr>",
+        "kernriftc check --canonical --format json <file.kr>",
     ] {
         assert!(
             KRIR_SPEC_TEXT.contains(surface),
@@ -611,6 +616,7 @@ fn usage_includes_artifact_json_consumer_commands() {
     ));
     assert!(stderr.contains("kernriftc check --format json --policy <policy.toml> <file.kr>"));
     assert!(stderr.contains("kernriftc check --canonical <file.kr>"));
+    assert!(stderr.contains("kernriftc check --canonical --format json <file.kr>"));
 }
 
 #[test]
@@ -4190,6 +4196,32 @@ fn check_canonical_reports_legacy_unary_shorthands_exactly() {
 }
 
 #[test]
+fn check_canonical_json_reports_legacy_unary_shorthands_exactly() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("living_compiler")
+        .join("migration_preview_legacy_unary.kr");
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--canonical")
+        .arg("--format")
+        .arg("json")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_json_transport(&stdout, &stderr, "kernrift_canonical_findings_v1");
+    let json: Value = serde_json::from_str(&stdout).expect("json stdout");
+    validate_canonical_findings_schema(&json);
+    assert_eq!(
+        stdout,
+        "{\n  \"schema_version\": \"kernrift_canonical_findings_v1\",\n  \"surface\": \"stable\",\n  \"canonical_findings\": 5,\n  \"findings\": [\n    {\n      \"function\": \"alloc_worker\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@alloc\",\n      \"canonical_replacement\": \"@eff(alloc)\",\n      \"migration_safe\": true\n    },\n    {\n      \"function\": \"block_worker\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@block\",\n      \"canonical_replacement\": \"@eff(block)\",\n      \"migration_safe\": true\n    },\n    {\n      \"function\": \"irq_entry\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@irq\",\n      \"canonical_replacement\": \"@ctx(irq)\",\n      \"migration_safe\": true\n    },\n    {\n      \"function\": \"noirq_worker\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@noirq\",\n      \"canonical_replacement\": \"@ctx(thread, boot)\",\n      \"migration_safe\": true\n    },\n    {\n      \"function\": \"preempt_guarded\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@preempt_off\",\n      \"canonical_replacement\": \"@eff(preempt_off)\",\n      \"migration_safe\": true\n    }\n  ]\n}\n"
+    );
+}
+
+#[test]
 fn check_canonical_reports_accepted_aliases_under_experimental_surface() {
     let root = repo_root();
     let fixture = root
@@ -4235,6 +4267,34 @@ fn check_canonical_reports_accepted_aliases_under_experimental_surface() {
 }
 
 #[test]
+fn check_canonical_json_reports_accepted_aliases_under_experimental_surface() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("living_compiler")
+        .join("canonical_check_aliases.kr");
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--canonical")
+        .arg("--format")
+        .arg("json")
+        .arg("--surface")
+        .arg("experimental")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_json_transport(&stdout, &stderr, "kernrift_canonical_findings_v1");
+    let json: Value = serde_json::from_str(&stdout).expect("json stdout");
+    validate_canonical_findings_schema(&json);
+    assert_eq!(
+        stdout,
+        "{\n  \"schema_version\": \"kernrift_canonical_findings_v1\",\n  \"surface\": \"experimental\",\n  \"canonical_findings\": 3,\n  \"findings\": [\n    {\n      \"function\": \"blocker\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@may_block\",\n      \"canonical_replacement\": \"@eff(block)\",\n      \"migration_safe\": true\n    },\n    {\n      \"function\": \"isr\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@irq_handler\",\n      \"canonical_replacement\": \"@ctx(irq)\",\n      \"migration_safe\": true\n    },\n    {\n      \"function\": \"worker\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@thread_entry\",\n      \"canonical_replacement\": \"@ctx(thread)\",\n      \"migration_safe\": true\n    }\n  ]\n}\n"
+    );
+}
+
+#[test]
 fn check_canonical_succeeds_cleanly_for_canonical_source() {
     let root = repo_root();
     let fixture = root.join("tests").join("must_pass").join("basic.kr");
@@ -4257,6 +4317,29 @@ fn check_canonical_succeeds_cleanly_for_canonical_source() {
 }
 
 #[test]
+fn check_canonical_json_succeeds_cleanly_for_canonical_source() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--canonical")
+        .arg("--format")
+        .arg("json")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_json_transport(&stdout, &stderr, "kernrift_canonical_findings_v1");
+    let json: Value = serde_json::from_str(&stdout).expect("json stdout");
+    validate_canonical_findings_schema(&json);
+    assert_eq!(
+        stdout,
+        "{\n  \"schema_version\": \"kernrift_canonical_findings_v1\",\n  \"surface\": \"stable\",\n  \"canonical_findings\": 0,\n  \"findings\": []\n}\n"
+    );
+}
+
+#[test]
 fn check_canonical_rejects_policy_and_output_flags() {
     let root = repo_root();
     let fixture = root.join("tests").join("must_pass").join("basic.kr");
@@ -4272,9 +4355,42 @@ fn check_canonical_rejects_policy_and_output_flags() {
     assert_eq!(
         stderr.lines().next(),
         Some(
-            "invalid check mode: --canonical cannot be combined with --format, --profile, --contracts-schema, --contracts-out, --policy, --hash-out, --sign-ed25519, or --sig-out"
+            "invalid check mode: --canonical cannot be combined with --profile, --contracts-schema, --contracts-out, --policy, --hash-out, --sign-ed25519, or --sig-out"
         )
     );
+}
+
+#[test]
+fn canonical_findings_json_schema_accepts_empty_and_nonempty_reports() {
+    let compiled = compile_canonical_findings_schema();
+    for instance in [
+        json!({
+            "schema_version": "kernrift_canonical_findings_v1",
+            "surface": "stable",
+            "canonical_findings": 0,
+            "findings": []
+        }),
+        json!({
+            "schema_version": "kernrift_canonical_findings_v1",
+            "surface": "experimental",
+            "canonical_findings": 1,
+            "findings": [{
+                "function": "helper",
+                "classification": "compatibility_alias",
+                "surface_form": "@irq_handler",
+                "canonical_replacement": "@ctx(irq)",
+                "migration_safe": true
+            }]
+        }),
+    ] {
+        if let Err(errors) = compiled.validate(&instance) {
+            let details = errors.map(|e| e.to_string()).collect::<Vec<_>>();
+            panic!(
+                "canonical findings JSON must validate against canonical findings v1 schema: {}",
+                details.join(" | ")
+            );
+        }
+    }
 }
 
 #[test]
@@ -9274,12 +9390,29 @@ fn compile_policy_violations_schema() -> JSONSchema {
     JSONSchema::compile(&schema_json).expect("compile schema")
 }
 
+fn compile_canonical_findings_schema() -> JSONSchema {
+    let schema_json: Value =
+        serde_json::from_str(CANONICAL_FINDINGS_SCHEMA_V1).expect("schema json");
+    JSONSchema::compile(&schema_json).expect("compile schema")
+}
+
 fn validate_policy_violations_schema(instance: &Value) {
     let compiled = compile_policy_violations_schema();
     if let Err(errors) = compiled.validate(instance) {
         let details = errors.map(|e| e.to_string()).collect::<Vec<_>>();
         panic!(
             "policy JSON must validate against policy violations v1 schema: {}",
+            details.join(" | ")
+        );
+    }
+}
+
+fn validate_canonical_findings_schema(instance: &Value) {
+    let compiled = compile_canonical_findings_schema();
+    if let Err(errors) = compiled.validate(instance) {
+        let details = errors.map(|e| e.to_string()).collect::<Vec<_>>();
+        panic!(
+            "canonical findings JSON must validate against canonical findings v1 schema: {}",
             details.join(" | ")
         );
     }
