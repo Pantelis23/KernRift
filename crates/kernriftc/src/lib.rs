@@ -219,7 +219,7 @@ pub fn canonical_fix_file_with_surface(
 ) -> Result<CanonicalFixResult, Vec<String>> {
     let src = std::fs::read_to_string(path)
         .map_err(|e| vec![format!("failed to read '{}': {}", path.display(), e)])?;
-    let result = canonical_fix_source_with_surface(&src, surface_profile)?;
+    let result = canonical_fix_source_text_with_surface(&src, surface_profile)?;
 
     if !result.changed {
         return Ok(CanonicalFixResult {
@@ -242,7 +242,7 @@ pub fn canonical_fix_source_file_with_surface(
 ) -> Result<CanonicalFixSourceResult, Vec<String>> {
     let src = std::fs::read_to_string(path)
         .map_err(|e| vec![format!("failed to read '{}': {}", path.display(), e)])?;
-    canonical_fix_source_with_surface(&src, surface_profile)
+    canonical_fix_source_text_with_surface(&src, surface_profile)
 }
 
 pub fn canonical_fix_preview_file_with_surface(
@@ -266,7 +266,7 @@ fn canonical_rewrites_for_source_with_surface(
     Ok(frontend_canonical_rewrites(&ast, surface_profile))
 }
 
-fn canonical_fix_source_with_surface(
+pub fn canonical_fix_source_text_with_surface(
     src: &str,
     surface_profile: SurfaceProfile,
 ) -> Result<CanonicalFixSourceResult, Vec<String>> {
