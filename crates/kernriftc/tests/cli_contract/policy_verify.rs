@@ -1288,6 +1288,42 @@ fn check_json_policy_irq_raw_mmio_allowlist_helper_path_matches_policy_json_cont
 }
 
 #[test]
+fn check_json_policy_rejects_missing_policy_file_without_emitting_json() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("raw_mmio_with_cap.kr");
+    let missing_policy_path =
+        unique_temp_output_path("check-policy-json-missing-policy-file", "toml");
+    fs::remove_file(&missing_policy_path).ok();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("check")
+        .arg("--format")
+        .arg("json")
+        .arg("--policy")
+        .arg(missing_policy_path.as_os_str())
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(2);
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stdout.is_empty(),
+        "check json policy invalid input must not emit stdout payload: {:?}",
+        stdout
+    );
+    assert!(
+        stderr.lines().next().is_some_and(|line| line.starts_with(&format!(
+            "failed to read policy '{}':",
+            missing_policy_path.display()
+        ))),
+        "expected missing-policy read error, got: {stderr}"
+    );
+}
+
+#[test]
 fn policy_irq_raw_mmio_symbol_allowlist_does_not_affect_structured_irq_mmio() {
     let root = repo_root();
     let fixture = root
