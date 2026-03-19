@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use assert_cmd::Command;
+use assert_cmd::assert::Assert;
 use assert_cmd::cargo::cargo_bin_cmd;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -472,6 +473,30 @@ fn write_temp_source_fixture(label: &str, src: &str) -> PathBuf {
     temp_path
 }
 
+fn living_compiler_fixture(name: &str) -> PathBuf {
+    repo_root().join("tests").join("living_compiler").join(name)
+}
+
+fn must_pass_fixture(name: &str) -> PathBuf {
+    repo_root().join("tests").join("must_pass").join(name)
+}
+
+fn fixture_text(path: &Path) -> String {
+    fs::read_to_string(path).expect("read fixture")
+}
+
+fn stdout_string(assert: &Assert) -> String {
+    String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8")
+}
+
+fn stderr_string(assert: &Assert) -> String {
+    String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8")
+}
+
+fn stdout_json(assert: &Assert) -> Value {
+    serde_json::from_slice(&assert.get_output().stdout).expect("json stdout")
+}
+
 fn normalized_lines_without_file_label(stdout: &str) -> Vec<String> {
     stdout
         .lines()
@@ -494,6 +519,123 @@ fn normalized_fix_preview_json(stdout: &str) -> Value {
     let mut value: Value = serde_json::from_str(stdout).expect("json stdout");
     value["file"] = json!("<normalized>");
     value
+}
+
+fn run_check_canonical_file(
+    root: &Path,
+    fixture: &Path,
+    surface: Option<&str>,
+    format: Option<&str>,
+) -> Assert {
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(root).arg("check").arg("--canonical");
+    if let Some(surface) = surface {
+        cmd.arg("--surface").arg(surface);
+    }
+    if let Some(format) = format {
+        cmd.arg("--format").arg(format);
+    }
+    cmd.arg(fixture.as_os_str());
+    cmd.assert()
+}
+
+fn run_check_canonical_stdin(
+    root: &Path,
+    input: &str,
+    surface: Option<&str>,
+    format: Option<&str>,
+) -> Assert {
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(root)
+        .arg("check")
+        .arg("--canonical")
+        .arg("--stdin");
+    if let Some(surface) = surface {
+        cmd.arg("--surface").arg(surface);
+    }
+    if let Some(format) = format {
+        cmd.arg("--format").arg(format);
+    }
+    cmd.write_stdin(input).assert()
+}
+
+fn run_fix_canonical_dry_run_file(
+    root: &Path,
+    fixture: &Path,
+    surface: Option<&str>,
+    format: Option<&str>,
+) -> Assert {
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(root)
+        .arg("fix")
+        .arg("--canonical")
+        .arg("--dry-run");
+    if let Some(surface) = surface {
+        cmd.arg("--surface").arg(surface);
+    }
+    if let Some(format) = format {
+        cmd.arg("--format").arg(format);
+    }
+    cmd.arg(fixture.as_os_str());
+    cmd.assert()
+}
+
+fn run_fix_canonical_dry_run_stdin(
+    root: &Path,
+    input: &str,
+    surface: Option<&str>,
+    format: Option<&str>,
+) -> Assert {
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(root)
+        .arg("fix")
+        .arg("--canonical")
+        .arg("--dry-run")
+        .arg("--stdin");
+    if let Some(surface) = surface {
+        cmd.arg("--surface").arg(surface);
+    }
+    if let Some(format) = format {
+        cmd.arg("--format").arg(format);
+    }
+    cmd.write_stdin(input).assert()
+}
+
+fn run_migrate_preview_canonical_edits_file(
+    root: &Path,
+    fixture: &Path,
+    surface: &str,
+    format: &str,
+) -> Assert {
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(root)
+        .arg("migrate-preview")
+        .arg("--canonical-edits")
+        .arg("--format")
+        .arg(format)
+        .arg("--surface")
+        .arg(surface)
+        .arg(fixture.as_os_str());
+    cmd.assert()
+}
+
+fn run_migrate_preview_canonical_edits_stdin(
+    root: &Path,
+    input: &str,
+    surface: &str,
+    format: Option<&str>,
+) -> Assert {
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(root)
+        .arg("migrate-preview")
+        .arg("--canonical-edits")
+        .arg("--stdin")
+        .arg("--surface")
+        .arg(surface);
+    if let Some(format) = format {
+        cmd.arg("--format").arg(format);
+    }
+    cmd.write_stdin(input).assert()
 }
 
 fn emit_backend_artifact_with_sidecar(
@@ -4313,18 +4455,12 @@ fn check_rejects_legacy_yieldpoint_attribute_with_canonical_guidance() {
 #[test]
 fn check_canonical_reports_legacy_unary_shorthands_exactly() {
     let root = repo_root();
-    let fixture = root
-        .join("tests")
-        .join("living_compiler")
-        .join("migration_preview_legacy_unary.kr");
-    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
-        .arg("check")
-        .arg("--canonical")
-        .arg(fixture.as_os_str());
-    let assert = cmd.assert().failure().code(1);
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let fixture = living_compiler_fixture("migration_preview_legacy_unary.kr");
+    let assert = run_check_canonical_file(&root, &fixture, None, None)
+        .failure()
+        .code(1);
+    let stdout = stdout_string(&assert);
+    let stderr = stderr_string(&assert);
     assert!(
         stderr.is_empty(),
         "canonical check must report via stdout only"
@@ -4366,20 +4502,12 @@ fn check_canonical_reports_legacy_unary_shorthands_exactly() {
 #[test]
 fn check_canonical_json_reports_legacy_unary_shorthands_exactly() {
     let root = repo_root();
-    let fixture = root
-        .join("tests")
-        .join("living_compiler")
-        .join("migration_preview_legacy_unary.kr");
-    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
-        .arg("check")
-        .arg("--canonical")
-        .arg("--format")
-        .arg("json")
-        .arg(fixture.as_os_str());
-    let assert = cmd.assert().failure().code(1);
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let fixture = living_compiler_fixture("migration_preview_legacy_unary.kr");
+    let assert = run_check_canonical_file(&root, &fixture, None, Some("json"))
+        .failure()
+        .code(1);
+    let stdout = stdout_string(&assert);
+    let stderr = stderr_string(&assert);
     assert_json_transport(&stdout, &stderr, "kernrift_canonical_findings_v1");
     let json: Value = serde_json::from_str(&stdout).expect("json stdout");
     validate_canonical_findings_schema(&json);
@@ -4392,20 +4520,12 @@ fn check_canonical_json_reports_legacy_unary_shorthands_exactly() {
 #[test]
 fn check_canonical_reports_accepted_aliases_under_experimental_surface() {
     let root = repo_root();
-    let fixture = root
-        .join("tests")
-        .join("living_compiler")
-        .join("canonical_check_aliases.kr");
-    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
-        .arg("check")
-        .arg("--canonical")
-        .arg("--surface")
-        .arg("experimental")
-        .arg(fixture.as_os_str());
-    let assert = cmd.assert().failure().code(1);
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let fixture = living_compiler_fixture("canonical_check_aliases.kr");
+    let assert = run_check_canonical_file(&root, &fixture, Some("experimental"), None)
+        .failure()
+        .code(1);
+    let stdout = stdout_string(&assert);
+    let stderr = stderr_string(&assert);
     assert!(
         stderr.is_empty(),
         "canonical check must report via stdout only"
@@ -4437,22 +4557,12 @@ fn check_canonical_reports_accepted_aliases_under_experimental_surface() {
 #[test]
 fn check_canonical_json_reports_accepted_aliases_under_experimental_surface() {
     let root = repo_root();
-    let fixture = root
-        .join("tests")
-        .join("living_compiler")
-        .join("canonical_check_aliases.kr");
-    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
-        .arg("check")
-        .arg("--canonical")
-        .arg("--format")
-        .arg("json")
-        .arg("--surface")
-        .arg("experimental")
-        .arg(fixture.as_os_str());
-    let assert = cmd.assert().failure().code(1);
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let fixture = living_compiler_fixture("canonical_check_aliases.kr");
+    let assert = run_check_canonical_file(&root, &fixture, Some("experimental"), Some("json"))
+        .failure()
+        .code(1);
+    let stdout = stdout_string(&assert);
+    let stderr = stderr_string(&assert);
     assert_json_transport(&stdout, &stderr, "kernrift_canonical_findings_v1");
     let json: Value = serde_json::from_str(&stdout).expect("json stdout");
     validate_canonical_findings_schema(&json);
@@ -4465,21 +4575,14 @@ fn check_canonical_json_reports_accepted_aliases_under_experimental_surface() {
 #[test]
 fn check_canonical_from_stdin_reports_legacy_unary_shorthands_exactly() {
     let root = repo_root();
-    let input = fs::read_to_string(
-        root.join("tests")
-            .join("living_compiler")
-            .join("migration_preview_legacy_unary.kr"),
-    )
-    .expect("read legacy unary fixture");
-    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
-        .arg("check")
-        .arg("--canonical")
-        .arg("--stdin")
-        .write_stdin(input);
-    let assert = cmd.assert().failure().code(1);
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let input = fixture_text(&living_compiler_fixture(
+        "migration_preview_legacy_unary.kr",
+    ));
+    let assert = run_check_canonical_stdin(&root, &input, None, None)
+        .failure()
+        .code(1);
+    let stdout = stdout_string(&assert);
+    let stderr = stderr_string(&assert);
     assert!(
         stderr.is_empty(),
         "canonical check stdin mode must report via stdout only"
@@ -4521,23 +4624,14 @@ fn check_canonical_from_stdin_reports_legacy_unary_shorthands_exactly() {
 #[test]
 fn check_canonical_json_from_stdin_reports_legacy_unary_shorthands_exactly() {
     let root = repo_root();
-    let input = fs::read_to_string(
-        root.join("tests")
-            .join("living_compiler")
-            .join("migration_preview_legacy_unary.kr"),
-    )
-    .expect("read legacy unary fixture");
-    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
-        .arg("check")
-        .arg("--canonical")
-        .arg("--stdin")
-        .arg("--format")
-        .arg("json")
-        .write_stdin(input);
-    let assert = cmd.assert().failure().code(1);
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let input = fixture_text(&living_compiler_fixture(
+        "migration_preview_legacy_unary.kr",
+    ));
+    let assert = run_check_canonical_stdin(&root, &input, None, Some("json"))
+        .failure()
+        .code(1);
+    let stdout = stdout_string(&assert);
+    let stderr = stderr_string(&assert);
     assert_json_transport(&stdout, &stderr, "kernrift_canonical_findings_v1");
     let json: Value = serde_json::from_str(&stdout).expect("json stdout");
     validate_canonical_findings_schema(&json);
@@ -4550,23 +4644,12 @@ fn check_canonical_json_from_stdin_reports_legacy_unary_shorthands_exactly() {
 #[test]
 fn check_canonical_from_stdin_reports_accepted_aliases_under_experimental_surface_exactly() {
     let root = repo_root();
-    let input = fs::read_to_string(
-        root.join("tests")
-            .join("living_compiler")
-            .join("canonical_check_aliases.kr"),
-    )
-    .expect("read alias fixture");
-    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
-        .arg("check")
-        .arg("--canonical")
-        .arg("--stdin")
-        .arg("--surface")
-        .arg("experimental")
-        .write_stdin(input);
-    let assert = cmd.assert().failure().code(1);
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let input = fixture_text(&living_compiler_fixture("canonical_check_aliases.kr"));
+    let assert = run_check_canonical_stdin(&root, &input, Some("experimental"), None)
+        .failure()
+        .code(1);
+    let stdout = stdout_string(&assert);
+    let stderr = stderr_string(&assert);
     assert!(
         stderr.is_empty(),
         "canonical check stdin mode must report via stdout only"
@@ -4598,15 +4681,10 @@ fn check_canonical_from_stdin_reports_accepted_aliases_under_experimental_surfac
 #[test]
 fn check_canonical_succeeds_cleanly_for_canonical_source() {
     let root = repo_root();
-    let fixture = root.join("tests").join("must_pass").join("basic.kr");
-    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
-        .arg("check")
-        .arg("--canonical")
-        .arg(fixture.as_os_str());
-    let assert = cmd.assert().success();
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let fixture = must_pass_fixture("basic.kr");
+    let assert = run_check_canonical_file(&root, &fixture, None, None).success();
+    let stdout = stdout_string(&assert);
+    let stderr = stderr_string(&assert);
     assert!(
         stderr.is_empty(),
         "canonical check success must keep stderr empty"
@@ -4620,17 +4698,10 @@ fn check_canonical_succeeds_cleanly_for_canonical_source() {
 #[test]
 fn check_canonical_from_stdin_succeeds_cleanly_for_canonical_source() {
     let root = repo_root();
-    let input = fs::read_to_string(root.join("tests").join("must_pass").join("basic.kr"))
-        .expect("read canonical fixture");
-    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
-        .arg("check")
-        .arg("--canonical")
-        .arg("--stdin")
-        .write_stdin(input);
-    let assert = cmd.assert().success();
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let input = fixture_text(&must_pass_fixture("basic.kr"));
+    let assert = run_check_canonical_stdin(&root, &input, None, None).success();
+    let stdout = stdout_string(&assert);
+    let stderr = stderr_string(&assert);
     assert!(
         stderr.is_empty(),
         "canonical check stdin success must keep stderr empty"
@@ -4644,17 +4715,10 @@ fn check_canonical_from_stdin_succeeds_cleanly_for_canonical_source() {
 #[test]
 fn check_canonical_json_succeeds_cleanly_for_canonical_source() {
     let root = repo_root();
-    let fixture = root.join("tests").join("must_pass").join("basic.kr");
-    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
-        .arg("check")
-        .arg("--canonical")
-        .arg("--format")
-        .arg("json")
-        .arg(fixture.as_os_str());
-    let assert = cmd.assert().success();
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let fixture = must_pass_fixture("basic.kr");
+    let assert = run_check_canonical_file(&root, &fixture, None, Some("json")).success();
+    let stdout = stdout_string(&assert);
+    let stderr = stderr_string(&assert);
     assert_json_transport(&stdout, &stderr, "kernrift_canonical_findings_v1");
     let json: Value = serde_json::from_str(&stdout).expect("json stdout");
     validate_canonical_findings_schema(&json);
@@ -4667,19 +4731,10 @@ fn check_canonical_json_succeeds_cleanly_for_canonical_source() {
 #[test]
 fn check_canonical_json_from_stdin_succeeds_cleanly_for_canonical_source() {
     let root = repo_root();
-    let input = fs::read_to_string(root.join("tests").join("must_pass").join("basic.kr"))
-        .expect("read canonical fixture");
-    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
-        .arg("check")
-        .arg("--canonical")
-        .arg("--stdin")
-        .arg("--format")
-        .arg("json")
-        .write_stdin(input);
-    let assert = cmd.assert().success();
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let input = fixture_text(&must_pass_fixture("basic.kr"));
+    let assert = run_check_canonical_stdin(&root, &input, None, Some("json")).success();
+    let stdout = stdout_string(&assert);
+    let stderr = stderr_string(&assert);
     assert_json_transport(&stdout, &stderr, "kernrift_canonical_findings_v1");
     let json: Value = serde_json::from_str(&stdout).expect("json stdout");
     validate_canonical_findings_schema(&json);
@@ -4692,36 +4747,20 @@ fn check_canonical_json_from_stdin_succeeds_cleanly_for_canonical_source() {
 #[test]
 fn check_canonical_text_file_and_stdin_are_parity_locked_for_legacy_unary() {
     let root = repo_root();
-    let fixture = root
-        .join("tests")
-        .join("living_compiler")
-        .join("migration_preview_legacy_unary.kr");
-    let input = fs::read_to_string(&fixture).expect("read legacy unary fixture");
+    let fixture = living_compiler_fixture("migration_preview_legacy_unary.kr");
+    let input = fixture_text(&fixture);
 
-    let mut file_cmd: Command = cargo_bin_cmd!("kernriftc");
-    file_cmd
-        .current_dir(&root)
-        .arg("check")
-        .arg("--canonical")
-        .arg(fixture.as_os_str());
-    let file_assert = file_cmd.assert().failure().code(1);
-    let file_stdout =
-        String::from_utf8(file_assert.get_output().stdout.clone()).expect("stdout utf8");
-    let file_stderr =
-        String::from_utf8(file_assert.get_output().stderr.clone()).expect("stderr utf8");
+    let file_assert = run_check_canonical_file(&root, &fixture, None, None)
+        .failure()
+        .code(1);
+    let file_stdout = stdout_string(&file_assert);
+    let file_stderr = stderr_string(&file_assert);
 
-    let mut stdin_cmd: Command = cargo_bin_cmd!("kernriftc");
-    stdin_cmd
-        .current_dir(&root)
-        .arg("check")
-        .arg("--canonical")
-        .arg("--stdin")
-        .write_stdin(input);
-    let stdin_assert = stdin_cmd.assert().failure().code(1);
-    let stdin_stdout =
-        String::from_utf8(stdin_assert.get_output().stdout.clone()).expect("stdout utf8");
-    let stdin_stderr =
-        String::from_utf8(stdin_assert.get_output().stderr.clone()).expect("stderr utf8");
+    let stdin_assert = run_check_canonical_stdin(&root, &input, None, None)
+        .failure()
+        .code(1);
+    let stdin_stdout = stdout_string(&stdin_assert);
+    let stdin_stderr = stderr_string(&stdin_assert);
 
     assert!(file_stderr.is_empty());
     assert!(stdin_stderr.is_empty());
@@ -4731,72 +4770,35 @@ fn check_canonical_text_file_and_stdin_are_parity_locked_for_legacy_unary() {
 #[test]
 fn check_canonical_json_file_and_stdin_are_parity_locked_for_legacy_unary() {
     let root = repo_root();
-    let fixture = root
-        .join("tests")
-        .join("living_compiler")
-        .join("migration_preview_legacy_unary.kr");
-    let input = fs::read_to_string(&fixture).expect("read legacy unary fixture");
+    let fixture = living_compiler_fixture("migration_preview_legacy_unary.kr");
+    let input = fixture_text(&fixture);
 
-    let mut file_cmd: Command = cargo_bin_cmd!("kernriftc");
-    file_cmd
-        .current_dir(&root)
-        .arg("check")
-        .arg("--canonical")
-        .arg("--format")
-        .arg("json")
-        .arg(fixture.as_os_str());
-    let file_assert = file_cmd.assert().failure().code(1);
-    let file_stdout =
-        String::from_utf8(file_assert.get_output().stdout.clone()).expect("stdout utf8");
+    let file_assert = run_check_canonical_file(&root, &fixture, None, Some("json"))
+        .failure()
+        .code(1);
+    let stdin_assert = run_check_canonical_stdin(&root, &input, None, Some("json"))
+        .failure()
+        .code(1);
 
-    let mut stdin_cmd: Command = cargo_bin_cmd!("kernriftc");
-    stdin_cmd
-        .current_dir(&root)
-        .arg("check")
-        .arg("--canonical")
-        .arg("--stdin")
-        .arg("--format")
-        .arg("json")
-        .write_stdin(input);
-    let stdin_assert = stdin_cmd.assert().failure().code(1);
-    let stdin_stdout =
-        String::from_utf8(stdin_assert.get_output().stdout.clone()).expect("stdout utf8");
-
-    let file_json: Value = serde_json::from_str(&file_stdout).expect("json stdout");
-    let stdin_json: Value = serde_json::from_str(&stdin_stdout).expect("json stdout");
+    let file_json = stdout_json(&file_assert);
+    let stdin_json = stdout_json(&stdin_assert);
     assert_eq!(file_json, stdin_json);
 }
 
 #[test]
 fn check_canonical_text_count_matches_json_count_for_legacy_unary() {
     let root = repo_root();
-    let fixture = root
-        .join("tests")
-        .join("living_compiler")
-        .join("migration_preview_legacy_unary.kr");
+    let fixture = living_compiler_fixture("migration_preview_legacy_unary.kr");
 
-    let mut text_cmd: Command = cargo_bin_cmd!("kernriftc");
-    text_cmd
-        .current_dir(&root)
-        .arg("check")
-        .arg("--canonical")
-        .arg(fixture.as_os_str());
-    let text_assert = text_cmd.assert().failure().code(1);
-    let text_stdout =
-        String::from_utf8(text_assert.get_output().stdout.clone()).expect("stdout utf8");
+    let text_assert = run_check_canonical_file(&root, &fixture, None, None)
+        .failure()
+        .code(1);
+    let text_stdout = stdout_string(&text_assert);
 
-    let mut json_cmd: Command = cargo_bin_cmd!("kernriftc");
-    json_cmd
-        .current_dir(&root)
-        .arg("check")
-        .arg("--canonical")
-        .arg("--format")
-        .arg("json")
-        .arg(fixture.as_os_str());
-    let json_assert = json_cmd.assert().failure().code(1);
-    let json_stdout =
-        String::from_utf8(json_assert.get_output().stdout.clone()).expect("stdout utf8");
-    let json: Value = serde_json::from_str(&json_stdout).expect("json stdout");
+    let json_assert = run_check_canonical_file(&root, &fixture, None, Some("json"))
+        .failure()
+        .code(1);
+    let json = stdout_json(&json_assert);
 
     assert_eq!(
         text_count_value(&text_stdout, "canonical_findings"),
@@ -4809,59 +4811,16 @@ fn check_canonical_text_count_matches_json_count_for_legacy_unary() {
 #[test]
 fn check_canonical_noop_file_and_stdin_text_and_json_are_parity_locked() {
     let root = repo_root();
-    let fixture = root.join("tests").join("must_pass").join("basic.kr");
-    let input = fs::read_to_string(&fixture).expect("read canonical fixture");
+    let fixture = must_pass_fixture("basic.kr");
+    let input = fixture_text(&fixture);
 
-    let mut file_text_cmd: Command = cargo_bin_cmd!("kernriftc");
-    file_text_cmd
-        .current_dir(&root)
-        .arg("check")
-        .arg("--canonical")
-        .arg(fixture.as_os_str());
-    let file_text = String::from_utf8(file_text_cmd.assert().success().get_output().stdout.clone())
-        .expect("stdout utf8");
+    let file_text = stdout_string(&run_check_canonical_file(&root, &fixture, None, None).success());
+    let stdin_text = stdout_string(&run_check_canonical_stdin(&root, &input, None, None).success());
 
-    let mut stdin_text_cmd: Command = cargo_bin_cmd!("kernriftc");
-    stdin_text_cmd
-        .current_dir(&root)
-        .arg("check")
-        .arg("--canonical")
-        .arg("--stdin")
-        .write_stdin(input.clone());
-    let stdin_text = String::from_utf8(
-        stdin_text_cmd
-            .assert()
-            .success()
-            .get_output()
-            .stdout
-            .clone(),
-    )
-    .expect("stdout utf8");
-
-    let mut file_json_cmd: Command = cargo_bin_cmd!("kernriftc");
-    file_json_cmd
-        .current_dir(&root)
-        .arg("check")
-        .arg("--canonical")
-        .arg("--format")
-        .arg("json")
-        .arg(fixture.as_os_str());
-    let file_json: Value =
-        serde_json::from_slice(&file_json_cmd.assert().success().get_output().stdout)
-            .expect("json stdout");
-
-    let mut stdin_json_cmd: Command = cargo_bin_cmd!("kernriftc");
-    stdin_json_cmd
-        .current_dir(&root)
-        .arg("check")
-        .arg("--canonical")
-        .arg("--stdin")
-        .arg("--format")
-        .arg("json")
-        .write_stdin(input);
-    let stdin_json: Value =
-        serde_json::from_slice(&stdin_json_cmd.assert().success().get_output().stdout)
-            .expect("json stdout");
+    let file_json =
+        stdout_json(&run_check_canonical_file(&root, &fixture, None, Some("json")).success());
+    let stdin_json =
+        stdout_json(&run_check_canonical_stdin(&root, &input, None, Some("json")).success());
 
     assert_eq!(file_text, stdin_text);
     assert_eq!(file_json, stdin_json);
@@ -5160,22 +5119,13 @@ fn fix_canonical_json_is_empty_for_canonical_source() {
 #[test]
 fn fix_canonical_dry_run_reports_legacy_unary_shorthands_exactly() {
     let root = repo_root();
-    let fixture = root
-        .join("tests")
-        .join("living_compiler")
-        .join("migration_preview_legacy_unary.kr");
+    let fixture = living_compiler_fixture("migration_preview_legacy_unary.kr");
     let temp_fixture = copy_fixture_to_temp("fix-canonical-dry-run-legacy-unary", &fixture);
     let original = fs::read_to_string(&temp_fixture).expect("read original fixture");
 
-    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
-        .arg("fix")
-        .arg("--canonical")
-        .arg("--dry-run")
-        .arg(temp_fixture.as_os_str());
-    let assert = cmd.assert().success();
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let assert = run_fix_canonical_dry_run_file(&root, &temp_fixture, None, None).success();
+    let stdout = stdout_string(&assert);
+    let stderr = stderr_string(&assert);
     assert!(
         stderr.is_empty(),
         "fix dry-run mode must keep stderr empty on success"
@@ -5212,24 +5162,13 @@ fn fix_canonical_dry_run_reports_legacy_unary_shorthands_exactly() {
 #[test]
 fn fix_canonical_dry_run_json_reports_legacy_unary_shorthands_exactly() {
     let root = repo_root();
-    let fixture = root
-        .join("tests")
-        .join("living_compiler")
-        .join("migration_preview_legacy_unary.kr");
+    let fixture = living_compiler_fixture("migration_preview_legacy_unary.kr");
     let temp_fixture = copy_fixture_to_temp("fix-canonical-dry-run-json-legacy-unary", &fixture);
     let original = fs::read_to_string(&temp_fixture).expect("read original fixture");
 
-    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
-        .arg("fix")
-        .arg("--canonical")
-        .arg("--dry-run")
-        .arg("--format")
-        .arg("json")
-        .arg(temp_fixture.as_os_str());
-    let assert = cmd.assert().success();
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let assert = run_fix_canonical_dry_run_file(&root, &temp_fixture, None, Some("json")).success();
+    let stdout = stdout_string(&assert);
+    let stderr = stderr_string(&assert);
     assert_json_transport(&stdout, &stderr, "kernrift_canonical_fix_preview_v1");
     let json: Value = serde_json::from_str(&stdout).expect("json stdout");
     validate_canonical_fix_preview_schema(&json);
@@ -5249,24 +5188,14 @@ fn fix_canonical_dry_run_json_reports_legacy_unary_shorthands_exactly() {
 #[test]
 fn fix_canonical_dry_run_reports_accepted_aliases_under_experimental_surface_exactly() {
     let root = repo_root();
-    let fixture = root
-        .join("tests")
-        .join("living_compiler")
-        .join("canonical_check_aliases.kr");
+    let fixture = living_compiler_fixture("canonical_check_aliases.kr");
     let temp_fixture = copy_fixture_to_temp("fix-canonical-dry-run-aliases", &fixture);
     let original = fs::read_to_string(&temp_fixture).expect("read original fixture");
 
-    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
-        .arg("fix")
-        .arg("--canonical")
-        .arg("--dry-run")
-        .arg("--surface")
-        .arg("experimental")
-        .arg(temp_fixture.as_os_str());
-    let assert = cmd.assert().success();
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let assert =
+        run_fix_canonical_dry_run_file(&root, &temp_fixture, Some("experimental"), None).success();
+    let stdout = stdout_string(&assert);
+    let stderr = stderr_string(&assert);
     assert!(
         stderr.is_empty(),
         "fix dry-run mode must keep stderr empty on success"
@@ -5297,26 +5226,15 @@ fn fix_canonical_dry_run_reports_accepted_aliases_under_experimental_surface_exa
 #[test]
 fn fix_canonical_dry_run_json_reports_accepted_aliases_under_experimental_surface_exactly() {
     let root = repo_root();
-    let fixture = root
-        .join("tests")
-        .join("living_compiler")
-        .join("canonical_check_aliases.kr");
+    let fixture = living_compiler_fixture("canonical_check_aliases.kr");
     let temp_fixture = copy_fixture_to_temp("fix-canonical-dry-run-json-aliases", &fixture);
     let original = fs::read_to_string(&temp_fixture).expect("read original fixture");
 
-    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
-        .arg("fix")
-        .arg("--canonical")
-        .arg("--dry-run")
-        .arg("--format")
-        .arg("json")
-        .arg("--surface")
-        .arg("experimental")
-        .arg(temp_fixture.as_os_str());
-    let assert = cmd.assert().success();
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let assert =
+        run_fix_canonical_dry_run_file(&root, &temp_fixture, Some("experimental"), Some("json"))
+            .success();
+    let stdout = stdout_string(&assert);
+    let stderr = stderr_string(&assert);
     assert_json_transport(&stdout, &stderr, "kernrift_canonical_fix_preview_v1");
     let json: Value = serde_json::from_str(&stdout).expect("json stdout");
     validate_canonical_fix_preview_schema(&json);
@@ -5336,25 +5254,11 @@ fn fix_canonical_dry_run_json_reports_accepted_aliases_under_experimental_surfac
 #[test]
 fn fix_canonical_dry_run_from_stdin_reports_accepted_aliases_under_experimental_surface_exactly() {
     let root = repo_root();
-    let input = fs::read_to_string(
-        root.join("tests")
-            .join("living_compiler")
-            .join("canonical_check_aliases.kr"),
-    )
-    .expect("read alias fixture");
-
-    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
-        .arg("fix")
-        .arg("--canonical")
-        .arg("--dry-run")
-        .arg("--stdin")
-        .arg("--surface")
-        .arg("experimental")
-        .write_stdin(input);
-    let assert = cmd.assert().success();
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let input = fixture_text(&living_compiler_fixture("canonical_check_aliases.kr"));
+    let assert =
+        run_fix_canonical_dry_run_stdin(&root, &input, Some("experimental"), None).success();
+    let stdout = stdout_string(&assert);
+    let stderr = stderr_string(&assert);
     assert!(
         stderr.is_empty(),
         "fix dry-run stdin mode must keep stderr empty on success"
@@ -5381,23 +5285,12 @@ fn fix_canonical_dry_run_from_stdin_reports_accepted_aliases_under_experimental_
 #[test]
 fn fix_canonical_dry_run_from_stdin_reports_legacy_unary_exactly() {
     let root = repo_root();
-    let input = fs::read_to_string(
-        root.join("tests")
-            .join("living_compiler")
-            .join("migration_preview_legacy_unary.kr"),
-    )
-    .expect("read legacy unary fixture");
-
-    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
-        .arg("fix")
-        .arg("--canonical")
-        .arg("--dry-run")
-        .arg("--stdin")
-        .write_stdin(input);
-    let assert = cmd.assert().success();
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let input = fixture_text(&living_compiler_fixture(
+        "migration_preview_legacy_unary.kr",
+    ));
+    let assert = run_fix_canonical_dry_run_stdin(&root, &input, None, None).success();
+    let stdout = stdout_string(&assert);
+    let stderr = stderr_string(&assert);
     assert!(
         stderr.is_empty(),
         "fix dry-run stdin mode must keep stderr empty on success"
@@ -5430,25 +5323,12 @@ fn fix_canonical_dry_run_from_stdin_reports_legacy_unary_exactly() {
 #[test]
 fn fix_canonical_dry_run_json_from_stdin_reports_legacy_unary_exactly() {
     let root = repo_root();
-    let input = fs::read_to_string(
-        root.join("tests")
-            .join("living_compiler")
-            .join("migration_preview_legacy_unary.kr"),
-    )
-    .expect("read legacy unary fixture");
-
-    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
-        .arg("fix")
-        .arg("--canonical")
-        .arg("--dry-run")
-        .arg("--stdin")
-        .arg("--format")
-        .arg("json")
-        .write_stdin(input);
-    let assert = cmd.assert().success();
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let input = fixture_text(&living_compiler_fixture(
+        "migration_preview_legacy_unary.kr",
+    ));
+    let assert = run_fix_canonical_dry_run_stdin(&root, &input, None, Some("json")).success();
+    let stdout = stdout_string(&assert);
+    let stderr = stderr_string(&assert);
     assert_json_transport(&stdout, &stderr, "kernrift_canonical_fix_preview_v1");
     let json: Value = serde_json::from_str(&stdout).expect("json stdout");
     validate_canonical_fix_preview_schema(&json);
@@ -5461,19 +5341,13 @@ fn fix_canonical_dry_run_json_from_stdin_reports_legacy_unary_exactly() {
 #[test]
 fn fix_canonical_dry_run_noops_cleanly_for_canonical_source() {
     let root = repo_root();
-    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let fixture = must_pass_fixture("basic.kr");
     let temp_fixture = copy_fixture_to_temp("fix-canonical-dry-run-noop", &fixture);
     let original = fs::read_to_string(&temp_fixture).expect("read original fixture");
 
-    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
-        .arg("fix")
-        .arg("--canonical")
-        .arg("--dry-run")
-        .arg(temp_fixture.as_os_str());
-    let assert = cmd.assert().success();
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let assert = run_fix_canonical_dry_run_file(&root, &temp_fixture, None, None).success();
+    let stdout = stdout_string(&assert);
+    let stderr = stderr_string(&assert);
     assert!(
         stderr.is_empty(),
         "fix dry-run mode must keep stderr empty on success"
@@ -5495,19 +5369,10 @@ fn fix_canonical_dry_run_noops_cleanly_for_canonical_source() {
 #[test]
 fn fix_canonical_dry_run_from_stdin_noops_cleanly_for_canonical_source() {
     let root = repo_root();
-    let input = fs::read_to_string(root.join("tests").join("must_pass").join("basic.kr"))
-        .expect("read canonical fixture");
-
-    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
-        .arg("fix")
-        .arg("--canonical")
-        .arg("--dry-run")
-        .arg("--stdin")
-        .write_stdin(input);
-    let assert = cmd.assert().success();
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let input = fixture_text(&must_pass_fixture("basic.kr"));
+    let assert = run_fix_canonical_dry_run_stdin(&root, &input, None, None).success();
+    let stdout = stdout_string(&assert);
+    let stderr = stderr_string(&assert);
     assert!(
         stderr.is_empty(),
         "fix dry-run stdin mode must keep stderr empty on success"
@@ -5521,21 +5386,13 @@ fn fix_canonical_dry_run_from_stdin_noops_cleanly_for_canonical_source() {
 #[test]
 fn fix_canonical_dry_run_json_is_empty_for_canonical_source() {
     let root = repo_root();
-    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let fixture = must_pass_fixture("basic.kr");
     let temp_fixture = copy_fixture_to_temp("fix-canonical-dry-run-json-noop", &fixture);
     let original = fs::read_to_string(&temp_fixture).expect("read original fixture");
 
-    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
-        .arg("fix")
-        .arg("--canonical")
-        .arg("--dry-run")
-        .arg("--format")
-        .arg("json")
-        .arg(temp_fixture.as_os_str());
-    let assert = cmd.assert().success();
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let assert = run_fix_canonical_dry_run_file(&root, &temp_fixture, None, Some("json")).success();
+    let stdout = stdout_string(&assert);
+    let stderr = stderr_string(&assert);
     assert_json_transport(&stdout, &stderr, "kernrift_canonical_fix_preview_v1");
     let json: Value = serde_json::from_str(&stdout).expect("json stdout");
     validate_canonical_fix_preview_schema(&json);
@@ -5555,21 +5412,10 @@ fn fix_canonical_dry_run_json_is_empty_for_canonical_source() {
 #[test]
 fn fix_canonical_dry_run_json_from_stdin_noops_cleanly_for_canonical_source() {
     let root = repo_root();
-    let input = fs::read_to_string(root.join("tests").join("must_pass").join("basic.kr"))
-        .expect("read canonical fixture");
-
-    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
-        .arg("fix")
-        .arg("--canonical")
-        .arg("--dry-run")
-        .arg("--stdin")
-        .arg("--format")
-        .arg("json")
-        .write_stdin(input);
-    let assert = cmd.assert().success();
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let input = fixture_text(&must_pass_fixture("basic.kr"));
+    let assert = run_fix_canonical_dry_run_stdin(&root, &input, None, Some("json")).success();
+    let stdout = stdout_string(&assert);
+    let stderr = stderr_string(&assert);
     assert_json_transport(&stdout, &stderr, "kernrift_canonical_fix_preview_v1");
     let json: Value = serde_json::from_str(&stdout).expect("json stdout");
     validate_canonical_fix_preview_schema(&json);
@@ -5582,55 +5428,22 @@ fn fix_canonical_dry_run_json_from_stdin_noops_cleanly_for_canonical_source() {
 #[test]
 fn fix_canonical_dry_run_json_from_stdin_uses_stdin_file_label() {
     let root = repo_root();
-    let input = fs::read_to_string(root.join("tests").join("must_pass").join("basic.kr"))
-        .expect("read canonical fixture");
-
-    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
-        .arg("fix")
-        .arg("--canonical")
-        .arg("--dry-run")
-        .arg("--stdin")
-        .arg("--format")
-        .arg("json")
-        .write_stdin(input);
-    let assert = cmd.assert().success();
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let json: Value = serde_json::from_str(&stdout).expect("json stdout");
+    let input = fixture_text(&must_pass_fixture("basic.kr"));
+    let assert = run_fix_canonical_dry_run_stdin(&root, &input, None, Some("json")).success();
+    let json = stdout_json(&assert);
     assert_eq!(json.get("file").and_then(Value::as_str), Some("<stdin>"));
 }
 
 #[test]
 fn fix_canonical_dry_run_text_file_and_stdin_are_parity_locked_for_legacy_unary() {
     let root = repo_root();
-    let fixture = root
-        .join("tests")
-        .join("living_compiler")
-        .join("migration_preview_legacy_unary.kr");
-    let input = fs::read_to_string(&fixture).expect("read legacy unary fixture");
+    let fixture = living_compiler_fixture("migration_preview_legacy_unary.kr");
+    let input = fixture_text(&fixture);
 
-    let mut file_cmd: Command = cargo_bin_cmd!("kernriftc");
-    file_cmd
-        .current_dir(&root)
-        .arg("fix")
-        .arg("--canonical")
-        .arg("--dry-run")
-        .arg(fixture.as_os_str());
-    let file_assert = file_cmd.assert().success();
     let file_stdout =
-        String::from_utf8(file_assert.get_output().stdout.clone()).expect("stdout utf8");
-
-    let mut stdin_cmd: Command = cargo_bin_cmd!("kernriftc");
-    stdin_cmd
-        .current_dir(&root)
-        .arg("fix")
-        .arg("--canonical")
-        .arg("--dry-run")
-        .arg("--stdin")
-        .write_stdin(input);
-    let stdin_assert = stdin_cmd.assert().success();
+        stdout_string(&run_fix_canonical_dry_run_file(&root, &fixture, None, None).success());
     let stdin_stdout =
-        String::from_utf8(stdin_assert.get_output().stdout.clone()).expect("stdout utf8");
+        stdout_string(&run_fix_canonical_dry_run_stdin(&root, &input, None, None).success());
 
     assert_eq!(
         normalized_lines_without_file_label(&file_stdout),
@@ -5641,38 +5454,15 @@ fn fix_canonical_dry_run_text_file_and_stdin_are_parity_locked_for_legacy_unary(
 #[test]
 fn fix_canonical_dry_run_json_file_and_stdin_are_parity_locked_for_legacy_unary() {
     let root = repo_root();
-    let fixture = root
-        .join("tests")
-        .join("living_compiler")
-        .join("migration_preview_legacy_unary.kr");
-    let input = fs::read_to_string(&fixture).expect("read legacy unary fixture");
+    let fixture = living_compiler_fixture("migration_preview_legacy_unary.kr");
+    let input = fixture_text(&fixture);
 
-    let mut file_cmd: Command = cargo_bin_cmd!("kernriftc");
-    file_cmd
-        .current_dir(&root)
-        .arg("fix")
-        .arg("--canonical")
-        .arg("--dry-run")
-        .arg("--format")
-        .arg("json")
-        .arg(fixture.as_os_str());
-    let file_assert = file_cmd.assert().success();
-    let file_stdout =
-        String::from_utf8(file_assert.get_output().stdout.clone()).expect("stdout utf8");
-
-    let mut stdin_cmd: Command = cargo_bin_cmd!("kernriftc");
-    stdin_cmd
-        .current_dir(&root)
-        .arg("fix")
-        .arg("--canonical")
-        .arg("--dry-run")
-        .arg("--stdin")
-        .arg("--format")
-        .arg("json")
-        .write_stdin(input);
-    let stdin_assert = stdin_cmd.assert().success();
-    let stdin_stdout =
-        String::from_utf8(stdin_assert.get_output().stdout.clone()).expect("stdout utf8");
+    let file_stdout = stdout_string(
+        &run_fix_canonical_dry_run_file(&root, &fixture, None, Some("json")).success(),
+    );
+    let stdin_stdout = stdout_string(
+        &run_fix_canonical_dry_run_stdin(&root, &input, None, Some("json")).success(),
+    );
 
     assert_eq!(
         normalized_fix_preview_json(&file_stdout),
@@ -5683,35 +5473,12 @@ fn fix_canonical_dry_run_json_file_and_stdin_are_parity_locked_for_legacy_unary(
 #[test]
 fn fix_canonical_dry_run_text_count_matches_json_count_for_legacy_unary() {
     let root = repo_root();
-    let fixture = root
-        .join("tests")
-        .join("living_compiler")
-        .join("migration_preview_legacy_unary.kr");
+    let fixture = living_compiler_fixture("migration_preview_legacy_unary.kr");
 
-    let mut text_cmd: Command = cargo_bin_cmd!("kernriftc");
-    text_cmd
-        .current_dir(&root)
-        .arg("fix")
-        .arg("--canonical")
-        .arg("--dry-run")
-        .arg(fixture.as_os_str());
-    let text_assert = text_cmd.assert().success();
     let text_stdout =
-        String::from_utf8(text_assert.get_output().stdout.clone()).expect("stdout utf8");
-
-    let mut json_cmd: Command = cargo_bin_cmd!("kernriftc");
-    json_cmd
-        .current_dir(&root)
-        .arg("fix")
-        .arg("--canonical")
-        .arg("--dry-run")
-        .arg("--format")
-        .arg("json")
-        .arg(fixture.as_os_str());
-    let json_assert = json_cmd.assert().success();
-    let json_stdout =
-        String::from_utf8(json_assert.get_output().stdout.clone()).expect("stdout utf8");
-    let json: Value = serde_json::from_str(&json_stdout).expect("json stdout");
+        stdout_string(&run_fix_canonical_dry_run_file(&root, &fixture, None, None).success());
+    let json =
+        stdout_json(&run_fix_canonical_dry_run_file(&root, &fixture, None, Some("json")).success());
 
     assert_eq!(
         text_count_value(&text_stdout, "rewrites_planned"),
@@ -5724,10 +5491,7 @@ fn fix_canonical_dry_run_text_count_matches_json_count_for_legacy_unary() {
 #[test]
 fn fix_canonical_non_mutating_modes_keep_source_file_unchanged() {
     let root = repo_root();
-    let fixture = root
-        .join("tests")
-        .join("living_compiler")
-        .join("migration_preview_legacy_unary.kr");
+    let fixture = living_compiler_fixture("migration_preview_legacy_unary.kr");
 
     for (label, extra_args) in [
         ("dry-run", vec!["--dry-run"]),
@@ -5756,69 +5520,20 @@ fn fix_canonical_non_mutating_modes_keep_source_file_unchanged() {
 #[test]
 fn fix_canonical_dry_run_noop_file_and_stdin_text_and_json_are_parity_locked() {
     let root = repo_root();
-    let fixture = root.join("tests").join("must_pass").join("basic.kr");
-    let input = fs::read_to_string(&fixture).expect("read canonical fixture");
+    let fixture = must_pass_fixture("basic.kr");
+    let input = fixture_text(&fixture);
 
-    let mut file_text_cmd: Command = cargo_bin_cmd!("kernriftc");
-    file_text_cmd
-        .current_dir(&root)
-        .arg("fix")
-        .arg("--canonical")
-        .arg("--dry-run")
-        .arg(fixture.as_os_str());
-    let file_text = String::from_utf8(file_text_cmd.assert().success().get_output().stdout.clone())
-        .expect("stdout utf8");
+    let file_text =
+        stdout_string(&run_fix_canonical_dry_run_file(&root, &fixture, None, None).success());
+    let stdin_text =
+        stdout_string(&run_fix_canonical_dry_run_stdin(&root, &input, None, None).success());
 
-    let mut stdin_text_cmd: Command = cargo_bin_cmd!("kernriftc");
-    stdin_text_cmd
-        .current_dir(&root)
-        .arg("fix")
-        .arg("--canonical")
-        .arg("--dry-run")
-        .arg("--stdin")
-        .write_stdin(input.clone());
-    let stdin_text = String::from_utf8(
-        stdin_text_cmd
-            .assert()
-            .success()
-            .get_output()
-            .stdout
-            .clone(),
-    )
-    .expect("stdout utf8");
-
-    let mut file_json_cmd: Command = cargo_bin_cmd!("kernriftc");
-    file_json_cmd
-        .current_dir(&root)
-        .arg("fix")
-        .arg("--canonical")
-        .arg("--dry-run")
-        .arg("--format")
-        .arg("json")
-        .arg(fixture.as_os_str());
-    let file_json_stdout =
-        String::from_utf8(file_json_cmd.assert().success().get_output().stdout.clone())
-            .expect("stdout utf8");
-
-    let mut stdin_json_cmd: Command = cargo_bin_cmd!("kernriftc");
-    stdin_json_cmd
-        .current_dir(&root)
-        .arg("fix")
-        .arg("--canonical")
-        .arg("--dry-run")
-        .arg("--stdin")
-        .arg("--format")
-        .arg("json")
-        .write_stdin(input);
-    let stdin_json_stdout = String::from_utf8(
-        stdin_json_cmd
-            .assert()
-            .success()
-            .get_output()
-            .stdout
-            .clone(),
-    )
-    .expect("stdout utf8");
+    let file_json_stdout = stdout_string(
+        &run_fix_canonical_dry_run_file(&root, &fixture, None, Some("json")).success(),
+    );
+    let stdin_json_stdout = stdout_string(
+        &run_fix_canonical_dry_run_stdin(&root, &input, None, Some("json")).success(),
+    );
 
     assert_eq!(
         normalized_lines_without_file_label(&file_text),
@@ -7863,22 +7578,11 @@ fn migrate_preview_legacy_unary_experimental_output_is_exact() {
 #[test]
 fn migrate_preview_canonical_edits_text_reports_legacy_unary_exactly() {
     let root = repo_root();
-    let fixture = root
-        .join("tests")
-        .join("living_compiler")
-        .join("migration_preview_legacy_unary.kr");
-    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
-        .arg("migrate-preview")
-        .arg("--canonical-edits")
-        .arg("--format")
-        .arg("text")
-        .arg("--surface")
-        .arg("stable")
-        .arg(fixture.as_os_str());
-    let assert = cmd.assert().success();
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let fixture = living_compiler_fixture("migration_preview_legacy_unary.kr");
+    let assert =
+        run_migrate_preview_canonical_edits_file(&root, &fixture, "stable", "text").success();
+    let stdout = stdout_string(&assert);
+    let stderr = stderr_string(&assert);
     assert!(
         stderr.is_empty(),
         "canonical edit-plan file text mode must keep stderr empty on success"
@@ -7892,23 +7596,12 @@ fn migrate_preview_canonical_edits_text_reports_legacy_unary_exactly() {
 #[test]
 fn migrate_preview_canonical_edits_from_stdin_reports_legacy_unary_exactly() {
     let root = repo_root();
-    let input = fs::read_to_string(
-        root.join("tests")
-            .join("living_compiler")
-            .join("migration_preview_legacy_unary.kr"),
-    )
-    .expect("read legacy unary fixture");
-    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
-        .arg("migrate-preview")
-        .arg("--canonical-edits")
-        .arg("--stdin")
-        .arg("--surface")
-        .arg("stable")
-        .write_stdin(input);
-    let assert = cmd.assert().success();
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let input = fixture_text(&living_compiler_fixture(
+        "migration_preview_legacy_unary.kr",
+    ));
+    let assert = run_migrate_preview_canonical_edits_stdin(&root, &input, "stable", None).success();
+    let stdout = stdout_string(&assert);
+    let stderr = stderr_string(&assert);
     assert!(
         stderr.is_empty(),
         "canonical edit-plan stdin text mode must keep stderr empty on success"
@@ -7922,22 +7615,11 @@ fn migrate_preview_canonical_edits_from_stdin_reports_legacy_unary_exactly() {
 #[test]
 fn migrate_preview_canonical_edits_json_reports_legacy_unary_exactly() {
     let root = repo_root();
-    let fixture = root
-        .join("tests")
-        .join("living_compiler")
-        .join("migration_preview_legacy_unary.kr");
-    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
-        .arg("migrate-preview")
-        .arg("--canonical-edits")
-        .arg("--format")
-        .arg("json")
-        .arg("--surface")
-        .arg("stable")
-        .arg(fixture.as_os_str());
-    let assert = cmd.assert().success();
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let fixture = living_compiler_fixture("migration_preview_legacy_unary.kr");
+    let assert =
+        run_migrate_preview_canonical_edits_file(&root, &fixture, "stable", "json").success();
+    let stdout = stdout_string(&assert);
+    let stderr = stderr_string(&assert);
     assert_json_transport(&stdout, &stderr, "kernrift_canonical_edit_plan_v1");
     let json: Value = serde_json::from_str(&stdout).expect("json stdout");
     validate_canonical_edit_plan_schema(&json);
@@ -7950,25 +7632,13 @@ fn migrate_preview_canonical_edits_json_reports_legacy_unary_exactly() {
 #[test]
 fn migrate_preview_canonical_edits_json_from_stdin_reports_legacy_unary_exactly() {
     let root = repo_root();
-    let input = fs::read_to_string(
-        root.join("tests")
-            .join("living_compiler")
-            .join("migration_preview_legacy_unary.kr"),
-    )
-    .expect("read legacy unary fixture");
-    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
-        .arg("migrate-preview")
-        .arg("--canonical-edits")
-        .arg("--stdin")
-        .arg("--format")
-        .arg("json")
-        .arg("--surface")
-        .arg("stable")
-        .write_stdin(input);
-    let assert = cmd.assert().success();
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let input = fixture_text(&living_compiler_fixture(
+        "migration_preview_legacy_unary.kr",
+    ));
+    let assert =
+        run_migrate_preview_canonical_edits_stdin(&root, &input, "stable", Some("json")).success();
+    let stdout = stdout_string(&assert);
+    let stderr = stderr_string(&assert);
     assert_json_transport(&stdout, &stderr, "kernrift_canonical_edit_plan_v1");
     let json: Value = serde_json::from_str(&stdout).expect("json stdout");
     validate_canonical_edit_plan_schema(&json);
@@ -7981,22 +7651,11 @@ fn migrate_preview_canonical_edits_json_from_stdin_reports_legacy_unary_exactly(
 #[test]
 fn migrate_preview_canonical_edits_text_reports_experimental_aliases_exactly() {
     let root = repo_root();
-    let fixture = root
-        .join("tests")
-        .join("living_compiler")
-        .join("canonical_check_aliases.kr");
-    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
-        .arg("migrate-preview")
-        .arg("--canonical-edits")
-        .arg("--format")
-        .arg("text")
-        .arg("--surface")
-        .arg("experimental")
-        .arg(fixture.as_os_str());
-    let assert = cmd.assert().success();
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let fixture = living_compiler_fixture("canonical_check_aliases.kr");
+    let assert =
+        run_migrate_preview_canonical_edits_file(&root, &fixture, "experimental", "text").success();
+    let stdout = stdout_string(&assert);
+    let stderr = stderr_string(&assert);
     assert!(
         stderr.is_empty(),
         "canonical edit-plan file text mode must keep stderr empty on success"
@@ -8010,23 +7669,11 @@ fn migrate_preview_canonical_edits_text_reports_experimental_aliases_exactly() {
 #[test]
 fn migrate_preview_canonical_edits_from_stdin_reports_experimental_aliases_exactly() {
     let root = repo_root();
-    let input = fs::read_to_string(
-        root.join("tests")
-            .join("living_compiler")
-            .join("canonical_check_aliases.kr"),
-    )
-    .expect("read alias fixture");
-    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
-        .arg("migrate-preview")
-        .arg("--canonical-edits")
-        .arg("--stdin")
-        .arg("--surface")
-        .arg("experimental")
-        .write_stdin(input);
-    let assert = cmd.assert().success();
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let input = fixture_text(&living_compiler_fixture("canonical_check_aliases.kr"));
+    let assert =
+        run_migrate_preview_canonical_edits_stdin(&root, &input, "experimental", None).success();
+    let stdout = stdout_string(&assert);
+    let stderr = stderr_string(&assert);
     assert!(
         stderr.is_empty(),
         "canonical edit-plan stdin text mode must keep stderr empty on success"
@@ -8040,22 +7687,11 @@ fn migrate_preview_canonical_edits_from_stdin_reports_experimental_aliases_exact
 #[test]
 fn migrate_preview_canonical_edits_json_reports_experimental_aliases_exactly() {
     let root = repo_root();
-    let fixture = root
-        .join("tests")
-        .join("living_compiler")
-        .join("canonical_check_aliases.kr");
-    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
-        .arg("migrate-preview")
-        .arg("--canonical-edits")
-        .arg("--format")
-        .arg("json")
-        .arg("--surface")
-        .arg("experimental")
-        .arg(fixture.as_os_str());
-    let assert = cmd.assert().success();
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let fixture = living_compiler_fixture("canonical_check_aliases.kr");
+    let assert =
+        run_migrate_preview_canonical_edits_file(&root, &fixture, "experimental", "json").success();
+    let stdout = stdout_string(&assert);
+    let stderr = stderr_string(&assert);
     assert_json_transport(&stdout, &stderr, "kernrift_canonical_edit_plan_v1");
     let json: Value = serde_json::from_str(&stdout).expect("json stdout");
     validate_canonical_edit_plan_schema(&json);
@@ -8068,25 +7704,12 @@ fn migrate_preview_canonical_edits_json_reports_experimental_aliases_exactly() {
 #[test]
 fn migrate_preview_canonical_edits_json_from_stdin_reports_experimental_aliases_exactly() {
     let root = repo_root();
-    let input = fs::read_to_string(
-        root.join("tests")
-            .join("living_compiler")
-            .join("canonical_check_aliases.kr"),
-    )
-    .expect("read alias fixture");
-    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
-        .arg("migrate-preview")
-        .arg("--canonical-edits")
-        .arg("--stdin")
-        .arg("--format")
-        .arg("json")
-        .arg("--surface")
-        .arg("experimental")
-        .write_stdin(input);
-    let assert = cmd.assert().success();
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let input = fixture_text(&living_compiler_fixture("canonical_check_aliases.kr"));
+    let assert =
+        run_migrate_preview_canonical_edits_stdin(&root, &input, "experimental", Some("json"))
+            .success();
+    let stdout = stdout_string(&assert);
+    let stderr = stderr_string(&assert);
     assert_json_transport(&stdout, &stderr, "kernrift_canonical_edit_plan_v1");
     let json: Value = serde_json::from_str(&stdout).expect("json stdout");
     validate_canonical_edit_plan_schema(&json);
@@ -8099,19 +7722,11 @@ fn migrate_preview_canonical_edits_json_from_stdin_reports_experimental_aliases_
 #[test]
 fn migrate_preview_canonical_edits_text_is_empty_for_canonical_source() {
     let root = repo_root();
-    let fixture = root.join("tests").join("must_pass").join("basic.kr");
-    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
-        .arg("migrate-preview")
-        .arg("--canonical-edits")
-        .arg("--format")
-        .arg("text")
-        .arg("--surface")
-        .arg("stable")
-        .arg(fixture.as_os_str());
-    let assert = cmd.assert().success();
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let fixture = must_pass_fixture("basic.kr");
+    let assert =
+        run_migrate_preview_canonical_edits_file(&root, &fixture, "stable", "text").success();
+    let stdout = stdout_string(&assert);
+    let stderr = stderr_string(&assert);
     assert!(
         stderr.is_empty(),
         "canonical edit-plan file text mode must keep stderr empty on success"
@@ -8122,19 +7737,10 @@ fn migrate_preview_canonical_edits_text_is_empty_for_canonical_source() {
 #[test]
 fn migrate_preview_canonical_edits_from_stdin_is_empty_for_canonical_source() {
     let root = repo_root();
-    let input = fs::read_to_string(root.join("tests").join("must_pass").join("basic.kr"))
-        .expect("read canonical fixture");
-    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
-        .arg("migrate-preview")
-        .arg("--canonical-edits")
-        .arg("--stdin")
-        .arg("--surface")
-        .arg("stable")
-        .write_stdin(input);
-    let assert = cmd.assert().success();
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let input = fixture_text(&must_pass_fixture("basic.kr"));
+    let assert = run_migrate_preview_canonical_edits_stdin(&root, &input, "stable", None).success();
+    let stdout = stdout_string(&assert);
+    let stderr = stderr_string(&assert);
     assert!(
         stderr.is_empty(),
         "canonical edit-plan stdin text mode must keep stderr empty on success"
@@ -8145,19 +7751,11 @@ fn migrate_preview_canonical_edits_from_stdin_is_empty_for_canonical_source() {
 #[test]
 fn migrate_preview_canonical_edits_json_is_empty_for_canonical_source() {
     let root = repo_root();
-    let fixture = root.join("tests").join("must_pass").join("basic.kr");
-    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
-        .arg("migrate-preview")
-        .arg("--canonical-edits")
-        .arg("--format")
-        .arg("json")
-        .arg("--surface")
-        .arg("stable")
-        .arg(fixture.as_os_str());
-    let assert = cmd.assert().success();
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let fixture = must_pass_fixture("basic.kr");
+    let assert =
+        run_migrate_preview_canonical_edits_file(&root, &fixture, "stable", "json").success();
+    let stdout = stdout_string(&assert);
+    let stderr = stderr_string(&assert);
     assert_json_transport(&stdout, &stderr, "kernrift_canonical_edit_plan_v1");
     let json: Value = serde_json::from_str(&stdout).expect("json stdout");
     validate_canonical_edit_plan_schema(&json);
@@ -8170,21 +7768,11 @@ fn migrate_preview_canonical_edits_json_is_empty_for_canonical_source() {
 #[test]
 fn migrate_preview_canonical_edits_json_from_stdin_is_empty_for_canonical_source() {
     let root = repo_root();
-    let input = fs::read_to_string(root.join("tests").join("must_pass").join("basic.kr"))
-        .expect("read canonical fixture");
-    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
-    cmd.current_dir(&root)
-        .arg("migrate-preview")
-        .arg("--canonical-edits")
-        .arg("--stdin")
-        .arg("--format")
-        .arg("json")
-        .arg("--surface")
-        .arg("stable")
-        .write_stdin(input);
-    let assert = cmd.assert().success();
-    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    let input = fixture_text(&must_pass_fixture("basic.kr"));
+    let assert =
+        run_migrate_preview_canonical_edits_stdin(&root, &input, "stable", Some("json")).success();
+    let stdout = stdout_string(&assert);
+    let stderr = stderr_string(&assert);
     assert_json_transport(&stdout, &stderr, "kernrift_canonical_edit_plan_v1");
     let json: Value = serde_json::from_str(&stdout).expect("json stdout");
     validate_canonical_edit_plan_schema(&json);
@@ -8197,38 +7785,15 @@ fn migrate_preview_canonical_edits_json_from_stdin_is_empty_for_canonical_source
 #[test]
 fn migrate_preview_canonical_edits_text_file_and_stdin_are_parity_locked_for_legacy_unary() {
     let root = repo_root();
-    let fixture = root
-        .join("tests")
-        .join("living_compiler")
-        .join("migration_preview_legacy_unary.kr");
-    let input = fs::read_to_string(&fixture).expect("read legacy unary fixture");
+    let fixture = living_compiler_fixture("migration_preview_legacy_unary.kr");
+    let input = fixture_text(&fixture);
 
-    let mut file_cmd: Command = cargo_bin_cmd!("kernriftc");
-    file_cmd
-        .current_dir(&root)
-        .arg("migrate-preview")
-        .arg("--canonical-edits")
-        .arg("--format")
-        .arg("text")
-        .arg("--surface")
-        .arg("stable")
-        .arg(fixture.as_os_str());
-    let file_assert = file_cmd.assert().success();
-    let file_stdout =
-        String::from_utf8(file_assert.get_output().stdout.clone()).expect("stdout utf8");
-
-    let mut stdin_cmd: Command = cargo_bin_cmd!("kernriftc");
-    stdin_cmd
-        .current_dir(&root)
-        .arg("migrate-preview")
-        .arg("--canonical-edits")
-        .arg("--stdin")
-        .arg("--surface")
-        .arg("stable")
-        .write_stdin(input);
-    let stdin_assert = stdin_cmd.assert().success();
-    let stdin_stdout =
-        String::from_utf8(stdin_assert.get_output().stdout.clone()).expect("stdout utf8");
+    let file_stdout = stdout_string(
+        &run_migrate_preview_canonical_edits_file(&root, &fixture, "stable", "text").success(),
+    );
+    let stdin_stdout = stdout_string(
+        &run_migrate_preview_canonical_edits_stdin(&root, &input, "stable", None).success(),
+    );
 
     assert_eq!(file_stdout, stdin_stdout);
 }
@@ -8236,82 +7801,29 @@ fn migrate_preview_canonical_edits_text_file_and_stdin_are_parity_locked_for_leg
 #[test]
 fn migrate_preview_canonical_edits_json_file_and_stdin_are_parity_locked_for_legacy_unary() {
     let root = repo_root();
-    let fixture = root
-        .join("tests")
-        .join("living_compiler")
-        .join("migration_preview_legacy_unary.kr");
-    let input = fs::read_to_string(&fixture).expect("read legacy unary fixture");
+    let fixture = living_compiler_fixture("migration_preview_legacy_unary.kr");
+    let input = fixture_text(&fixture);
 
-    let mut file_cmd: Command = cargo_bin_cmd!("kernriftc");
-    file_cmd
-        .current_dir(&root)
-        .arg("migrate-preview")
-        .arg("--canonical-edits")
-        .arg("--format")
-        .arg("json")
-        .arg("--surface")
-        .arg("stable")
-        .arg(fixture.as_os_str());
-    let file_assert = file_cmd.assert().success();
-    let file_stdout =
-        String::from_utf8(file_assert.get_output().stdout.clone()).expect("stdout utf8");
-
-    let mut stdin_cmd: Command = cargo_bin_cmd!("kernriftc");
-    stdin_cmd
-        .current_dir(&root)
-        .arg("migrate-preview")
-        .arg("--canonical-edits")
-        .arg("--stdin")
-        .arg("--format")
-        .arg("json")
-        .arg("--surface")
-        .arg("stable")
-        .write_stdin(input);
-    let stdin_assert = stdin_cmd.assert().success();
-    let stdin_stdout =
-        String::from_utf8(stdin_assert.get_output().stdout.clone()).expect("stdout utf8");
-
-    let file_json: Value = serde_json::from_str(&file_stdout).expect("json stdout");
-    let stdin_json: Value = serde_json::from_str(&stdin_stdout).expect("json stdout");
+    let file_json = stdout_json(
+        &run_migrate_preview_canonical_edits_file(&root, &fixture, "stable", "json").success(),
+    );
+    let stdin_json = stdout_json(
+        &run_migrate_preview_canonical_edits_stdin(&root, &input, "stable", Some("json")).success(),
+    );
     assert_eq!(file_json, stdin_json);
 }
 
 #[test]
 fn migrate_preview_canonical_edits_text_and_json_count_match_for_legacy_unary() {
     let root = repo_root();
-    let fixture = root
-        .join("tests")
-        .join("living_compiler")
-        .join("migration_preview_legacy_unary.kr");
+    let fixture = living_compiler_fixture("migration_preview_legacy_unary.kr");
 
-    let mut text_cmd: Command = cargo_bin_cmd!("kernriftc");
-    text_cmd
-        .current_dir(&root)
-        .arg("migrate-preview")
-        .arg("--canonical-edits")
-        .arg("--format")
-        .arg("text")
-        .arg("--surface")
-        .arg("stable")
-        .arg(fixture.as_os_str());
-    let text_assert = text_cmd.assert().success();
-    let text_stdout =
-        String::from_utf8(text_assert.get_output().stdout.clone()).expect("stdout utf8");
-
-    let mut json_cmd: Command = cargo_bin_cmd!("kernriftc");
-    json_cmd
-        .current_dir(&root)
-        .arg("migrate-preview")
-        .arg("--canonical-edits")
-        .arg("--format")
-        .arg("json")
-        .arg("--surface")
-        .arg("stable")
-        .arg(fixture.as_os_str());
-    let json_assert = json_cmd.assert().success();
-    let json_stdout =
-        String::from_utf8(json_assert.get_output().stdout.clone()).expect("stdout utf8");
-    let json: Value = serde_json::from_str(&json_stdout).expect("json stdout");
+    let text_stdout = stdout_string(
+        &run_migrate_preview_canonical_edits_file(&root, &fixture, "stable", "text").success(),
+    );
+    let json = stdout_json(
+        &run_migrate_preview_canonical_edits_file(&root, &fixture, "stable", "json").success(),
+    );
 
     assert_eq!(
         text_count_value(&text_stdout, "edits_count"),
@@ -8324,38 +7836,16 @@ fn migrate_preview_canonical_edits_text_and_json_count_match_for_legacy_unary() 
 #[test]
 fn migrate_preview_canonical_edits_experimental_text_file_and_stdin_are_parity_locked() {
     let root = repo_root();
-    let fixture = root
-        .join("tests")
-        .join("living_compiler")
-        .join("canonical_check_aliases.kr");
-    let input = fs::read_to_string(&fixture).expect("read alias fixture");
+    let fixture = living_compiler_fixture("canonical_check_aliases.kr");
+    let input = fixture_text(&fixture);
 
-    let mut file_cmd: Command = cargo_bin_cmd!("kernriftc");
-    file_cmd
-        .current_dir(&root)
-        .arg("migrate-preview")
-        .arg("--canonical-edits")
-        .arg("--format")
-        .arg("text")
-        .arg("--surface")
-        .arg("experimental")
-        .arg(fixture.as_os_str());
-    let file_assert = file_cmd.assert().success();
-    let file_stdout =
-        String::from_utf8(file_assert.get_output().stdout.clone()).expect("stdout utf8");
-
-    let mut stdin_cmd: Command = cargo_bin_cmd!("kernriftc");
-    stdin_cmd
-        .current_dir(&root)
-        .arg("migrate-preview")
-        .arg("--canonical-edits")
-        .arg("--stdin")
-        .arg("--surface")
-        .arg("experimental")
-        .write_stdin(input);
-    let stdin_assert = stdin_cmd.assert().success();
-    let stdin_stdout =
-        String::from_utf8(stdin_assert.get_output().stdout.clone()).expect("stdout utf8");
+    let file_stdout = stdout_string(
+        &run_migrate_preview_canonical_edits_file(&root, &fixture, "experimental", "text")
+            .success(),
+    );
+    let stdin_stdout = stdout_string(
+        &run_migrate_preview_canonical_edits_stdin(&root, &input, "experimental", None).success(),
+    );
 
     assert_eq!(file_stdout, stdin_stdout);
 }
@@ -8363,69 +7853,22 @@ fn migrate_preview_canonical_edits_experimental_text_file_and_stdin_are_parity_l
 #[test]
 fn migrate_preview_canonical_edits_noop_file_and_stdin_text_and_json_are_parity_locked() {
     let root = repo_root();
-    let fixture = root.join("tests").join("must_pass").join("basic.kr");
-    let input = fs::read_to_string(&fixture).expect("read canonical fixture");
+    let fixture = must_pass_fixture("basic.kr");
+    let input = fixture_text(&fixture);
 
-    let mut file_text_cmd: Command = cargo_bin_cmd!("kernriftc");
-    file_text_cmd
-        .current_dir(&root)
-        .arg("migrate-preview")
-        .arg("--canonical-edits")
-        .arg("--format")
-        .arg("text")
-        .arg("--surface")
-        .arg("stable")
-        .arg(fixture.as_os_str());
-    let file_text = String::from_utf8(file_text_cmd.assert().success().get_output().stdout.clone())
-        .expect("stdout utf8");
+    let file_text = stdout_string(
+        &run_migrate_preview_canonical_edits_file(&root, &fixture, "stable", "text").success(),
+    );
+    let stdin_text = stdout_string(
+        &run_migrate_preview_canonical_edits_stdin(&root, &input, "stable", None).success(),
+    );
 
-    let mut stdin_text_cmd: Command = cargo_bin_cmd!("kernriftc");
-    stdin_text_cmd
-        .current_dir(&root)
-        .arg("migrate-preview")
-        .arg("--canonical-edits")
-        .arg("--stdin")
-        .arg("--surface")
-        .arg("stable")
-        .write_stdin(input.clone());
-    let stdin_text = String::from_utf8(
-        stdin_text_cmd
-            .assert()
-            .success()
-            .get_output()
-            .stdout
-            .clone(),
-    )
-    .expect("stdout utf8");
-
-    let mut file_json_cmd: Command = cargo_bin_cmd!("kernriftc");
-    file_json_cmd
-        .current_dir(&root)
-        .arg("migrate-preview")
-        .arg("--canonical-edits")
-        .arg("--format")
-        .arg("json")
-        .arg("--surface")
-        .arg("stable")
-        .arg(fixture.as_os_str());
-    let file_json: Value =
-        serde_json::from_slice(&file_json_cmd.assert().success().get_output().stdout)
-            .expect("json stdout");
-
-    let mut stdin_json_cmd: Command = cargo_bin_cmd!("kernriftc");
-    stdin_json_cmd
-        .current_dir(&root)
-        .arg("migrate-preview")
-        .arg("--canonical-edits")
-        .arg("--stdin")
-        .arg("--format")
-        .arg("json")
-        .arg("--surface")
-        .arg("stable")
-        .write_stdin(input);
-    let stdin_json: Value =
-        serde_json::from_slice(&stdin_json_cmd.assert().success().get_output().stdout)
-            .expect("json stdout");
+    let file_json = stdout_json(
+        &run_migrate_preview_canonical_edits_file(&root, &fixture, "stable", "json").success(),
+    );
+    let stdin_json = stdout_json(
+        &run_migrate_preview_canonical_edits_stdin(&root, &input, "stable", Some("json")).success(),
+    );
 
     assert_eq!(file_text, stdin_text);
     assert_eq!(file_json, stdin_json);
