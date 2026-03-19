@@ -13,6 +13,7 @@ use serde::Serialize;
 use super::args::{CheckArgs, CheckProfile, ContractsSchemaArg, PolicyOutputFormat};
 use super::crypto::{load_signing_key_hex, sha256_hex};
 use super::output::write_output_files;
+use crate::canonical_text::{print_finding_entry, print_surface_and_count};
 use crate::policy_engine::{
     decode_contracts_bundle, emit_policy_violations_json, evaluate_policy, load_policy_file,
     materialize_kernel_profile_policy, print_policy_violations,
@@ -243,14 +244,15 @@ struct CanonicalFindingJson<'a> {
 const CANONICAL_FINDINGS_SCHEMA_VERSION: &str = "kernrift_canonical_findings_v1";
 
 fn print_canonical_findings_text(surface: SurfaceProfile, findings: &[FrontendCanonicalFinding]) {
-    println!("surface: {}", surface.as_str());
-    println!("canonical_findings: {}", findings.len());
+    print_surface_and_count(surface, "canonical_findings", findings.len());
     for finding in findings {
-        println!("function: {}", finding.function_name);
-        println!("classification: {}", finding.classification.as_str());
-        println!("surface_form: @{}", finding.surface_form);
-        println!("canonical_replacement: {}", finding.canonical_replacement);
-        println!("migration_safe: {}", finding.migration_safe);
+        print_finding_entry(
+            finding.function_name.as_str(),
+            finding.classification.as_str(),
+            finding.surface_form,
+            finding.canonical_replacement,
+            finding.migration_safe,
+        );
     }
 }
 
