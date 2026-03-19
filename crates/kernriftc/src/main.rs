@@ -1,6 +1,5 @@
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::{self, Read};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -11,11 +10,9 @@ use emit::{
 };
 use kernriftc::{
     CanonicalFixPreviewResult, CanonicalFixResult, CanonicalFixSourceResult, SurfaceProfile,
-    analyze, canonical_edit_plan_file_with_surface, canonical_edit_plan_source_with_surface,
-    canonical_fix_file_with_surface, canonical_fix_preview_file_with_surface,
-    canonical_fix_preview_source_with_surface, canonical_fix_source_file_with_surface,
-    canonical_fix_source_text_with_surface, check_file, compile_file,
-    frontend_migration_features_for_profile, migrate_preview_file_with_surface,
+    analyze, canonical_edit_plan_source_with_surface, canonical_fix_file_with_surface,
+    canonical_fix_preview_source_with_surface, canonical_fix_source_text_with_surface, check_file,
+    compile_file, frontend_migration_features_for_profile, migrate_preview_file_with_surface,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -23,6 +20,7 @@ use sha2::{Digest, Sha256};
 mod artifact_inspect;
 mod artifact_meta;
 mod backend_emit;
+mod canonical_input;
 mod check_verify;
 mod policy_engine;
 mod proposals;
@@ -32,6 +30,7 @@ use crate::artifact_inspect::{
     format_artifact_inspection_report_text, inspect_artifact_from_bytes,
 };
 use crate::backend_emit::{parse_backend_emit_args, run_backend_emit};
+use crate::canonical_input::CanonicalInput;
 use crate::check_verify::{
     parse_check_args, parse_inspect_args, parse_inspect_report_args, parse_policy_args,
     parse_verify_args, run_check, run_inspect, run_inspect_report, run_policy, run_report,
@@ -798,15 +797,9 @@ fn run_canonical_edit_preview(args: &MigratePreviewArgs) -> ExitCode {
 fn canonical_edit_plan_for_args(
     args: &MigratePreviewArgs,
 ) -> Result<Vec<kernriftc::FrontendCanonicalEditPlanEntry>, Vec<String>> {
-    if args.stdin {
-        let src = read_stdin_source()?;
-        canonical_edit_plan_source_with_surface(&src, args.surface)
-    } else {
-        canonical_edit_plan_file_with_surface(
-            Path::new(args.input_path.as_deref().expect("input path")),
-            args.surface,
-        )
-    }
+    let input = CanonicalInput::from_optional_path(args.stdin, args.input_path.as_deref());
+    let src = input.read_to_string()?;
+    canonical_edit_plan_source_with_surface(&src, args.surface)
 }
 
 fn run_fix(args: &FixArgs) -> ExitCode {
@@ -908,9 +901,10 @@ fn run_fix_dry_run(args: &FixArgs) -> ExitCode {
 
     match args.format {
         FixFormat::Text => {
+            let input = canonical_input_for_fix_args(args);
             println!("surface: {}", args.surface.as_str());
             println!("rewrites_planned: {}", result.rewrites.len());
-            println!("file: {}", args.input_path.as_deref().unwrap_or("<stdin>"));
+            println!("file: {}", input.label());
             for rewrite in result.rewrites {
                 println!("function: {}", rewrite.function_name);
                 println!("surface_form: @{}", rewrite.surface_form);
@@ -919,11 +913,8 @@ fn run_fix_dry_run(args: &FixArgs) -> ExitCode {
             ExitCode::SUCCESS
         }
         FixFormat::Json => {
-            match emit_canonical_fix_preview_json(
-                args.surface,
-                args.input_path.as_deref().unwrap_or("<stdin>"),
-                &result,
-            ) {
+            let input = canonical_input_for_fix_args(args);
+            match emit_canonical_fix_preview_json(args.surface, input.label(), &result) {
                 Ok(text) => {
                     print!("{}", text);
                     ExitCode::SUCCESS
@@ -1104,37 +1095,21 @@ fn split_diff_lines(src: &str) -> Vec<&str> {
 fn canonical_fix_source_result_for_args(
     args: &FixArgs,
 ) -> Result<CanonicalFixSourceResult, Vec<String>> {
-    if args.stdin {
-        let src = read_stdin_source()?;
-        canonical_fix_source_text_with_surface(&src, args.surface)
-    } else {
-        canonical_fix_source_file_with_surface(
-            Path::new(args.input_path.as_deref().expect("input path")),
-            args.surface,
-        )
-    }
+    let input = canonical_input_for_fix_args(args);
+    let src = input.read_to_string()?;
+    canonical_fix_source_text_with_surface(&src, args.surface)
 }
 
 fn canonical_fix_preview_result_for_args(
     args: &FixArgs,
 ) -> Result<CanonicalFixPreviewResult, Vec<String>> {
-    if args.stdin {
-        let src = read_stdin_source()?;
-        canonical_fix_preview_source_with_surface(&src, args.surface)
-    } else {
-        canonical_fix_preview_file_with_surface(
-            Path::new(args.input_path.as_deref().expect("input path")),
-            args.surface,
-        )
-    }
+    let input = canonical_input_for_fix_args(args);
+    let src = input.read_to_string()?;
+    canonical_fix_preview_source_with_surface(&src, args.surface)
 }
 
-fn read_stdin_source() -> Result<String, Vec<String>> {
-    let mut src = String::new();
-    io::stdin()
-        .read_to_string(&mut src)
-        .map_err(|err| vec![format!("failed to read '<stdin>': {}", err)])?;
-    Ok(src)
+fn canonical_input_for_fix_args(args: &FixArgs) -> CanonicalInput<'_> {
+    CanonicalInput::from_optional_path(args.stdin, args.input_path.as_deref())
 }
 
 fn run_selftest() -> ExitCode {

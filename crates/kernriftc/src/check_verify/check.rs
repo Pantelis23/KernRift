@@ -1,4 +1,3 @@
-use std::io::Read;
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -6,9 +5,8 @@ use base64::Engine;
 use ed25519_dalek::Signer;
 use emit::{ContractsSchema as EmitContractsSchema, emit_contracts_json_canonical_with_schema};
 use kernriftc::{
-    FrontendCanonicalFinding, SurfaceProfile, analyze, canonical_check_file_with_surface,
-    canonical_check_source_with_surface, check_file_with_surface, check_module,
-    compile_file_with_surface, compile_source_with_surface,
+    FrontendCanonicalFinding, SurfaceProfile, analyze, canonical_check_source_with_surface,
+    check_file_with_surface, check_module, compile_file_with_surface, compile_source_with_surface,
 };
 use serde::Serialize;
 
@@ -19,7 +17,9 @@ use crate::policy_engine::{
     decode_contracts_bundle, emit_policy_violations_json, evaluate_policy, load_policy_file,
     materialize_kernel_profile_policy, print_policy_violations,
 };
-use crate::{EXIT_INVALID_INPUT, EXIT_POLICY_VIOLATION, print_errors};
+use crate::{
+    EXIT_INVALID_INPUT, EXIT_POLICY_VIOLATION, canonical_input::CanonicalInput, print_errors,
+};
 
 pub(crate) fn run_check(args: &CheckArgs) -> ExitCode {
     if args.canonical {
@@ -177,45 +177,30 @@ pub(crate) fn run_check(args: &CheckArgs) -> ExitCode {
 }
 
 fn run_canonical_check(args: &CheckArgs) -> ExitCode {
-    let findings = if args.stdin {
-        let src = match read_stdin_source() {
-            Ok(src) => src,
-            Err(errs) => {
-                print_errors(&errs);
-                return ExitCode::from(EXIT_POLICY_VIOLATION);
-            }
-        };
-        let module = match compile_source_with_surface(&src, args.surface) {
-            Ok(module) => module,
-            Err(errs) => {
-                print_errors(&errs);
-                return ExitCode::from(EXIT_POLICY_VIOLATION);
-            }
-        };
-        if let Err(errs) = check_module(&module) {
+    let input = CanonicalInput::from_optional_path(args.stdin, args.path.as_deref());
+    let src = match input.read_to_string() {
+        Ok(src) => src,
+        Err(errs) => {
             print_errors(&errs);
             return ExitCode::from(EXIT_POLICY_VIOLATION);
         }
-        match canonical_check_source_with_surface(&src, args.surface) {
-            Ok(findings) => findings,
-            Err(errs) => {
-                print_errors(&errs);
-                return ExitCode::from(EXIT_POLICY_VIOLATION);
-            }
-        }
-    } else {
-        let path = Path::new(args.path.as_deref().expect("input path"));
-        if let Err(errs) = check_file_with_surface(path, args.surface) {
+    };
+    let module = match compile_source_with_surface(&src, args.surface) {
+        Ok(module) => module,
+        Err(errs) => {
             print_errors(&errs);
             return ExitCode::from(EXIT_POLICY_VIOLATION);
         }
-
-        match canonical_check_file_with_surface(path, args.surface) {
-            Ok(findings) => findings,
-            Err(errs) => {
-                print_errors(&errs);
-                return ExitCode::from(EXIT_POLICY_VIOLATION);
-            }
+    };
+    if let Err(errs) = check_module(&module) {
+        print_errors(&errs);
+        return ExitCode::from(EXIT_POLICY_VIOLATION);
+    }
+    let findings = match canonical_check_source_with_surface(&src, args.surface) {
+        Ok(findings) => findings,
+        Err(errs) => {
+            print_errors(&errs);
+            return ExitCode::from(EXIT_POLICY_VIOLATION);
         }
     };
 
@@ -236,14 +221,6 @@ fn run_canonical_check(args: &CheckArgs) -> ExitCode {
     } else {
         ExitCode::from(EXIT_POLICY_VIOLATION)
     }
-}
-
-fn read_stdin_source() -> Result<String, Vec<String>> {
-    let mut src = String::new();
-    std::io::stdin()
-        .read_to_string(&mut src)
-        .map_err(|err| vec![format!("failed to read '<stdin>': {}", err)])?;
-    Ok(src)
 }
 
 #[derive(Debug, Clone, Serialize)]
