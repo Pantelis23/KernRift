@@ -11,6 +11,7 @@ FIXTURE="tests/must_pass/locks_ok.kr"
 PROOF_FIXTURE="examples/uart_console_executable.kr"
 VALUE_FLOW_FIXTURE="examples/uart_console_value_flow.kr"
 EXPLICIT_SLOT_FIXTURE="examples/uart_console_explicit_slot.kr"
+BRANCH_ZERO_FIXTURE="examples/uart_console_branch_zero.kr"
 CONTRACTS_OUT="$TMP_DIR/contracts.json"
 HASH_OUT="$TMP_DIR/contracts.sha256"
 REPORT_OUT="$TMP_DIR/verify.report.json"
@@ -25,6 +26,8 @@ VALUE_FLOW_ELFEXE_OUT="$TMP_DIR/uart_console_value_flow.elf"
 VALUE_FLOW_INSPECT_JSON="$TMP_DIR/uart_console_value_flow.inspect.json"
 EXPLICIT_SLOT_ELFEXE_OUT="$TMP_DIR/uart_console_explicit_slot.elf"
 EXPLICIT_SLOT_INSPECT_JSON="$TMP_DIR/uart_console_explicit_slot.inspect.json"
+BRANCH_ZERO_ELFEXE_OUT="$TMP_DIR/uart_console_branch_zero.elf"
+BRANCH_ZERO_INSPECT_JSON="$TMP_DIR/uart_console_branch_zero.inspect.json"
 
 echo "[1/3] smoke: check emits contracts/hash"
 cargo run -q -p kernriftc -- \
@@ -118,7 +121,7 @@ grep -q '"has_undefined_symbols": false' "$VALUE_FLOW_INSPECT_JSON"
 grep -q '"mirror_status"' "$VALUE_FLOW_INSPECT_JSON"
 grep -q '"mirror_watchdog"' "$VALUE_FLOW_INSPECT_JSON"
 
-echo "[8/8] smoke: explicit-slot proof program emits backend elf executable"
+echo "[8/9] smoke: explicit-slot proof program emits backend elf executable"
 cargo run -q -p kernriftc -- \
   --emit=elfexe \
   -o "$EXPLICIT_SLOT_ELFEXE_OUT" \
@@ -135,5 +138,23 @@ grep -q '"has_entry_symbol": true' "$EXPLICIT_SLOT_INSPECT_JSON"
 grep -q '"has_undefined_symbols": false' "$EXPLICIT_SLOT_INSPECT_JSON"
 grep -q '"mirror_status"' "$EXPLICIT_SLOT_INSPECT_JSON"
 grep -q '"mirror_watchdog"' "$EXPLICIT_SLOT_INSPECT_JSON"
+
+echo "[9/9] smoke: branch-zero proof program emits backend elf executable"
+cargo run -q -p kernriftc -- \
+  --emit=elfexe \
+  -o "$BRANCH_ZERO_ELFEXE_OUT" \
+  "$BRANCH_ZERO_FIXTURE"
+
+cargo run -q -p kernriftc -- \
+  inspect-artifact \
+  "$BRANCH_ZERO_ELFEXE_OUT" \
+  --format json > "$BRANCH_ZERO_INSPECT_JSON"
+
+grep -q '"artifact_kind": "elf_executable"' "$BRANCH_ZERO_INSPECT_JSON"
+grep -q '"machine": "x86_64"' "$BRANCH_ZERO_INSPECT_JSON"
+grep -q '"has_entry_symbol": true' "$BRANCH_ZERO_INSPECT_JSON"
+grep -q '"has_undefined_symbols": false' "$BRANCH_ZERO_INSPECT_JSON"
+grep -q '"send_idle_word"' "$BRANCH_ZERO_INSPECT_JSON"
+grep -q '"send_ready_word"' "$BRANCH_ZERO_INSPECT_JSON"
 
 echo "KRIR v0.1 acceptance: PASS"

@@ -118,6 +118,11 @@ pub enum Stmt {
     BlockPoint,
     Acquire(String),
     Release(String),
+    BranchIfZero {
+        slot: String,
+        then_callee: String,
+        else_callee: String,
+    },
     MmioRead {
         ty: MmioScalarType,
         addr: MmioAddrExpr,
@@ -914,6 +919,24 @@ fn parse_stmt(stmt: &str) -> Result<Option<Stmt>, String> {
         return Ok(Some(Stmt::Release(lock.to_string())));
     }
 
+    if lowered == "branch_if_zero" {
+        let parts = split_csv(&args);
+        if parts.len() != 3 {
+            return Err(
+                "branch_if_zero(slot, then_fn, else_fn) requires exactly three identifier arguments"
+                    .to_string(),
+            );
+        }
+        let slot = parse_branch_slot_operand(parts[0].trim())?;
+        let then_callee = parse_branch_target_operand(parts[1].trim())?;
+        let else_callee = parse_branch_target_operand(parts[2].trim())?;
+        return Ok(Some(Stmt::BranchIfZero {
+            slot,
+            then_callee,
+            else_callee,
+        }));
+    }
+
     if let Some(stmt) = parse_typed_mmio_stmt(&name, &args)? {
         return Ok(Some(stmt));
     }
@@ -1054,6 +1077,28 @@ fn parse_mmio_capture_operand(raw: &str) -> Result<String, String> {
     }
     Err(format!(
         "'{}' is not a valid capture slot identifier",
+        operand
+    ))
+}
+
+fn parse_branch_slot_operand(raw: &str) -> Result<String, String> {
+    let operand = raw.trim();
+    if is_ident_token(operand) {
+        return Ok(operand.to_string());
+    }
+    Err(format!(
+        "'{}' is not a valid branch slot identifier",
+        operand
+    ))
+}
+
+fn parse_branch_target_operand(raw: &str) -> Result<String, String> {
+    let operand = raw.trim();
+    if is_ident_token(operand) {
+        return Ok(operand.to_string());
+    }
+    Err(format!(
+        "'{}' is not a valid branch target identifier",
         operand
     ))
 }

@@ -74,6 +74,11 @@ pub enum KrirOp {
     Call {
         callee: String,
     },
+    BranchIfZero {
+        slot: String,
+        then_callee: String,
+        else_callee: String,
+    },
     CriticalEnter,
     CriticalExit,
     YieldPoint,
@@ -302,6 +307,11 @@ pub enum ExecutableOp {
     Call {
         callee: String,
     },
+    BranchIfZero {
+        ty: MmioScalarType,
+        then_callee: String,
+        else_callee: String,
+    },
     MmioRead {
         ty: MmioScalarType,
         addr: u64,
@@ -474,6 +484,22 @@ impl ExecutableKrirModule {
                                 ));
                             }
                         }
+                        ExecutableOp::BranchIfZero {
+                            then_callee,
+                            else_callee,
+                            ..
+                        } => {
+                            for callee in [then_callee, else_callee] {
+                                if !function_names.contains(callee.as_str())
+                                    && !extern_names.contains(callee.as_str())
+                                {
+                                    return Err(format!(
+                                        "executable KRIR function '{}' calls undeclared target '{}'",
+                                        function.name, callee
+                                    ));
+                                }
+                            }
+                        }
                         ExecutableOp::MmioRead { .. }
                         | ExecutableOp::MmioWriteImm { .. }
                         | ExecutableOp::MmioWriteValue { .. } => {}
@@ -514,6 +540,55 @@ pub fn lower_current_krir_to_executable_krir(
                 KrirOp::Call { callee } => exec_ops.push(ExecutableOp::Call {
                     callee: callee.clone(),
                 }),
+                KrirOp::BranchIfZero {
+                    slot,
+                    then_callee,
+                    else_callee,
+                } => {
+                    let Some(captured_slot) = executable_slot_name.as_deref() else {
+                        errors.push(format!(
+                            "canonical-exec: function '{}' contains unsupported {}: branch test slot '{}' requires a prior mmio_read<...>(..., {}) or raw_mmio_read<...>(..., {}) in the same function",
+                            function.name,
+                            format_branch_if_zero_invocation(slot, then_callee, else_callee),
+                            slot,
+                            slot,
+                            slot
+                        ));
+                        continue;
+                    };
+                    if slot != captured_slot {
+                        errors.push(format!(
+                            "canonical-exec: function '{}' contains unsupported {}: branch test slot '{}' does not match the captured executable slot '{}' in this function",
+                            function.name,
+                            format_branch_if_zero_invocation(slot, then_callee, else_callee),
+                            slot,
+                            captured_slot
+                        ));
+                        continue;
+                    }
+                    let Some((read_index, _, read_ty)) = last_read.as_ref() else {
+                        errors.push(format!(
+                            "canonical-exec: function '{}' contains unsupported {}: branch test slot '{}' requires a prior mmio_read<...>(..., {}) or raw_mmio_read<...>(..., {}) in the same function",
+                            function.name,
+                            format_branch_if_zero_invocation(slot, then_callee, else_callee),
+                            slot,
+                            slot,
+                            slot
+                        ));
+                        continue;
+                    };
+                    let Some(ExecutableOp::MmioRead { capture_value, .. }) =
+                        exec_ops.get_mut(*read_index)
+                    else {
+                        unreachable!("branch-if-zero must point at a prior mmio read op");
+                    };
+                    *capture_value = true;
+                    exec_ops.push(ExecutableOp::BranchIfZero {
+                        ty: *read_ty,
+                        then_callee: then_callee.clone(),
+                        else_callee: else_callee.clone(),
+                    });
+                }
                 KrirOp::CriticalEnter => errors.push(format!(
                     "canonical-exec: function '{}' contains unsupported critical region",
                     function.name
@@ -861,6 +936,10 @@ fn format_mmio_write_invocation(
     )
 }
 
+fn format_branch_if_zero_invocation(slot: &str, then_callee: &str, else_callee: &str) -> String {
+    format!("branch_if_zero({}, {}, {})", slot, then_callee, else_callee)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BackendTargetId {
@@ -1181,6 +1260,11 @@ pub struct X86_64AsmFunction {
 pub enum X86_64AsmInstruction {
     Call {
         symbol: String,
+    },
+    BranchIfZero {
+        ty: MmioScalarType,
+        then_symbol: String,
+        else_symbol: String,
     },
     MmioRead {
         ty: MmioScalarType,
@@ -1615,6 +1699,15 @@ pub fn lower_executable_krir_to_x86_64_asm(
                 .cloned()
                 .map(|op| match op {
                     ExecutableOp::Call { callee } => X86_64AsmInstruction::Call { symbol: callee },
+                    ExecutableOp::BranchIfZero {
+                        ty,
+                        then_callee,
+                        else_callee,
+                    } => X86_64AsmInstruction::BranchIfZero {
+                        ty,
+                        then_symbol: then_callee,
+                        else_symbol: else_callee,
+                    },
                     ExecutableOp::MmioRead {
                         ty,
                         addr,
@@ -1661,6 +1754,7 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
     out.push_str(module.section);
     out.push('\n');
     for function in &module.functions {
+        let mut branch_index = 0usize;
         out.push('\n');
         out.push_str(".globl ");
         out.push_str(&function.symbol);
@@ -1676,6 +1770,34 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                     out.push_str("    call ");
                     out.push_str(symbol);
                     out.push('\n');
+                }
+                X86_64AsmInstruction::BranchIfZero {
+                    ty,
+                    then_symbol,
+                    else_symbol,
+                } => {
+                    let else_label = format!(".L{}_branch_{}_else", function.symbol, branch_index);
+                    let end_label = format!(".L{}_branch_{}_end", function.symbol, branch_index);
+                    out.push_str("    ");
+                    out.push_str(mmio_saved_value_zero_test_mnemonic(*ty));
+                    out.push('\n');
+                    out.push_str("    jne ");
+                    out.push_str(&else_label);
+                    out.push('\n');
+                    out.push_str("    call ");
+                    out.push_str(then_symbol);
+                    out.push('\n');
+                    out.push_str("    jmp ");
+                    out.push_str(&end_label);
+                    out.push('\n');
+                    out.push_str(&else_label);
+                    out.push_str(":\n");
+                    out.push_str("    call ");
+                    out.push_str(else_symbol);
+                    out.push('\n');
+                    out.push_str(&end_label);
+                    out.push_str(":\n");
+                    branch_index += 1;
                 }
                 X86_64AsmInstruction::MmioRead {
                     ty,
@@ -1870,6 +1992,7 @@ fn loadless_value_offset(cursor: usize, opcode_bytes: usize) -> usize {
 fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
     match op {
         ExecutableOp::Call { .. } => 5,
+        ExecutableOp::BranchIfZero { ty, .. } => mmio_saved_value_zero_test_bytes(*ty) + 16,
         ExecutableOp::MmioRead {
             ty, capture_value, ..
         } => {
@@ -1921,6 +2044,16 @@ fn encode_mmio_write_saved_value_bytes(out: &mut Vec<u8>, ty: MmioScalarType, ad
     }
 }
 
+fn encode_branch_if_zero_bytes(out: &mut Vec<u8>, ty: MmioScalarType) {
+    push_test_saved_value_register_zero(out, ty);
+    out.extend_from_slice(&[0x0F, 0x85, 0x0A, 0x00, 0x00, 0x00]);
+    out.push(0xE8);
+    out.extend_from_slice(&[0, 0, 0, 0]);
+    out.extend_from_slice(&[0xE9, 0x05, 0x00, 0x00, 0x00]);
+    out.push(0xE8);
+    out.extend_from_slice(&[0, 0, 0, 0]);
+}
+
 fn push_movabs_rax_imm64(out: &mut Vec<u8>, value: u64) {
     out.extend_from_slice(&[0x48, 0xB8]);
     push_u64_le(out, value);
@@ -1956,6 +2089,15 @@ fn push_mov_accumulator_to_saved_value_register(out: &mut Vec<u8>, ty: MmioScala
     }
 }
 
+fn push_test_saved_value_register_zero(out: &mut Vec<u8>, ty: MmioScalarType) {
+    match ty {
+        MmioScalarType::U8 => out.extend_from_slice(&[0x84, 0xDB]),
+        MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x85, 0xDB]),
+        MmioScalarType::U32 => out.extend_from_slice(&[0x85, 0xDB]),
+        MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x85, 0xDB]),
+    }
+}
+
 fn mmio_load_bytes(ty: MmioScalarType) -> u64 {
     match ty {
         MmioScalarType::U8 | MmioScalarType::U32 => 2,
@@ -1973,6 +2115,13 @@ fn mmio_value_load_immediate_bytes(ty: MmioScalarType) -> u64 {
 }
 
 fn mmio_saved_value_copy_bytes(ty: MmioScalarType) -> u64 {
+    match ty {
+        MmioScalarType::U8 | MmioScalarType::U32 => 2,
+        MmioScalarType::U16 | MmioScalarType::U64 => 3,
+    }
+}
+
+fn mmio_saved_value_zero_test_bytes(ty: MmioScalarType) -> u64 {
     match ty {
         MmioScalarType::U8 | MmioScalarType::U32 => 2,
         MmioScalarType::U16 | MmioScalarType::U64 => 3,
@@ -2032,6 +2181,15 @@ fn mmio_store_mnemonic(ty: MmioScalarType) -> &'static str {
 
 fn mmio_move_saved_value_mnemonic(ty: MmioScalarType) -> &'static str {
     mmio_load_mnemonic(ty)
+}
+
+fn mmio_saved_value_zero_test_mnemonic(ty: MmioScalarType) -> &'static str {
+    match ty {
+        MmioScalarType::U8 => "testb %bl, %bl",
+        MmioScalarType::U16 => "testw %bx, %bx",
+        MmioScalarType::U32 => "testl %ebx, %ebx",
+        MmioScalarType::U64 => "testq %rbx, %rbx",
+    }
 }
 
 fn mmio_immediate_mnemonic(ty: MmioScalarType, value: u64) -> String {
@@ -2127,6 +2285,40 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         width_bytes: 4,
                     });
                     local_offset += 5;
+                }
+                ExecutableOp::BranchIfZero {
+                    ty,
+                    then_callee,
+                    else_callee,
+                } => {
+                    for callee in [then_callee, else_callee] {
+                        if !function_offsets.contains_key(callee) {
+                            if !extern_names.contains(callee.as_str()) {
+                                return Err(format!(
+                                    "compiler-owned object emission requires declared extern target '{}' in function '{}'",
+                                    callee, function.name
+                                ));
+                            }
+                            unresolved_targets.insert(callee.clone());
+                        }
+                    }
+                    let test_bytes = mmio_saved_value_zero_test_bytes(*ty);
+                    encode_branch_if_zero_bytes(&mut code_bytes, *ty);
+                    fixups.push(CompilerOwnedObjectFixup {
+                        source_symbol: function.name.clone(),
+                        patch_offset: function_offset + local_offset + test_bytes + 7,
+                        kind: CompilerOwnedFixupKind::X86_64CallRel32,
+                        target_symbol: then_callee.clone(),
+                        width_bytes: 4,
+                    });
+                    fixups.push(CompilerOwnedObjectFixup {
+                        source_symbol: function.name.clone(),
+                        patch_offset: function_offset + local_offset + test_bytes + 17,
+                        kind: CompilerOwnedFixupKind::X86_64CallRel32,
+                        target_symbol: else_callee.clone(),
+                        width_bytes: 4,
+                    });
+                    local_offset += executable_op_encoded_len(op);
                 }
                 ExecutableOp::MmioRead {
                     ty,

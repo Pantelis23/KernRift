@@ -1337,18 +1337,40 @@ pub fn lower_to_krir_with_surface(
             continue;
         }
         for op in &function.ops {
-            if let KrirOp::Call { callee } = op {
-                if !names.contains(callee) {
-                    errors.push(format!(
-                        "undefined symbol '{}': add extern declaration with canonical facts (@ctx/@eff/@caps)",
-                        callee
-                    ));
-                    continue;
+            match op {
+                KrirOp::Call { callee } => {
+                    if !names.contains(callee) {
+                        errors.push(format!(
+                            "undefined symbol '{}': add extern declaration with canonical facts (@ctx/@eff/@caps)",
+                            callee
+                        ));
+                        continue;
+                    }
+                    call_edges.push(CallEdge {
+                        caller: function.name.clone(),
+                        callee: callee.clone(),
+                    });
                 }
-                call_edges.push(CallEdge {
-                    caller: function.name.clone(),
-                    callee: callee.clone(),
-                });
+                KrirOp::BranchIfZero {
+                    then_callee,
+                    else_callee,
+                    ..
+                } => {
+                    for callee in [then_callee, else_callee] {
+                        if !names.contains(callee) {
+                            errors.push(format!(
+                                "undefined symbol '{}': add extern declaration with canonical facts (@ctx/@eff/@caps)",
+                                callee
+                            ));
+                            continue;
+                        }
+                        call_edges.push(CallEdge {
+                            caller: function.name.clone(),
+                            callee: callee.clone(),
+                        });
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -2140,6 +2162,15 @@ fn lower_stmts_to_canonical_executable(
                 "canonical-exec: function '{}' contains unsupported release({})",
                 function_name, lock_class
             )),
+            Stmt::BranchIfZero {
+                slot,
+                then_callee,
+                else_callee,
+            } => errors.push(format!(
+                "canonical-exec: function '{}' contains unsupported {}",
+                function_name,
+                format_branch_if_zero_invocation(slot, then_callee, else_callee)
+            )),
             Stmt::MmioRead { ty, addr, capture } => errors.push(format!(
                 "canonical-exec: function '{}' contains unsupported {}",
                 function_name,
@@ -2193,6 +2224,15 @@ fn lower_stmt(stmt: &Stmt, ops: &mut Vec<KrirOp>, eff_used: &mut BTreeSet<Eff>) 
         }),
         Stmt::Release(lock_class) => ops.push(KrirOp::Release {
             lock_class: lock_class.clone(),
+        }),
+        Stmt::BranchIfZero {
+            slot,
+            then_callee,
+            else_callee,
+        } => ops.push(KrirOp::BranchIfZero {
+            slot: slot.clone(),
+            then_callee: then_callee.clone(),
+            else_callee: else_callee.clone(),
         }),
         Stmt::MmioRead { ty, addr, capture } => {
             ops.push(KrirOp::MmioRead {
@@ -2324,6 +2364,10 @@ fn format_raw_mmio_write_invocation(
         addr.as_source(),
         value.as_source()
     )
+}
+
+fn format_branch_if_zero_invocation(slot: &str, then_callee: &str, else_callee: &str) -> String {
+    format!("branch_if_zero({}, {}, {})", slot, then_callee, else_callee)
 }
 
 fn parse_ctx_attr(attr: &RawAttr) -> Result<Vec<Ctx>, String> {
