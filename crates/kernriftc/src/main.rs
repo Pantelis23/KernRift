@@ -483,7 +483,11 @@ fn parse_migrate_preview_args(args: &[String]) -> Result<MigratePreviewArgs, Str
         idx += 1;
     }
 
-    let Some(surface) = surface else {
+    let surface = if let Some(surface) = surface {
+        surface
+    } else if canonical_edits {
+        SurfaceProfile::Stable
+    } else {
         return Err("invalid migrate-preview mode: missing --surface".to_string());
     };
     if stdin && input_path.is_some() {
@@ -1655,6 +1659,8 @@ fn print_usage() {
     eprintln!("  kernriftc proposals --promote <feature-id> --dry-run --diff");
     eprintln!("  kernriftc migrate-preview --surface stable <file.kr>");
     eprintln!("  kernriftc migrate-preview --surface experimental <file.kr>");
+    eprintln!("  kernriftc migrate-preview --canonical-edits --format text <file.kr>");
+    eprintln!("  kernriftc migrate-preview --canonical-edits --format json <file.kr>");
     eprintln!(
         "  kernriftc migrate-preview --canonical-edits --format text --surface stable <file.kr>"
     );

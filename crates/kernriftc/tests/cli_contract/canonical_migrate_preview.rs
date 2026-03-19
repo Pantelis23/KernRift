@@ -73,6 +73,66 @@ fn migrate_preview_canonical_edits_json_from_stdin_reports_legacy_unary_exactly(
 }
 
 #[test]
+fn migrate_preview_canonical_edits_omitted_surface_file_text_matches_explicit_stable() {
+    let root = repo_root();
+    let fixture = living_compiler_fixture("migration_preview_legacy_unary.kr");
+
+    let default_stdout = stdout_string(
+        &run_migrate_preview_canonical_edits_file_default_surface(&root, &fixture, "text").success(),
+    );
+    let explicit_stdout = stdout_string(
+        &run_migrate_preview_canonical_edits_file(&root, &fixture, "stable", "text").success(),
+    );
+
+    assert_eq!(default_stdout, explicit_stdout);
+}
+
+#[test]
+fn migrate_preview_canonical_edits_omitted_surface_file_json_matches_explicit_stable() {
+    let root = repo_root();
+    let fixture = living_compiler_fixture("migration_preview_legacy_unary.kr");
+
+    let default_stdout = stdout_string(
+        &run_migrate_preview_canonical_edits_file_default_surface(&root, &fixture, "json").success(),
+    );
+    let explicit_stdout = stdout_string(
+        &run_migrate_preview_canonical_edits_file(&root, &fixture, "stable", "json").success(),
+    );
+
+    assert_eq!(default_stdout, explicit_stdout);
+}
+
+#[test]
+fn migrate_preview_canonical_edits_omitted_surface_stdin_text_matches_explicit_stable() {
+    let root = repo_root();
+    let input = fixture_text(&living_compiler_fixture("migration_preview_legacy_unary.kr"));
+
+    let default_stdout = stdout_string(
+        &run_migrate_preview_canonical_edits_stdin_default_surface(&root, &input, None).success(),
+    );
+    let explicit_stdout = stdout_string(
+        &run_migrate_preview_canonical_edits_stdin(&root, &input, "stable", None).success(),
+    );
+
+    assert_eq!(default_stdout, explicit_stdout);
+}
+
+#[test]
+fn migrate_preview_canonical_edits_omitted_surface_stdin_json_matches_explicit_stable() {
+    let root = repo_root();
+    let input = fixture_text(&living_compiler_fixture("migration_preview_legacy_unary.kr"));
+
+    let default_stdout = stdout_string(
+        &run_migrate_preview_canonical_edits_stdin_default_surface(&root, &input, Some("json")).success(),
+    );
+    let explicit_stdout = stdout_string(
+        &run_migrate_preview_canonical_edits_stdin(&root, &input, "stable", Some("json")).success(),
+    );
+
+    assert_eq!(default_stdout, explicit_stdout);
+}
+
+#[test]
 fn migrate_preview_canonical_edits_text_reports_experimental_aliases_exactly() {
     let root = repo_root();
     let fixture = living_compiler_fixture("canonical_check_aliases.kr");

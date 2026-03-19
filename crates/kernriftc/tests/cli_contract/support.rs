@@ -223,6 +223,37 @@ pub(super) fn run_migrate_preview_canonical_edits_stdin(
     cmd.write_stdin(input).assert()
 }
 
+pub(super) fn run_migrate_preview_canonical_edits_file_default_surface(
+    root: &Path,
+    fixture: &Path,
+    format: &str,
+) -> Assert {
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(root)
+        .arg("migrate-preview")
+        .arg("--canonical-edits")
+        .arg("--format")
+        .arg(format)
+        .arg(fixture.as_os_str());
+    cmd.assert()
+}
+
+pub(super) fn run_migrate_preview_canonical_edits_stdin_default_surface(
+    root: &Path,
+    input: &str,
+    format: Option<&str>,
+) -> Assert {
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(root)
+        .arg("migrate-preview")
+        .arg("--canonical-edits")
+        .arg("--stdin");
+    if let Some(format) = format {
+        cmd.arg("--format").arg(format);
+    }
+    cmd.write_stdin(input).assert()
+}
+
 pub(super) fn emit_backend_artifact_with_sidecar(
     root: &Path,
     kind: &str,

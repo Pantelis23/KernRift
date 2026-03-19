@@ -17,6 +17,8 @@ fn usage_includes_artifact_json_consumer_commands() {
     assert!(stderr.contains("kernriftc check --canonical --stdin"));
     assert!(stderr.contains("kernriftc check --canonical --format json <file.kr>"));
     assert!(stderr.contains("kernriftc check --canonical --stdin --format json"));
+    assert!(stderr.contains("kernriftc migrate-preview --canonical-edits --format text <file.kr>"));
+    assert!(stderr.contains("kernriftc migrate-preview --canonical-edits --format json <file.kr>"));
     assert!(stderr.contains(
         "kernriftc migrate-preview --canonical-edits --format text --surface stable <file.kr>"
     ));
