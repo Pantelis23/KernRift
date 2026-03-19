@@ -2257,6 +2257,21 @@ fn lower_stmts_to_canonical_executable(
                     else_callee
                 )
             )),
+            Stmt::StackCell { ty, cell } => errors.push(format!(
+                "canonical-exec: function '{}' contains unsupported {}",
+                function_name,
+                format_stack_cell_invocation(*ty, cell)
+            )),
+            Stmt::CellStore { ty, cell, value } => errors.push(format!(
+                "canonical-exec: function '{}' contains unsupported {}",
+                function_name,
+                format_cell_store_invocation(*ty, cell, value)
+            )),
+            Stmt::CellLoad { ty, cell, slot } => errors.push(format!(
+                "canonical-exec: function '{}' contains unsupported {}",
+                function_name,
+                format_cell_load_invocation(*ty, cell, slot)
+            )),
             Stmt::MmioRead { ty, addr, capture } => errors.push(format!(
                 "canonical-exec: function '{}' contains unsupported {}",
                 function_name,
@@ -2346,6 +2361,20 @@ fn lower_stmt(stmt: &Stmt, ops: &mut Vec<KrirOp>, eff_used: &mut BTreeSet<Eff>) 
             mask_value: mask_value.clone(),
             then_callee: then_callee.clone(),
             else_callee: else_callee.clone(),
+        }),
+        Stmt::StackCell { ty, cell } => ops.push(KrirOp::StackCell {
+            ty: lower_mmio_scalar_type(*ty),
+            cell: cell.clone(),
+        }),
+        Stmt::CellStore { ty, cell, value } => ops.push(KrirOp::StackStore {
+            ty: lower_mmio_scalar_type(*ty),
+            cell: cell.clone(),
+            value: lower_mmio_value_expr(value),
+        }),
+        Stmt::CellLoad { ty, cell, slot } => ops.push(KrirOp::StackLoad {
+            ty: lower_mmio_scalar_type(*ty),
+            cell: cell.clone(),
+            slot: slot.clone(),
         }),
         Stmt::MmioRead { ty, addr, capture } => {
             ops.push(KrirOp::MmioRead {
@@ -2489,6 +2518,27 @@ fn format_call_capture_invocation(callee: &str, slot: &str) -> String {
 
 fn format_return_slot_invocation(slot: &str) -> String {
     format!("return_slot({})", slot)
+}
+
+fn format_stack_cell_invocation(ty: ParserMmioScalarType, cell: &str) -> String {
+    format!("stack_cell<{}>({})", ty.as_str(), cell)
+}
+
+fn format_cell_store_invocation(
+    ty: ParserMmioScalarType,
+    cell: &str,
+    value: &ParserMmioValueExpr,
+) -> String {
+    format!(
+        "cell_store<{}>({}, {})",
+        ty.as_str(),
+        cell,
+        value.as_source()
+    )
+}
+
+fn format_cell_load_invocation(ty: ParserMmioScalarType, cell: &str, slot: &str) -> String {
+    format!("cell_load<{}>({}, {})", ty.as_str(), cell, slot)
 }
 
 fn format_branch_if_eq_invocation(
