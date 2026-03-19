@@ -3170,6 +3170,38 @@ fn inspect_report_rejects_malformed_report_deterministically() {
 }
 
 #[test]
+fn inspect_report_json_rejects_malformed_report_without_emitting_json() {
+    let root = repo_root();
+    let report_path = write_verify_report_fixture("malformed-json", &json!({}));
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("inspect-report")
+        .arg("--report")
+        .arg(report_path.as_os_str())
+        .arg("--format")
+        .arg("json");
+    let assert = cmd.assert().failure().code(2);
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+
+    assert!(
+        stdout.is_empty(),
+        "malformed inspect-report JSON mode must not emit stdout payload: {:?}",
+        stdout
+    );
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec![format!(
+            "failed to decode verify report '{}': missing string field 'schema_version'",
+            report_path.display()
+        )]
+    );
+
+    fs::remove_file(&report_path).ok();
+}
+
+#[test]
 fn inspect_report_summary_is_stable_and_exact() {
     let root = repo_root();
     let report_path = write_verify_report_fixture(

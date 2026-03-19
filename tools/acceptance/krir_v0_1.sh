@@ -12,6 +12,9 @@ CONTRACTS_OUT="$TMP_DIR/contracts.json"
 HASH_OUT="$TMP_DIR/contracts.sha256"
 REPORT_OUT="$TMP_DIR/verify.report.json"
 INSPECT_REPORT_JSON="$TMP_DIR/inspect.report.json"
+MALFORMED_REPORT="$TMP_DIR/malformed.report.json"
+MALFORMED_STDOUT="$TMP_DIR/malformed.inspect.stdout"
+MALFORMED_STDERR="$TMP_DIR/malformed.inspect.stderr"
 BAD_HASH_OUT="$TMP_DIR/bad.sha256"
 
 echo "[1/3] smoke: check emits contracts/hash"
@@ -41,7 +44,23 @@ grep -q '"schema_version": "kernrift_inspect_report_v1"' "$INSPECT_REPORT_JSON"
 grep -q "\"file\": \"$REPORT_OUT\"" "$INSPECT_REPORT_JSON"
 grep -q '"result": "pass"' "$INSPECT_REPORT_JSON"
 
-echo "[4/4] smoke: verify deny on hash mismatch (exit 1)"
+echo "[4/5] smoke: inspect-report malformed JSON mode stays stderr-only (exit 2)"
+printf '{}\n' > "$MALFORMED_REPORT"
+set +e
+cargo run -q -p kernriftc -- \
+  inspect-report \
+  --report "$MALFORMED_REPORT" \
+  --format json >"$MALFORMED_STDOUT" 2>"$MALFORMED_STDERR"
+status=$?
+set -e
+if [[ "$status" -ne 2 ]]; then
+  echo "expected inspect-report malformed exit code 2, got $status" >&2
+  exit 1
+fi
+test ! -s "$MALFORMED_STDOUT"
+grep -q "missing string field 'schema_version'" "$MALFORMED_STDERR"
+
+echo "[5/5] smoke: verify deny on hash mismatch (exit 1)"
 printf '%064d\n' 0 > "$BAD_HASH_OUT"
 set +e
 cargo run -q -p kernriftc -- \
