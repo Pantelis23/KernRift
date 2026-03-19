@@ -3,6 +3,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use hir::lower_to_krir_with_surface;
 pub use hir::{
     AdaptiveFeaturePromotionPlan, AdaptiveFeaturePromotionReadiness, AdaptiveFeatureProposal,
     AdaptiveFeatureProposalSummary, AdaptiveFeatureStatus, AdaptiveMigrationPreviewEntry,
@@ -15,14 +16,11 @@ pub use hir::{
     frontend_canonical_rewrites, frontend_migration_features_for_profile,
     frontend_migration_preview, irq_handler_alias_proposal, validate_adaptive_feature_governance,
 };
-use hir::{
-    lower_canonical_executable_to_krir, lower_to_canonical_executable_with_surface,
-    lower_to_krir_with_surface,
-};
 use krir::{
     BackendTargetContract, KrirModule, emit_compiler_owned_object_bytes, emit_x86_64_asm_text,
-    emit_x86_64_object_bytes, export_compiler_owned_object_to_x86_64_asm,
-    lower_executable_krir_to_compiler_owned_object, lower_executable_krir_to_x86_64_object,
+    emit_x86_64_object_bytes, lower_current_krir_to_executable_krir,
+    lower_executable_krir_to_compiler_owned_object, lower_executable_krir_to_x86_64_asm,
+    lower_executable_krir_to_x86_64_object,
 };
 use parser::parse_module;
 pub use passes::{AnalysisReport, NoYieldSpan};
@@ -107,11 +105,8 @@ pub fn emit_backend_artifact_file_with_surface(
     surface_profile: SurfaceProfile,
     kind: BackendArtifactKind,
 ) -> Result<Vec<u8>, Vec<String>> {
-    let src = std::fs::read_to_string(path)
-        .map_err(|e| vec![format!("failed to read '{}': {}", path.display(), e)])?;
-    let ast = parse_module(&src)?;
-    let canonical = lower_to_canonical_executable_with_surface(&ast, surface_profile)?;
-    let executable = lower_canonical_executable_to_krir(&canonical)?;
+    let current = compile_file_with_surface(path, surface_profile)?;
+    let executable = lower_current_krir_to_executable_krir(&current)?;
     let target = BackendTargetContract::x86_64_sysv();
 
     match kind {
@@ -126,9 +121,7 @@ pub fn emit_backend_artifact_file_with_surface(
             Ok(emit_x86_64_object_bytes(&object))
         }
         BackendArtifactKind::Asm => {
-            let object = lower_executable_krir_to_compiler_owned_object(&executable, &target)
-                .map_err(|err| vec![err])?;
-            let asm = export_compiler_owned_object_to_x86_64_asm(&object, &target)
+            let asm = lower_executable_krir_to_x86_64_asm(&executable, &target)
                 .map_err(|err| vec![err])?;
             Ok(emit_x86_64_asm_text(&asm).into_bytes())
         }

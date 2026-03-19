@@ -295,7 +295,18 @@ pub struct ExecutableFacts {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum ExecutableOp {
-    Call { callee: String },
+    Call {
+        callee: String,
+    },
+    MmioRead {
+        ty: MmioScalarType,
+        addr: u64,
+    },
+    MmioWriteImm {
+        ty: MmioScalarType,
+        addr: u64,
+        value: u64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -454,6 +465,7 @@ impl ExecutableKrirModule {
                                 ));
                             }
                         }
+                        ExecutableOp::MmioRead { .. } | ExecutableOp::MmioWriteImm { .. } => {}
                     }
                 }
             }
@@ -461,6 +473,240 @@ impl ExecutableKrirModule {
 
         Ok(())
     }
+}
+
+pub fn lower_current_krir_to_executable_krir(
+    module: &KrirModule,
+) -> Result<ExecutableKrirModule, Vec<String>> {
+    let mmio_bases = build_mmio_base_map(module)?;
+    let mut lowered = ExecutableKrirModule {
+        module_caps: module.module_caps.clone(),
+        functions: Vec::new(),
+        extern_declarations: Vec::new(),
+        call_edges: module.call_edges.clone(),
+    };
+    let mut errors = Vec::new();
+
+    for function in &module.functions {
+        if function.is_extern {
+            lowered.extern_declarations.push(ExecutableExternDecl {
+                name: function.name.clone(),
+            });
+            continue;
+        }
+
+        let mut exec_ops = Vec::new();
+        for op in &function.ops {
+            match op {
+                KrirOp::Call { callee } => exec_ops.push(ExecutableOp::Call {
+                    callee: callee.clone(),
+                }),
+                KrirOp::CriticalEnter => errors.push(format!(
+                    "canonical-exec: function '{}' contains unsupported critical region",
+                    function.name
+                )),
+                KrirOp::CriticalExit => {}
+                KrirOp::YieldPoint => errors.push(format!(
+                    "canonical-exec: function '{}' contains unsupported yieldpoint()",
+                    function.name
+                )),
+                KrirOp::AllocPoint => errors.push(format!(
+                    "canonical-exec: function '{}' contains unsupported allocpoint()",
+                    function.name
+                )),
+                KrirOp::BlockPoint => errors.push(format!(
+                    "canonical-exec: function '{}' contains unsupported blockpoint()",
+                    function.name
+                )),
+                KrirOp::Acquire { lock_class } => errors.push(format!(
+                    "canonical-exec: function '{}' contains unsupported acquire({})",
+                    function.name, lock_class
+                )),
+                KrirOp::Release { lock_class } => errors.push(format!(
+                    "canonical-exec: function '{}' contains unsupported release({})",
+                    function.name, lock_class
+                )),
+                KrirOp::MmioRead { ty, addr } | KrirOp::RawMmioRead { ty, addr } => {
+                    match resolve_executable_mmio_addr(addr, &mmio_bases) {
+                        Ok(resolved) => exec_ops.push(ExecutableOp::MmioRead {
+                            ty: *ty,
+                            addr: resolved,
+                        }),
+                        Err(reason) => errors.push(format!(
+                            "canonical-exec: function '{}' contains unsupported {}: {}",
+                            function.name,
+                            format_mmio_read_invocation(*ty, addr),
+                            reason
+                        )),
+                    }
+                }
+                KrirOp::MmioWrite { ty, addr, value }
+                | KrirOp::RawMmioWrite { ty, addr, value } => {
+                    let resolved_addr = match resolve_executable_mmio_addr(addr, &mmio_bases) {
+                        Ok(resolved) => resolved,
+                        Err(reason) => {
+                            errors.push(format!(
+                                "canonical-exec: function '{}' contains unsupported {}: {}",
+                                function.name,
+                                format_mmio_write_invocation(*ty, addr, value),
+                                reason
+                            ));
+                            continue;
+                        }
+                    };
+                    let immediate = match resolve_executable_mmio_write_value(*ty, value) {
+                        Ok(immediate) => immediate,
+                        Err(reason) => {
+                            errors.push(format!(
+                                "canonical-exec: function '{}' contains unsupported {}: {}",
+                                function.name,
+                                format_mmio_write_invocation(*ty, addr, value),
+                                reason
+                            ));
+                            continue;
+                        }
+                    };
+                    exec_ops.push(ExecutableOp::MmioWriteImm {
+                        ty: *ty,
+                        addr: resolved_addr,
+                        value: immediate,
+                    });
+                }
+            }
+        }
+
+        lowered.functions.push(ExecutableFunction {
+            name: function.name.clone(),
+            is_extern: false,
+            signature: ExecutableSignature {
+                params: vec![],
+                result: ExecutableValueType::Unit,
+            },
+            facts: ExecutableFacts {
+                ctx_ok: function.ctx_ok.clone(),
+                eff_used: function.eff_used.clone(),
+                caps_req: function.caps_req.clone(),
+                attrs: function.attrs.clone(),
+            },
+            entry_block: "entry".to_string(),
+            blocks: vec![ExecutableBlock {
+                label: "entry".to_string(),
+                ops: exec_ops,
+                terminator: ExecutableTerminator::Return {
+                    value: ExecutableValue::Unit,
+                },
+            }],
+        });
+    }
+
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
+    lowered.canonicalize();
+    lowered.validate().map_err(|err| vec![err])?;
+    Ok(lowered)
+}
+
+fn build_mmio_base_map(module: &KrirModule) -> Result<BTreeMap<&str, u64>, Vec<String>> {
+    let mut bases = BTreeMap::new();
+    let mut errors = Vec::new();
+    for base in &module.mmio_bases {
+        match parse_integer_literal_u64(&base.addr) {
+            Ok(addr) => {
+                bases.insert(base.name.as_str(), addr);
+            }
+            Err(reason) => errors.push(format!(
+                "canonical-exec: failed to parse mmio base '{}' address '{}': {}",
+                base.name, base.addr, reason
+            )),
+        }
+    }
+    if errors.is_empty() {
+        Ok(bases)
+    } else {
+        Err(errors)
+    }
+}
+
+fn resolve_executable_mmio_addr(
+    addr: &MmioAddrExpr,
+    mmio_bases: &BTreeMap<&str, u64>,
+) -> Result<u64, String> {
+    match addr {
+        MmioAddrExpr::IntLiteral { value } => parse_integer_literal_u64(value),
+        MmioAddrExpr::Ident { name } => mmio_bases
+            .get(name.as_str())
+            .copied()
+            .ok_or_else(|| format!("unknown mmio base '{}'", name)),
+        MmioAddrExpr::IdentPlusOffset { base, offset } => {
+            let base_addr = mmio_bases
+                .get(base.as_str())
+                .copied()
+                .ok_or_else(|| format!("unknown mmio base '{}'", base))?;
+            let offset_value = parse_integer_literal_u64(offset)?;
+            base_addr
+                .checked_add(offset_value)
+                .ok_or_else(|| format!("mmio address overflow for '{} + {}'", base, offset))
+        }
+    }
+}
+
+fn resolve_executable_mmio_write_value(
+    ty: MmioScalarType,
+    value: &MmioValueExpr,
+) -> Result<u64, String> {
+    match value {
+        MmioValueExpr::IntLiteral { value } => {
+            let parsed = parse_integer_literal_u64(value)?;
+            let max_value = match ty {
+                MmioScalarType::U8 => u8::MAX as u64,
+                MmioScalarType::U16 => u16::MAX as u64,
+                MmioScalarType::U32 => u32::MAX as u64,
+                MmioScalarType::U64 => u64::MAX,
+            };
+            if parsed > max_value {
+                Err(format!(
+                    "literal value '{}' does not fit {}",
+                    value,
+                    ty.as_str()
+                ))
+            } else {
+                Ok(parsed)
+            }
+        }
+        MmioValueExpr::Ident { name } => Err(format!(
+            "non-literal write value '{}' is not executable in v0.1",
+            name
+        )),
+    }
+}
+
+fn parse_integer_literal_u64(raw: &str) -> Result<u64, String> {
+    if let Some(hex) = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X")) {
+        u64::from_str_radix(hex, 16)
+            .map_err(|_| format!("'{}' is not a valid unsigned integer literal", raw))
+    } else {
+        raw.parse::<u64>()
+            .map_err(|_| format!("'{}' is not a valid unsigned integer literal", raw))
+    }
+}
+
+fn format_mmio_read_invocation(ty: MmioScalarType, addr: &MmioAddrExpr) -> String {
+    format!("mmio_read<{}>({})", ty.as_str(), addr.as_source())
+}
+
+fn format_mmio_write_invocation(
+    ty: MmioScalarType,
+    addr: &MmioAddrExpr,
+    value: &MmioValueExpr,
+) -> String {
+    format!(
+        "mmio_write<{}>({}, {})",
+        ty.as_str(),
+        addr.as_source(),
+        value.as_source()
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -780,7 +1026,18 @@ pub struct X86_64AsmFunction {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum X86_64AsmInstruction {
-    Call { symbol: String },
+    Call {
+        symbol: String,
+    },
+    MmioRead {
+        ty: MmioScalarType,
+        addr: u64,
+    },
+    MmioWriteImm {
+        ty: MmioScalarType,
+        addr: u64,
+        value: u64,
+    },
     Ret,
 }
 
@@ -1162,8 +1419,37 @@ pub fn lower_executable_krir_to_x86_64_asm(
     module: &ExecutableKrirModule,
     target: &BackendTargetContract,
 ) -> Result<X86_64AsmModule, String> {
-    let object = lower_executable_krir_to_compiler_owned_object(module, target)?;
-    export_compiler_owned_object_to_x86_64_asm(&object, target)
+    validate_compiler_owned_object_linear_subset(module, target)?;
+
+    let mut canonical = module.clone();
+    canonical.canonicalize();
+    let functions = canonical
+        .functions
+        .iter()
+        .map(|function| X86_64AsmFunction {
+            symbol: function.name.clone(),
+            instructions: function.blocks[0]
+                .ops
+                .iter()
+                .cloned()
+                .map(|op| match op {
+                    ExecutableOp::Call { callee } => X86_64AsmInstruction::Call { symbol: callee },
+                    ExecutableOp::MmioRead { ty, addr } => {
+                        X86_64AsmInstruction::MmioRead { ty, addr }
+                    }
+                    ExecutableOp::MmioWriteImm { ty, addr, value } => {
+                        X86_64AsmInstruction::MmioWriteImm { ty, addr, value }
+                    }
+                })
+                .chain(std::iter::once(X86_64AsmInstruction::Ret))
+                .collect(),
+        })
+        .collect();
+
+    Ok(X86_64AsmModule {
+        section: target.sections.text,
+        functions,
+    })
 }
 
 pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
@@ -1184,6 +1470,29 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                     out.push_str(symbol);
                     out.push('\n');
                 }
+                X86_64AsmInstruction::MmioRead { ty, addr } => {
+                    out.push_str("    movabs $");
+                    out.push_str(&format_hex_u64(*addr));
+                    out.push_str(", %rax\n");
+                    out.push_str("    ");
+                    out.push_str(mmio_load_mnemonic(*ty));
+                    out.push_str(" (%rax), ");
+                    out.push_str(mmio_accumulator_register(*ty));
+                    out.push('\n');
+                }
+                X86_64AsmInstruction::MmioWriteImm { ty, addr, value } => {
+                    out.push_str("    movabs $");
+                    out.push_str(&format_hex_u64(*addr));
+                    out.push_str(", %rax\n");
+                    out.push_str("    ");
+                    out.push_str(&mmio_immediate_mnemonic(*ty, *value));
+                    out.push('\n');
+                    out.push_str("    ");
+                    out.push_str(mmio_store_mnemonic(*ty));
+                    out.push(' ');
+                    out.push_str(mmio_value_register(*ty));
+                    out.push_str(", (%rax)\n");
+                }
                 X86_64AsmInstruction::Ret => {
                     out.push_str("    ret\n");
                 }
@@ -1191,6 +1500,135 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
         }
     }
     out
+}
+
+fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
+    match op {
+        ExecutableOp::Call { .. } => 5,
+        ExecutableOp::MmioRead { ty, .. } => 10 + mmio_load_bytes(*ty),
+        ExecutableOp::MmioWriteImm { ty, .. } => {
+            10 + mmio_value_load_immediate_bytes(*ty) + mmio_store_bytes(*ty)
+        }
+    }
+}
+
+fn encode_mmio_read_bytes(out: &mut Vec<u8>, ty: MmioScalarType, addr: u64) {
+    push_movabs_rax_imm64(out, addr);
+    match ty {
+        MmioScalarType::U8 => out.extend_from_slice(&[0x8A, 0x00]),
+        MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x8B, 0x00]),
+        MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x00]),
+        MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x00]),
+    }
+}
+
+fn encode_mmio_write_imm_bytes(out: &mut Vec<u8>, ty: MmioScalarType, addr: u64, value: u64) {
+    push_movabs_rax_imm64(out, addr);
+    push_mov_imm_to_value_register(out, ty, value);
+    match ty {
+        MmioScalarType::U8 => out.extend_from_slice(&[0x88, 0x08]),
+        MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x08]),
+        MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x08]),
+        MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x08]),
+    }
+}
+
+fn push_movabs_rax_imm64(out: &mut Vec<u8>, value: u64) {
+    out.extend_from_slice(&[0x48, 0xB8]);
+    push_u64_le(out, value);
+}
+
+fn push_mov_imm_to_value_register(out: &mut Vec<u8>, ty: MmioScalarType, value: u64) {
+    match ty {
+        MmioScalarType::U8 => {
+            out.push(0xB1);
+            out.push(value as u8);
+        }
+        MmioScalarType::U16 => {
+            out.extend_from_slice(&[0x66, 0xB9]);
+            push_u16_le(out, value as u16);
+        }
+        MmioScalarType::U32 => {
+            out.push(0xB9);
+            push_u32_le(out, value as u32);
+        }
+        MmioScalarType::U64 => {
+            out.extend_from_slice(&[0x48, 0xB9]);
+            push_u64_le(out, value);
+        }
+    }
+}
+
+fn mmio_load_bytes(ty: MmioScalarType) -> u64 {
+    match ty {
+        MmioScalarType::U8 | MmioScalarType::U32 => 2,
+        MmioScalarType::U16 | MmioScalarType::U64 => 3,
+    }
+}
+
+fn mmio_value_load_immediate_bytes(ty: MmioScalarType) -> u64 {
+    match ty {
+        MmioScalarType::U8 => 2,
+        MmioScalarType::U16 => 4,
+        MmioScalarType::U32 => 5,
+        MmioScalarType::U64 => 10,
+    }
+}
+
+fn mmio_store_bytes(ty: MmioScalarType) -> u64 {
+    match ty {
+        MmioScalarType::U8 | MmioScalarType::U32 => 2,
+        MmioScalarType::U16 | MmioScalarType::U64 => 3,
+    }
+}
+
+fn mmio_accumulator_register(ty: MmioScalarType) -> &'static str {
+    match ty {
+        MmioScalarType::U8 => "%al",
+        MmioScalarType::U16 => "%ax",
+        MmioScalarType::U32 => "%eax",
+        MmioScalarType::U64 => "%rax",
+    }
+}
+
+fn mmio_value_register(ty: MmioScalarType) -> &'static str {
+    match ty {
+        MmioScalarType::U8 => "%cl",
+        MmioScalarType::U16 => "%cx",
+        MmioScalarType::U32 => "%ecx",
+        MmioScalarType::U64 => "%rcx",
+    }
+}
+
+fn mmio_load_mnemonic(ty: MmioScalarType) -> &'static str {
+    match ty {
+        MmioScalarType::U8 => "movb",
+        MmioScalarType::U16 => "movw",
+        MmioScalarType::U32 => "movl",
+        MmioScalarType::U64 => "movq",
+    }
+}
+
+fn mmio_store_mnemonic(ty: MmioScalarType) -> &'static str {
+    mmio_load_mnemonic(ty)
+}
+
+fn mmio_immediate_mnemonic(ty: MmioScalarType, value: u64) -> String {
+    let mnemonic = match ty {
+        MmioScalarType::U8 => "movb",
+        MmioScalarType::U16 => "movw",
+        MmioScalarType::U32 => "movl",
+        MmioScalarType::U64 => "movabs",
+    };
+    format!(
+        "{mnemonic} ${}, {}",
+        format_hex_u64(value),
+        mmio_value_register(ty)
+    )
+}
+
+fn format_hex_u64(value: u64) -> String {
+    format!("0x{value:x}")
 }
 
 pub fn validate_compiler_owned_object_linear_subset(
@@ -1219,7 +1657,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
     let mut cursor = 0u64;
     for function in &canonical.functions {
         let block = &function.blocks[0];
-        let size = (block.ops.len() as u64) * 5 + 1;
+        let size = block.ops.iter().map(executable_op_encoded_len).sum::<u64>() + 1;
         function_offsets.insert(function.name.clone(), cursor);
         function_sizes.insert(function.name.clone(), size);
         cursor += size;
@@ -1260,6 +1698,14 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         width_bytes: 4,
                     });
                     local_offset += 5;
+                }
+                ExecutableOp::MmioRead { ty, addr } => {
+                    encode_mmio_read_bytes(&mut code_bytes, *ty, *addr);
+                    local_offset += executable_op_encoded_len(op);
+                }
+                ExecutableOp::MmioWriteImm { ty, addr, value } => {
+                    encode_mmio_write_imm_bytes(&mut code_bytes, *ty, *addr, *value);
+                    local_offset += executable_op_encoded_len(op);
                 }
             }
         }

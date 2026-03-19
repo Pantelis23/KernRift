@@ -230,6 +230,125 @@ fn emit_asm_supports_declared_extern_call_target_downstream() {
 }
 
 #[test]
+fn emit_asm_supports_uart_console_probe_proof_program_exactly() {
+    let root = repo_root();
+    let fixture = root.join("examples").join("uart_console_probe.kr");
+    let output_path = unique_temp_output_path("emit-asm-uart-console-probe", "s");
+    fs::remove_file(&output_path).ok();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("--emit=asm")
+        .arg("-o")
+        .arg(output_path.as_os_str())
+        .arg(fixture.as_os_str());
+    cmd.assert().success();
+
+    let text = fs::read_to_string(&output_path).expect("read asm output");
+    assert_eq!(
+        text,
+        concat!(
+            ".text\n",
+            "\n",
+            ".globl entry\n",
+            "entry:\n",
+            "    call uart_init\n",
+            "    call uart_send_break\n",
+            "    call uart_kick_watchdog\n",
+            "    movabs $0x1004, %rax\n",
+            "    movl (%rax), %eax\n",
+            "    ret\n",
+            "\n",
+            ".globl uart_init\n",
+            "uart_init:\n",
+            "    movabs $0x1008, %rax\n",
+            "    movl $0x1, %ecx\n",
+            "    movl %ecx, (%rax)\n",
+            "    call platform_barrier\n",
+            "    call uart_status\n",
+            "    ret\n",
+            "\n",
+            ".globl uart_kick_watchdog\n",
+            "uart_kick_watchdog:\n",
+            "    movabs $0x1014, %rax\n",
+            "    movl $0xdeadbeef, %ecx\n",
+            "    movl %ecx, (%rax)\n",
+            "    ret\n",
+            "\n",
+            ".globl uart_send_break\n",
+            "uart_send_break:\n",
+            "    movabs $0x1000, %rax\n",
+            "    movb $0x0, %cl\n",
+            "    movb %cl, (%rax)\n",
+            "    call platform_barrier\n",
+            "    ret\n",
+            "\n",
+            ".globl uart_status\n",
+            "uart_status:\n",
+            "    movabs $0x1004, %rax\n",
+            "    movl (%rax), %eax\n",
+            "    ret\n"
+        )
+    );
+
+    fs::remove_file(&output_path).ok();
+}
+
+#[test]
+fn emit_elfobj_supports_uart_console_probe_proof_program_and_metadata_verifies() {
+    let root = repo_root();
+    let fixture = root.join("examples").join("uart_console_probe.kr");
+    let artifact_path = unique_temp_output_path("emit-elfobj-uart-console-probe", "o");
+    let meta_path = unique_temp_output_path("emit-elfobj-uart-console-probe", "json");
+
+    emit_backend_artifact_with_sidecar(
+        &root,
+        "elfobj",
+        &fixture,
+        &artifact_path,
+        &meta_path,
+        false,
+    );
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("verify-artifact-meta")
+        .arg(artifact_path.as_os_str())
+        .arg(meta_path.as_os_str());
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    assert_eq!(stdout, "verify-artifact-meta: PASS\n");
+
+    fs::remove_file(&artifact_path).ok();
+    fs::remove_file(&meta_path).ok();
+}
+
+#[test]
+fn emit_backend_artifact_rejects_nonliteral_mmio_write_value_in_current_subset() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("mmio_typed.kr");
+    let output_path = unique_temp_output_path("emit-mmio-nonliteral-value", "o");
+    fs::remove_file(&output_path).ok();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("--emit=elfobj")
+        .arg("-o")
+        .arg(output_path.as_os_str())
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec![
+            "canonical-exec: function 'entry' contains unsupported mmio_write<u8>(UART0, value): non-literal write value 'value' is not executable in v0.1"
+        ]
+    );
+
+    fs::remove_file(&output_path).ok();
+}
+
+#[test]
 fn emit_asm_supports_mixed_internal_and_declared_extern_targets_downstream() {
     let root = repo_root();
     let fixture = root

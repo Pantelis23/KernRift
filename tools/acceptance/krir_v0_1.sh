@@ -8,6 +8,7 @@ TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kernrift-acceptance-XXXXXX")"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 FIXTURE="tests/must_pass/locks_ok.kr"
+PROOF_FIXTURE="examples/uart_console_probe.kr"
 CONTRACTS_OUT="$TMP_DIR/contracts.json"
 HASH_OUT="$TMP_DIR/contracts.sha256"
 REPORT_OUT="$TMP_DIR/verify.report.json"
@@ -16,6 +17,7 @@ MALFORMED_REPORT="$TMP_DIR/malformed.report.json"
 MALFORMED_STDOUT="$TMP_DIR/malformed.inspect.stdout"
 MALFORMED_STDERR="$TMP_DIR/malformed.inspect.stderr"
 BAD_HASH_OUT="$TMP_DIR/bad.sha256"
+PROOF_ASM_OUT="$TMP_DIR/uart_console_probe.s"
 
 echo "[1/3] smoke: check emits contracts/hash"
 cargo run -q -p kernriftc -- \
@@ -60,7 +62,7 @@ fi
 test ! -s "$MALFORMED_STDOUT"
 grep -q "missing string field 'schema_version'" "$MALFORMED_STDERR"
 
-echo "[5/5] smoke: verify deny on hash mismatch (exit 1)"
+echo "[5/6] smoke: verify deny on hash mismatch (exit 1)"
 printf '%064d\n' 0 > "$BAD_HASH_OUT"
 set +e
 cargo run -q -p kernriftc -- \
@@ -74,5 +76,15 @@ if [[ "$status" -ne 1 ]]; then
   echo "expected verify hash-mismatch exit code 1, got $status" >&2
   exit 1
 fi
+
+echo "[6/6] smoke: proof program emits backend asm"
+cargo run -q -p kernriftc -- \
+  --emit=asm \
+  -o "$PROOF_ASM_OUT" \
+  "$PROOF_FIXTURE"
+
+grep -q "call platform_barrier" "$PROOF_ASM_OUT"
+grep -q 'movabs \$0x1014, %rax' "$PROOF_ASM_OUT"
+grep -q 'movl \$0xdeadbeef, %ecx' "$PROOF_ASM_OUT"
 
 echo "KRIR v0.1 acceptance: PASS"
