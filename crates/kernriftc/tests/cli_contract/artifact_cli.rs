@@ -416,6 +416,51 @@ fn emit_elfexe_supports_uart_console_executable_proof_program_and_inspection_ver
 }
 
 #[test]
+fn emit_elfexe_supports_uart_console_value_flow_proof_program_and_inspection_verifies() {
+    let root = repo_root();
+    let fixture = root.join("examples").join("uart_console_value_flow.kr");
+    let artifact_path = unique_temp_output_path("emit-elfexe-uart-console-value-flow", "elf");
+    fs::remove_file(&artifact_path).ok();
+
+    let mut emit_cmd: Command = cargo_bin_cmd!("kernriftc");
+    emit_cmd
+        .current_dir(&root)
+        .arg("--emit=elfexe")
+        .arg("-o")
+        .arg(artifact_path.as_os_str())
+        .arg(fixture.as_os_str());
+    emit_cmd.assert().success();
+
+    let output = inspect_artifact_output(&root, &artifact_path, Some("json"));
+    let json: Value = serde_json::from_str(&output).expect("parse inspect-artifact JSON");
+    validate_inspect_artifact_schema(&json);
+    assert_eq!(json["schema_version"], "kernrift_inspect_artifact_v2");
+    assert_eq!(json["file"], artifact_path.display().to_string());
+    assert_eq!(json["artifact_kind"], "elf_executable");
+    assert_eq!(json["machine"], "x86_64");
+    assert_eq!(json["undefined_symbols"], json!([]));
+    assert_eq!(json["flags"]["has_entry_symbol"], true);
+    assert_eq!(json["flags"]["has_undefined_symbols"], false);
+    assert_eq!(json["flags"]["has_text_relocations"], false);
+    let defined_symbols = json["defined_symbols"]
+        .as_array()
+        .expect("defined_symbols array")
+        .iter()
+        .map(|value| value.as_str().expect("defined symbol string"))
+        .collect::<Vec<_>>();
+    for required in ["_start", "entry", "mirror_status", "mirror_watchdog"] {
+        assert!(
+            defined_symbols.contains(&required),
+            "expected defined symbol '{}' in {:?}",
+            required,
+            defined_symbols
+        );
+    }
+
+    fs::remove_file(&artifact_path).ok();
+}
+
+#[test]
 fn inspect_artifact_json_reports_uart_console_probe_elf_object_shape() {
     let root = repo_root();
     let fixture = root.join("examples").join("uart_console_probe.kr");
@@ -451,15 +496,15 @@ fn inspect_artifact_json_reports_uart_console_probe_elf_object_shape() {
 }
 
 #[test]
-fn emit_backend_artifact_rejects_nonliteral_mmio_write_value_in_current_subset() {
+fn emit_elfexe_rejects_mismatched_mmio_value_flow_width_in_current_subset() {
     let root = repo_root();
     let fixture = root.join("tests").join("must_pass").join("mmio_typed.kr");
-    let output_path = unique_temp_output_path("emit-mmio-nonliteral-value", "o");
+    let output_path = unique_temp_output_path("emit-elfexe-mmio-value-width-mismatch", "elf");
     fs::remove_file(&output_path).ok();
 
     let mut cmd: Command = cargo_bin_cmd!("kernriftc");
     cmd.current_dir(&root)
-        .arg("--emit=elfobj")
+        .arg("--emit=elfexe")
         .arg("-o")
         .arg(output_path.as_os_str())
         .arg(fixture.as_os_str());
@@ -468,7 +513,7 @@ fn emit_backend_artifact_rejects_nonliteral_mmio_write_value_in_current_subset()
     assert_eq!(
         stderr.lines().collect::<Vec<_>>(),
         vec![
-            "canonical-exec: function 'entry' contains unsupported mmio_write<u8>(UART0, value): non-literal write value 'value' is not executable in v0.1"
+            "canonical-exec: function 'entry' contains unsupported mmio_write<u8>(UART0, value): implicit write value 'value' has type u32 from the prior read and does not match write type u8"
         ]
     );
 
