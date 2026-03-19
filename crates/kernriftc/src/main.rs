@@ -21,6 +21,7 @@ mod artifact_inspect;
 mod artifact_meta;
 mod backend_emit;
 mod canonical_input;
+mod canonical_text;
 mod check_verify;
 mod policy_engine;
 mod proposals;
@@ -31,6 +32,9 @@ use crate::artifact_inspect::{
 };
 use crate::backend_emit::{parse_backend_emit_args, run_backend_emit};
 use crate::canonical_input::CanonicalInput;
+use crate::canonical_text::{
+    print_edit_entry, print_file_label, print_rewrite_entry, print_surface_and_count,
+};
 use crate::check_verify::{
     parse_check_args, parse_inspect_args, parse_inspect_report_args, parse_policy_args,
     parse_verify_args, run_check, run_inspect, run_inspect_report, run_policy, run_report,
@@ -786,15 +790,16 @@ fn run_canonical_edit_preview(args: &MigratePreviewArgs) -> ExitCode {
 
     match args.format {
         MigratePreviewFormat::Text => {
-            println!("surface: {}", args.surface.as_str());
-            println!("edits_count: {}", edits.len());
+            print_surface_and_count(args.surface, "edits_count", edits.len());
             for edit in edits {
-                println!("function: {}", edit.function_name);
-                println!("classification: {}", edit.classification.as_str());
-                println!("surface_form: @{}", edit.surface_form);
-                println!("canonical_replacement: {}", edit.canonical_replacement);
-                println!("migration_safe: {}", edit.migration_safe);
-                println!("rewrite_intent: {}", edit.rewrite_intent);
+                print_edit_entry(
+                    edit.function_name.as_str(),
+                    edit.classification.as_str(),
+                    edit.surface_form,
+                    edit.canonical_replacement,
+                    edit.migration_safe,
+                    edit.rewrite_intent,
+                );
             }
             ExitCode::SUCCESS
         }
@@ -852,13 +857,14 @@ fn run_fix(args: &FixArgs) -> ExitCode {
 
     match args.format {
         FixFormat::Text => {
-            println!("surface: {}", args.surface.as_str());
-            println!("rewrites_applied: {}", result.rewrites.len());
-            println!("file: {}", args.input_path.as_deref().unwrap_or("<stdin>"));
+            print_surface_and_count(args.surface, "rewrites_applied", result.rewrites.len());
+            print_file_label(args.input_path.as_deref().unwrap_or("<stdin>"));
             for rewrite in result.rewrites {
-                println!("function: {}", rewrite.function_name);
-                println!("surface_form: @{}", rewrite.surface_form);
-                println!("canonical_replacement: {}", rewrite.canonical_replacement);
+                print_rewrite_entry(
+                    rewrite.function_name.as_str(),
+                    rewrite.surface_form,
+                    rewrite.canonical_replacement,
+                );
             }
             ExitCode::SUCCESS
         }
@@ -919,13 +925,14 @@ fn run_fix_dry_run(args: &FixArgs) -> ExitCode {
     match args.format {
         FixFormat::Text => {
             let input = canonical_input_for_fix_args(args);
-            println!("surface: {}", args.surface.as_str());
-            println!("rewrites_planned: {}", result.rewrites.len());
-            println!("file: {}", input.label());
+            print_surface_and_count(args.surface, "rewrites_planned", result.rewrites.len());
+            print_file_label(input.label());
             for rewrite in result.rewrites {
-                println!("function: {}", rewrite.function_name);
-                println!("surface_form: @{}", rewrite.surface_form);
-                println!("canonical_replacement: {}", rewrite.canonical_replacement);
+                print_rewrite_entry(
+                    rewrite.function_name.as_str(),
+                    rewrite.surface_form,
+                    rewrite.canonical_replacement,
+                );
             }
             ExitCode::SUCCESS
         }
