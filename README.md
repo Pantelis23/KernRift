@@ -111,12 +111,19 @@ Run acceptance smoke checks with:
 
 - `./tools/acceptance/all.sh`
 
-For the repo-owned full serialized low-memory validation path, use:
+For the default repo-owned local-safe validation path on 32 GB class machines, use:
+
+- `bash tools/validation/local_safe.sh`
+
+This wrapper keeps `CARGO_BUILD_JOBS=1`, runs one command at a time, and intentionally skips the
+heavier local `hir` randomized coverage that can destabilize this machine class.
+
+For the heavier repo-owned full serialized validation path, use:
 
 - `bash tools/validation/full_serial.sh`
 
 This wrapper is intentionally split into explicit per-crate serialized test steps instead of
-`cargo test --workspace` so the local full-validation path stays usable on 32 GB class machines.
+`cargo test --workspace`, but it still includes the heavier local `hir` coverage and remains closer to the CI-style path.
 
 Current acceptance smoke covers downstream artifact compatibility for KRBO/ELF/ASM export paths. Tool-dependent checks are optional and skip explicitly when required host tools are unavailable. Hosted runtime smoke is Linux x86_64 only and can skip when binary execution is unavailable (for example, `noexec` temporary directories).
 

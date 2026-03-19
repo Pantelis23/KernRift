@@ -40,6 +40,7 @@ const KRIR_SPEC_TEXT: &str = include_str!("../../../docs/spec/krir-v0.1.md");
 const KERNEL_PROFILE_SPEC_TEXT: &str = include_str!("../../../docs/spec/kernel_profile.md");
 const README_TEXT: &str = include_str!("../../../README.md");
 const FULL_SERIAL_WRAPPER_TEXT: &str = include_str!("../../../tools/validation/full_serial.sh");
+const LOCAL_SAFE_WRAPPER_TEXT: &str = include_str!("../../../tools/validation/local_safe.sh");
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -178,6 +179,28 @@ fn structured_output_new_json_command_checklist_is_present() {
 }
 
 #[test]
+fn readme_points_to_local_safe_and_full_serial_validation_wrappers() {
+    assert!(
+        README_TEXT.contains("bash tools/validation/local_safe.sh"),
+        "README must point contributors at the repo-owned local-safe validation wrapper"
+    );
+    assert!(
+        README_TEXT.contains("default repo-owned local-safe validation path")
+            && README_TEXT.contains("32 GB class machines"),
+        "README must describe local_safe.sh as the default path on this machine class"
+    );
+    assert!(
+        README_TEXT.contains("bash tools/validation/full_serial.sh"),
+        "README must still point contributors at the heavier full_serial wrapper"
+    );
+    assert!(
+        README_TEXT.contains("heavier local `hir` coverage")
+            && README_TEXT.contains("closer to the CI-style path"),
+        "README must distinguish full_serial as the heavier local path"
+    );
+}
+
+#[test]
 fn readme_points_to_full_serial_low_memory_validation_wrapper() {
     assert!(
         README_TEXT.contains("bash tools/validation/full_serial.sh"),
@@ -185,8 +208,8 @@ fn readme_points_to_full_serial_low_memory_validation_wrapper() {
     );
     assert!(
         README_TEXT.contains("per-crate serialized test steps")
-            && README_TEXT.contains("32 GB class machines"),
-        "README must describe the full_serial wrapper as the safer local low-memory path"
+            && README_TEXT.contains("heavier local `hir` coverage"),
+        "README must describe the full_serial wrapper as the heavier serialized local path"
     );
 }
 
@@ -207,6 +230,38 @@ fn full_serial_wrapper_avoids_workspace_test_aggregation() {
         assert!(
             FULL_SERIAL_WRAPPER_TEXT.contains(step),
             "full_serial wrapper must include '{}'",
+            step
+        );
+    }
+}
+
+#[test]
+fn local_safe_wrapper_stays_explicit_and_avoids_dangerous_local_steps() {
+    assert!(
+        !LOCAL_SAFE_WRAPPER_TEXT.contains("cargo test --workspace"),
+        "local_safe wrapper must not use workspace-wide test aggregation"
+    );
+    assert!(
+        !LOCAL_SAFE_WRAPPER_TEXT.contains("cargo test -p hir -- --test-threads=1"),
+        "local_safe wrapper must not include the heavy hir randomized coverage locally"
+    );
+    assert!(
+        !LOCAL_SAFE_WRAPPER_TEXT.contains("./tools/acceptance/all.sh"),
+        "local_safe wrapper must avoid the heavier all.sh acceptance aggregation"
+    );
+    for step in [
+        "run_step cargo fmt --all",
+        "run_step cargo test -p kernriftc --test cli_contract -- --test-threads=1",
+        "run_step cargo test -p kernriftc --test golden -- --test-threads=1",
+        "run_step cargo test -p kernriftc -- --test-threads=1",
+        "run_step cargo clippy -p kernriftc --all-targets -- -D warnings",
+        "run_step ./tools/acceptance/krir_v0_1.sh",
+        "run_step ./tools/acceptance/kernriftc_artifact_exports.sh",
+        "run_step cargo run -q -p kernriftc -- --selftest",
+    ] {
+        assert!(
+            LOCAL_SAFE_WRAPPER_TEXT.contains(step),
+            "local_safe wrapper must include '{}'",
             step
         );
     }
