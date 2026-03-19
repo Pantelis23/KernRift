@@ -18,4 +18,5 @@ run_step cargo test -p kernriftc -- --test-threads=1
 run_step cargo clippy -p kernriftc --all-targets -- -D warnings
 run_step ./tools/acceptance/krir_v0_1.sh
 run_step ./tools/acceptance/kernriftc_artifact_exports.sh
+run_step ./tools/acceptance/kernriftc_canonical_flows.sh
 run_step cargo run -q -p kernriftc -- --selftest
