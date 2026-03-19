@@ -12,5 +12,6 @@ run_acceptance() {
 
 run_acceptance "krir_v0_1.sh"
 run_acceptance "kernriftc_artifact_exports.sh"
+run_acceptance "kernriftc_canonical_flows.sh"
 
 echo "all acceptance: PASS"
