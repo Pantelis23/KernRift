@@ -40,7 +40,8 @@ pub(crate) struct InspectReportArgs {
 
 #[derive(Debug)]
 pub(crate) struct CheckArgs {
-    pub(crate) path: String,
+    pub(crate) path: Option<String>,
+    pub(crate) stdin: bool,
     pub(crate) surface: SurfaceProfile,
     pub(crate) canonical: bool,
     pub(crate) format: PolicyOutputFormat,
@@ -109,6 +110,7 @@ pub(crate) fn parse_check_args(args: &[String]) -> Result<CheckArgs, String> {
     let mut surface = SurfaceProfile::Stable;
     let mut saw_surface = false;
     let mut canonical = false;
+    let mut stdin = false;
     let mut format = PolicyOutputFormat::Text;
     let mut format_set = false;
     let mut profile = None::<CheckProfile>;
@@ -140,6 +142,13 @@ pub(crate) fn parse_check_args(args: &[String]) -> Result<CheckArgs, String> {
                     return Err("invalid check mode: duplicate --canonical".to_string());
                 }
                 canonical = true;
+                idx += 1;
+            }
+            "--stdin" => {
+                if stdin {
+                    return Err("invalid check mode: duplicate --stdin".to_string());
+                }
+                stdin = true;
                 idx += 1;
             }
             "--profile" => {
@@ -242,7 +251,17 @@ pub(crate) fn parse_check_args(args: &[String]) -> Result<CheckArgs, String> {
         }
     }
 
-    if positionals.len() != 1 {
+    if stdin && !canonical {
+        return Err("invalid check mode: --stdin requires --canonical".to_string());
+    }
+
+    if stdin && !positionals.is_empty() {
+        return Err(
+            "invalid check mode: --stdin cannot be combined with an input file".to_string(),
+        );
+    }
+
+    if !stdin && positionals.len() != 1 {
         return Err("invalid check mode: expected exactly one <file.kr> input".to_string());
     }
 
@@ -269,7 +288,12 @@ pub(crate) fn parse_check_args(args: &[String]) -> Result<CheckArgs, String> {
     }
 
     Ok(CheckArgs {
-        path: positionals.remove(0),
+        path: if stdin {
+            None
+        } else {
+            Some(positionals.remove(0))
+        },
+        stdin,
         surface,
         canonical,
         format,
