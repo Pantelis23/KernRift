@@ -486,13 +486,7 @@ fn parse_migrate_preview_args(args: &[String]) -> Result<MigratePreviewArgs, Str
         idx += 1;
     }
 
-    let surface = if let Some(surface) = surface {
-        surface
-    } else if canonical_edits {
-        SurfaceProfile::Stable
-    } else {
-        return Err("invalid migrate-preview mode: missing --surface".to_string());
-    };
+    let surface = surface.unwrap_or(SurfaceProfile::Stable);
     if stdin && input_path.is_some() {
         return Err(
             "invalid migrate-preview mode: --stdin cannot be combined with an input file"
@@ -1668,6 +1662,7 @@ fn print_usage() {
     eprintln!("  kernriftc proposals --promote <feature-id> --dry-run");
     eprintln!("  kernriftc proposals --promote <feature-id> --diff");
     eprintln!("  kernriftc proposals --promote <feature-id> --dry-run --diff");
+    eprintln!("  kernriftc migrate-preview <file.kr>");
     eprintln!("  kernriftc migrate-preview --surface stable <file.kr>");
     eprintln!("  kernriftc migrate-preview --surface experimental <file.kr>");
     eprintln!("  kernriftc migrate-preview --canonical-edits --format text <file.kr>");
