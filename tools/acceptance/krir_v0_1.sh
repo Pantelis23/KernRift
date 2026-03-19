@@ -9,6 +9,7 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 
 FIXTURE="tests/must_pass/locks_ok.kr"
 PROOF_FIXTURE="examples/uart_console_executable.kr"
+VALUE_FLOW_FIXTURE="examples/uart_console_value_flow.kr"
 CONTRACTS_OUT="$TMP_DIR/contracts.json"
 HASH_OUT="$TMP_DIR/contracts.sha256"
 REPORT_OUT="$TMP_DIR/verify.report.json"
@@ -19,6 +20,8 @@ MALFORMED_STDERR="$TMP_DIR/malformed.inspect.stderr"
 BAD_HASH_OUT="$TMP_DIR/bad.sha256"
 PROOF_ELFEXE_OUT="$TMP_DIR/uart_console_executable.elf"
 PROOF_INSPECT_JSON="$TMP_DIR/uart_console_executable.inspect.json"
+VALUE_FLOW_ELFEXE_OUT="$TMP_DIR/uart_console_value_flow.elf"
+VALUE_FLOW_INSPECT_JSON="$TMP_DIR/uart_console_value_flow.inspect.json"
 
 echo "[1/3] smoke: check emits contracts/hash"
 cargo run -q -p kernriftc -- \
@@ -78,7 +81,7 @@ if [[ "$status" -ne 1 ]]; then
   exit 1
 fi
 
-echo "[6/6] smoke: proof program emits backend elf executable"
+echo "[6/7] smoke: proof program emits backend elf executable"
 cargo run -q -p kernriftc -- \
   --emit=elfexe \
   -o "$PROOF_ELFEXE_OUT" \
@@ -93,5 +96,23 @@ grep -q '"artifact_kind": "elf_executable"' "$PROOF_INSPECT_JSON"
 grep -q '"machine": "x86_64"' "$PROOF_INSPECT_JSON"
 grep -q '"has_entry_symbol": true' "$PROOF_INSPECT_JSON"
 grep -q '"has_undefined_symbols": false' "$PROOF_INSPECT_JSON"
+
+echo "[7/7] smoke: value-flow proof program emits backend elf executable"
+cargo run -q -p kernriftc -- \
+  --emit=elfexe \
+  -o "$VALUE_FLOW_ELFEXE_OUT" \
+  "$VALUE_FLOW_FIXTURE"
+
+cargo run -q -p kernriftc -- \
+  inspect-artifact \
+  "$VALUE_FLOW_ELFEXE_OUT" \
+  --format json > "$VALUE_FLOW_INSPECT_JSON"
+
+grep -q '"artifact_kind": "elf_executable"' "$VALUE_FLOW_INSPECT_JSON"
+grep -q '"machine": "x86_64"' "$VALUE_FLOW_INSPECT_JSON"
+grep -q '"has_entry_symbol": true' "$VALUE_FLOW_INSPECT_JSON"
+grep -q '"has_undefined_symbols": false' "$VALUE_FLOW_INSPECT_JSON"
+grep -q '"mirror_status"' "$VALUE_FLOW_INSPECT_JSON"
+grep -q '"mirror_watchdog"' "$VALUE_FLOW_INSPECT_JSON"
 
 echo "KRIR v0.1 acceptance: PASS"

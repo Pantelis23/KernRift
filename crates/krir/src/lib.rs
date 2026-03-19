@@ -301,11 +301,16 @@ pub enum ExecutableOp {
     MmioRead {
         ty: MmioScalarType,
         addr: u64,
+        capture_value: bool,
     },
     MmioWriteImm {
         ty: MmioScalarType,
         addr: u64,
         value: u64,
+    },
+    MmioWriteValue {
+        ty: MmioScalarType,
+        addr: u64,
     },
 }
 
@@ -465,7 +470,9 @@ impl ExecutableKrirModule {
                                 ));
                             }
                         }
-                        ExecutableOp::MmioRead { .. } | ExecutableOp::MmioWriteImm { .. } => {}
+                        ExecutableOp::MmioRead { .. }
+                        | ExecutableOp::MmioWriteImm { .. }
+                        | ExecutableOp::MmioWriteValue { .. } => {}
                     }
                 }
             }
@@ -496,6 +503,7 @@ pub fn lower_current_krir_to_executable_krir(
         }
 
         let mut exec_ops = Vec::new();
+        let mut last_read = None::<(usize, MmioScalarType)>;
         for op in &function.ops {
             match op {
                 KrirOp::Call { callee } => exec_ops.push(ExecutableOp::Call {
@@ -528,10 +536,14 @@ pub fn lower_current_krir_to_executable_krir(
                 )),
                 KrirOp::MmioRead { ty, addr } | KrirOp::RawMmioRead { ty, addr } => {
                     match resolve_executable_mmio_addr(addr, &mmio_bases) {
-                        Ok(resolved) => exec_ops.push(ExecutableOp::MmioRead {
-                            ty: *ty,
-                            addr: resolved,
-                        }),
+                        Ok(resolved) => {
+                            exec_ops.push(ExecutableOp::MmioRead {
+                                ty: *ty,
+                                addr: resolved,
+                                capture_value: false,
+                            });
+                            last_read = Some((exec_ops.len() - 1, *ty));
+                        }
                         Err(reason) => errors.push(format!(
                             "canonical-exec: function '{}' contains unsupported {}: {}",
                             function.name,
@@ -554,7 +566,11 @@ pub fn lower_current_krir_to_executable_krir(
                             continue;
                         }
                     };
-                    let immediate = match resolve_executable_mmio_write_value(*ty, value) {
+                    let resolved_value = match resolve_executable_mmio_write_value(
+                        *ty,
+                        value,
+                        last_read.map(|(_, ty)| ty),
+                    ) {
                         Ok(immediate) => immediate,
                         Err(reason) => {
                             errors.push(format!(
@@ -566,11 +582,31 @@ pub fn lower_current_krir_to_executable_krir(
                             continue;
                         }
                     };
-                    exec_ops.push(ExecutableOp::MmioWriteImm {
-                        ty: *ty,
-                        addr: resolved_addr,
-                        value: immediate,
-                    });
+                    match resolved_value {
+                        ExecutableMmioWriteValue::Immediate(immediate) => {
+                            exec_ops.push(ExecutableOp::MmioWriteImm {
+                                ty: *ty,
+                                addr: resolved_addr,
+                                value: immediate,
+                            });
+                        }
+                        ExecutableMmioWriteValue::SavedValue => {
+                            let (read_index, _) = last_read
+                                .expect("saved executable write must have a prior captured read");
+                            let Some(ExecutableOp::MmioRead { capture_value, .. }) =
+                                exec_ops.get_mut(read_index)
+                            else {
+                                unreachable!(
+                                    "saved executable write must point at a prior mmio read op"
+                                );
+                            };
+                            *capture_value = true;
+                            exec_ops.push(ExecutableOp::MmioWriteValue {
+                                ty: *ty,
+                                addr: resolved_addr,
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -652,10 +688,16 @@ fn resolve_executable_mmio_addr(
     }
 }
 
+enum ExecutableMmioWriteValue {
+    Immediate(u64),
+    SavedValue,
+}
+
 fn resolve_executable_mmio_write_value(
     ty: MmioScalarType,
     value: &MmioValueExpr,
-) -> Result<u64, String> {
+    available_read_value: Option<MmioScalarType>,
+) -> Result<ExecutableMmioWriteValue, String> {
     match value {
         MmioValueExpr::IntLiteral { value } => {
             let parsed = parse_integer_literal_u64(value)?;
@@ -672,13 +714,32 @@ fn resolve_executable_mmio_write_value(
                     ty.as_str()
                 ))
             } else {
-                Ok(parsed)
+                Ok(ExecutableMmioWriteValue::Immediate(parsed))
             }
         }
-        MmioValueExpr::Ident { name } => Err(format!(
-            "non-literal write value '{}' is not executable in v0.1",
-            name
-        )),
+        MmioValueExpr::Ident { name } => {
+            if name != "value" {
+                return Err(format!(
+                    "non-literal write value '{}' is not executable in v0.1; only implicit 'value' from a prior mmio_read/raw_mmio_read is supported",
+                    name
+                ));
+            }
+            let Some(read_ty) = available_read_value else {
+                return Err(format!(
+                    "implicit write value 'value' requires a prior mmio_read<{}>(...) or raw_mmio_read<{}>(...) in the same function",
+                    ty.as_str(),
+                    ty.as_str()
+                ));
+            };
+            if read_ty != ty {
+                return Err(format!(
+                    "implicit write value 'value' has type {} from the prior read and does not match write type {}",
+                    read_ty.as_str(),
+                    ty.as_str()
+                ));
+            }
+            Ok(ExecutableMmioWriteValue::SavedValue)
+        }
     }
 }
 
@@ -1020,6 +1081,7 @@ pub struct X86_64AsmModule {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct X86_64AsmFunction {
     pub symbol: String,
+    pub uses_saved_value_slot: bool,
     pub instructions: Vec<X86_64AsmInstruction>,
 }
 
@@ -1032,11 +1094,16 @@ pub enum X86_64AsmInstruction {
     MmioRead {
         ty: MmioScalarType,
         addr: u64,
+        capture_value: bool,
     },
     MmioWriteImm {
         ty: MmioScalarType,
         addr: u64,
         value: u64,
+    },
+    MmioWriteValue {
+        ty: MmioScalarType,
+        addr: u64,
     },
     Ret,
 }
@@ -1365,9 +1432,18 @@ pub fn export_compiler_owned_object_to_x86_64_asm(
                 usize::try_from(symbol.offset + symbol.size).expect("symbol end must fit usize");
             let bytes = &object.code.bytes[start..end];
             let mut instructions = Vec::new();
-            let mut cursor = 0usize;
-            while cursor < bytes.len() {
-                if cursor == bytes.len() - 1 && bytes[cursor] == 0xC3 {
+            let uses_saved_value_slot = matches!(bytes.first(), Some(0x53))
+                && bytes.len() >= 3
+                && bytes[bytes.len() - 2] == 0x5B
+                && bytes[bytes.len() - 1] == 0xC3;
+            let mut cursor = if uses_saved_value_slot { 1usize } else { 0usize };
+            let end = if uses_saved_value_slot {
+                bytes.len() - 2
+            } else {
+                bytes.len()
+            };
+            while cursor < end {
+                if !uses_saved_value_slot && cursor == bytes.len() - 1 && bytes[cursor] == 0xC3 {
                     instructions.push(X86_64AsmInstruction::Ret);
                     cursor += 1;
                     continue;
@@ -1396,14 +1472,27 @@ pub fn export_compiler_owned_object_to_x86_64_asm(
                     continue;
                 }
 
+                if let Some((instruction, consumed)) =
+                    decode_x86_64_mmio_instruction(bytes, cursor, end)?
+                {
+                    instructions.push(instruction);
+                    cursor += consumed;
+                    continue;
+                }
+
                 return Err(format!(
                     "x86_64 asm export encountered unsupported code byte 0x{:02x} in function '{}' at offset {}",
                     bytes[cursor], symbol.name, cursor
                 ));
             }
 
+            if uses_saved_value_slot {
+                instructions.push(X86_64AsmInstruction::Ret);
+            }
+
             Ok(X86_64AsmFunction {
                 symbol: symbol.name.clone(),
+                uses_saved_value_slot,
                 instructions,
             })
         })
@@ -1428,17 +1517,27 @@ pub fn lower_executable_krir_to_x86_64_asm(
         .iter()
         .map(|function| X86_64AsmFunction {
             symbol: function.name.clone(),
+            uses_saved_value_slot: executable_function_uses_saved_value_slot(function),
             instructions: function.blocks[0]
                 .ops
                 .iter()
                 .cloned()
                 .map(|op| match op {
                     ExecutableOp::Call { callee } => X86_64AsmInstruction::Call { symbol: callee },
-                    ExecutableOp::MmioRead { ty, addr } => {
-                        X86_64AsmInstruction::MmioRead { ty, addr }
-                    }
+                    ExecutableOp::MmioRead {
+                        ty,
+                        addr,
+                        capture_value,
+                    } => X86_64AsmInstruction::MmioRead {
+                        ty,
+                        addr,
+                        capture_value,
+                    },
                     ExecutableOp::MmioWriteImm { ty, addr, value } => {
                         X86_64AsmInstruction::MmioWriteImm { ty, addr, value }
+                    }
+                    ExecutableOp::MmioWriteValue { ty, addr } => {
+                        X86_64AsmInstruction::MmioWriteValue { ty, addr }
                     }
                 })
                 .chain(std::iter::once(X86_64AsmInstruction::Ret))
@@ -1449,6 +1548,20 @@ pub fn lower_executable_krir_to_x86_64_asm(
     Ok(X86_64AsmModule {
         section: target.sections.text,
         functions,
+    })
+}
+
+fn executable_function_uses_saved_value_slot(function: &ExecutableFunction) -> bool {
+    function.blocks.iter().any(|block| {
+        block.ops.iter().any(|op| {
+            matches!(
+                op,
+                ExecutableOp::MmioRead {
+                    capture_value: true,
+                    ..
+                } | ExecutableOp::MmioWriteValue { .. }
+            )
+        })
     })
 }
 
@@ -1463,6 +1576,9 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
         out.push('\n');
         out.push_str(&function.symbol);
         out.push_str(":\n");
+        if function.uses_saved_value_slot {
+            out.push_str("    push %rbx\n");
+        }
         for instruction in &function.instructions {
             match instruction {
                 X86_64AsmInstruction::Call { symbol } => {
@@ -1470,7 +1586,11 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                     out.push_str(symbol);
                     out.push('\n');
                 }
-                X86_64AsmInstruction::MmioRead { ty, addr } => {
+                X86_64AsmInstruction::MmioRead {
+                    ty,
+                    addr,
+                    capture_value,
+                } => {
                     out.push_str("    movabs $");
                     out.push_str(&format_hex_u64(*addr));
                     out.push_str(", %rax\n");
@@ -1479,6 +1599,15 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                     out.push_str(" (%rax), ");
                     out.push_str(mmio_accumulator_register(*ty));
                     out.push('\n');
+                    if *capture_value {
+                        out.push_str("    ");
+                        out.push_str(mmio_move_saved_value_mnemonic(*ty));
+                        out.push(' ');
+                        out.push_str(mmio_accumulator_register(*ty));
+                        out.push_str(", ");
+                        out.push_str(mmio_saved_value_register(*ty));
+                        out.push('\n');
+                    }
                 }
                 X86_64AsmInstruction::MmioWriteImm { ty, addr, value } => {
                     out.push_str("    movabs $");
@@ -1493,7 +1622,20 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                     out.push_str(mmio_value_register(*ty));
                     out.push_str(", (%rax)\n");
                 }
+                X86_64AsmInstruction::MmioWriteValue { ty, addr } => {
+                    out.push_str("    movabs $");
+                    out.push_str(&format_hex_u64(*addr));
+                    out.push_str(", %rax\n");
+                    out.push_str("    ");
+                    out.push_str(mmio_store_mnemonic(*ty));
+                    out.push(' ');
+                    out.push_str(mmio_saved_value_register(*ty));
+                    out.push_str(", (%rax)\n");
+                }
                 X86_64AsmInstruction::Ret => {
+                    if function.uses_saved_value_slot {
+                        out.push_str("    pop %rbx\n");
+                    }
                     out.push_str("    ret\n");
                 }
             }
@@ -1502,23 +1644,168 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
     out
 }
 
+fn decode_x86_64_mmio_instruction(
+    bytes: &[u8],
+    cursor: usize,
+    end: usize,
+) -> Result<Option<(X86_64AsmInstruction, usize)>, String> {
+    let Some(prefix) = bytes.get(cursor..cursor + 2) else {
+        return Ok(None);
+    };
+    if prefix != [0x48, 0xB8] {
+        return Ok(None);
+    }
+    if cursor + 10 > end {
+        return Ok(None);
+    }
+    let addr = u64::from_le_bytes(
+        bytes[cursor + 2..cursor + 10]
+            .try_into()
+            .expect("movabs immediate must fit u64"),
+    );
+    let rest = &bytes[cursor + 10..end];
+
+    for (ty, load, copy) in [
+        (MmioScalarType::U8, &[0x8A, 0x00][..], &[0x88, 0xC3][..]),
+        (
+            MmioScalarType::U16,
+            &[0x66, 0x8B, 0x00][..],
+            &[0x66, 0x89, 0xC3][..],
+        ),
+        (MmioScalarType::U32, &[0x8B, 0x00][..], &[0x89, 0xC3][..]),
+        (
+            MmioScalarType::U64,
+            &[0x48, 0x8B, 0x00][..],
+            &[0x48, 0x89, 0xC3][..],
+        ),
+    ] {
+        if rest.starts_with(load) {
+            let consumed = 10 + load.len();
+            if rest[load.len()..].starts_with(copy) {
+                return Ok(Some((
+                    X86_64AsmInstruction::MmioRead {
+                        ty,
+                        addr,
+                        capture_value: true,
+                    },
+                    consumed + copy.len(),
+                )));
+            }
+            return Ok(Some((
+                X86_64AsmInstruction::MmioRead {
+                    ty,
+                    addr,
+                    capture_value: false,
+                },
+                consumed,
+            )));
+        }
+    }
+
+    for (ty, imm, store) in [
+        (MmioScalarType::U8, &[0xB1][..], &[0x88, 0x08][..]),
+        (
+            MmioScalarType::U16,
+            &[0x66, 0xB9][..],
+            &[0x66, 0x89, 0x08][..],
+        ),
+        (MmioScalarType::U32, &[0xB9][..], &[0x89, 0x08][..]),
+        (
+            MmioScalarType::U64,
+            &[0x48, 0xB9][..],
+            &[0x48, 0x89, 0x08][..],
+        ),
+    ] {
+        if rest.starts_with(imm) {
+            let immediate_bytes = match ty {
+                MmioScalarType::U8 => 1usize,
+                MmioScalarType::U16 => 2usize,
+                MmioScalarType::U32 => 4usize,
+                MmioScalarType::U64 => 8usize,
+            };
+            if rest.len() < imm.len() + immediate_bytes + store.len() {
+                return Ok(None);
+            }
+            let value_offset = loadless_value_offset(cursor, imm.len());
+            let value = match ty {
+                MmioScalarType::U8 => bytes[value_offset] as u64,
+                MmioScalarType::U16 => u16::from_le_bytes(
+                    bytes[value_offset..value_offset + 2]
+                        .try_into()
+                        .expect("u16 immediate bytes"),
+                ) as u64,
+                MmioScalarType::U32 => u32::from_le_bytes(
+                    bytes[value_offset..value_offset + 4]
+                        .try_into()
+                        .expect("u32 immediate bytes"),
+                ) as u64,
+                MmioScalarType::U64 => u64::from_le_bytes(
+                    bytes[value_offset..value_offset + 8]
+                        .try_into()
+                        .expect("u64 immediate bytes"),
+                ),
+            };
+            let store_offset = value_offset + immediate_bytes;
+            if &bytes[store_offset..store_offset + store.len()] == store {
+                return Ok(Some((
+                    X86_64AsmInstruction::MmioWriteImm { ty, addr, value },
+                    10 + imm.len() + immediate_bytes + store.len(),
+                )));
+            }
+        }
+    }
+
+    for (ty, store) in [
+        (MmioScalarType::U8, &[0x88, 0x18][..]),
+        (MmioScalarType::U16, &[0x66, 0x89, 0x18][..]),
+        (MmioScalarType::U32, &[0x89, 0x18][..]),
+        (MmioScalarType::U64, &[0x48, 0x89, 0x18][..]),
+    ] {
+        if rest.starts_with(store) {
+            return Ok(Some((
+                X86_64AsmInstruction::MmioWriteValue { ty, addr },
+                10 + store.len(),
+            )));
+        }
+    }
+
+    Ok(None)
+}
+
+fn loadless_value_offset(cursor: usize, opcode_bytes: usize) -> usize {
+    cursor + 10 + opcode_bytes
+}
+
 fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
     match op {
         ExecutableOp::Call { .. } => 5,
-        ExecutableOp::MmioRead { ty, .. } => 10 + mmio_load_bytes(*ty),
+        ExecutableOp::MmioRead {
+            ty, capture_value, ..
+        } => {
+            10 + mmio_load_bytes(*ty)
+                + if *capture_value {
+                    mmio_saved_value_copy_bytes(*ty)
+                } else {
+                    0
+                }
+        }
         ExecutableOp::MmioWriteImm { ty, .. } => {
             10 + mmio_value_load_immediate_bytes(*ty) + mmio_store_bytes(*ty)
         }
+        ExecutableOp::MmioWriteValue { ty, .. } => 10 + mmio_saved_value_store_bytes(*ty),
     }
 }
 
-fn encode_mmio_read_bytes(out: &mut Vec<u8>, ty: MmioScalarType, addr: u64) {
+fn encode_mmio_read_bytes(out: &mut Vec<u8>, ty: MmioScalarType, addr: u64, capture_value: bool) {
     push_movabs_rax_imm64(out, addr);
     match ty {
         MmioScalarType::U8 => out.extend_from_slice(&[0x8A, 0x00]),
         MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x8B, 0x00]),
         MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x00]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x00]),
+    }
+    if capture_value {
+        push_mov_accumulator_to_saved_value_register(out, ty);
     }
 }
 
@@ -1530,6 +1817,16 @@ fn encode_mmio_write_imm_bytes(out: &mut Vec<u8>, ty: MmioScalarType, addr: u64,
         MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x08]),
         MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x08]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x08]),
+    }
+}
+
+fn encode_mmio_write_saved_value_bytes(out: &mut Vec<u8>, ty: MmioScalarType, addr: u64) {
+    push_movabs_rax_imm64(out, addr);
+    match ty {
+        MmioScalarType::U8 => out.extend_from_slice(&[0x88, 0x18]),
+        MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x18]),
+        MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x18]),
+        MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x18]),
     }
 }
 
@@ -1559,6 +1856,15 @@ fn push_mov_imm_to_value_register(out: &mut Vec<u8>, ty: MmioScalarType, value: 
     }
 }
 
+fn push_mov_accumulator_to_saved_value_register(out: &mut Vec<u8>, ty: MmioScalarType) {
+    match ty {
+        MmioScalarType::U8 => out.extend_from_slice(&[0x88, 0xC3]),
+        MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0xC3]),
+        MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0xC3]),
+        MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0xC3]),
+    }
+}
+
 fn mmio_load_bytes(ty: MmioScalarType) -> u64 {
     match ty {
         MmioScalarType::U8 | MmioScalarType::U32 => 2,
@@ -1575,11 +1881,22 @@ fn mmio_value_load_immediate_bytes(ty: MmioScalarType) -> u64 {
     }
 }
 
+fn mmio_saved_value_copy_bytes(ty: MmioScalarType) -> u64 {
+    match ty {
+        MmioScalarType::U8 | MmioScalarType::U32 => 2,
+        MmioScalarType::U16 | MmioScalarType::U64 => 3,
+    }
+}
+
 fn mmio_store_bytes(ty: MmioScalarType) -> u64 {
     match ty {
         MmioScalarType::U8 | MmioScalarType::U32 => 2,
         MmioScalarType::U16 | MmioScalarType::U64 => 3,
     }
+}
+
+fn mmio_saved_value_store_bytes(ty: MmioScalarType) -> u64 {
+    mmio_store_bytes(ty)
 }
 
 fn mmio_accumulator_register(ty: MmioScalarType) -> &'static str {
@@ -1600,6 +1917,15 @@ fn mmio_value_register(ty: MmioScalarType) -> &'static str {
     }
 }
 
+fn mmio_saved_value_register(ty: MmioScalarType) -> &'static str {
+    match ty {
+        MmioScalarType::U8 => "%bl",
+        MmioScalarType::U16 => "%bx",
+        MmioScalarType::U32 => "%ebx",
+        MmioScalarType::U64 => "%rbx",
+    }
+}
+
 fn mmio_load_mnemonic(ty: MmioScalarType) -> &'static str {
     match ty {
         MmioScalarType::U8 => "movb",
@@ -1610,6 +1936,10 @@ fn mmio_load_mnemonic(ty: MmioScalarType) -> &'static str {
 }
 
 fn mmio_store_mnemonic(ty: MmioScalarType) -> &'static str {
+    mmio_load_mnemonic(ty)
+}
+
+fn mmio_move_saved_value_mnemonic(ty: MmioScalarType) -> &'static str {
     mmio_load_mnemonic(ty)
 }
 
@@ -1657,7 +1987,10 @@ pub fn lower_executable_krir_to_compiler_owned_object(
     let mut cursor = 0u64;
     for function in &canonical.functions {
         let block = &function.blocks[0];
-        let size = block.ops.iter().map(executable_op_encoded_len).sum::<u64>() + 1;
+        let uses_saved_value_slot = executable_function_uses_saved_value_slot(function);
+        let size = block.ops.iter().map(executable_op_encoded_len).sum::<u64>()
+            + if uses_saved_value_slot { 2 } else { 0 }
+            + 1;
         function_offsets.insert(function.name.clone(), cursor);
         function_sizes.insert(function.name.clone(), size);
         cursor += size;
@@ -1675,7 +2008,12 @@ pub fn lower_executable_krir_to_compiler_owned_object(
         let function_size = *function_sizes
             .get(&function.name)
             .expect("function size must exist");
+        let uses_saved_value_slot = executable_function_uses_saved_value_slot(function);
         let mut local_offset = 0u64;
+        if uses_saved_value_slot {
+            code_bytes.push(0x53);
+            local_offset += 1;
+        }
         for op in &block.ops {
             match op {
                 ExecutableOp::Call { callee } => {
@@ -1699,15 +2037,26 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     });
                     local_offset += 5;
                 }
-                ExecutableOp::MmioRead { ty, addr } => {
-                    encode_mmio_read_bytes(&mut code_bytes, *ty, *addr);
+                ExecutableOp::MmioRead {
+                    ty,
+                    addr,
+                    capture_value,
+                } => {
+                    encode_mmio_read_bytes(&mut code_bytes, *ty, *addr, *capture_value);
                     local_offset += executable_op_encoded_len(op);
                 }
                 ExecutableOp::MmioWriteImm { ty, addr, value } => {
                     encode_mmio_write_imm_bytes(&mut code_bytes, *ty, *addr, *value);
                     local_offset += executable_op_encoded_len(op);
                 }
+                ExecutableOp::MmioWriteValue { ty, addr } => {
+                    encode_mmio_write_saved_value_bytes(&mut code_bytes, *ty, *addr);
+                    local_offset += executable_op_encoded_len(op);
+                }
             }
+        }
+        if uses_saved_value_slot {
+            code_bytes.push(0x5B);
         }
         code_bytes.push(0xC3);
         symbols.push(CompilerOwnedObjectSymbol {
