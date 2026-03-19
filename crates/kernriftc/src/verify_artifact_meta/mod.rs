@@ -72,6 +72,7 @@ pub(crate) fn run_verify_artifact_meta(args: &VerifyArtifactMetaArgs) -> ExitCod
         Err(err) => {
             return format::emit_verify_artifact_meta_result(
                 args.format,
+                &args.artifact_path,
                 "invalid_input",
                 EXIT_INVALID_INPUT,
                 format!("failed to read artifact '{}': {}", args.artifact_path, err),
@@ -84,6 +85,7 @@ pub(crate) fn run_verify_artifact_meta(args: &VerifyArtifactMetaArgs) -> ExitCod
         Err(err) => {
             return format::emit_verify_artifact_meta_result(
                 args.format,
+                &args.artifact_path,
                 "invalid_input",
                 EXIT_INVALID_INPUT,
                 format!(
@@ -99,6 +101,7 @@ pub(crate) fn run_verify_artifact_meta(args: &VerifyArtifactMetaArgs) -> ExitCod
         Err(err) => {
             return format::emit_verify_artifact_meta_result(
                 args.format,
+                &args.artifact_path,
                 "invalid_input",
                 EXIT_INVALID_INPUT,
                 err,
@@ -109,6 +112,7 @@ pub(crate) fn run_verify_artifact_meta(args: &VerifyArtifactMetaArgs) -> ExitCod
     match verify_backend_artifact_metadata(&artifact_bytes, &metadata) {
         Ok(()) => format::emit_verify_artifact_meta_result(
             args.format,
+            &args.artifact_path,
             "pass",
             0,
             "verify-artifact-meta: PASS".to_string(),
@@ -116,6 +120,7 @@ pub(crate) fn run_verify_artifact_meta(args: &VerifyArtifactMetaArgs) -> ExitCod
         Err(VerifyArtifactMetaError::InvalidInput(err)) => {
             format::emit_verify_artifact_meta_result(
                 args.format,
+                &args.artifact_path,
                 "invalid_input",
                 EXIT_INVALID_INPUT,
                 err,
@@ -123,6 +128,7 @@ pub(crate) fn run_verify_artifact_meta(args: &VerifyArtifactMetaArgs) -> ExitCod
         }
         Err(VerifyArtifactMetaError::Mismatch(err)) => format::emit_verify_artifact_meta_result(
             args.format,
+            &args.artifact_path,
             "mismatch",
             EXIT_POLICY_VIOLATION,
             err,

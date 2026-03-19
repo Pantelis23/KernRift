@@ -101,6 +101,7 @@ pub(crate) fn inspect_asm_artifact(bytes: &[u8]) -> Result<ArtifactInspectionRep
 
     Ok(ArtifactInspectionReport {
         schema_version: ARTIFACT_INSPECTION_SCHEMA_VERSION,
+        file: String::new(),
         artifact_kind: "asm_text",
         file_size: bytes.len(),
         machine: Some("x86_64"),

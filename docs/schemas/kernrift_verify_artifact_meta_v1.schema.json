@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kernrift.dev/schemas/kernrift_verify_artifact_meta_v1.schema.json",
+  "title": "kernrift_verify_artifact_meta_v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "result", "exit_code", "message"],
+  "properties": {
+    "schema_version": { "const": "kernrift_verify_artifact_meta_v1" },
+    "result": {
+      "type": "string",
+      "enum": ["pass", "mismatch", "invalid_input"]
+    },
+    "exit_code": { "type": "integer", "minimum": 0, "maximum": 255 },
+    "message": { "type": "string" }
+  }
+}

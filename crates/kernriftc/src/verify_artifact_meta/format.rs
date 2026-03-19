@@ -5,6 +5,7 @@ use super::report::{VERIFY_ARTIFACT_META_SCHEMA_VERSION, VerifyArtifactMetaRepor
 
 pub(crate) fn emit_verify_artifact_meta_result(
     format: VerifyArtifactMetaFormat,
+    file: &str,
     result: &'static str,
     exit_code: u8,
     message: String,
@@ -21,6 +22,7 @@ pub(crate) fn emit_verify_artifact_meta_result(
         VerifyArtifactMetaFormat::Json => {
             let report = VerifyArtifactMetaReport {
                 schema_version: VERIFY_ARTIFACT_META_SCHEMA_VERSION,
+                file: file.to_string(),
                 result,
                 exit_code,
                 message,

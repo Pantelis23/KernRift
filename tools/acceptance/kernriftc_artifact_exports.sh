@@ -238,9 +238,11 @@ step_verify_internal_sidecars() {
   verify_artifact_meta_json "$BASIC_KRBO_OUT" "$BASIC_KRBO_META" "$VERIFY_BASIC_KRBO_JSON"
   verify_artifact_meta_json "$BASIC_ELF_OUT" "$BASIC_ELF_META" "$VERIFY_BASIC_ELF_JSON"
 
-  acceptance_assert_json_string_field "$VERIFY_BASIC_KRBO_JSON" "schema_version" "kernrift_verify_artifact_meta_v1"
+  acceptance_assert_json_string_field "$VERIFY_BASIC_KRBO_JSON" "schema_version" "kernrift_verify_artifact_meta_v2"
+  acceptance_assert_json_string_field "$VERIFY_BASIC_KRBO_JSON" "file" "$BASIC_KRBO_OUT"
   acceptance_assert_json_string_field "$VERIFY_BASIC_KRBO_JSON" "result" "pass"
-  acceptance_assert_json_string_field "$VERIFY_BASIC_ELF_JSON" "schema_version" "kernrift_verify_artifact_meta_v1"
+  acceptance_assert_json_string_field "$VERIFY_BASIC_ELF_JSON" "schema_version" "kernrift_verify_artifact_meta_v2"
+  acceptance_assert_json_string_field "$VERIFY_BASIC_ELF_JSON" "file" "$BASIC_ELF_OUT"
   acceptance_assert_json_string_field "$VERIFY_BASIC_ELF_JSON" "result" "pass"
 }
 
@@ -317,11 +319,14 @@ step_inspect_artifact_cli_smoke() {
   grep -q "^- helper$" "$INSPECT_MIXED_ASM_TXT"
   grep -q "^- ext$" "$INSPECT_MIXED_ASM_TXT"
 
-  acceptance_assert_json_string_field "$INSPECT_BASIC_KRBO_JSON" "schema_version" "kernrift_inspect_artifact_v1"
+  acceptance_assert_json_string_field "$INSPECT_BASIC_KRBO_JSON" "schema_version" "kernrift_inspect_artifact_v2"
+  acceptance_assert_json_string_field "$INSPECT_BASIC_KRBO_JSON" "file" "$BASIC_KRBO_OUT"
   acceptance_assert_json_string_field "$INSPECT_BASIC_KRBO_JSON" "artifact_kind" "krbo"
-  acceptance_assert_json_string_field "$INSPECT_BASIC_ELF_JSON" "schema_version" "kernrift_inspect_artifact_v1"
+  acceptance_assert_json_string_field "$INSPECT_BASIC_ELF_JSON" "schema_version" "kernrift_inspect_artifact_v2"
+  acceptance_assert_json_string_field "$INSPECT_BASIC_ELF_JSON" "file" "$BASIC_ELF_OUT"
   acceptance_assert_json_string_field "$INSPECT_BASIC_ELF_JSON" "artifact_kind" "elf_relocatable"
-  acceptance_assert_json_string_field "$INSPECT_MIXED_ASM_JSON" "schema_version" "kernrift_inspect_artifact_v1"
+  acceptance_assert_json_string_field "$INSPECT_MIXED_ASM_JSON" "schema_version" "kernrift_inspect_artifact_v2"
+  acceptance_assert_json_string_field "$INSPECT_MIXED_ASM_JSON" "file" "$MIXED_ASM_OUT"
   acceptance_assert_json_string_field "$INSPECT_MIXED_ASM_JSON" "artifact_kind" "asm_text"
 }
 
@@ -343,7 +348,8 @@ step_verify_json_negative_consumer_smoke() {
   fi
 
   acceptance_assert_nonempty_file "$VERIFY_NEGATIVE_JSON"
-  acceptance_assert_json_string_field "$VERIFY_NEGATIVE_JSON" "schema_version" "kernrift_verify_artifact_meta_v1"
+  acceptance_assert_json_string_field "$VERIFY_NEGATIVE_JSON" "schema_version" "kernrift_verify_artifact_meta_v2"
+  acceptance_assert_json_string_field "$VERIFY_NEGATIVE_JSON" "file" "$NEGATIVE_BOGUS_ARTIFACT"
   acceptance_assert_json_string_field "$VERIFY_NEGATIVE_JSON" "result" "invalid_input"
   acceptance_assert_json_number_field "$VERIFY_NEGATIVE_JSON" "exit_code" "2"
   acceptance_assert_json_string_field "$VERIFY_NEGATIVE_JSON" "message" "verify-artifact-meta: unsupported artifact bytes"

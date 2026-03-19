@@ -330,6 +330,7 @@ pub(crate) fn inspect_elf_artifact(bytes: &[u8]) -> Result<ArtifactInspectionRep
 
     Ok(ArtifactInspectionReport {
         schema_version: ARTIFACT_INSPECTION_SCHEMA_VERSION,
+        file: String::new(),
         artifact_kind,
         file_size: bytes.len(),
         machine: Some(machine_name),

@@ -29,6 +29,17 @@ pub(super) fn compile_verify_report_schema() -> JSONSchema {
     JSONSchema::compile(&schema_json).expect("compile schema")
 }
 
+pub(super) fn compile_inspect_artifact_schema() -> JSONSchema {
+    let schema_json: Value = serde_json::from_str(INSPECT_ARTIFACT_SCHEMA_V2).expect("schema json");
+    JSONSchema::compile(&schema_json).expect("compile schema")
+}
+
+pub(super) fn compile_verify_artifact_meta_schema() -> JSONSchema {
+    let schema_json: Value =
+        serde_json::from_str(VERIFY_ARTIFACT_META_SCHEMA_V2).expect("schema json");
+    JSONSchema::compile(&schema_json).expect("compile schema")
+}
+
 pub(super) fn compile_policy_violations_schema() -> JSONSchema {
     let schema_json: Value =
         serde_json::from_str(POLICY_VIOLATIONS_SCHEMA_V1).expect("schema json");
@@ -65,6 +76,28 @@ pub(super) fn validate_policy_violations_schema(instance: &Value) {
         let details = errors.map(|e| e.to_string()).collect::<Vec<_>>();
         panic!(
             "policy JSON must validate against policy violations v1 schema: {}",
+            details.join(" | ")
+        );
+    }
+}
+
+pub(super) fn validate_inspect_artifact_schema(instance: &Value) {
+    let compiled = compile_inspect_artifact_schema();
+    if let Err(errors) = compiled.validate(instance) {
+        let details = errors.map(|e| e.to_string()).collect::<Vec<_>>();
+        panic!(
+            "inspect-artifact JSON must validate against inspect-artifact v2 schema: {}",
+            details.join(" | ")
+        );
+    }
+}
+
+pub(super) fn validate_verify_artifact_meta_schema(instance: &Value) {
+    let compiled = compile_verify_artifact_meta_schema();
+    if let Err(errors) = compiled.validate(instance) {
+        let details = errors.map(|e| e.to_string()).collect::<Vec<_>>();
+        panic!(
+            "verify-artifact-meta JSON must validate against verify-artifact-meta v2 schema: {}",
             details.join(" | ")
         );
     }

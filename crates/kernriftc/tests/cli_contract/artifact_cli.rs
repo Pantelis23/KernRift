@@ -362,7 +362,9 @@ fn inspect_artifact_json_reports_krbo_header_and_symbols() {
 
     let output = inspect_artifact_output(&root, &artifact_path, Some("json"));
     let json: Value = serde_json::from_str(&output).expect("parse inspect-artifact JSON");
-    assert_eq!(json["schema_version"], "kernrift_inspect_artifact_v1");
+    validate_inspect_artifact_schema(&json);
+    assert_eq!(json["schema_version"], "kernrift_inspect_artifact_v2");
+    assert_eq!(json["file"], artifact_path.display().to_string());
     assert_eq!(json["artifact_kind"], "krbo");
     assert_eq!(json["machine"], "x86_64");
     assert_eq!(json["pointer_bits"], 64);
@@ -385,7 +387,9 @@ fn inspect_artifact_json_reports_relocation_bearing_elf_object() {
 
     let output = inspect_artifact_output(&root, &artifact_path, Some("json"));
     let json: Value = serde_json::from_str(&output).expect("parse inspect-artifact JSON");
-    assert_eq!(json["schema_version"], "kernrift_inspect_artifact_v1");
+    validate_inspect_artifact_schema(&json);
+    assert_eq!(json["schema_version"], "kernrift_inspect_artifact_v2");
+    assert_eq!(json["file"], artifact_path.display().to_string());
     assert_eq!(json["artifact_kind"], "elf_relocatable");
     assert_eq!(json["machine"], "x86_64");
     assert_eq!(json["undefined_symbols"], json!(["ext"]));
@@ -423,12 +427,14 @@ fn inspect_artifact_json_contract_shape_is_stable_across_krbo_elf_and_asm() {
     let asm = parse(&asm_path);
 
     for report in [&krbo, &elf, &asm] {
+        validate_inspect_artifact_schema(report);
         assert_eq!(
             report["schema_version"],
-            json!("kernrift_inspect_artifact_v1")
+            json!("kernrift_inspect_artifact_v2")
         );
         for key in [
             "schema_version",
+            "file",
             "artifact_kind",
             "file_size",
             "symbols",
@@ -537,7 +543,7 @@ fn inspect_artifact_json_transport_is_stdout_only_and_newline_terminated() {
     let assert = cmd.assert().success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
     let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
-    assert_json_transport(&stdout, &stderr, "kernrift_inspect_artifact_v1");
+    assert_json_transport(&stdout, &stderr, "kernrift_inspect_artifact_v2");
 
     fs::remove_file(&artifact_path).ok();
 }
@@ -889,7 +895,8 @@ fn inspect_artifact_json_outputs_are_exact_for_fixture_matrix() {
     emit_backend_artifact(&root, "elfobj", &mixed_fixture, &mixed_elf, false);
     emit_backend_artifact(&root, "asm", &mixed_fixture, &mixed_asm, false);
 
-    let expected_json = |artifact_kind: &str,
+    let expected_json = |file: &Path,
+                         artifact_kind: &str,
                          file_size: usize,
                          machine: &str,
                          pointer_bits: Option<u64>,
@@ -901,7 +908,8 @@ fn inspect_artifact_json_outputs_are_exact_for_fixture_matrix() {
                          asm: Option<Value>,
                          flags: Value| {
         let mut obj = json!({
-            "schema_version": "kernrift_inspect_artifact_v1",
+            "schema_version": "kernrift_inspect_artifact_v2",
+            "file": file.display().to_string(),
             "artifact_kind": artifact_kind,
             "file_size": file_size,
             "machine": machine,
@@ -927,6 +935,7 @@ fn inspect_artifact_json_outputs_are_exact_for_fixture_matrix() {
         serde_json::from_str::<Value>(&inspect_artifact_output(&root, &basic_krbo, Some("json")))
             .expect("parse krbo inspect json"),
         expected_json(
+            &basic_krbo,
             "krbo",
             136,
             "x86_64",
@@ -947,6 +956,7 @@ fn inspect_artifact_json_outputs_are_exact_for_fixture_matrix() {
         serde_json::from_str::<Value>(&inspect_artifact_output(&root, &basic_elf, Some("json")))
             .expect("parse basic elf inspect json"),
         expected_json(
+            &basic_elf,
             "elf_relocatable",
             536,
             "x86_64",
@@ -967,6 +977,7 @@ fn inspect_artifact_json_outputs_are_exact_for_fixture_matrix() {
         serde_json::from_str::<Value>(&inspect_artifact_output(&root, &basic_asm, Some("json")))
             .expect("parse basic asm inspect json"),
         expected_json(
+            &basic_asm,
             "asm_text",
             69,
             "x86_64",
@@ -992,6 +1003,7 @@ fn inspect_artifact_json_outputs_are_exact_for_fixture_matrix() {
         serde_json::from_str::<Value>(&inspect_artifact_output(&root, &extern_elf, Some("json")))
             .expect("parse extern elf inspect json"),
         expected_json(
+            &extern_elf,
             "elf_relocatable",
             632,
             "x86_64",
@@ -1012,6 +1024,7 @@ fn inspect_artifact_json_outputs_are_exact_for_fixture_matrix() {
         serde_json::from_str::<Value>(&inspect_artifact_output(&root, &extern_asm, Some("json")))
             .expect("parse extern asm inspect json"),
         expected_json(
+            &extern_asm,
             "asm_text",
             48,
             "x86_64",
@@ -1037,6 +1050,7 @@ fn inspect_artifact_json_outputs_are_exact_for_fixture_matrix() {
         serde_json::from_str::<Value>(&inspect_artifact_output(&root, &mixed_elf, Some("json")))
             .expect("parse mixed elf inspect json"),
         expected_json(
+            &mixed_elf,
             "elf_relocatable",
             672,
             "x86_64",
@@ -1058,6 +1072,7 @@ fn inspect_artifact_json_outputs_are_exact_for_fixture_matrix() {
         serde_json::from_str::<Value>(&inspect_artifact_output(&root, &mixed_asm, Some("json")))
             .expect("parse mixed asm inspect json"),
         expected_json(
+            &mixed_asm,
             "asm_text",
             95,
             "x86_64",
@@ -1562,10 +1577,12 @@ fn verify_artifact_meta_json_reports_success_with_schema_marker() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
     let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
     let json: Value = serde_json::from_str(&stdout).expect("parse verify-artifact-meta JSON");
+    validate_verify_artifact_meta_schema(&json);
     assert_eq!(
         json,
         json!({
-            "schema_version": "kernrift_verify_artifact_meta_v1",
+            "schema_version": "kernrift_verify_artifact_meta_v2",
+            "file": artifact_path.display().to_string(),
             "result": "pass",
             "exit_code": 0,
             "message": "verify-artifact-meta: PASS"
@@ -1687,10 +1704,12 @@ fn verify_artifact_meta_json_reports_mismatch_with_schema_marker() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
     let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
     let json: Value = serde_json::from_str(&stdout).expect("parse verify-artifact-meta JSON");
+    validate_verify_artifact_meta_schema(&json);
     assert_eq!(
         json,
         json!({
-            "schema_version": "kernrift_verify_artifact_meta_v1",
+            "schema_version": "kernrift_verify_artifact_meta_v2",
+            "file": artifact_path.display().to_string(),
             "result": "mismatch",
             "exit_code": 1,
             "message": format!("verify-artifact-meta: sha256 mismatch: metadata 00, artifact {}", artifact_sha256)
@@ -1742,10 +1761,12 @@ fn verify_artifact_meta_json_reports_invalid_input_with_schema_marker() {
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
     let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
     let json: Value = serde_json::from_str(&stdout).expect("parse verify-artifact-meta JSON");
+    validate_verify_artifact_meta_schema(&json);
     assert_eq!(
         json,
         json!({
-            "schema_version": "kernrift_verify_artifact_meta_v1",
+            "schema_version": "kernrift_verify_artifact_meta_v2",
+            "file": artifact_path.display().to_string(),
             "result": "invalid_input",
             "exit_code": 2,
             "message": "verify-artifact-meta: unsupported artifact bytes"
@@ -1775,7 +1796,9 @@ fn verify_artifact_meta_json_transport_is_stdout_only_and_newline_terminated() {
     let assert = cmd.assert().success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
     let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
-    assert_json_transport(&stdout, &stderr, "kernrift_verify_artifact_meta_v1");
+    let json: Value = serde_json::from_str(&stdout).expect("parse verify-artifact-meta JSON");
+    validate_verify_artifact_meta_schema(&json);
+    assert_json_transport(&stdout, &stderr, "kernrift_verify_artifact_meta_v2");
 
     fs::remove_file(&artifact_path).ok();
     fs::remove_file(&meta_path).ok();
@@ -3263,4 +3286,3 @@ fn inspect_report_output_is_repeatable() {
 
     fs::remove_file(&report_path).ok();
 }
-

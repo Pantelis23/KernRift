@@ -681,13 +681,14 @@ fn run_inspect_artifact(args: &InspectArtifactArgs) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let report = match inspect_artifact_from_bytes(&artifact_bytes) {
+    let mut report = match inspect_artifact_from_bytes(&artifact_bytes) {
         Ok(report) => report,
         Err(err) => {
             eprintln!("{}", err);
             return ExitCode::from(1);
         }
     };
+    report.file = args.artifact_path.clone();
 
     match args.format {
         InspectArtifactFormat::Text => {

@@ -290,6 +290,18 @@ Current JSON-capable command surfaces:
   - this emits a non-mutating canonical fix preview under
     `kernrift_canonical_fix_preview_v1`
 
+Artifact JSON consumer migration note:
+
+- `kernriftc inspect-artifact --format json` now emits
+  `kernrift_inspect_artifact_v2`
+- `kernriftc verify-artifact-meta --format json` now emits
+  `kernrift_verify_artifact_meta_v2`
+- `kernrift_inspect_artifact_v1` and `kernrift_verify_artifact_meta_v1`
+  remain preserved as historical contracts
+- machine consumers must dispatch on `schema_version`, not command name alone
+- both artifact v2 envelopes add required `file` using the exact artifact path
+  seen by the CLI
+
 Canonical JSON consumer migration note:
 
 - `kernriftc check --canonical --format json` now emits
@@ -323,8 +335,8 @@ Contributor lock for future JSON-capable commands:
 
 | Command surface | JSON mode flag | Schema / payload | Transport expectations | Exit code behavior | Structured output is emitted on |
 |---|---|---|---|---|---|
-| `kernriftc inspect-artifact <artifact> --format json` | `--format json` | `kernrift_inspect_artifact_v1` | `stdout` only, empty `stderr`, trailing newline, `schema_version` present | `0` on successful inspection, `1` on unsupported or malformed artifact bytes | success only |
-| `kernriftc verify-artifact-meta --format json <artifact> <meta.json>` | `--format json` | `kernrift_verify_artifact_meta_v1` | `stdout` only, empty `stderr`, trailing newline, `schema_version` present | `0` pass, `1` mismatch / deny, `2` invalid input | pass, deny, invalid input |
+| `kernriftc inspect-artifact <artifact> --format json` | `--format json` | `kernrift_inspect_artifact_v2` | `stdout` only, empty `stderr`, trailing newline, `schema_version` present | `0` on successful inspection, `1` on unsupported or malformed artifact bytes | success only |
+| `kernriftc verify-artifact-meta --format json <artifact> <meta.json>` | `--format json` | `kernrift_verify_artifact_meta_v2` | `stdout` only, empty `stderr`, trailing newline, `schema_version` present | `0` pass, `1` mismatch / deny, `2` invalid input | pass, deny, invalid input |
 | `kernriftc policy --format json --policy <policy.toml> --contracts <contracts.json>` | `--format json` | `kernrift_policy_violations_v1` | `stdout` only, empty `stderr`, trailing newline, `schema_version` present | `0` pass, `1` deny, `2` invalid input | pass and deny |
 | `kernriftc check --format json --policy <policy.toml> <file.kr>` | `--format json` | `kernrift_policy_violations_v1` on policy denial | `stdout` only, empty `stderr`, trailing newline, `schema_version` present when JSON is emitted | `1` on policy deny with JSON payload; other check failures remain command-specific | policy deny only today |
 | `kernriftc check --canonical --format json <file.kr>` | `--format json` | `kernrift_canonical_findings_v2` | `stdout` only, empty `stderr`, trailing newline, `schema_version` present | `0` when no canonical findings exist, `1` when findings are emitted, `2` invalid input | canonical pass and canonical-findings deny |

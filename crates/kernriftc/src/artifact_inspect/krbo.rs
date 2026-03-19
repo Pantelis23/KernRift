@@ -137,6 +137,7 @@ pub(crate) fn inspect_krbo_artifact(bytes: &[u8]) -> Result<ArtifactInspectionRe
 
     Ok(ArtifactInspectionReport {
         schema_version: ARTIFACT_INSPECTION_SCHEMA_VERSION,
+        file: String::new(),
         artifact_kind: "krbo",
         file_size: bytes.len(),
         machine,
