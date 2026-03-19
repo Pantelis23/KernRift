@@ -688,6 +688,8 @@ fn usage_includes_artifact_json_consumer_commands() {
     assert!(stderr.contains("kernriftc fix --canonical --write --format json <file.kr>"));
     assert!(stderr.contains("kernriftc fix --canonical --dry-run <file.kr>"));
     assert!(stderr.contains("kernriftc fix --canonical --dry-run --format json <file.kr>"));
+    assert!(stderr.contains("kernriftc fix --canonical --dry-run --stdin"));
+    assert!(stderr.contains("kernriftc fix --canonical --dry-run --stdin --format json"));
     assert!(stderr.contains("kernriftc fix --canonical --stdout <file.kr>"));
     assert!(stderr.contains("kernriftc fix --canonical --stdout --surface experimental <file.kr>"));
     assert!(stderr.contains("kernriftc fix --canonical --stdout --stdin"));
@@ -4841,6 +4843,131 @@ fn fix_canonical_dry_run_json_reports_accepted_aliases_under_experimental_surfac
 }
 
 #[test]
+fn fix_canonical_dry_run_from_stdin_reports_accepted_aliases_under_experimental_surface_exactly() {
+    let root = repo_root();
+    let input = fs::read_to_string(
+        root.join("tests")
+            .join("living_compiler")
+            .join("canonical_check_aliases.kr"),
+    )
+    .expect("read alias fixture");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("fix")
+        .arg("--canonical")
+        .arg("--dry-run")
+        .arg("--stdin")
+        .arg("--surface")
+        .arg("experimental")
+        .write_stdin(input);
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.is_empty(),
+        "fix dry-run stdin mode must keep stderr empty on success"
+    );
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        vec![
+            "surface: experimental",
+            "rewrites_planned: 3",
+            "file: <stdin>",
+            "function: blocker",
+            "surface_form: @may_block",
+            "canonical_replacement: @eff(block)",
+            "function: isr",
+            "surface_form: @irq_handler",
+            "canonical_replacement: @ctx(irq)",
+            "function: worker",
+            "surface_form: @thread_entry",
+            "canonical_replacement: @ctx(thread)",
+        ]
+    );
+}
+
+#[test]
+fn fix_canonical_dry_run_from_stdin_reports_legacy_unary_exactly() {
+    let root = repo_root();
+    let input = fs::read_to_string(
+        root.join("tests")
+            .join("living_compiler")
+            .join("migration_preview_legacy_unary.kr"),
+    )
+    .expect("read legacy unary fixture");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("fix")
+        .arg("--canonical")
+        .arg("--dry-run")
+        .arg("--stdin")
+        .write_stdin(input);
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.is_empty(),
+        "fix dry-run stdin mode must keep stderr empty on success"
+    );
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        vec![
+            "surface: stable",
+            "rewrites_planned: 5",
+            "file: <stdin>",
+            "function: alloc_worker",
+            "surface_form: @alloc",
+            "canonical_replacement: @eff(alloc)",
+            "function: block_worker",
+            "surface_form: @block",
+            "canonical_replacement: @eff(block)",
+            "function: irq_entry",
+            "surface_form: @irq",
+            "canonical_replacement: @ctx(irq)",
+            "function: noirq_worker",
+            "surface_form: @noirq",
+            "canonical_replacement: @ctx(thread, boot)",
+            "function: preempt_guarded",
+            "surface_form: @preempt_off",
+            "canonical_replacement: @eff(preempt_off)",
+        ]
+    );
+}
+
+#[test]
+fn fix_canonical_dry_run_json_from_stdin_reports_legacy_unary_exactly() {
+    let root = repo_root();
+    let input = fs::read_to_string(
+        root.join("tests")
+            .join("living_compiler")
+            .join("migration_preview_legacy_unary.kr"),
+    )
+    .expect("read legacy unary fixture");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("fix")
+        .arg("--canonical")
+        .arg("--dry-run")
+        .arg("--stdin")
+        .arg("--format")
+        .arg("json")
+        .write_stdin(input);
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_json_transport(&stdout, &stderr, "kernrift_canonical_fix_preview_v1");
+    let json: Value = serde_json::from_str(&stdout).expect("json stdout");
+    validate_canonical_fix_preview_schema(&json);
+    assert_eq!(
+        stdout,
+        "{\n  \"schema_version\": \"kernrift_canonical_fix_preview_v1\",\n  \"surface\": \"stable\",\n  \"file\": \"<stdin>\",\n  \"rewrites_planned\": 5,\n  \"would_change\": true,\n  \"rewrites\": [\n    {\n      \"function\": \"alloc_worker\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@alloc\",\n      \"canonical_replacement\": \"@eff(alloc)\",\n      \"migration_safe\": true\n    },\n    {\n      \"function\": \"block_worker\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@block\",\n      \"canonical_replacement\": \"@eff(block)\",\n      \"migration_safe\": true\n    },\n    {\n      \"function\": \"irq_entry\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@irq\",\n      \"canonical_replacement\": \"@ctx(irq)\",\n      \"migration_safe\": true\n    },\n    {\n      \"function\": \"noirq_worker\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@noirq\",\n      \"canonical_replacement\": \"@ctx(thread, boot)\",\n      \"migration_safe\": true\n    },\n    {\n      \"function\": \"preempt_guarded\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@preempt_off\",\n      \"canonical_replacement\": \"@eff(preempt_off)\",\n      \"migration_safe\": true\n    }\n  ]\n}\n"
+    );
+}
+
+#[test]
 fn fix_canonical_dry_run_noops_cleanly_for_canonical_source() {
     let root = repo_root();
     let fixture = root.join("tests").join("must_pass").join("basic.kr");
@@ -4871,6 +4998,32 @@ fn fix_canonical_dry_run_noops_cleanly_for_canonical_source() {
     assert_eq!(
         fs::read_to_string(&temp_fixture).expect("read unchanged fixture"),
         original
+    );
+}
+
+#[test]
+fn fix_canonical_dry_run_from_stdin_noops_cleanly_for_canonical_source() {
+    let root = repo_root();
+    let input = fs::read_to_string(root.join("tests").join("must_pass").join("basic.kr"))
+        .expect("read canonical fixture");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("fix")
+        .arg("--canonical")
+        .arg("--dry-run")
+        .arg("--stdin")
+        .write_stdin(input);
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.is_empty(),
+        "fix dry-run stdin mode must keep stderr empty on success"
+    );
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        vec!["surface: stable", "rewrites_planned: 0", "file: <stdin>",]
     );
 }
 
@@ -4906,6 +5059,54 @@ fn fix_canonical_dry_run_json_is_empty_for_canonical_source() {
         fs::read_to_string(&temp_fixture).expect("read unchanged fixture"),
         original
     );
+}
+
+#[test]
+fn fix_canonical_dry_run_json_from_stdin_noops_cleanly_for_canonical_source() {
+    let root = repo_root();
+    let input = fs::read_to_string(root.join("tests").join("must_pass").join("basic.kr"))
+        .expect("read canonical fixture");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("fix")
+        .arg("--canonical")
+        .arg("--dry-run")
+        .arg("--stdin")
+        .arg("--format")
+        .arg("json")
+        .write_stdin(input);
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_json_transport(&stdout, &stderr, "kernrift_canonical_fix_preview_v1");
+    let json: Value = serde_json::from_str(&stdout).expect("json stdout");
+    validate_canonical_fix_preview_schema(&json);
+    assert_eq!(
+        stdout,
+        "{\n  \"schema_version\": \"kernrift_canonical_fix_preview_v1\",\n  \"surface\": \"stable\",\n  \"file\": \"<stdin>\",\n  \"rewrites_planned\": 0,\n  \"would_change\": false,\n  \"rewrites\": []\n}\n"
+    );
+}
+
+#[test]
+fn fix_canonical_dry_run_json_from_stdin_uses_stdin_file_label() {
+    let root = repo_root();
+    let input = fs::read_to_string(root.join("tests").join("must_pass").join("basic.kr"))
+        .expect("read canonical fixture");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("fix")
+        .arg("--canonical")
+        .arg("--dry-run")
+        .arg("--stdin")
+        .arg("--format")
+        .arg("json")
+        .write_stdin(input);
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let json: Value = serde_json::from_str(&stdout).expect("json stdout");
+    assert_eq!(json.get("file").and_then(Value::as_str), Some("<stdin>"));
 }
 
 #[test]

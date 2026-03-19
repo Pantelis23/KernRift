@@ -12,9 +12,9 @@ use emit::{
 use kernriftc::{
     CanonicalFixPreviewResult, CanonicalFixResult, CanonicalFixSourceResult, SurfaceProfile,
     analyze, canonical_edit_plan_file_with_surface, canonical_fix_file_with_surface,
-    canonical_fix_preview_file_with_surface, canonical_fix_source_file_with_surface,
-    canonical_fix_source_text_with_surface, check_file, compile_file,
-    frontend_migration_features_for_profile, migrate_preview_file_with_surface,
+    canonical_fix_preview_file_with_surface, canonical_fix_preview_source_with_surface,
+    canonical_fix_source_file_with_surface, canonical_fix_source_text_with_surface, check_file,
+    compile_file, frontend_migration_features_for_profile, migrate_preview_file_with_surface,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -622,9 +622,6 @@ fn parse_fix_args(args: &[String]) -> Result<FixArgs, String> {
     if diff && format_set {
         return Err("invalid fix mode: --diff does not accept --format".to_string());
     }
-    if stdin && dry_run {
-        return Err("invalid fix mode: --stdin requires --stdout or --diff".to_string());
-    }
     if stdin && input_path.is_some() {
         return Err("invalid fix mode: --stdin cannot be combined with an input file".to_string());
     }
@@ -864,10 +861,7 @@ fn run_fix_diff(args: &FixArgs) -> ExitCode {
 }
 
 fn run_fix_dry_run(args: &FixArgs) -> ExitCode {
-    let result = match canonical_fix_preview_file_with_surface(
-        Path::new(args.input_path.as_deref().expect("input path")),
-        args.surface,
-    ) {
+    let result = match canonical_fix_preview_result_for_args(args) {
         Ok(result) => result,
         Err(errs) => {
             print_errors(&errs);
@@ -890,7 +884,7 @@ fn run_fix_dry_run(args: &FixArgs) -> ExitCode {
         FixFormat::Json => {
             match emit_canonical_fix_preview_json(
                 args.surface,
-                args.input_path.as_deref().expect("input path"),
+                args.input_path.as_deref().unwrap_or("<stdin>"),
                 &result,
             ) {
                 Ok(text) => {
@@ -1078,6 +1072,20 @@ fn canonical_fix_source_result_for_args(
         canonical_fix_source_text_with_surface(&src, args.surface)
     } else {
         canonical_fix_source_file_with_surface(
+            Path::new(args.input_path.as_deref().expect("input path")),
+            args.surface,
+        )
+    }
+}
+
+fn canonical_fix_preview_result_for_args(
+    args: &FixArgs,
+) -> Result<CanonicalFixPreviewResult, Vec<String>> {
+    if args.stdin {
+        let src = read_stdin_source()?;
+        canonical_fix_preview_source_with_surface(&src, args.surface)
+    } else {
+        canonical_fix_preview_file_with_surface(
             Path::new(args.input_path.as_deref().expect("input path")),
             args.surface,
         )
@@ -1621,6 +1629,8 @@ fn print_usage() {
     eprintln!("  kernriftc fix --canonical --dry-run <file.kr>");
     eprintln!("  kernriftc fix --canonical --dry-run --surface experimental <file.kr>");
     eprintln!("  kernriftc fix --canonical --dry-run --format json <file.kr>");
+    eprintln!("  kernriftc fix --canonical --dry-run --stdin");
+    eprintln!("  kernriftc fix --canonical --dry-run --stdin --format json");
     eprintln!("  kernriftc fix --canonical --stdout <file.kr>");
     eprintln!("  kernriftc fix --canonical --stdout --surface experimental <file.kr>");
     eprintln!("  kernriftc fix --canonical --stdout --stdin");
