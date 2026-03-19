@@ -505,7 +505,7 @@ fn parse_migrate_preview_args(args: &[String]) -> Result<MigratePreviewArgs, Str
         );
     }
 
-    if canonical_edits && !stdin && format != MigratePreviewFormat::Json {
+    if canonical_edits && !stdin && !format_set {
         return Err(
             "invalid migrate-preview mode: --canonical-edits requires --format json".to_string(),
         );
@@ -1649,7 +1649,13 @@ fn print_usage() {
     eprintln!("  kernriftc migrate-preview --surface stable <file.kr>");
     eprintln!("  kernriftc migrate-preview --surface experimental <file.kr>");
     eprintln!(
+        "  kernriftc migrate-preview --canonical-edits --format text --surface stable <file.kr>"
+    );
+    eprintln!(
         "  kernriftc migrate-preview --canonical-edits --format json --surface stable <file.kr>"
+    );
+    eprintln!(
+        "  kernriftc migrate-preview --canonical-edits --format text --surface experimental <file.kr>"
     );
     eprintln!("  kernriftc migrate-preview --canonical-edits --stdin");
     eprintln!("  kernriftc migrate-preview --canonical-edits --stdin --format json");

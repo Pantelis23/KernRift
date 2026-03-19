@@ -739,7 +739,13 @@ fn usage_includes_artifact_json_consumer_commands() {
     assert!(stderr.contains("kernriftc check --canonical --format json <file.kr>"));
     assert!(stderr.contains("kernriftc check --canonical --stdin --format json"));
     assert!(stderr.contains(
+        "kernriftc migrate-preview --canonical-edits --format text --surface stable <file.kr>"
+    ));
+    assert!(stderr.contains(
         "kernriftc migrate-preview --canonical-edits --format json --surface stable <file.kr>"
+    ));
+    assert!(stderr.contains(
+        "kernriftc migrate-preview --canonical-edits --format text --surface experimental <file.kr>"
     ));
     assert!(stderr.contains("kernriftc migrate-preview --canonical-edits --stdin"));
     assert!(stderr.contains("kernriftc migrate-preview --canonical-edits --stdin --format json"));
@@ -7411,6 +7417,35 @@ fn migrate_preview_legacy_unary_experimental_output_is_exact() {
 }
 
 #[test]
+fn migrate_preview_canonical_edits_text_reports_legacy_unary_exactly() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("living_compiler")
+        .join("migration_preview_legacy_unary.kr");
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("migrate-preview")
+        .arg("--canonical-edits")
+        .arg("--format")
+        .arg("text")
+        .arg("--surface")
+        .arg("stable")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.is_empty(),
+        "canonical edit-plan file text mode must keep stderr empty on success"
+    );
+    assert_eq!(
+        stdout,
+        "surface: stable\nedits_count: 5\nfunction: alloc_worker\nclassification: compatibility_alias\nsurface_form: @alloc\ncanonical_replacement: @eff(alloc)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@alloc` with `@eff(alloc)`.\nfunction: block_worker\nclassification: compatibility_alias\nsurface_form: @block\ncanonical_replacement: @eff(block)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@block` with `@eff(block)`.\nfunction: irq_entry\nclassification: compatibility_alias\nsurface_form: @irq\ncanonical_replacement: @ctx(irq)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@irq` with `@ctx(irq)`.\nfunction: noirq_worker\nclassification: compatibility_alias\nsurface_form: @noirq\ncanonical_replacement: @ctx(thread, boot)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@noirq` with `@ctx(thread, boot)`.\nfunction: preempt_guarded\nclassification: compatibility_alias\nsurface_form: @preempt_off\ncanonical_replacement: @eff(preempt_off)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@preempt_off` with `@eff(preempt_off)`.\n"
+    );
+}
+
+#[test]
 fn migrate_preview_canonical_edits_from_stdin_reports_legacy_unary_exactly() {
     let root = repo_root();
     let input = fs::read_to_string(
@@ -7496,6 +7531,35 @@ fn migrate_preview_canonical_edits_json_from_stdin_reports_legacy_unary_exactly(
     assert_eq!(
         stdout,
         "{\n  \"schema_version\": \"kernrift_canonical_edit_plan_v1\",\n  \"surface\": \"stable\",\n  \"edits_count\": 5,\n  \"edits\": [\n    {\n      \"function\": \"alloc_worker\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@alloc\",\n      \"canonical_replacement\": \"@eff(alloc)\",\n      \"migration_safe\": true,\n      \"rewrite_intent\": \"Replace the attribute token `@alloc` with `@eff(alloc)`.\"\n    },\n    {\n      \"function\": \"block_worker\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@block\",\n      \"canonical_replacement\": \"@eff(block)\",\n      \"migration_safe\": true,\n      \"rewrite_intent\": \"Replace the attribute token `@block` with `@eff(block)`.\"\n    },\n    {\n      \"function\": \"irq_entry\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@irq\",\n      \"canonical_replacement\": \"@ctx(irq)\",\n      \"migration_safe\": true,\n      \"rewrite_intent\": \"Replace the attribute token `@irq` with `@ctx(irq)`.\"\n    },\n    {\n      \"function\": \"noirq_worker\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@noirq\",\n      \"canonical_replacement\": \"@ctx(thread, boot)\",\n      \"migration_safe\": true,\n      \"rewrite_intent\": \"Replace the attribute token `@noirq` with `@ctx(thread, boot)`.\"\n    },\n    {\n      \"function\": \"preempt_guarded\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@preempt_off\",\n      \"canonical_replacement\": \"@eff(preempt_off)\",\n      \"migration_safe\": true,\n      \"rewrite_intent\": \"Replace the attribute token `@preempt_off` with `@eff(preempt_off)`.\"\n    }\n  ]\n}\n"
+    );
+}
+
+#[test]
+fn migrate_preview_canonical_edits_text_reports_experimental_aliases_exactly() {
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("living_compiler")
+        .join("canonical_check_aliases.kr");
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("migrate-preview")
+        .arg("--canonical-edits")
+        .arg("--format")
+        .arg("text")
+        .arg("--surface")
+        .arg("experimental")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.is_empty(),
+        "canonical edit-plan file text mode must keep stderr empty on success"
+    );
+    assert_eq!(
+        stdout,
+        "surface: experimental\nedits_count: 3\nfunction: blocker\nclassification: compatibility_alias\nsurface_form: @may_block\ncanonical_replacement: @eff(block)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@may_block` with `@eff(block)`.\nfunction: isr\nclassification: compatibility_alias\nsurface_form: @irq_handler\ncanonical_replacement: @ctx(irq)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@irq_handler` with `@ctx(irq)`.\nfunction: worker\nclassification: compatibility_alias\nsurface_form: @thread_entry\ncanonical_replacement: @ctx(thread)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@thread_entry` with `@ctx(thread)`.\n"
     );
 }
 
@@ -7586,6 +7650,29 @@ fn migrate_preview_canonical_edits_json_from_stdin_reports_experimental_aliases_
         stdout,
         "{\n  \"schema_version\": \"kernrift_canonical_edit_plan_v1\",\n  \"surface\": \"experimental\",\n  \"edits_count\": 3,\n  \"edits\": [\n    {\n      \"function\": \"blocker\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@may_block\",\n      \"canonical_replacement\": \"@eff(block)\",\n      \"migration_safe\": true,\n      \"rewrite_intent\": \"Replace the attribute token `@may_block` with `@eff(block)`.\"\n    },\n    {\n      \"function\": \"isr\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@irq_handler\",\n      \"canonical_replacement\": \"@ctx(irq)\",\n      \"migration_safe\": true,\n      \"rewrite_intent\": \"Replace the attribute token `@irq_handler` with `@ctx(irq)`.\"\n    },\n    {\n      \"function\": \"worker\",\n      \"classification\": \"compatibility_alias\",\n      \"surface_form\": \"@thread_entry\",\n      \"canonical_replacement\": \"@ctx(thread)\",\n      \"migration_safe\": true,\n      \"rewrite_intent\": \"Replace the attribute token `@thread_entry` with `@ctx(thread)`.\"\n    }\n  ]\n}\n"
     );
+}
+
+#[test]
+fn migrate_preview_canonical_edits_text_is_empty_for_canonical_source() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("migrate-preview")
+        .arg("--canonical-edits")
+        .arg("--format")
+        .arg("text")
+        .arg("--surface")
+        .arg("stable")
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.is_empty(),
+        "canonical edit-plan file text mode must keep stderr empty on success"
+    );
+    assert_eq!(stdout, "surface: stable\nedits_count: 0\n");
 }
 
 #[test]
