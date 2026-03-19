@@ -344,3 +344,17 @@ fn migrate_preview_surface_unexpected_arg_is_rejected_deterministically() {
         Some("invalid migrate-preview mode: unexpected argument 'extra'")
     );
 }
+
+#[test]
+fn migrate_preview_surface_rejects_stdin_without_canonical_edits_even_when_surface_is_omitted() {
+    let root = repo_root();
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root).arg("migrate-preview").arg("--stdin");
+    cmd.write_stdin("@thread_entry\nfn worker() { }\n");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("invalid migrate-preview mode: --stdin is only supported with --canonical-edits")
+    );
+}
