@@ -17,6 +17,10 @@ Use `docs/spec/krir-v0.1.md` when you need the full accepted-surface grammar and
 - Alias fixtures under `tests/living_compiler/*alias*.kr` are compatibility locks, not preferred authoring style.
 - Only empty parameter lists `()` are supported today.
 - Use `kernriftc check --canonical <file.kr>` when you want the compiler to reject accepted non-canonical frontend spellings in authoring/CI flows.
+- Machine consumers of canonical JSON output should dispatch on
+  `schema_version`; current canonical JSON emits
+  `kernrift_canonical_findings_v2` and
+  `kernrift_canonical_edit_plan_v2`, and both require `file`.
 
 ## Canonical Function Forms
 

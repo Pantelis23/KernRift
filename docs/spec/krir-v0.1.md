@@ -290,6 +290,17 @@ Current JSON-capable command surfaces:
   - this emits a non-mutating canonical fix preview under
     `kernrift_canonical_fix_preview_v1`
 
+Canonical JSON consumer migration note:
+
+- `kernriftc check --canonical --format json` now emits
+  `kernrift_canonical_findings_v2`
+- `kernriftc migrate-preview --canonical-edits --format json` now emits
+  `kernrift_canonical_edit_plan_v2`
+- `kernrift_canonical_findings_v1` and `kernrift_canonical_edit_plan_v1`
+  remain preserved as historical contracts
+- machine consumers must dispatch on `schema_version`, not command name alone
+- both canonical v2 envelopes add required `file` for file/stdin source labeling
+
 Transport invariants:
 
 - structured JSON payload is written to `stdout` only
