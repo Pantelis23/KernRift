@@ -784,7 +784,8 @@ const CANONICAL_FIX_SCHEMA_VERSION: &str = "kernrift_canonical_fix_result_v1";
 const CANONICAL_FIX_PREVIEW_SCHEMA_VERSION: &str = "kernrift_canonical_fix_preview_v1";
 
 fn run_canonical_edit_preview(args: &MigratePreviewArgs) -> ExitCode {
-    let edits = match canonical_edit_plan_for_args(args) {
+    let input = CanonicalInput::from_optional_path(args.stdin, args.input_path.as_deref());
+    let edits = match canonical_edit_plan_for_input(input, args.surface) {
         Ok(edits) => edits,
         Err(errs) => {
             print_errors(&errs);
@@ -795,6 +796,7 @@ fn run_canonical_edit_preview(args: &MigratePreviewArgs) -> ExitCode {
     match args.format {
         MigratePreviewFormat::Text => {
             print_surface_and_count(args.surface, "edits_count", edits.len());
+            print_file_label(input.label());
             for edit in edits {
                 print_edit_entry(
                     edit.function_name.as_str(),
@@ -820,12 +822,12 @@ fn run_canonical_edit_preview(args: &MigratePreviewArgs) -> ExitCode {
     }
 }
 
-fn canonical_edit_plan_for_args(
-    args: &MigratePreviewArgs,
+fn canonical_edit_plan_for_input(
+    input: CanonicalInput<'_>,
+    surface: SurfaceProfile,
 ) -> Result<Vec<kernriftc::FrontendCanonicalEditPlanEntry>, Vec<String>> {
-    let input = CanonicalInput::from_optional_path(args.stdin, args.input_path.as_deref());
     let src = input.read_to_string()?;
-    canonical_edit_plan_source_with_surface(&src, args.surface)
+    canonical_edit_plan_source_with_surface(&src, surface)
 }
 
 fn run_fix(args: &FixArgs) -> ExitCode {

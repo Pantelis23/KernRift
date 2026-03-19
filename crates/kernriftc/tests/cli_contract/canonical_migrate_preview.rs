@@ -13,7 +13,10 @@ fn migrate_preview_canonical_edits_text_reports_legacy_unary_exactly() {
     );
     assert_eq!(
         stdout,
-        "surface: stable\nedits_count: 5\nfunction: alloc_worker\nclassification: compatibility_alias\nsurface_form: @alloc\ncanonical_replacement: @eff(alloc)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@alloc` with `@eff(alloc)`.\nfunction: block_worker\nclassification: compatibility_alias\nsurface_form: @block\ncanonical_replacement: @eff(block)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@block` with `@eff(block)`.\nfunction: irq_entry\nclassification: compatibility_alias\nsurface_form: @irq\ncanonical_replacement: @ctx(irq)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@irq` with `@ctx(irq)`.\nfunction: noirq_worker\nclassification: compatibility_alias\nsurface_form: @noirq\ncanonical_replacement: @ctx(thread, boot)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@noirq` with `@ctx(thread, boot)`.\nfunction: preempt_guarded\nclassification: compatibility_alias\nsurface_form: @preempt_off\ncanonical_replacement: @eff(preempt_off)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@preempt_off` with `@eff(preempt_off)`.\n"
+        format!(
+            "surface: stable\nedits_count: 5\nfile: {}\nfunction: alloc_worker\nclassification: compatibility_alias\nsurface_form: @alloc\ncanonical_replacement: @eff(alloc)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@alloc` with `@eff(alloc)`.\nfunction: block_worker\nclassification: compatibility_alias\nsurface_form: @block\ncanonical_replacement: @eff(block)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@block` with `@eff(block)`.\nfunction: irq_entry\nclassification: compatibility_alias\nsurface_form: @irq\ncanonical_replacement: @ctx(irq)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@irq` with `@ctx(irq)`.\nfunction: noirq_worker\nclassification: compatibility_alias\nsurface_form: @noirq\ncanonical_replacement: @ctx(thread, boot)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@noirq` with `@ctx(thread, boot)`.\nfunction: preempt_guarded\nclassification: compatibility_alias\nsurface_form: @preempt_off\ncanonical_replacement: @eff(preempt_off)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@preempt_off` with `@eff(preempt_off)`.\n",
+            fixture.display()
+        )
     );
 }
 
@@ -32,7 +35,7 @@ fn migrate_preview_canonical_edits_from_stdin_reports_legacy_unary_exactly() {
     );
     assert_eq!(
         stdout,
-        "surface: stable\nedits_count: 5\nfunction: alloc_worker\nclassification: compatibility_alias\nsurface_form: @alloc\ncanonical_replacement: @eff(alloc)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@alloc` with `@eff(alloc)`.\nfunction: block_worker\nclassification: compatibility_alias\nsurface_form: @block\ncanonical_replacement: @eff(block)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@block` with `@eff(block)`.\nfunction: irq_entry\nclassification: compatibility_alias\nsurface_form: @irq\ncanonical_replacement: @ctx(irq)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@irq` with `@ctx(irq)`.\nfunction: noirq_worker\nclassification: compatibility_alias\nsurface_form: @noirq\ncanonical_replacement: @ctx(thread, boot)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@noirq` with `@ctx(thread, boot)`.\nfunction: preempt_guarded\nclassification: compatibility_alias\nsurface_form: @preempt_off\ncanonical_replacement: @eff(preempt_off)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@preempt_off` with `@eff(preempt_off)`.\n"
+        "surface: stable\nedits_count: 5\nfile: <stdin>\nfunction: alloc_worker\nclassification: compatibility_alias\nsurface_form: @alloc\ncanonical_replacement: @eff(alloc)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@alloc` with `@eff(alloc)`.\nfunction: block_worker\nclassification: compatibility_alias\nsurface_form: @block\ncanonical_replacement: @eff(block)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@block` with `@eff(block)`.\nfunction: irq_entry\nclassification: compatibility_alias\nsurface_form: @irq\ncanonical_replacement: @ctx(irq)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@irq` with `@ctx(irq)`.\nfunction: noirq_worker\nclassification: compatibility_alias\nsurface_form: @noirq\ncanonical_replacement: @ctx(thread, boot)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@noirq` with `@ctx(thread, boot)`.\nfunction: preempt_guarded\nclassification: compatibility_alias\nsurface_form: @preempt_off\ncanonical_replacement: @eff(preempt_off)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@preempt_off` with `@eff(preempt_off)`.\n"
     );
 }
 
@@ -146,7 +149,10 @@ fn migrate_preview_canonical_edits_text_reports_experimental_aliases_exactly() {
     );
     assert_eq!(
         stdout,
-        "surface: experimental\nedits_count: 3\nfunction: blocker\nclassification: compatibility_alias\nsurface_form: @may_block\ncanonical_replacement: @eff(block)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@may_block` with `@eff(block)`.\nfunction: isr\nclassification: compatibility_alias\nsurface_form: @irq_handler\ncanonical_replacement: @ctx(irq)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@irq_handler` with `@ctx(irq)`.\nfunction: worker\nclassification: compatibility_alias\nsurface_form: @thread_entry\ncanonical_replacement: @ctx(thread)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@thread_entry` with `@ctx(thread)`.\n"
+        format!(
+            "surface: experimental\nedits_count: 3\nfile: {}\nfunction: blocker\nclassification: compatibility_alias\nsurface_form: @may_block\ncanonical_replacement: @eff(block)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@may_block` with `@eff(block)`.\nfunction: isr\nclassification: compatibility_alias\nsurface_form: @irq_handler\ncanonical_replacement: @ctx(irq)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@irq_handler` with `@ctx(irq)`.\nfunction: worker\nclassification: compatibility_alias\nsurface_form: @thread_entry\ncanonical_replacement: @ctx(thread)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@thread_entry` with `@ctx(thread)`.\n",
+            fixture.display()
+        )
     );
 }
 
@@ -164,7 +170,7 @@ fn migrate_preview_canonical_edits_from_stdin_reports_experimental_aliases_exact
     );
     assert_eq!(
         stdout,
-        "surface: experimental\nedits_count: 3\nfunction: blocker\nclassification: compatibility_alias\nsurface_form: @may_block\ncanonical_replacement: @eff(block)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@may_block` with `@eff(block)`.\nfunction: isr\nclassification: compatibility_alias\nsurface_form: @irq_handler\ncanonical_replacement: @ctx(irq)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@irq_handler` with `@ctx(irq)`.\nfunction: worker\nclassification: compatibility_alias\nsurface_form: @thread_entry\ncanonical_replacement: @ctx(thread)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@thread_entry` with `@ctx(thread)`.\n"
+        "surface: experimental\nedits_count: 3\nfile: <stdin>\nfunction: blocker\nclassification: compatibility_alias\nsurface_form: @may_block\ncanonical_replacement: @eff(block)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@may_block` with `@eff(block)`.\nfunction: isr\nclassification: compatibility_alias\nsurface_form: @irq_handler\ncanonical_replacement: @ctx(irq)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@irq_handler` with `@ctx(irq)`.\nfunction: worker\nclassification: compatibility_alias\nsurface_form: @thread_entry\ncanonical_replacement: @ctx(thread)\nmigration_safe: true\nrewrite_intent: Replace the attribute token `@thread_entry` with `@ctx(thread)`.\n"
     );
 }
 
@@ -215,7 +221,10 @@ fn migrate_preview_canonical_edits_text_is_empty_for_canonical_source() {
         stderr.is_empty(),
         "canonical edit-plan file text mode must keep stderr empty on success"
     );
-    assert_eq!(stdout, "surface: stable\nedits_count: 0\n");
+    assert_eq!(
+        stdout,
+        format!("surface: stable\nedits_count: 0\nfile: {}\n", fixture.display())
+    );
 }
 
 #[test]
@@ -229,7 +238,7 @@ fn migrate_preview_canonical_edits_from_stdin_is_empty_for_canonical_source() {
         stderr.is_empty(),
         "canonical edit-plan stdin text mode must keep stderr empty on success"
     );
-    assert_eq!(stdout, "surface: stable\nedits_count: 0\n");
+    assert_eq!(stdout, "surface: stable\nedits_count: 0\nfile: <stdin>\n");
 }
 
 #[test]
@@ -279,7 +288,10 @@ fn migrate_preview_canonical_edits_text_file_and_stdin_are_parity_locked_for_leg
         &run_migrate_preview_canonical_edits_stdin(&root, &input, "stable", None).success(),
     );
 
-    assert_eq!(file_stdout, stdin_stdout);
+    assert_eq!(
+        normalized_lines_without_file_label(&file_stdout),
+        normalized_lines_without_file_label(&stdin_stdout)
+    );
 }
 
 #[test]
@@ -331,7 +343,10 @@ fn migrate_preview_canonical_edits_experimental_text_file_and_stdin_are_parity_l
         &run_migrate_preview_canonical_edits_stdin(&root, &input, "experimental", None).success(),
     );
 
-    assert_eq!(file_stdout, stdin_stdout);
+    assert_eq!(
+        normalized_lines_without_file_label(&file_stdout),
+        normalized_lines_without_file_label(&stdin_stdout)
+    );
 }
 
 #[test]
@@ -354,7 +369,10 @@ fn migrate_preview_canonical_edits_noop_file_and_stdin_text_and_json_are_parity_
         &run_migrate_preview_canonical_edits_stdin(&root, &input, "stable", Some("json")).success(),
     );
 
-    assert_eq!(file_text, stdin_text);
+    assert_eq!(
+        normalized_lines_without_file_label(&file_text),
+        normalized_lines_without_file_label(&stdin_text)
+    );
     assert_eq!(file_json, stdin_json);
     assert_eq!(text_count_value(&file_text, "edits_count"), 0);
     assert_eq!(

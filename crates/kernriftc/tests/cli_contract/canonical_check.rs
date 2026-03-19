@@ -13,36 +13,11 @@ fn check_canonical_reports_legacy_unary_shorthands_exactly() {
         "canonical check must report via stdout only"
     );
     assert_eq!(
-        stdout.lines().collect::<Vec<_>>(),
-        vec![
-            "surface: stable",
-            "canonical_findings: 5",
-            "function: alloc_worker",
-            "classification: compatibility_alias",
-            "surface_form: @alloc",
-            "canonical_replacement: @eff(alloc)",
-            "migration_safe: true",
-            "function: block_worker",
-            "classification: compatibility_alias",
-            "surface_form: @block",
-            "canonical_replacement: @eff(block)",
-            "migration_safe: true",
-            "function: irq_entry",
-            "classification: compatibility_alias",
-            "surface_form: @irq",
-            "canonical_replacement: @ctx(irq)",
-            "migration_safe: true",
-            "function: noirq_worker",
-            "classification: compatibility_alias",
-            "surface_form: @noirq",
-            "canonical_replacement: @ctx(thread, boot)",
-            "migration_safe: true",
-            "function: preempt_guarded",
-            "classification: compatibility_alias",
-            "surface_form: @preempt_off",
-            "canonical_replacement: @eff(preempt_off)",
-            "migration_safe: true",
-        ]
+        stdout,
+        format!(
+            "surface: stable\ncanonical_findings: 5\nfile: {}\nfunction: alloc_worker\nclassification: compatibility_alias\nsurface_form: @alloc\ncanonical_replacement: @eff(alloc)\nmigration_safe: true\nfunction: block_worker\nclassification: compatibility_alias\nsurface_form: @block\ncanonical_replacement: @eff(block)\nmigration_safe: true\nfunction: irq_entry\nclassification: compatibility_alias\nsurface_form: @irq\ncanonical_replacement: @ctx(irq)\nmigration_safe: true\nfunction: noirq_worker\nclassification: compatibility_alias\nsurface_form: @noirq\ncanonical_replacement: @ctx(thread, boot)\nmigration_safe: true\nfunction: preempt_guarded\nclassification: compatibility_alias\nsurface_form: @preempt_off\ncanonical_replacement: @eff(preempt_off)\nmigration_safe: true\n",
+            fixture.display()
+        )
     );
 }
 
@@ -78,26 +53,11 @@ fn check_canonical_reports_accepted_aliases_under_experimental_surface() {
         "canonical check must report via stdout only"
     );
     assert_eq!(
-        stdout.lines().collect::<Vec<_>>(),
-        vec![
-            "surface: experimental",
-            "canonical_findings: 3",
-            "function: blocker",
-            "classification: compatibility_alias",
-            "surface_form: @may_block",
-            "canonical_replacement: @eff(block)",
-            "migration_safe: true",
-            "function: isr",
-            "classification: compatibility_alias",
-            "surface_form: @irq_handler",
-            "canonical_replacement: @ctx(irq)",
-            "migration_safe: true",
-            "function: worker",
-            "classification: compatibility_alias",
-            "surface_form: @thread_entry",
-            "canonical_replacement: @ctx(thread)",
-            "migration_safe: true",
-        ]
+        stdout,
+        format!(
+            "surface: experimental\ncanonical_findings: 3\nfile: {}\nfunction: blocker\nclassification: compatibility_alias\nsurface_form: @may_block\ncanonical_replacement: @eff(block)\nmigration_safe: true\nfunction: isr\nclassification: compatibility_alias\nsurface_form: @irq_handler\ncanonical_replacement: @ctx(irq)\nmigration_safe: true\nfunction: worker\nclassification: compatibility_alias\nsurface_form: @thread_entry\ncanonical_replacement: @ctx(thread)\nmigration_safe: true\n",
+            fixture.display()
+        )
     );
 }
 
@@ -135,36 +95,8 @@ fn check_canonical_from_stdin_reports_legacy_unary_shorthands_exactly() {
         "canonical check stdin mode must report via stdout only"
     );
     assert_eq!(
-        stdout.lines().collect::<Vec<_>>(),
-        vec![
-            "surface: stable",
-            "canonical_findings: 5",
-            "function: alloc_worker",
-            "classification: compatibility_alias",
-            "surface_form: @alloc",
-            "canonical_replacement: @eff(alloc)",
-            "migration_safe: true",
-            "function: block_worker",
-            "classification: compatibility_alias",
-            "surface_form: @block",
-            "canonical_replacement: @eff(block)",
-            "migration_safe: true",
-            "function: irq_entry",
-            "classification: compatibility_alias",
-            "surface_form: @irq",
-            "canonical_replacement: @ctx(irq)",
-            "migration_safe: true",
-            "function: noirq_worker",
-            "classification: compatibility_alias",
-            "surface_form: @noirq",
-            "canonical_replacement: @ctx(thread, boot)",
-            "migration_safe: true",
-            "function: preempt_guarded",
-            "classification: compatibility_alias",
-            "surface_form: @preempt_off",
-            "canonical_replacement: @eff(preempt_off)",
-            "migration_safe: true",
-        ]
+        stdout,
+        "surface: stable\ncanonical_findings: 5\nfile: <stdin>\nfunction: alloc_worker\nclassification: compatibility_alias\nsurface_form: @alloc\ncanonical_replacement: @eff(alloc)\nmigration_safe: true\nfunction: block_worker\nclassification: compatibility_alias\nsurface_form: @block\ncanonical_replacement: @eff(block)\nmigration_safe: true\nfunction: irq_entry\nclassification: compatibility_alias\nsurface_form: @irq\ncanonical_replacement: @ctx(irq)\nmigration_safe: true\nfunction: noirq_worker\nclassification: compatibility_alias\nsurface_form: @noirq\ncanonical_replacement: @ctx(thread, boot)\nmigration_safe: true\nfunction: preempt_guarded\nclassification: compatibility_alias\nsurface_form: @preempt_off\ncanonical_replacement: @eff(preempt_off)\nmigration_safe: true\n"
     );
 }
 
@@ -202,26 +134,8 @@ fn check_canonical_from_stdin_reports_accepted_aliases_under_experimental_surfac
         "canonical check stdin mode must report via stdout only"
     );
     assert_eq!(
-        stdout.lines().collect::<Vec<_>>(),
-        vec![
-            "surface: experimental",
-            "canonical_findings: 3",
-            "function: blocker",
-            "classification: compatibility_alias",
-            "surface_form: @may_block",
-            "canonical_replacement: @eff(block)",
-            "migration_safe: true",
-            "function: isr",
-            "classification: compatibility_alias",
-            "surface_form: @irq_handler",
-            "canonical_replacement: @ctx(irq)",
-            "migration_safe: true",
-            "function: worker",
-            "classification: compatibility_alias",
-            "surface_form: @thread_entry",
-            "canonical_replacement: @ctx(thread)",
-            "migration_safe: true",
-        ]
+        stdout,
+        "surface: experimental\ncanonical_findings: 3\nfile: <stdin>\nfunction: blocker\nclassification: compatibility_alias\nsurface_form: @may_block\ncanonical_replacement: @eff(block)\nmigration_safe: true\nfunction: isr\nclassification: compatibility_alias\nsurface_form: @irq_handler\ncanonical_replacement: @ctx(irq)\nmigration_safe: true\nfunction: worker\nclassification: compatibility_alias\nsurface_form: @thread_entry\ncanonical_replacement: @ctx(thread)\nmigration_safe: true\n"
     );
 }
 
@@ -237,8 +151,8 @@ fn check_canonical_succeeds_cleanly_for_canonical_source() {
         "canonical check success must keep stderr empty"
     );
     assert_eq!(
-        stdout.lines().collect::<Vec<_>>(),
-        vec!["surface: stable", "canonical_findings: 0"]
+        stdout,
+        format!("surface: stable\ncanonical_findings: 0\nfile: {}\n", fixture.display())
     );
 }
 
@@ -253,10 +167,7 @@ fn check_canonical_from_stdin_succeeds_cleanly_for_canonical_source() {
         stderr.is_empty(),
         "canonical check stdin success must keep stderr empty"
     );
-    assert_eq!(
-        stdout.lines().collect::<Vec<_>>(),
-        vec!["surface: stable", "canonical_findings: 0"]
-    );
+    assert_eq!(stdout, "surface: stable\ncanonical_findings: 0\nfile: <stdin>\n");
 }
 
 #[test]
@@ -311,7 +222,10 @@ fn check_canonical_text_file_and_stdin_are_parity_locked_for_legacy_unary() {
 
     assert!(file_stderr.is_empty());
     assert!(stdin_stderr.is_empty());
-    assert_eq!(file_stdout, stdin_stdout);
+    assert_eq!(
+        normalized_lines_without_file_label(&file_stdout),
+        normalized_lines_without_file_label(&stdin_stdout)
+    );
 }
 
 #[test]
@@ -369,7 +283,10 @@ fn check_canonical_noop_file_and_stdin_text_and_json_are_parity_locked() {
     let stdin_json =
         stdout_json(&run_check_canonical_stdin(&root, &input, None, Some("json")).success());
 
-    assert_eq!(file_text, stdin_text);
+    assert_eq!(
+        normalized_lines_without_file_label(&file_text),
+        normalized_lines_without_file_label(&stdin_text)
+    );
     assert_eq!(file_json, stdin_json);
     assert_eq!(text_count_value(&file_text, "canonical_findings"), 0);
     assert_eq!(

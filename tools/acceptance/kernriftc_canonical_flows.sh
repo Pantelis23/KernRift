@@ -54,6 +54,7 @@ if [[ "$status" -ne 1 ]]; then
   exit 1
 fi
 assert_contains "surface: stable" "$CHECK_TEXT_OUT"
+assert_contains "file: $WORK_FIXTURE" "$CHECK_TEXT_OUT"
 assert_contains "canonical_findings: 5" "$CHECK_TEXT_OUT"
 assert_unchanged_fixture
 
@@ -91,6 +92,7 @@ echo "[6/12] canonical edit-plan text smoke (file)"
 PREVIEW_TEXT_OUT="$TMP_DIR/preview.text.out"
 run_kernriftc migrate-preview --canonical-edits --format text "$WORK_FIXTURE" >"$PREVIEW_TEXT_OUT"
 assert_contains "surface: stable" "$PREVIEW_TEXT_OUT"
+assert_contains "file: $WORK_FIXTURE" "$PREVIEW_TEXT_OUT"
 assert_contains "edits_count: 5" "$PREVIEW_TEXT_OUT"
 assert_unchanged_fixture
 
@@ -105,6 +107,7 @@ if [[ "$status" -ne 1 ]]; then
   exit 1
 fi
 assert_contains "surface: stable" "$CHECK_STDIN_TEXT_OUT"
+assert_contains "file: <stdin>" "$CHECK_STDIN_TEXT_OUT"
 assert_contains "canonical_findings: 5" "$CHECK_STDIN_TEXT_OUT"
 
 echo "[8/12] canonical dry-run smoke (stdin)"
@@ -131,6 +134,7 @@ echo "[11/12] canonical edit-plan text smoke (stdin)"
 PREVIEW_STDIN_TEXT_OUT="$TMP_DIR/preview.stdin.text.out"
 cat "$WORK_FIXTURE" | run_kernriftc migrate-preview --canonical-edits --stdin >"$PREVIEW_STDIN_TEXT_OUT"
 assert_contains "surface: stable" "$PREVIEW_STDIN_TEXT_OUT"
+assert_contains "file: <stdin>" "$PREVIEW_STDIN_TEXT_OUT"
 assert_contains "edits_count: 5" "$PREVIEW_STDIN_TEXT_OUT"
 
 echo "[12/12] canonical edit-plan JSON smoke (stdin)"
