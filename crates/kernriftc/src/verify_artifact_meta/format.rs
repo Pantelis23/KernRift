@@ -20,6 +20,10 @@ pub(crate) fn emit_verify_artifact_meta_result(
             ExitCode::from(exit_code)
         }
         VerifyArtifactMetaFormat::Json => {
+            if result == "invalid_input" {
+                eprintln!("{}", message);
+                return ExitCode::from(exit_code);
+            }
             let report = VerifyArtifactMetaReport {
                 schema_version: VERIFY_ARTIFACT_META_SCHEMA_VERSION,
                 file: file.to_string(),

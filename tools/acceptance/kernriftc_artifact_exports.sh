@@ -113,6 +113,9 @@ VERIFY_BASIC_ELF_JSON="$TMP_DIR/verify.basic.elf.json"
 NEGATIVE_BOGUS_ARTIFACT="$TMP_DIR/negative.unsupported.bin"
 NEGATIVE_META_JSON="$TMP_DIR/negative.meta.json"
 VERIFY_NEGATIVE_JSON="$TMP_DIR/verify.negative.json"
+VERIFY_NEGATIVE_STDERR="$TMP_DIR/verify.negative.stderr.txt"
+INSPECT_NEGATIVE_STDOUT="$TMP_DIR/inspect.negative.stdout.txt"
+INSPECT_NEGATIVE_STDERR="$TMP_DIR/inspect.negative.stderr.txt"
 
 RELINKED_BASIC_ELF_OUT="$TMP_DIR/basic.relinked.o"
 FINAL_RUNTIME_STUB_SRC="$TMP_DIR/runtime_stub.s"
@@ -331,12 +334,14 @@ step_inspect_artifact_cli_smoke() {
 }
 
 step_verify_json_negative_consumer_smoke() {
-  set_context "$BASIC_FIXTURE" "$NEGATIVE_BOGUS_ARTIFACT" "$NEGATIVE_META_JSON" "$VERIFY_NEGATIVE_JSON"
+  set_context "$BASIC_FIXTURE" "$NEGATIVE_BOGUS_ARTIFACT" "$NEGATIVE_META_JSON" "$VERIFY_NEGATIVE_JSON" "$VERIFY_NEGATIVE_STDERR" "$INSPECT_NEGATIVE_STDOUT" "$INSPECT_NEGATIVE_STDERR"
 
   printf "not-an-artifact" >"$NEGATIVE_BOGUS_ARTIFACT"
   cp "$BASIC_KRBO_META" "$NEGATIVE_META_JSON"
 
-  if run_kernriftc verify-artifact-meta --format json "$NEGATIVE_BOGUS_ARTIFACT" "$NEGATIVE_META_JSON" >"$VERIFY_NEGATIVE_JSON"; then
+  : >"$VERIFY_NEGATIVE_JSON"
+  : >"$VERIFY_NEGATIVE_STDERR"
+  if run_kernriftc verify-artifact-meta --format json "$NEGATIVE_BOGUS_ARTIFACT" "$NEGATIVE_META_JSON" >"$VERIFY_NEGATIVE_JSON" 2>"$VERIFY_NEGATIVE_STDERR"; then
     echo "expected verify-artifact-meta --format json to fail for unsupported artifact bytes" >&2
     exit 1
   else
@@ -347,12 +352,32 @@ step_verify_json_negative_consumer_smoke() {
     fi
   fi
 
-  acceptance_assert_nonempty_file "$VERIFY_NEGATIVE_JSON"
-  acceptance_assert_json_string_field "$VERIFY_NEGATIVE_JSON" "schema_version" "kernrift_verify_artifact_meta_v2"
-  acceptance_assert_json_string_field "$VERIFY_NEGATIVE_JSON" "file" "$NEGATIVE_BOGUS_ARTIFACT"
-  acceptance_assert_json_string_field "$VERIFY_NEGATIVE_JSON" "result" "invalid_input"
-  acceptance_assert_json_number_field "$VERIFY_NEGATIVE_JSON" "exit_code" "2"
-  acceptance_assert_json_string_field "$VERIFY_NEGATIVE_JSON" "message" "verify-artifact-meta: unsupported artifact bytes"
+  if [[ -s "$VERIFY_NEGATIVE_JSON" ]]; then
+    echo "expected verify-artifact-meta --format json invalid-input stdout to stay empty" >&2
+    exit 1
+  fi
+  acceptance_assert_nonempty_file "$VERIFY_NEGATIVE_STDERR"
+  grep -qx "verify-artifact-meta: unsupported artifact bytes" "$VERIFY_NEGATIVE_STDERR"
+
+  : >"$INSPECT_NEGATIVE_STDOUT"
+  : >"$INSPECT_NEGATIVE_STDERR"
+  if run_kernriftc inspect-artifact "$NEGATIVE_BOGUS_ARTIFACT" --format json >"$INSPECT_NEGATIVE_STDOUT" 2>"$INSPECT_NEGATIVE_STDERR"; then
+    echo "expected inspect-artifact --format json to fail for unsupported artifact bytes" >&2
+    exit 1
+  else
+    local status=$?
+    if [[ "$status" -ne 1 ]]; then
+      echo "expected inspect-artifact --format json exit code 1, got $status" >&2
+      exit 1
+    fi
+  fi
+
+  if [[ -s "$INSPECT_NEGATIVE_STDOUT" ]]; then
+    echo "expected inspect-artifact --format json invalid stdout to stay empty" >&2
+    exit 1
+  fi
+  acceptance_assert_nonempty_file "$INSPECT_NEGATIVE_STDERR"
+  grep -qx "inspect-artifact: unsupported artifact bytes" "$INSPECT_NEGATIVE_STDERR"
 }
 
 step_optional_elf_inspection_matrix() {

@@ -551,6 +551,30 @@ fn inspect_artifact_json_transport_is_stdout_only_and_newline_terminated() {
 }
 
 #[test]
+fn inspect_artifact_json_rejects_malformed_bytes_without_emitting_json() {
+    let root = repo_root();
+    let input_path = unique_temp_output_path("inspect-artifact-json-random-text", "txt");
+    fs::write(&input_path, "hello artifact\n").expect("write random text");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("inspect-artifact")
+        .arg(input_path.as_os_str())
+        .arg("--format")
+        .arg("json");
+    let assert = cmd.assert().failure().code(1);
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(stdout.is_empty(), "expected empty stdout, got: {stdout}");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("inspect-artifact: unsupported artifact bytes")
+    );
+
+    fs::remove_file(&input_path).ok();
+}
+
+#[test]
 fn inspect_artifact_rejects_random_text_file() {
     let root = repo_root();
     let input_path = unique_temp_output_path("inspect-artifact-random-text", "txt");
@@ -1724,7 +1748,7 @@ fn verify_artifact_meta_json_reports_mismatch_with_schema_marker() {
 }
 
 #[test]
-fn verify_artifact_meta_json_reports_invalid_input_with_schema_marker() {
+fn verify_artifact_meta_json_rejects_invalid_input_without_emitting_json() {
     let root = repo_root();
     let artifact_path = unique_temp_output_path("verify-meta-json-invalid-input", "bin");
     let meta_path = unique_temp_output_path("verify-meta-json-invalid-input", "json");
@@ -1762,19 +1786,11 @@ fn verify_artifact_meta_json_reports_invalid_input_with_schema_marker() {
     let assert = cmd.assert().failure().code(2);
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
     let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
-    let json: Value = serde_json::from_str(&stdout).expect("parse verify-artifact-meta JSON");
-    validate_verify_artifact_meta_schema(&json);
+    assert!(stdout.is_empty(), "expected empty stdout, got: {stdout}");
     assert_eq!(
-        json,
-        json!({
-            "schema_version": "kernrift_verify_artifact_meta_v2",
-            "file": artifact_path.display().to_string(),
-            "result": "invalid_input",
-            "exit_code": 2,
-            "message": "verify-artifact-meta: unsupported artifact bytes"
-        })
+        stderr.lines().next(),
+        Some("verify-artifact-meta: unsupported artifact bytes")
     );
-    assert!(stderr.is_empty(), "expected empty stderr, got: {stderr}");
 
     fs::remove_file(&artifact_path).ok();
     fs::remove_file(&meta_path).ok();
@@ -1801,6 +1817,38 @@ fn verify_artifact_meta_json_transport_is_stdout_only_and_newline_terminated() {
     let json: Value = serde_json::from_str(&stdout).expect("parse verify-artifact-meta JSON");
     validate_verify_artifact_meta_schema(&json);
     assert_json_transport(&stdout, &stderr, "kernrift_verify_artifact_meta_v2");
+
+    fs::remove_file(&artifact_path).ok();
+    fs::remove_file(&meta_path).ok();
+}
+
+#[test]
+fn verify_artifact_meta_json_rejects_malformed_metadata_without_emitting_json() {
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let artifact_path = unique_temp_output_path("verify-meta-json-malformed-meta", "krbo");
+    let meta_path = unique_temp_output_path("verify-meta-json-malformed-meta", "json");
+    emit_backend_artifact_with_sidecar(&root, "krbo", &fixture, &artifact_path, &meta_path, false);
+    fs::write(&meta_path, b"{not valid json").expect("write malformed metadata");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("verify-artifact-meta")
+        .arg("--format")
+        .arg("json")
+        .arg(artifact_path.as_os_str())
+        .arg(meta_path.as_os_str());
+    let assert = cmd.assert().failure().code(2);
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(stdout.is_empty(), "expected empty stdout, got: {stdout}");
+    assert!(
+        stderr
+            .lines()
+            .next()
+            .is_some_and(|line| line.starts_with("failed to decode artifact metadata '")),
+        "expected malformed metadata decode error, got: {stderr}"
+    );
 
     fs::remove_file(&artifact_path).ok();
     fs::remove_file(&meta_path).ok();
