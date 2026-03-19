@@ -14,6 +14,7 @@ EXPLICIT_SLOT_FIXTURE="examples/uart_console_explicit_slot.kr"
 BRANCH_ZERO_FIXTURE="examples/uart_console_branch_zero.kr"
 BRANCH_EQ_FIXTURE="examples/uart_console_branch_eq.kr"
 BRANCH_MASK_FIXTURE="examples/uart_console_branch_mask.kr"
+CALL_RETURN_FIXTURE="examples/uart_console_call_return.kr"
 CONTRACTS_OUT="$TMP_DIR/contracts.json"
 HASH_OUT="$TMP_DIR/contracts.sha256"
 REPORT_OUT="$TMP_DIR/verify.report.json"
@@ -34,6 +35,8 @@ BRANCH_EQ_ELFEXE_OUT="$TMP_DIR/uart_console_branch_eq.elf"
 BRANCH_EQ_INSPECT_JSON="$TMP_DIR/uart_console_branch_eq.inspect.json"
 BRANCH_MASK_ELFEXE_OUT="$TMP_DIR/uart_console_branch_mask.elf"
 BRANCH_MASK_INSPECT_JSON="$TMP_DIR/uart_console_branch_mask.inspect.json"
+CALL_RETURN_ELFEXE_OUT="$TMP_DIR/uart_console_call_return.elf"
+CALL_RETURN_INSPECT_JSON="$TMP_DIR/uart_console_call_return.inspect.json"
 
 echo "[1/3] smoke: check emits contracts/hash"
 cargo run -q -p kernriftc -- \
@@ -181,7 +184,7 @@ grep -q '"has_undefined_symbols": false' "$BRANCH_EQ_INSPECT_JSON"
 grep -q '"send_idle_word"' "$BRANCH_EQ_INSPECT_JSON"
 grep -q '"send_ready_word"' "$BRANCH_EQ_INSPECT_JSON"
 
-echo "[11/11] smoke: branch-mask proof program emits backend elf executable"
+echo "[11/12] smoke: branch-mask proof program emits backend elf executable"
 cargo run -q -p kernriftc -- \
   --emit=elfexe \
   -o "$BRANCH_MASK_ELFEXE_OUT" \
@@ -198,5 +201,24 @@ grep -q '"has_entry_symbol": true' "$BRANCH_MASK_INSPECT_JSON"
 grep -q '"has_undefined_symbols": false' "$BRANCH_MASK_INSPECT_JSON"
 grep -q '"send_idle_word"' "$BRANCH_MASK_INSPECT_JSON"
 grep -q '"send_ready_word"' "$BRANCH_MASK_INSPECT_JSON"
+
+echo "[12/12] smoke: call-return proof program emits backend elf executable"
+cargo run -q -p kernriftc -- \
+  --emit=elfexe \
+  -o "$CALL_RETURN_ELFEXE_OUT" \
+  "$CALL_RETURN_FIXTURE"
+
+cargo run -q -p kernriftc -- \
+  inspect-artifact \
+  "$CALL_RETURN_ELFEXE_OUT" \
+  --format json > "$CALL_RETURN_INSPECT_JSON"
+
+grep -q '"artifact_kind": "elf_executable"' "$CALL_RETURN_INSPECT_JSON"
+grep -q '"machine": "x86_64"' "$CALL_RETURN_INSPECT_JSON"
+grep -q '"has_entry_symbol": true' "$CALL_RETURN_INSPECT_JSON"
+grep -q '"has_undefined_symbols": false' "$CALL_RETURN_INSPECT_JSON"
+grep -q '"read_status"' "$CALL_RETURN_INSPECT_JSON"
+grep -q '"send_idle_word"' "$CALL_RETURN_INSPECT_JSON"
+grep -q '"send_ready_word"' "$CALL_RETURN_INSPECT_JSON"
 
 echo "KRIR v0.1 acceptance: PASS"

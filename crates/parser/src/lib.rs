@@ -112,12 +112,19 @@ impl MmioValueExpr {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Stmt {
     Call(String),
+    CallCapture {
+        callee: String,
+        slot: String,
+    },
     Critical(Vec<Stmt>),
     YieldPoint,
     AllocPoint,
     BlockPoint,
     Acquire(String),
     Release(String),
+    ReturnSlot {
+        slot: String,
+    },
     BranchIfZero {
         slot: String,
         then_callee: String,
@@ -931,6 +938,29 @@ fn parse_stmt(stmt: &str) -> Result<Option<Stmt>, String> {
         return Ok(Some(Stmt::Release(lock.to_string())));
     }
 
+    if lowered == "call_capture" {
+        let parts = split_csv(&args);
+        if parts.len() != 2 {
+            return Err(
+                "call_capture(callee, slot) requires exactly two identifier arguments".to_string(),
+            );
+        }
+        let callee = parse_branch_target_operand(parts[0].trim())?;
+        let slot = parse_mmio_capture_operand(parts[1].trim())?;
+        return Ok(Some(Stmt::CallCapture { callee, slot }));
+    }
+
+    if lowered == "return_slot" {
+        let slot = parse_branch_slot_operand(args.trim())?;
+        if slot.is_empty() {
+            return Err("return_slot(slot) requires exactly one slot identifier".to_string());
+        }
+        if split_csv(&args).len() != 1 {
+            return Err("return_slot(slot) requires exactly one slot identifier".to_string());
+        }
+        return Ok(Some(Stmt::ReturnSlot { slot }));
+    }
+
     if lowered == "branch_if_zero" {
         let parts = split_csv(&args);
         if parts.len() != 3 {
@@ -1492,6 +1522,63 @@ mod tests {
     }
 
     #[test]
+    fn parse_call_capture_and_return_slot_are_structured() {
+        let src = r#"
+        fn read_status() {
+          mmio_read<u32>(uart0 + 0x10, status);
+          return_slot(status);
+        }
+
+        fn entry() {
+          call_capture(read_status, latest);
+          branch_if_mask_nonzero(latest, 0x20, ready, idle);
+        }
+        "#;
+        let ast = parse_module(src).expect("parse");
+        let read_status = ast
+            .items
+            .iter()
+            .find(|item| item.name == "read_status")
+            .expect("read_status function");
+        assert_eq!(
+            read_status.body,
+            vec![
+                Stmt::MmioRead {
+                    ty: MmioScalarType::U32,
+                    addr: MmioAddrExpr::IdentPlusOffset {
+                        base: "uart0".to_string(),
+                        offset: "0x10".to_string(),
+                    },
+                    capture: Some("status".to_string()),
+                },
+                Stmt::ReturnSlot {
+                    slot: "status".to_string(),
+                }
+            ]
+        );
+        let entry = ast
+            .items
+            .iter()
+            .find(|item| item.name == "entry")
+            .expect("entry function");
+        assert_eq!(
+            entry.body,
+            vec![
+                Stmt::CallCapture {
+                    callee: "read_status".to_string(),
+                    slot: "latest".to_string(),
+                },
+                Stmt::BranchIfMaskNonZero {
+                    slot: "latest".to_string(),
+                    mask_value: "0x20".to_string(),
+                    then_callee: "ready".to_string(),
+                    else_callee: "idle".to_string(),
+                }
+            ]
+        );
+    }
+
+    #[test]
     fn parse_branch_if_mask_nonzero_is_structured() {
         let src = r#"
         fn entry() {
@@ -1863,6 +1950,20 @@ mod tests {
                 src,
                 13,
                 "'ready' is not a valid branch comparison literal",
+            )]
+        );
+    }
+
+    #[test]
+    fn parse_rejects_return_slot_invalid_operand() {
+        let src = "fn entry() { return_slot(0x10); }";
+        let err = parse_module(src).expect_err("invalid return slot should fail");
+        assert_eq!(
+            err,
+            vec![diagnostic_at(
+                src,
+                13,
+                "'0x10' is not a valid branch slot identifier",
             )]
         );
     }

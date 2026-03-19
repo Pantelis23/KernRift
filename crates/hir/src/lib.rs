@@ -1351,6 +1351,19 @@ pub fn lower_to_krir_with_surface(
                         callee: callee.clone(),
                     });
                 }
+                KrirOp::CallCapture { callee, .. } => {
+                    if !names.contains(callee) {
+                        errors.push(format!(
+                            "undefined symbol '{}': add extern declaration with canonical facts (@ctx/@eff/@caps)",
+                            callee
+                        ));
+                        continue;
+                    }
+                    call_edges.push(CallEdge {
+                        caller: function.name.clone(),
+                        callee: callee.clone(),
+                    });
+                }
                 KrirOp::BranchIfZero {
                     then_callee,
                     else_callee,
@@ -2176,6 +2189,11 @@ fn lower_stmts_to_canonical_executable(
                     ));
                 }
             }
+            Stmt::CallCapture { callee, slot } => errors.push(format!(
+                "canonical-exec: function '{}' contains unsupported {}",
+                function_name,
+                format_call_capture_invocation(callee, slot)
+            )),
             Stmt::Critical(_) => errors.push(format!(
                 "canonical-exec: function '{}' contains unsupported critical region",
                 function_name
@@ -2199,6 +2217,11 @@ fn lower_stmts_to_canonical_executable(
             Stmt::Release(lock_class) => errors.push(format!(
                 "canonical-exec: function '{}' contains unsupported release({})",
                 function_name, lock_class
+            )),
+            Stmt::ReturnSlot { slot } => errors.push(format!(
+                "canonical-exec: function '{}' contains unsupported {}",
+                function_name,
+                format_return_slot_invocation(slot)
             )),
             Stmt::BranchIfZero {
                 slot,
@@ -2263,6 +2286,10 @@ fn lower_stmt(stmt: &Stmt, ops: &mut Vec<KrirOp>, eff_used: &mut BTreeSet<Eff>) 
         Stmt::Call(callee) => ops.push(KrirOp::Call {
             callee: callee.clone(),
         }),
+        Stmt::CallCapture { callee, slot } => ops.push(KrirOp::CallCapture {
+            callee: callee.clone(),
+            capture_slot: slot.clone(),
+        }),
         Stmt::Critical(inner) => {
             ops.push(KrirOp::CriticalEnter);
             for stmt in inner {
@@ -2288,6 +2315,7 @@ fn lower_stmt(stmt: &Stmt, ops: &mut Vec<KrirOp>, eff_used: &mut BTreeSet<Eff>) 
         Stmt::Release(lock_class) => ops.push(KrirOp::Release {
             lock_class: lock_class.clone(),
         }),
+        Stmt::ReturnSlot { slot } => ops.push(KrirOp::ReturnSlot { slot: slot.clone() }),
         Stmt::BranchIfZero {
             slot,
             then_callee,
@@ -2453,6 +2481,14 @@ fn format_raw_mmio_write_invocation(
 
 fn format_branch_if_zero_invocation(slot: &str, then_callee: &str, else_callee: &str) -> String {
     format!("branch_if_zero({}, {}, {})", slot, then_callee, else_callee)
+}
+
+fn format_call_capture_invocation(callee: &str, slot: &str) -> String {
+    format!("call_capture({}, {})", callee, slot)
+}
+
+fn format_return_slot_invocation(slot: &str) -> String {
+    format!("return_slot({})", slot)
 }
 
 fn format_branch_if_eq_invocation(

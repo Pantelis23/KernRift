@@ -74,6 +74,10 @@ pub enum KrirOp {
     Call {
         callee: String,
     },
+    CallCapture {
+        callee: String,
+        capture_slot: String,
+    },
     BranchIfZero {
         slot: String,
         then_callee: String,
@@ -101,6 +105,9 @@ pub enum KrirOp {
     },
     Release {
         lock_class: String,
+    },
+    ReturnSlot {
+        slot: String,
     },
     MmioRead {
         ty: MmioScalarType,
@@ -275,13 +282,30 @@ impl KrirModule {
 #[serde(rename_all = "snake_case")]
 pub enum ExecutableValueType {
     Unit,
+    U8,
+    U16,
+    U32,
+    U64,
 }
 
 impl ExecutableValueType {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Unit => "unit",
+            Self::U8 => "u8",
+            Self::U16 => "u16",
+            Self::U32 => "u32",
+            Self::U64 => "u64",
         }
+    }
+}
+
+fn executable_value_type_from_mmio_scalar(ty: MmioScalarType) -> ExecutableValueType {
+    match ty {
+        MmioScalarType::U8 => ExecutableValueType::U8,
+        MmioScalarType::U16 => ExecutableValueType::U16,
+        MmioScalarType::U32 => ExecutableValueType::U32,
+        MmioScalarType::U64 => ExecutableValueType::U64,
     }
 }
 
@@ -289,12 +313,14 @@ impl ExecutableValueType {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ExecutableValue {
     Unit,
+    SavedValue { ty: MmioScalarType },
 }
 
 impl ExecutableValue {
     pub fn value_type(&self) -> ExecutableValueType {
         match self {
             Self::Unit => ExecutableValueType::Unit,
+            Self::SavedValue { ty } => executable_value_type_from_mmio_scalar(*ty),
         }
     }
 }
@@ -318,6 +344,10 @@ pub struct ExecutableFacts {
 pub enum ExecutableOp {
     Call {
         callee: String,
+    },
+    CallCapture {
+        callee: String,
+        ty: MmioScalarType,
     },
     BranchIfZero {
         ty: MmioScalarType,
@@ -419,6 +449,7 @@ impl ExecutableKrirModule {
     pub fn validate(&self) -> Result<(), String> {
         let mut function_names = BTreeSet::new();
         let mut extern_names = BTreeSet::new();
+        let mut function_results = BTreeMap::new();
 
         for function in &self.functions {
             if !function_names.insert(function.name.as_str()) {
@@ -477,6 +508,8 @@ impl ExecutableKrirModule {
                     function.name, function.entry_block
                 ));
             }
+
+            function_results.insert(function.name.as_str(), function.signature.result);
         }
 
         for extern_decl in &self.extern_declarations {
@@ -505,6 +538,29 @@ impl ExecutableKrirModule {
                                 return Err(format!(
                                     "executable KRIR function '{}' calls undeclared target '{}'",
                                     function.name, callee
+                                ));
+                            }
+                        }
+                        ExecutableOp::CallCapture { callee, ty } => {
+                            let Some(result) = function_results.get(callee.as_str()) else {
+                                if !extern_names.contains(callee.as_str()) {
+                                    return Err(format!(
+                                        "executable KRIR function '{}' calls undeclared target '{}'",
+                                        function.name, callee
+                                    ));
+                                }
+                                return Err(format!(
+                                    "executable KRIR function '{}' must not capture extern target '{}'",
+                                    function.name, callee
+                                ));
+                            };
+                            if *result != executable_value_type_from_mmio_scalar(*ty) {
+                                return Err(format!(
+                                    "executable KRIR function '{}' captures '{}' as {} but callee returns {}",
+                                    function.name,
+                                    callee,
+                                    ty.as_str(),
+                                    result.as_str()
                                 ));
                             }
                         }
@@ -568,10 +624,121 @@ impl ExecutableKrirModule {
     }
 }
 
+#[derive(Clone, Copy)]
+enum ExecutableCapturedValueSource {
+    DeferredRead { op_index: usize },
+    SavedSlot,
+}
+
+#[derive(Clone)]
+struct ExecutableCapturedValue {
+    slot: String,
+    ty: MmioScalarType,
+    source: ExecutableCapturedValueSource,
+}
+
+fn infer_executable_function_result_types(
+    module: &KrirModule,
+) -> Result<BTreeMap<String, Option<MmioScalarType>>, Vec<String>> {
+    let mut results = BTreeMap::new();
+    let mut errors = Vec::new();
+
+    for function in &module.functions {
+        if function.is_extern {
+            continue;
+        }
+
+        let mut executable_slot_name = None::<String>;
+        let mut last_read = None::<(String, MmioScalarType)>;
+        let mut result_ty = None::<MmioScalarType>;
+        let mut saw_return_slot = false;
+
+        for (index, op) in function.ops.iter().enumerate() {
+            match op {
+                KrirOp::MmioRead {
+                    ty, capture_slot, ..
+                }
+                | KrirOp::RawMmioRead {
+                    ty, capture_slot, ..
+                } => {
+                    let slot_name = capture_slot
+                        .clone()
+                        .unwrap_or_else(|| DEFAULT_EXECUTABLE_MMIO_SLOT.to_string());
+                    if executable_slot_name.is_none() {
+                        executable_slot_name = Some(slot_name.clone());
+                    }
+                    last_read = Some((slot_name, *ty));
+                }
+                KrirOp::ReturnSlot { slot } => {
+                    let invocation = format_return_slot_invocation(slot);
+                    if saw_return_slot || index + 1 != function.ops.len() {
+                        errors.push(format!(
+                            "canonical-exec: function '{}' contains unsupported {}: return_slot(...) must be the final statement in the function",
+                            function.name,
+                            invocation
+                        ));
+                        continue;
+                    }
+                    saw_return_slot = true;
+
+                    if let Some(captured_slot) = executable_slot_name.as_deref()
+                        && slot != captured_slot
+                    {
+                        errors.push(format!(
+                            "canonical-exec: function '{}' contains unsupported {}: return slot '{}' does not match the captured executable slot '{}' in this function",
+                            function.name,
+                            invocation,
+                            slot,
+                            captured_slot
+                        ));
+                        continue;
+                    }
+
+                    let Some((read_slot, read_ty)) = last_read.as_ref() else {
+                        errors.push(format!(
+                            "canonical-exec: function '{}' contains unsupported {}: return slot '{}' requires a prior mmio_read<...>(..., {}) or raw_mmio_read<...>(..., {}) in the same function",
+                            function.name,
+                            invocation,
+                            slot,
+                            slot,
+                            slot
+                        ));
+                        continue;
+                    };
+
+                    if read_slot != slot {
+                        errors.push(format!(
+                            "canonical-exec: function '{}' contains unsupported {}: return slot '{}' requires a prior mmio_read<...>(..., {}) or raw_mmio_read<...>(..., {}) in the same function",
+                            function.name,
+                            invocation,
+                            slot,
+                            slot,
+                            slot
+                        ));
+                        continue;
+                    }
+
+                    result_ty = Some(*read_ty);
+                }
+                _ => {}
+            }
+        }
+
+        results.insert(function.name.clone(), result_ty);
+    }
+
+    if errors.is_empty() {
+        Ok(results)
+    } else {
+        Err(errors)
+    }
+}
+
 pub fn lower_current_krir_to_executable_krir(
     module: &KrirModule,
 ) -> Result<ExecutableKrirModule, Vec<String>> {
     let mmio_bases = build_mmio_base_map(module)?;
+    let function_result_types = infer_executable_function_result_types(module)?;
     let mut lowered = ExecutableKrirModule {
         module_caps: module.module_caps.clone(),
         functions: Vec::new(),
@@ -590,12 +757,64 @@ pub fn lower_current_krir_to_executable_krir(
 
         let mut exec_ops = Vec::new();
         let mut executable_slot_name = None::<String>;
-        let mut last_read = None::<(usize, String, MmioScalarType)>;
+        let mut last_value = None::<ExecutableCapturedValue>;
         for op in &function.ops {
             match op {
                 KrirOp::Call { callee } => exec_ops.push(ExecutableOp::Call {
                     callee: callee.clone(),
                 }),
+                KrirOp::CallCapture {
+                    callee,
+                    capture_slot,
+                } => {
+                    let invocation = format_call_capture_invocation(callee, capture_slot);
+                    let Some(return_ty) = function_result_types.get(callee).copied().flatten()
+                    else {
+                        if module
+                            .functions
+                            .iter()
+                            .any(|f| f.name == *callee && f.is_extern)
+                        {
+                            errors.push(format!(
+                                "canonical-exec: function '{}' contains unsupported {}: captured call target '{}' must be an internal executable function with scalar return in the current subset",
+                                function.name,
+                                invocation,
+                                callee
+                            ));
+                        } else {
+                            errors.push(format!(
+                                "canonical-exec: function '{}' contains unsupported {}: captured call target '{}' returns unit in the current executable subset",
+                                function.name,
+                                invocation,
+                                callee
+                            ));
+                        }
+                        continue;
+                    };
+                    if let Some(existing) = &executable_slot_name {
+                        if existing != capture_slot {
+                            errors.push(format!(
+                                "canonical-exec: function '{}' contains unsupported {}: executable value slot '{}' conflicts with already-captured slot '{}' in the same function",
+                                function.name,
+                                invocation,
+                                capture_slot,
+                                existing
+                            ));
+                            continue;
+                        }
+                    } else {
+                        executable_slot_name = Some(capture_slot.clone());
+                    }
+                    exec_ops.push(ExecutableOp::CallCapture {
+                        callee: callee.clone(),
+                        ty: return_ty,
+                    });
+                    last_value = Some(ExecutableCapturedValue {
+                        slot: capture_slot.clone(),
+                        ty: return_ty,
+                        source: ExecutableCapturedValueSource::SavedSlot,
+                    });
+                }
                 KrirOp::BranchIfZero {
                     slot,
                     then_callee,
@@ -622,7 +841,7 @@ pub fn lower_current_krir_to_executable_krir(
                         ));
                         continue;
                     }
-                    let Some((read_index, _, read_ty)) = last_read.as_ref() else {
+                    let Some(current_value) = last_value.as_ref() else {
                         errors.push(format!(
                             "canonical-exec: function '{}' contains unsupported {}: branch test slot '{}' requires a prior mmio_read<...>(..., {}) or raw_mmio_read<...>(..., {}) in the same function",
                             function.name,
@@ -633,14 +852,19 @@ pub fn lower_current_krir_to_executable_krir(
                         ));
                         continue;
                     };
-                    let Some(ExecutableOp::MmioRead { capture_value, .. }) =
-                        exec_ops.get_mut(*read_index)
-                    else {
-                        unreachable!("branch-if-zero must point at a prior mmio read op");
-                    };
-                    *capture_value = true;
+                    let read_ty = current_value.ty;
+                    if let ExecutableCapturedValueSource::DeferredRead { op_index } =
+                        current_value.source
+                    {
+                        let Some(ExecutableOp::MmioRead { capture_value, .. }) =
+                            exec_ops.get_mut(op_index)
+                        else {
+                            unreachable!("branch-if-zero must point at a prior mmio read op");
+                        };
+                        *capture_value = true;
+                    }
                     exec_ops.push(ExecutableOp::BranchIfZero {
-                        ty: *read_ty,
+                        ty: read_ty,
                         then_callee: then_callee.clone(),
                         else_callee: else_callee.clone(),
                     });
@@ -682,7 +906,7 @@ pub fn lower_current_krir_to_executable_krir(
                         ));
                         continue;
                     }
-                    let Some((read_index, _, read_ty)) = last_read.as_ref() else {
+                    let Some(current_value) = last_value.as_ref() else {
                         errors.push(format!(
                             "canonical-exec: function '{}' contains unsupported {}: branch test slot '{}' requires a prior mmio_read<...>(..., {}) or raw_mmio_read<...>(..., {}) in the same function",
                             function.name,
@@ -698,8 +922,9 @@ pub fn lower_current_krir_to_executable_krir(
                         ));
                         continue;
                     };
+                    let read_ty = current_value.ty;
                     let resolved_compare_value =
-                        match resolve_executable_branch_compare_value(*read_ty, compare_value) {
+                        match resolve_executable_branch_compare_value(read_ty, compare_value) {
                             Ok(value) => value,
                             Err(err) => {
                                 errors.push(format!(
@@ -716,14 +941,18 @@ pub fn lower_current_krir_to_executable_krir(
                                 continue;
                             }
                         };
-                    let Some(ExecutableOp::MmioRead { capture_value, .. }) =
-                        exec_ops.get_mut(*read_index)
-                    else {
-                        unreachable!("branch-if-eq must point at a prior mmio read op");
-                    };
-                    *capture_value = true;
+                    if let ExecutableCapturedValueSource::DeferredRead { op_index } =
+                        current_value.source
+                    {
+                        let Some(ExecutableOp::MmioRead { capture_value, .. }) =
+                            exec_ops.get_mut(op_index)
+                        else {
+                            unreachable!("branch-if-eq must point at a prior mmio read op");
+                        };
+                        *capture_value = true;
+                    }
                     exec_ops.push(ExecutableOp::BranchIfEqImm {
-                        ty: *read_ty,
+                        ty: read_ty,
                         compare_value: resolved_compare_value,
                         then_callee: then_callee.clone(),
                         else_callee: else_callee.clone(),
@@ -766,7 +995,7 @@ pub fn lower_current_krir_to_executable_krir(
                         ));
                         continue;
                     }
-                    let Some((read_index, _, read_ty)) = last_read.as_ref() else {
+                    let Some(current_value) = last_value.as_ref() else {
                         errors.push(format!(
                             "canonical-exec: function '{}' contains unsupported {}: branch test slot '{}' requires a prior mmio_read<...>(..., {}) or raw_mmio_read<...>(..., {}) in the same function",
                             function.name,
@@ -782,8 +1011,9 @@ pub fn lower_current_krir_to_executable_krir(
                         ));
                         continue;
                     };
+                    let read_ty = current_value.ty;
                     let resolved_mask_value =
-                        match resolve_executable_branch_mask_value(*read_ty, mask_value) {
+                        match resolve_executable_branch_mask_value(read_ty, mask_value) {
                             Ok(value) => value,
                             Err(err) => {
                                 errors.push(format!(
@@ -800,14 +1030,20 @@ pub fn lower_current_krir_to_executable_krir(
                                 continue;
                             }
                         };
-                    let Some(ExecutableOp::MmioRead { capture_value, .. }) =
-                        exec_ops.get_mut(*read_index)
-                    else {
-                        unreachable!("branch-if-mask-nonzero must point at a prior mmio read op");
-                    };
-                    *capture_value = true;
+                    if let ExecutableCapturedValueSource::DeferredRead { op_index } =
+                        current_value.source
+                    {
+                        let Some(ExecutableOp::MmioRead { capture_value, .. }) =
+                            exec_ops.get_mut(op_index)
+                        else {
+                            unreachable!(
+                                "branch-if-mask-nonzero must point at a prior mmio read op"
+                            );
+                        };
+                        *capture_value = true;
+                    }
                     exec_ops.push(ExecutableOp::BranchIfMaskNonZeroImm {
-                        ty: *read_ty,
+                        ty: read_ty,
                         mask_value: resolved_mask_value,
                         then_callee: then_callee.clone(),
                         else_callee: else_callee.clone(),
@@ -838,6 +1074,7 @@ pub fn lower_current_krir_to_executable_krir(
                     "canonical-exec: function '{}' contains unsupported release({})",
                     function.name, lock_class
                 )),
+                KrirOp::ReturnSlot { .. } => {}
                 KrirOp::MmioRead {
                     ty,
                     addr,
@@ -872,7 +1109,13 @@ pub fn lower_current_krir_to_executable_krir(
                                 addr: resolved,
                                 capture_value: false,
                             });
-                            last_read = Some((exec_ops.len() - 1, slot_name, *ty));
+                            last_value = Some(ExecutableCapturedValue {
+                                slot: slot_name,
+                                ty: *ty,
+                                source: ExecutableCapturedValueSource::DeferredRead {
+                                    op_index: exec_ops.len() - 1,
+                                },
+                            });
                         }
                         Err(reason) => errors.push(format!(
                             "canonical-exec: function '{}' contains unsupported {}: {}",
@@ -896,12 +1139,42 @@ pub fn lower_current_krir_to_executable_krir(
                             continue;
                         }
                     };
-                    let resolved_value = match resolve_executable_mmio_write_value(
-                        *ty,
-                        value,
-                        executable_slot_name.as_deref(),
-                        last_read.as_ref().map(|(_, slot, ty)| (slot.as_str(), *ty)),
-                    ) {
+                    let resolved_value = match value {
+                        MmioValueExpr::IntLiteral { .. } => resolve_executable_mmio_write_value(
+                            *ty,
+                            value,
+                            executable_slot_name.as_deref(),
+                            None,
+                        ),
+                        MmioValueExpr::Ident { name } => {
+                            if matches!(
+                                last_value.as_ref().map(|value| value.source),
+                                Some(ExecutableCapturedValueSource::SavedSlot)
+                            ) {
+                                resolve_executable_saved_slot_write_value(
+                                    *ty,
+                                    name,
+                                    executable_slot_name.as_deref(),
+                                    last_value
+                                        .as_ref()
+                                        .map(|value| (value.slot.as_str(), value.ty)),
+                                )
+                            } else {
+                                resolve_executable_mmio_write_value(
+                                    *ty,
+                                    value,
+                                    executable_slot_name.as_deref(),
+                                    last_value.as_ref().and_then(|value| match value.source {
+                                        ExecutableCapturedValueSource::DeferredRead { .. } => {
+                                            Some((value.slot.as_str(), value.ty))
+                                        }
+                                        ExecutableCapturedValueSource::SavedSlot => None,
+                                    }),
+                                )
+                            }
+                        }
+                    };
+                    let resolved_value = match resolved_value {
                         Ok(immediate) => immediate,
                         Err(reason) => {
                             errors.push(format!(
@@ -922,17 +1195,19 @@ pub fn lower_current_krir_to_executable_krir(
                             });
                         }
                         ExecutableMmioWriteValue::SavedValue => {
-                            let &(read_index, _, _) = last_read
-                                .as_ref()
-                                .expect("saved executable write must have a prior captured read");
-                            let Some(ExecutableOp::MmioRead { capture_value, .. }) =
-                                exec_ops.get_mut(read_index)
-                            else {
-                                unreachable!(
-                                    "saved executable write must point at a prior mmio read op"
-                                );
-                            };
-                            *capture_value = true;
+                            if let Some(current_value) = last_value.as_ref()
+                                && let ExecutableCapturedValueSource::DeferredRead { op_index } =
+                                    current_value.source
+                            {
+                                let Some(ExecutableOp::MmioRead { capture_value, .. }) =
+                                    exec_ops.get_mut(op_index)
+                                else {
+                                    unreachable!(
+                                        "saved executable write must point at a prior mmio read op"
+                                    );
+                                };
+                                *capture_value = true;
+                            }
                             exec_ops.push(ExecutableOp::MmioWriteValue {
                                 ty: *ty,
                                 addr: resolved_addr,
@@ -943,12 +1218,16 @@ pub fn lower_current_krir_to_executable_krir(
             }
         }
 
+        let result_ty = function_result_types.get(&function.name).copied().flatten();
+
         lowered.functions.push(ExecutableFunction {
             name: function.name.clone(),
             is_extern: false,
             signature: ExecutableSignature {
                 params: vec![],
-                result: ExecutableValueType::Unit,
+                result: result_ty
+                    .map(executable_value_type_from_mmio_scalar)
+                    .unwrap_or(ExecutableValueType::Unit),
             },
             facts: ExecutableFacts {
                 ctx_ok: function.ctx_ok.clone(),
@@ -961,7 +1240,9 @@ pub fn lower_current_krir_to_executable_krir(
                 label: "entry".to_string(),
                 ops: exec_ops,
                 terminator: ExecutableTerminator::Return {
-                    value: ExecutableValue::Unit,
+                    value: result_ty
+                        .map(|ty| ExecutableValue::SavedValue { ty })
+                        .unwrap_or(ExecutableValue::Unit),
                 },
             }],
         });
@@ -1121,6 +1402,66 @@ fn resolve_executable_mmio_write_value(
     }
 }
 
+fn resolve_executable_saved_slot_write_value(
+    ty: MmioScalarType,
+    name: &str,
+    executable_slot_name: Option<&str>,
+    available_saved_value: Option<(&str, MmioScalarType)>,
+) -> Result<ExecutableMmioWriteValue, String> {
+    let is_implicit_value = name == DEFAULT_EXECUTABLE_MMIO_SLOT;
+    let Some(slot_name) = executable_slot_name else {
+        return Err(if is_implicit_value {
+            format!(
+                "implicit write value '{}' requires a prior call_capture(...) in the same function",
+                name
+            )
+        } else {
+            format!(
+                "named write value '{}' requires a prior call_capture(..., {}) in the same function",
+                name, name
+            )
+        });
+    };
+    if name != slot_name {
+        return Err(format!(
+            "named write value '{}' does not match the captured executable slot '{}' in this function",
+            name, slot_name
+        ));
+    }
+    let Some((saved_slot, saved_ty)) = available_saved_value else {
+        return Err(if is_implicit_value {
+            format!(
+                "implicit write value '{}' requires a prior call_capture(...) in the same function",
+                name
+            )
+        } else {
+            format!(
+                "named write value '{}' requires a prior call_capture(..., {}) in the same function",
+                name, name
+            )
+        });
+    };
+    debug_assert_eq!(saved_slot, slot_name);
+    if saved_ty != ty {
+        return Err(if is_implicit_value {
+            format!(
+                "implicit write value '{}' has type {} from the prior captured call result and does not match write type {}",
+                name,
+                saved_ty.as_str(),
+                ty.as_str()
+            )
+        } else {
+            format!(
+                "named write value '{}' has type {} from the prior captured call result and does not match write type {}",
+                name,
+                saved_ty.as_str(),
+                ty.as_str()
+            )
+        });
+    }
+    Ok(ExecutableMmioWriteValue::SavedValue)
+}
+
 fn resolve_executable_branch_compare_value(
     ty: MmioScalarType,
     compare_value: &str,
@@ -1202,6 +1543,14 @@ fn format_mmio_write_invocation(
         addr.as_source(),
         value.as_source()
     )
+}
+
+fn format_call_capture_invocation(callee: &str, slot: &str) -> String {
+    format!("call_capture({}, {})", callee, slot)
+}
+
+fn format_return_slot_invocation(slot: &str) -> String {
+    format!("return_slot({})", slot)
 }
 
 fn format_branch_if_zero_invocation(slot: &str, then_callee: &str, else_callee: &str) -> String {
@@ -1553,6 +1902,10 @@ pub enum X86_64AsmInstruction {
     Call {
         symbol: String,
     },
+    CallCapture {
+        ty: MmioScalarType,
+        symbol: String,
+    },
     BranchIfZero {
         ty: MmioScalarType,
         then_symbol: String,
@@ -1583,6 +1936,9 @@ pub enum X86_64AsmInstruction {
     MmioWriteValue {
         ty: MmioScalarType,
         addr: u64,
+    },
+    ReturnSavedValue {
+        ty: MmioScalarType,
     },
     Ret,
 }
@@ -2003,6 +2359,9 @@ pub fn lower_executable_krir_to_x86_64_asm(
                 .cloned()
                 .map(|op| match op {
                     ExecutableOp::Call { callee } => X86_64AsmInstruction::Call { symbol: callee },
+                    ExecutableOp::CallCapture { callee, ty } => {
+                        X86_64AsmInstruction::CallCapture { ty, symbol: callee }
+                    }
                     ExecutableOp::BranchIfZero {
                         ty,
                         then_callee,
@@ -2050,7 +2409,19 @@ pub fn lower_executable_krir_to_x86_64_asm(
                         X86_64AsmInstruction::MmioWriteValue { ty, addr }
                     }
                 })
-                .chain(std::iter::once(X86_64AsmInstruction::Ret))
+                .chain(match function.blocks[0].terminator {
+                    ExecutableTerminator::Return {
+                        value: ExecutableValue::SavedValue { ty },
+                    } => std::iter::once(X86_64AsmInstruction::ReturnSavedValue { ty })
+                        .chain(std::iter::once(X86_64AsmInstruction::Ret))
+                        .collect::<Vec<_>>()
+                        .into_iter(),
+                    ExecutableTerminator::Return {
+                        value: ExecutableValue::Unit,
+                    } => std::iter::once(X86_64AsmInstruction::Ret)
+                        .collect::<Vec<_>>()
+                        .into_iter(),
+                })
                 .collect(),
         })
         .collect();
@@ -2066,10 +2437,15 @@ fn executable_function_uses_saved_value_slot(function: &ExecutableFunction) -> b
         block.ops.iter().any(|op| {
             matches!(
                 op,
-                ExecutableOp::MmioRead {
-                    capture_value: true,
-                    ..
-                } | ExecutableOp::MmioWriteValue { .. }
+                ExecutableOp::CallCapture { .. }
+                    | ExecutableOp::BranchIfZero { .. }
+                    | ExecutableOp::BranchIfEqImm { .. }
+                    | ExecutableOp::BranchIfMaskNonZeroImm { .. }
+                    | ExecutableOp::MmioWriteValue { .. }
+                    | ExecutableOp::MmioRead {
+                        capture_value: true,
+                        ..
+                    }
             )
         })
     })
@@ -2095,6 +2471,18 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                 X86_64AsmInstruction::Call { symbol } => {
                     out.push_str("    call ");
                     out.push_str(symbol);
+                    out.push('\n');
+                }
+                X86_64AsmInstruction::CallCapture { ty, symbol } => {
+                    out.push_str("    call ");
+                    out.push_str(symbol);
+                    out.push('\n');
+                    out.push_str("    ");
+                    out.push_str(mmio_move_saved_value_mnemonic(*ty));
+                    out.push(' ');
+                    out.push_str(mmio_accumulator_register(*ty));
+                    out.push_str(", ");
+                    out.push_str(mmio_saved_value_register(*ty));
                     out.push('\n');
                 }
                 X86_64AsmInstruction::BranchIfZero {
@@ -2234,6 +2622,15 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                     out.push(' ');
                     out.push_str(mmio_saved_value_register(*ty));
                     out.push_str(", (%rax)\n");
+                }
+                X86_64AsmInstruction::ReturnSavedValue { ty } => {
+                    out.push_str("    ");
+                    out.push_str(mmio_move_return_value_mnemonic(*ty));
+                    out.push(' ');
+                    out.push_str(mmio_saved_value_register(*ty));
+                    out.push_str(", ");
+                    out.push_str(mmio_accumulator_register(*ty));
+                    out.push('\n');
                 }
                 X86_64AsmInstruction::Ret => {
                     if function.uses_saved_value_slot {
@@ -2382,6 +2779,7 @@ fn loadless_value_offset(cursor: usize, opcode_bytes: usize) -> usize {
 fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
     match op {
         ExecutableOp::Call { .. } => 5,
+        ExecutableOp::CallCapture { ty, .. } => 5 + mmio_saved_value_copy_bytes(*ty),
         ExecutableOp::BranchIfZero { ty, .. } => mmio_saved_value_zero_test_bytes(*ty) + 16,
         ExecutableOp::BranchIfEqImm {
             ty,
@@ -2405,6 +2803,30 @@ fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
             10 + mmio_value_load_immediate_bytes(*ty) + mmio_store_bytes(*ty)
         }
         ExecutableOp::MmioWriteValue { ty, .. } => 10 + mmio_saved_value_store_bytes(*ty),
+    }
+}
+
+fn executable_terminator_encoded_len(function: &ExecutableFunction) -> u64 {
+    match function.blocks[0].terminator {
+        ExecutableTerminator::Return {
+            value: ExecutableValue::SavedValue { ty },
+        } => {
+            mmio_saved_value_copy_bytes(ty)
+                + if executable_function_uses_saved_value_slot(function) {
+                    2
+                } else {
+                    1
+                }
+        }
+        ExecutableTerminator::Return {
+            value: ExecutableValue::Unit,
+        } => {
+            if executable_function_uses_saved_value_slot(function) {
+                2
+            } else {
+                1
+            }
+        }
     }
 }
 
@@ -2440,6 +2862,12 @@ fn encode_mmio_write_saved_value_bytes(out: &mut Vec<u8>, ty: MmioScalarType, ad
         MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x18]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x18]),
     }
+}
+
+fn encode_call_capture_bytes(out: &mut Vec<u8>, ty: MmioScalarType) {
+    out.push(0xE8);
+    out.extend_from_slice(&[0, 0, 0, 0]);
+    push_mov_accumulator_to_saved_value_register(out, ty);
 }
 
 fn encode_branch_if_zero_bytes(out: &mut Vec<u8>, ty: MmioScalarType) {
@@ -2527,6 +2955,15 @@ fn push_mov_accumulator_to_saved_value_register(out: &mut Vec<u8>, ty: MmioScala
         MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0xC3]),
         MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0xC3]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0xC3]),
+    }
+}
+
+fn push_mov_saved_value_to_accumulator_register(out: &mut Vec<u8>, ty: MmioScalarType) {
+    match ty {
+        MmioScalarType::U8 => out.extend_from_slice(&[0x88, 0xD8]),
+        MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0xD8]),
+        MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0xD8]),
+        MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0xD8]),
     }
 }
 
@@ -2666,6 +3103,10 @@ fn mmio_move_saved_value_mnemonic(ty: MmioScalarType) -> &'static str {
     mmio_load_mnemonic(ty)
 }
 
+fn mmio_move_return_value_mnemonic(ty: MmioScalarType) -> &'static str {
+    mmio_load_mnemonic(ty)
+}
+
 fn mmio_saved_value_zero_test_mnemonic(ty: MmioScalarType) -> &'static str {
     match ty {
         MmioScalarType::U8 => "testb %bl, %bl",
@@ -2752,10 +3193,8 @@ pub fn lower_executable_krir_to_compiler_owned_object(
     let mut cursor = 0u64;
     for function in &canonical.functions {
         let block = &function.blocks[0];
-        let uses_saved_value_slot = executable_function_uses_saved_value_slot(function);
         let size = block.ops.iter().map(executable_op_encoded_len).sum::<u64>()
-            + if uses_saved_value_slot { 2 } else { 0 }
-            + 1;
+            + executable_terminator_encoded_len(function);
         function_offsets.insert(function.name.clone(), cursor);
         function_sizes.insert(function.name.clone(), size);
         cursor += size;
@@ -2801,6 +3240,26 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         width_bytes: 4,
                     });
                     local_offset += 5;
+                }
+                ExecutableOp::CallCapture { callee, ty } => {
+                    if !function_offsets.contains_key(callee) {
+                        if !extern_names.contains(callee.as_str()) {
+                            return Err(format!(
+                                "compiler-owned object emission requires declared extern target '{}' in function '{}'",
+                                callee, function.name
+                            ));
+                        }
+                        unresolved_targets.insert(callee.clone());
+                    }
+                    encode_call_capture_bytes(&mut code_bytes, *ty);
+                    fixups.push(CompilerOwnedObjectFixup {
+                        source_symbol: function.name.clone(),
+                        patch_offset: function_offset + local_offset + 1,
+                        kind: CompilerOwnedFixupKind::X86_64CallRel32,
+                        target_symbol: callee.clone(),
+                        width_bytes: 4,
+                    });
+                    local_offset += executable_op_encoded_len(op);
                 }
                 ExecutableOp::BranchIfZero {
                     ty,
@@ -2923,6 +3382,12 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     local_offset += executable_op_encoded_len(op);
                 }
             }
+        }
+        if let ExecutableTerminator::Return {
+            value: ExecutableValue::SavedValue { ty },
+        } = function.blocks[0].terminator
+        {
+            push_mov_saved_value_to_accumulator_register(&mut code_bytes, ty);
         }
         if uses_saved_value_slot {
             code_bytes.push(0x5B);
