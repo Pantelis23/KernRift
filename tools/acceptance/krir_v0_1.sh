@@ -8,7 +8,7 @@ TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kernrift-acceptance-XXXXXX")"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 FIXTURE="tests/must_pass/locks_ok.kr"
-PROOF_FIXTURE="examples/uart_console_probe.kr"
+PROOF_FIXTURE="examples/uart_console_executable.kr"
 CONTRACTS_OUT="$TMP_DIR/contracts.json"
 HASH_OUT="$TMP_DIR/contracts.sha256"
 REPORT_OUT="$TMP_DIR/verify.report.json"
@@ -17,9 +17,8 @@ MALFORMED_REPORT="$TMP_DIR/malformed.report.json"
 MALFORMED_STDOUT="$TMP_DIR/malformed.inspect.stdout"
 MALFORMED_STDERR="$TMP_DIR/malformed.inspect.stderr"
 BAD_HASH_OUT="$TMP_DIR/bad.sha256"
-PROOF_ELFOBJ_OUT="$TMP_DIR/uart_console_probe.o"
-PROOF_META_OUT="$TMP_DIR/uart_console_probe.meta.json"
-PROOF_INSPECT_JSON="$TMP_DIR/uart_console_probe.inspect.json"
+PROOF_ELFEXE_OUT="$TMP_DIR/uart_console_executable.elf"
+PROOF_INSPECT_JSON="$TMP_DIR/uart_console_executable.inspect.json"
 
 echo "[1/3] smoke: check emits contracts/hash"
 cargo run -q -p kernriftc -- \
@@ -79,26 +78,20 @@ if [[ "$status" -ne 1 ]]; then
   exit 1
 fi
 
-echo "[6/6] smoke: proof program emits backend elf object"
+echo "[6/6] smoke: proof program emits backend elf executable"
 cargo run -q -p kernriftc -- \
-  --emit=elfobj \
-  -o "$PROOF_ELFOBJ_OUT" \
-  --meta-out "$PROOF_META_OUT" \
+  --emit=elfexe \
+  -o "$PROOF_ELFEXE_OUT" \
   "$PROOF_FIXTURE"
 
 cargo run -q -p kernriftc -- \
-  verify-artifact-meta \
-  "$PROOF_ELFOBJ_OUT" \
-  "$PROOF_META_OUT"
-
-cargo run -q -p kernriftc -- \
   inspect-artifact \
-  "$PROOF_ELFOBJ_OUT" \
+  "$PROOF_ELFEXE_OUT" \
   --format json > "$PROOF_INSPECT_JSON"
 
-grep -q '"artifact_kind": "elf_relocatable"' "$PROOF_INSPECT_JSON"
+grep -q '"artifact_kind": "elf_executable"' "$PROOF_INSPECT_JSON"
 grep -q '"machine": "x86_64"' "$PROOF_INSPECT_JSON"
-grep -q '"name": "entry"' "$PROOF_INSPECT_JSON"
-grep -q '"name": "platform_barrier"' "$PROOF_INSPECT_JSON"
+grep -q '"has_entry_symbol": true' "$PROOF_INSPECT_JSON"
+grep -q '"has_undefined_symbols": false' "$PROOF_INSPECT_JSON"
 
 echo "KRIR v0.1 acceptance: PASS"

@@ -57,8 +57,16 @@ pub(crate) fn parse_backend_emit_args(
         return Err("invalid emit mode: missing -o <output-path>".to_string());
     };
 
-    if kind == BackendArtifactKind::Asm && meta_output_path.is_some() {
-        return Err("invalid emit mode: --meta-out is unsupported for 'asm'".to_string());
+    if meta_output_path.is_some()
+        && matches!(
+            kind,
+            BackendArtifactKind::Asm | BackendArtifactKind::ElfExecutable
+        )
+    {
+        return Err(format!(
+            "invalid emit mode: --meta-out is unsupported for '{}'",
+            kind.as_str()
+        ));
     }
 
     if positionals.len() != 1 {

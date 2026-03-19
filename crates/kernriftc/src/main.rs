@@ -1716,9 +1716,11 @@ fn print_usage() {
     eprintln!(
         "  kernriftc --surface stable --emit=elfobj -o <output.o> --meta-out <output.json> <file.kr>"
     );
+    eprintln!("  kernriftc --surface stable --emit=elfexe -o <output.elf> <file.kr>");
     eprintln!("  kernriftc --surface stable --emit=asm -o <output.s> <file.kr>");
     eprintln!("  kernriftc --surface stable --emit=krbo -o <output.krbo> <file.kr>");
     eprintln!("  kernriftc --surface stable --emit=elfobj -o <output.o> <file.kr>");
+    eprintln!("  kernriftc --emit=elfexe -o <output.elf> <file.kr>");
     eprintln!("  kernriftc --emit=asm -o <output.s> <file.kr>");
     eprintln!("  kernriftc --emit=krbo -o <output.krbo> --meta-out <output.json> <file.kr>");
     eprintln!("  kernriftc --emit=elfobj -o <output.o> --meta-out <output.json> <file.kr>");

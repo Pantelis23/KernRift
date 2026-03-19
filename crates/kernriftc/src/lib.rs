@@ -1,6 +1,7 @@
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use hir::lower_to_krir_with_surface;
@@ -50,6 +51,7 @@ pub struct CanonicalFixSourceResult {
 pub enum BackendArtifactKind {
     Krbo,
     ElfObject,
+    ElfExecutable,
     Asm,
 }
 
@@ -58,6 +60,7 @@ impl BackendArtifactKind {
         match self {
             Self::Krbo => "krbo",
             Self::ElfObject => "elfobj",
+            Self::ElfExecutable => "elfexe",
             Self::Asm => "asm",
         }
     }
@@ -66,9 +69,10 @@ impl BackendArtifactKind {
         match value {
             "krbo" => Ok(Self::Krbo),
             "elfobj" => Ok(Self::ElfObject),
+            "elfexe" => Ok(Self::ElfExecutable),
             "asm" => Ok(Self::Asm),
             _ => Err(format!(
-                "unsupported emit target '{}'; expected 'krbo', 'elfobj', or 'asm'",
+                "unsupported emit target '{}'; expected 'krbo', 'elfobj', 'elfexe', or 'asm'",
                 value
             )),
         }
@@ -119,6 +123,9 @@ pub fn emit_backend_artifact_file_with_surface(
             let object = lower_executable_krir_to_x86_64_object(&executable, &target)
                 .map_err(|err| vec![err])?;
             Ok(emit_x86_64_object_bytes(&object))
+        }
+        BackendArtifactKind::ElfExecutable => {
+            emit_x86_64_executable_bytes(&executable, &target).map_err(|err| vec![err])
         }
         BackendArtifactKind::Asm => {
             let asm = lower_executable_krir_to_x86_64_asm(&executable, &target)
@@ -416,6 +423,185 @@ fn sync_parent_directory_best_effort(path: &Path) -> Result<(), Vec<String>> {
 #[cfg(not(unix))]
 fn sync_parent_directory_best_effort(_path: &Path) -> Result<(), Vec<String>> {
     Ok(())
+}
+
+fn emit_x86_64_executable_bytes(
+    executable: &krir::ExecutableKrirModule,
+    target: &BackendTargetContract,
+) -> Result<Vec<u8>, String> {
+    if !cfg!(target_os = "linux") {
+        return Err("final executable emit currently requires a Linux host".to_string());
+    }
+
+    if !executable.extern_declarations.is_empty() {
+        let unresolved = executable
+            .extern_declarations
+            .iter()
+            .map(|decl| decl.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "final executable emit currently requires no extern declarations; unresolved externs: {}",
+            unresolved
+        ));
+    }
+
+    if !executable
+        .functions
+        .iter()
+        .any(|function| function.name == "entry")
+    {
+        return Err(
+            "final executable emit currently requires a defined 'entry' function".to_string(),
+        );
+    }
+
+    let object = lower_executable_krir_to_x86_64_object(executable, target)?;
+    let object_bytes = emit_x86_64_object_bytes(&object);
+    link_x86_64_linux_executable(&object_bytes)
+}
+
+fn link_x86_64_linux_executable(object_bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let linker = find_host_tool(&["ld.lld", "ld"])
+        .ok_or_else(|| "final executable emit requires a host linker (ld.lld or ld)".to_string())?;
+    let asm_compiler = find_host_tool(&["cc", "clang", "gcc", "as"]).ok_or_else(|| {
+        "final executable emit requires a host assembler/compiler (cc, clang, gcc, or as)"
+            .to_string()
+    })?;
+
+    let temp_dir = unique_temp_dir("elfexe");
+    fs::create_dir_all(&temp_dir).map_err(|err| {
+        format!(
+            "failed to create temporary link directory '{}': {}",
+            temp_dir.display(),
+            err
+        )
+    })?;
+
+    let cleanup = TempArtifactDir {
+        path: temp_dir.clone(),
+    };
+    let input_object = temp_dir.join("input.o");
+    let startup_source = temp_dir.join("startup.s");
+    let startup_object = temp_dir.join("startup.o");
+    let output_path = temp_dir.join("output.elf");
+
+    fs::write(&input_object, object_bytes).map_err(|err| {
+        format!(
+            "failed to write temporary object '{}': {}",
+            input_object.display(),
+            err
+        )
+    })?;
+
+    fs::write(&startup_source, hosted_startup_stub_asm()).map_err(|err| {
+        format!(
+            "failed to write startup stub '{}': {}",
+            startup_source.display(),
+            err
+        )
+    })?;
+
+    let asm_output = match asm_compiler.as_str() {
+        "as" => Command::new(&asm_compiler)
+            .arg("-o")
+            .arg(&startup_object)
+            .arg(&startup_source)
+            .output(),
+        _ => Command::new(&asm_compiler)
+            .arg("-c")
+            .arg(&startup_source)
+            .arg("-o")
+            .arg(&startup_object)
+            .output(),
+    }
+    .map_err(|err| {
+        format!(
+            "failed to run assembler/compiler '{}': {}",
+            asm_compiler, err
+        )
+    })?;
+
+    if !asm_output.status.success() {
+        return Err(format!(
+            "final executable emit failed while assembling startup stub with '{}'\nstdout:\n{}\nstderr:\n{}",
+            asm_compiler,
+            String::from_utf8_lossy(&asm_output.stdout),
+            String::from_utf8_lossy(&asm_output.stderr)
+        ));
+    }
+
+    let link_output = Command::new(&linker)
+        .arg("-m")
+        .arg("elf_x86_64")
+        .arg("-e")
+        .arg("_start")
+        .arg("-o")
+        .arg(&output_path)
+        .arg(&input_object)
+        .arg(&startup_object)
+        .output()
+        .map_err(|err| format!("failed to run linker '{}': {}", linker, err))?;
+
+    if !link_output.status.success() {
+        return Err(format!(
+            "final executable emit failed while linking with '{}'\nstdout:\n{}\nstderr:\n{}",
+            linker,
+            String::from_utf8_lossy(&link_output.stdout),
+            String::from_utf8_lossy(&link_output.stderr)
+        ));
+    }
+
+    let bytes = fs::read(&output_path).map_err(|err| {
+        format!(
+            "failed to read linked executable '{}': {}",
+            output_path.display(),
+            err
+        )
+    })?;
+    drop(cleanup);
+    Ok(bytes)
+}
+
+fn hosted_startup_stub_asm() -> &'static str {
+    ".text\n.globl _start\n_start:\n    call entry\n    mov $60, %rax\n    xor %rdi, %rdi\n    syscall\n"
+}
+
+fn find_host_tool(candidates: &[&str]) -> Option<String> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path).find_map(|dir| {
+        candidates.iter().find_map(|candidate| {
+            let full = dir.join(candidate);
+            if full.is_file() {
+                Some(candidate.to_string())
+            } else {
+                None
+            }
+        })
+    })
+}
+
+fn unique_temp_dir(label: &str) -> PathBuf {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "kernrift-{}-{}-{}",
+        label,
+        std::process::id(),
+        timestamp
+    ))
+}
+
+struct TempArtifactDir {
+    path: PathBuf,
+}
+
+impl Drop for TempArtifactDir {
+    fn drop(&mut self) {
+        fs::remove_dir_all(&self.path).ok();
+    }
 }
 
 fn format_check_errors(mut errs: Vec<CheckError>) -> Vec<String> {

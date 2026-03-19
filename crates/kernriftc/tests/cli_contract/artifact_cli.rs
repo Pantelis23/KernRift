@@ -10,6 +10,8 @@ fn usage_includes_artifact_json_consumer_commands() {
     assert!(stderr.contains("kernriftc inspect-report --report <verify-report.json> --format json"));
     assert!(stderr.contains("kernriftc inspect-artifact <artifact-path> --format json"));
     assert!(stderr.contains("kernriftc verify-artifact-meta --format json <artifact> <meta.json>"));
+    assert!(stderr.contains("kernriftc --emit=elfexe -o <output.elf> <file.kr>"));
+    assert!(stderr.contains("kernriftc --surface stable --emit=elfexe -o <output.elf> <file.kr>"));
     assert!(stderr.contains(
         "kernriftc policy --format json --policy <policy.toml> --contracts <contracts.json>"
     ));
@@ -112,6 +114,42 @@ fn emit_elfobj_writes_valid_relocatable_object() {
         u16::from_le_bytes([bytes[16], bytes[17]]),
         1,
         "expected ET_REL"
+    );
+    assert_eq!(
+        u16::from_le_bytes([bytes[18], bytes[19]]),
+        62,
+        "expected EM_X86_64"
+    );
+
+    fs::remove_file(&output_path).ok();
+}
+
+#[test]
+fn emit_elfexe_writes_valid_executable() {
+    let root = repo_root();
+    let fixture = root
+        .join("examples")
+        .join("uart_console_executable.kr");
+    let output_path = unique_temp_output_path("emit-elfexe", "elf");
+    fs::remove_file(&output_path).ok();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("--emit=elfexe")
+        .arg("-o")
+        .arg(output_path.as_os_str())
+        .arg(fixture.as_os_str());
+    cmd.assert().success();
+
+    let bytes = fs::read(&output_path).expect("read elf executable output");
+    assert!(bytes.len() >= 20, "elf executable output too small");
+    assert_eq!(&bytes[0..4], b"\x7fELF");
+    assert_eq!(bytes[4], 2, "expected ELF64 class");
+    assert_eq!(bytes[5], 1, "expected little-endian ELF");
+    assert_eq!(
+        u16::from_le_bytes([bytes[16], bytes[17]]),
+        2,
+        "expected ET_EXEC"
     );
     assert_eq!(
         u16::from_le_bytes([bytes[18], bytes[19]]),
@@ -324,6 +362,50 @@ fn emit_elfobj_supports_uart_console_probe_proof_program_and_metadata_verifies()
 }
 
 #[test]
+fn emit_elfexe_supports_uart_console_executable_proof_program_and_inspection_verifies() {
+    let root = repo_root();
+    let fixture = root
+        .join("examples")
+        .join("uart_console_executable.kr");
+    let artifact_path = unique_temp_output_path("emit-elfexe-uart-console", "elf");
+    fs::remove_file(&artifact_path).ok();
+
+    let mut emit_cmd: Command = cargo_bin_cmd!("kernriftc");
+    emit_cmd
+        .current_dir(&root)
+        .arg("--emit=elfexe")
+        .arg("-o")
+        .arg(artifact_path.as_os_str())
+        .arg(fixture.as_os_str());
+    emit_cmd.assert().success();
+
+    let output = inspect_artifact_output(&root, &artifact_path, Some("json"));
+    let json: Value = serde_json::from_str(&output).expect("parse inspect-artifact JSON");
+    validate_inspect_artifact_schema(&json);
+    assert_eq!(json["schema_version"], "kernrift_inspect_artifact_v2");
+    assert_eq!(json["file"], artifact_path.display().to_string());
+    assert_eq!(json["artifact_kind"], "elf_executable");
+    assert_eq!(json["machine"], "x86_64");
+    assert_eq!(json["undefined_symbols"], json!([]));
+    assert_eq!(json["flags"]["has_entry_symbol"], true);
+    assert_eq!(json["flags"]["has_undefined_symbols"], false);
+    assert_eq!(json["flags"]["has_text_relocations"], false);
+    assert_eq!(
+        json["defined_symbols"],
+        json!([
+            "_start",
+            "entry",
+            "uart_init",
+            "uart_kick_watchdog",
+            "uart_send_zero",
+            "uart_status"
+        ])
+    );
+
+    fs::remove_file(&artifact_path).ok();
+}
+
+#[test]
 fn inspect_artifact_json_reports_uart_console_probe_elf_object_shape() {
     let root = repo_root();
     let fixture = root.join("examples").join("uart_console_probe.kr");
@@ -378,6 +460,31 @@ fn emit_backend_artifact_rejects_nonliteral_mmio_write_value_in_current_subset()
         vec![
             "canonical-exec: function 'entry' contains unsupported mmio_write<u8>(UART0, value): non-literal write value 'value' is not executable in v0.1"
         ]
+    );
+
+    fs::remove_file(&output_path).ok();
+}
+
+#[test]
+fn emit_elfexe_rejects_extern_declarations_in_current_linker_lane() {
+    let root = repo_root();
+    let fixture = root.join("examples").join("uart_console_probe.kr");
+    let output_path = unique_temp_output_path("emit-elfexe-extern-boundary", "elf");
+    fs::remove_file(&output_path).ok();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("--emit=elfexe")
+        .arg("-o")
+        .arg(output_path.as_os_str())
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some(
+            "final executable emit currently requires no extern declarations; unresolved externs: platform_barrier"
+        )
     );
 
     fs::remove_file(&output_path).ok();
