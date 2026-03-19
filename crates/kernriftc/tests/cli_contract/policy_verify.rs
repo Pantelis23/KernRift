@@ -1029,6 +1029,85 @@ fn policy_json_schema_accepts_scalar_list_and_empty_list_evidence_variants() {
 }
 
 #[test]
+fn policy_json_rejects_invalid_contracts_without_emitting_json() {
+    let root = repo_root();
+    let policy_path = write_temp_policy_file("policy-json-invalid-contracts", "[kernel]\n");
+    let contracts_path = unique_temp_output_path("policy-json-invalid-contracts", "json");
+    fs::write(&contracts_path, "{}").expect("write malformed contracts");
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("policy")
+        .arg("--format")
+        .arg("json")
+        .arg("--policy")
+        .arg(policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    let assert = cmd.assert().failure().code(2);
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stdout.is_empty(),
+        "policy json invalid input must not emit stdout payload: {:?}",
+        stdout
+    );
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec![format!(
+            "failed to decode contracts bundle '{}': missing string field 'schema_version'",
+            contracts_path.display()
+        )]
+    );
+
+    fs::remove_file(&contracts_path).ok();
+    fs::remove_file(&policy_path).ok();
+}
+
+#[test]
+fn policy_json_rejects_missing_policy_file_without_emitting_json() {
+    let root = repo_root();
+    let contracts_fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("raw_mmio_with_cap.kr");
+    let contracts_path = write_v2_contracts_for_fixture(
+        &root,
+        &contracts_fixture,
+        "policy-json-missing-policy-file",
+    );
+    let missing_policy_path = unique_temp_output_path("policy-json-missing-policy-file", "toml");
+    fs::remove_file(&missing_policy_path).ok();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("policy")
+        .arg("--format")
+        .arg("json")
+        .arg("--policy")
+        .arg(missing_policy_path.as_os_str())
+        .arg("--contracts")
+        .arg(contracts_path.as_os_str());
+    let assert = cmd.assert().failure().code(2);
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert!(
+        stdout.is_empty(),
+        "policy json invalid input must not emit stdout payload: {:?}",
+        stdout
+    );
+    assert!(
+        stderr.lines().next().is_some_and(|line| line.starts_with(&format!(
+            "failed to read policy '{}':",
+            missing_policy_path.display()
+        ))),
+        "expected missing-policy read error, got: {stderr}"
+    );
+
+    fs::remove_file(&contracts_path).ok();
+}
+
+#[test]
 fn check_json_policy_irq_raw_mmio_forbid_matches_policy_json_contract_exactly() {
     let root = repo_root();
     let fixture = root
