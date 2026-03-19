@@ -24,6 +24,8 @@ const INSPECT_ARTIFACT_SCHEMA_V2: &str =
     include_str!("../../../docs/schemas/kernrift_inspect_artifact_v2.schema.json");
 const VERIFY_ARTIFACT_META_SCHEMA_V2: &str =
     include_str!("../../../docs/schemas/kernrift_verify_artifact_meta_v2.schema.json");
+const INSPECT_REPORT_SCHEMA_V1: &str =
+    include_str!("../../../docs/schemas/kernrift_inspect_report_v1.schema.json");
 const CANONICAL_FINDINGS_SCHEMA_V2: &str =
     include_str!("../../../docs/schemas/kernrift_canonical_findings_v2.schema.json");
 const CANONICAL_EDIT_PLAN_SCHEMA_V2: &str =

@@ -36,6 +36,7 @@ pub(crate) struct InspectArgs {
 #[derive(Debug)]
 pub(crate) struct InspectReportArgs {
     pub(crate) report_path: String,
+    pub(crate) format: PolicyOutputFormat,
 }
 
 #[derive(Debug)]
@@ -417,9 +418,27 @@ pub(crate) fn parse_inspect_args(args: &[String]) -> Result<InspectArgs, String>
 
 pub(crate) fn parse_inspect_report_args(args: &[String]) -> Result<InspectReportArgs, String> {
     let mut report_path = None::<String>;
+    let mut format = PolicyOutputFormat::Text;
+    let mut format_set = false;
     let mut idx = 0usize;
     while idx < args.len() {
         match args[idx].as_str() {
+            "--format" => {
+                if format_set {
+                    return Err("invalid inspect-report mode: duplicate --format".to_string());
+                }
+                idx += 1;
+                if idx >= args.len() {
+                    return Err(
+                        "invalid inspect-report mode: --format requires 'text' or 'json'"
+                            .to_string(),
+                    );
+                }
+                format = PolicyOutputFormat::parse(&args[idx]).map_err(|err| {
+                    err.replacen("invalid policy mode", "invalid inspect-report mode", 1)
+                })?;
+                format_set = true;
+            }
             "--report" => {
                 if report_path.is_some() {
                     return Err("invalid inspect-report mode: duplicate --report".to_string());
@@ -446,7 +465,10 @@ pub(crate) fn parse_inspect_report_args(args: &[String]) -> Result<InspectReport
         return Err("invalid inspect-report mode: missing --report".to_string());
     };
 
-    Ok(InspectReportArgs { report_path })
+    Ok(InspectReportArgs {
+        report_path,
+        format,
+    })
 }
 
 pub(crate) fn parse_verify_args(args: &[String]) -> Result<VerifyArgs, String> {

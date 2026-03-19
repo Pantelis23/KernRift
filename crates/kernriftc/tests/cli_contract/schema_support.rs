@@ -29,6 +29,11 @@ pub(super) fn compile_verify_report_schema() -> JSONSchema {
     JSONSchema::compile(&schema_json).expect("compile schema")
 }
 
+pub(super) fn compile_inspect_report_schema() -> JSONSchema {
+    let schema_json: Value = serde_json::from_str(INSPECT_REPORT_SCHEMA_V1).expect("schema json");
+    JSONSchema::compile(&schema_json).expect("compile schema")
+}
+
 pub(super) fn compile_inspect_artifact_schema() -> JSONSchema {
     let schema_json: Value = serde_json::from_str(INSPECT_ARTIFACT_SCHEMA_V2).expect("schema json");
     JSONSchema::compile(&schema_json).expect("compile schema")
@@ -87,6 +92,17 @@ pub(super) fn validate_inspect_artifact_schema(instance: &Value) {
         let details = errors.map(|e| e.to_string()).collect::<Vec<_>>();
         panic!(
             "inspect-artifact JSON must validate against inspect-artifact v2 schema: {}",
+            details.join(" | ")
+        );
+    }
+}
+
+pub(super) fn validate_inspect_report_schema(instance: &Value) {
+    let compiled = compile_inspect_report_schema();
+    if let Err(errors) = compiled.validate(instance) {
+        let details = errors.map(|e| e.to_string()).collect::<Vec<_>>();
+        panic!(
+            "inspect-report JSON must validate against inspect-report v1 schema: {}",
             details.join(" | ")
         );
     }

@@ -7,6 +7,7 @@ fn usage_includes_artifact_json_consumer_commands() {
     let assert = cmd.assert().failure().code(2);
     let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
 
+    assert!(stderr.contains("kernriftc inspect-report --report <verify-report.json> --format json"));
     assert!(stderr.contains("kernriftc inspect-artifact <artifact-path> --format json"));
     assert!(stderr.contains("kernriftc verify-artifact-meta --format json <artifact> <meta.json>"));
     assert!(stderr.contains(
@@ -3239,6 +3240,89 @@ fn inspect_report_summary_is_stable_and_exact() {
 }
 
 #[test]
+fn inspect_report_json_is_stable_and_exact() {
+    let root = repo_root();
+    let report_path = write_verify_report_fixture(
+        "json",
+        &json!({
+            "schema_version": "kernrift_verify_report_v1",
+            "result": "deny",
+            "inputs": {
+                "contracts": "contracts.json",
+                "hash": "contracts.sha256",
+                "sig": Value::Null,
+                "pubkey": Value::Null
+            },
+            "hash": {
+                "expected_sha256": "0000",
+                "computed_sha256": "1111",
+                "matched": false
+            },
+            "contracts": {
+                "utf8_valid": true,
+                "schema_valid": true,
+                "schema_version": "kernrift_contracts_v2"
+            },
+            "signature": {
+                "checked": false,
+                "valid": Value::Null
+            },
+            "diagnostics": [
+                "verify: HASH_MISMATCH: expected 0000, got 1111"
+            ]
+        }),
+    );
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("inspect-report")
+        .arg("--report")
+        .arg(report_path.as_os_str())
+        .arg("--format")
+        .arg("json");
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_json_transport(&stdout, &stderr, "kernrift_inspect_report_v1");
+    let json: Value = serde_json::from_str(&stdout).expect("inspect-report json");
+    validate_inspect_report_schema(&json);
+    assert_eq!(
+        json,
+        json!({
+            "schema_version": "kernrift_inspect_report_v1",
+            "file": report_path.display().to_string(),
+            "report_schema_version": "kernrift_verify_report_v1",
+            "result": "deny",
+            "inputs": {
+                "contracts": "contracts.json",
+                "hash": "contracts.sha256",
+                "sig": Value::Null,
+                "pubkey": Value::Null
+            },
+            "hash": {
+                "expected_sha256": "0000",
+                "computed_sha256": "1111",
+                "matched": false
+            },
+            "contracts": {
+                "utf8_valid": true,
+                "schema_valid": true,
+                "schema_version": "kernrift_contracts_v2"
+            },
+            "signature": {
+                "checked": false,
+                "valid": Value::Null
+            },
+            "diagnostics": [
+                "verify: HASH_MISMATCH: expected 0000, got 1111"
+            ]
+        })
+    );
+
+    fs::remove_file(&report_path).ok();
+}
+
+#[test]
 fn inspect_report_output_is_repeatable() {
     let root = repo_root();
     let report_path = write_verify_report_fixture(
@@ -3283,6 +3367,57 @@ fn inspect_report_output_is_repeatable() {
     let first = run_inspect();
     let second = run_inspect();
     assert_eq!(first, second, "inspect-report output must be byte-stable");
+
+    fs::remove_file(&report_path).ok();
+}
+
+#[test]
+fn inspect_report_json_transport_is_stdout_only_and_newline_terminated() {
+    let root = repo_root();
+    let report_path = write_verify_report_fixture(
+        "transport",
+        &json!({
+            "schema_version": "kernrift_verify_report_v1",
+            "result": "pass",
+            "inputs": {
+                "contracts": "contracts.json",
+                "hash": "contracts.sha256",
+                "sig": Value::Null,
+                "pubkey": Value::Null
+            },
+            "hash": {
+                "expected_sha256": Value::Null,
+                "computed_sha256": "abcd",
+                "matched": true
+            },
+            "contracts": {
+                "utf8_valid": true,
+                "schema_valid": true,
+                "schema_version": "kernrift_contracts_v1"
+            },
+            "signature": {
+                "checked": false,
+                "valid": Value::Null
+            },
+            "diagnostics": []
+        }),
+    );
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("inspect-report")
+        .arg("--report")
+        .arg(report_path.as_os_str())
+        .arg("--format")
+        .arg("json");
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+
+    assert_json_transport(&stdout, &stderr, "kernrift_inspect_report_v1");
+    let json: Value = serde_json::from_str(&stdout).expect("inspect-report json");
+    assert_eq!(json["file"], json!(report_path.display().to_string()));
+    assert_eq!(json["report_schema_version"], json!("kernrift_verify_report_v1"));
 
     fs::remove_file(&report_path).ok();
 }

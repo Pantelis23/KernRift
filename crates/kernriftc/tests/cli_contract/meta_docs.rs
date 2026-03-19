@@ -27,6 +27,7 @@ fn structured_output_conventions_spec_locks_future_json_command_transport_tests(
 #[test]
 fn structured_output_command_matrix_spec_lists_current_json_capable_commands() {
     for surface in [
+        "kernriftc inspect-report --report <verify-report.json> --format json",
         "kernriftc inspect-artifact <artifact> --format json",
         "kernriftc verify-artifact-meta --format json <artifact> <meta.json>",
         "kernriftc policy --format json --policy <policy.toml> --contracts <contracts.json>",
@@ -43,6 +44,7 @@ fn structured_output_command_matrix_spec_lists_current_json_capable_commands() {
         );
     }
     for schema in [
+        "kernrift_inspect_report_v1",
         "kernrift_inspect_artifact_v2",
         "kernrift_verify_artifact_meta_v2",
         "kernrift_policy_violations_v1",
@@ -66,6 +68,7 @@ fn structured_output_test_coverage_matrix_spec_lists_current_json_capable_comman
         "structured output spec must include the test coverage matrix section"
     );
     for surface in [
+        "kernriftc inspect-report --report <verify-report.json> --format json",
         "kernriftc inspect-artifact <artifact> --format json",
         "kernriftc verify-artifact-meta --format json <artifact> <meta.json>",
         "kernriftc policy --format json --policy <policy.toml> --contracts <contracts.json>",

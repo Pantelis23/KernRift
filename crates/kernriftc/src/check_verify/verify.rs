@@ -16,8 +16,9 @@ use crate::policy_engine::{
     contracts_bundle_schema_version, decode_contracts_bundle, validate_json_against_schema_text,
 };
 use crate::{
-    EXIT_INVALID_INPUT, EXIT_POLICY_VIOLATION, VERIFY_REPORT_SCHEMA_V1,
-    VERIFY_REPORT_SCHEMA_VERSION, print_errors,
+    EXIT_INVALID_INPUT, EXIT_POLICY_VIOLATION, INSPECT_REPORT_SCHEMA_V1,
+    INSPECT_REPORT_SCHEMA_VERSION, VERIFY_REPORT_SCHEMA_V1, VERIFY_REPORT_SCHEMA_VERSION,
+    print_errors,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +66,47 @@ pub(super) struct DecodedVerifyReport {
     contracts: DecodedVerifyReportContracts,
     signature: DecodedVerifyReportSignature,
     diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct InspectVerifyReport {
+    schema_version: &'static str,
+    file: String,
+    report_schema_version: String,
+    result: String,
+    inputs: InspectVerifyReportInputs,
+    hash: InspectVerifyReportHash,
+    contracts: InspectVerifyReportContracts,
+    signature: InspectVerifyReportSignature,
+    diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct InspectVerifyReportInputs {
+    contracts: String,
+    hash: String,
+    sig: Option<String>,
+    pubkey: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct InspectVerifyReportHash {
+    expected_sha256: Option<String>,
+    computed_sha256: Option<String>,
+    matched: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct InspectVerifyReportContracts {
+    utf8_valid: bool,
+    schema_valid: bool,
+    schema_version: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct InspectVerifyReportSignature {
+    checked: bool,
+    valid: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -462,6 +504,53 @@ pub(super) fn format_verify_report_inspect_summary(report: &DecodedVerifyReport)
     }
 
     lines.join("\n")
+}
+
+pub(super) fn emit_verify_report_inspect_json(
+    report: &DecodedVerifyReport,
+    file: &str,
+) -> Result<String, String> {
+    let inspect_report = InspectVerifyReport {
+        schema_version: INSPECT_REPORT_SCHEMA_VERSION,
+        file: file.to_string(),
+        report_schema_version: report.schema_version.clone(),
+        result: report.result.clone(),
+        inputs: InspectVerifyReportInputs {
+            contracts: report.inputs.contracts.clone(),
+            hash: report.inputs.hash.clone(),
+            sig: report.inputs.sig.clone(),
+            pubkey: report.inputs.pubkey.clone(),
+        },
+        hash: InspectVerifyReportHash {
+            expected_sha256: report.hash.expected_sha256.clone(),
+            computed_sha256: report.hash.computed_sha256.clone(),
+            matched: report.hash.matched,
+        },
+        contracts: InspectVerifyReportContracts {
+            utf8_valid: report.contracts.utf8_valid,
+            schema_valid: report.contracts.schema_valid,
+            schema_version: report.contracts.schema_version.clone(),
+        },
+        signature: InspectVerifyReportSignature {
+            checked: report.signature.checked,
+            valid: report.signature.valid,
+        },
+        diagnostics: report.diagnostics.clone(),
+    };
+    let report_json = serde_json::to_value(&inspect_report)
+        .map_err(|e| format!("failed to serialize inspect-report JSON: {}", e))?;
+    validate_json_against_schema_text(
+        &report_json,
+        INSPECT_REPORT_SCHEMA_V1,
+        "embedded inspect-report schema",
+        "inspect report",
+    )?;
+    serde_json::to_string_pretty(&report_json)
+        .map(|mut text| {
+            text.push('\n');
+            text
+        })
+        .map_err(|e| format!("failed to format inspect-report JSON: {}", e))
 }
 
 fn format_option_value(value: Option<&str>) -> &str {

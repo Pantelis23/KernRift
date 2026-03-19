@@ -50,6 +50,9 @@ use crate::verify_artifact_meta::{parse_verify_artifact_meta_args, run_verify_ar
 const VERIFY_REPORT_SCHEMA_V1: &str =
     include_str!("../../../docs/schemas/kernrift_verify_report_v1.schema.json");
 const VERIFY_REPORT_SCHEMA_VERSION: &str = "kernrift_verify_report_v1";
+const INSPECT_REPORT_SCHEMA_V1: &str =
+    include_str!("../../../docs/schemas/kernrift_inspect_report_v1.schema.json");
+const INSPECT_REPORT_SCHEMA_VERSION: &str = "kernrift_inspect_report_v1";
 const EXIT_POLICY_VIOLATION: u8 = 1;
 const EXIT_INVALID_INPUT: u8 = 2;
 
@@ -229,7 +232,7 @@ fn main() -> ExitCode {
             }
         },
         "inspect-report" => match parse_inspect_report_args(&args[2..]) {
-            Ok(parsed) => run_inspect_report(&parsed.report_path),
+            Ok(parsed) => run_inspect_report(&parsed.report_path, parsed.format),
             Err(err) => {
                 eprintln!("{}", err);
                 print_usage();
@@ -1699,6 +1702,7 @@ fn print_usage() {
     eprintln!("  kernriftc fix --canonical --diff --stdin");
     eprintln!("  kernriftc inspect --contracts <contracts.json>");
     eprintln!("  kernriftc inspect-report --report <verify-report.json>");
+    eprintln!("  kernriftc inspect-report --report <verify-report.json> --format json");
     eprintln!("  kernriftc inspect-artifact <artifact-path>");
     eprintln!("  kernriftc inspect-artifact <artifact-path> --format json");
     eprintln!("  kernriftc verify --contracts <contracts.json> --hash <contracts.sha256>");

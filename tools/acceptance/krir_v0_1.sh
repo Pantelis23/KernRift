@@ -11,6 +11,7 @@ FIXTURE="tests/must_pass/locks_ok.kr"
 CONTRACTS_OUT="$TMP_DIR/contracts.json"
 HASH_OUT="$TMP_DIR/contracts.sha256"
 REPORT_OUT="$TMP_DIR/verify.report.json"
+INSPECT_REPORT_JSON="$TMP_DIR/inspect.report.json"
 BAD_HASH_OUT="$TMP_DIR/bad.sha256"
 
 echo "[1/3] smoke: check emits contracts/hash"
@@ -30,7 +31,17 @@ cargo run -q -p kernriftc -- \
 grep -q '"schema_version": "kernrift_verify_report_v1"' "$REPORT_OUT"
 grep -q '"result": "pass"' "$REPORT_OUT"
 
-echo "[3/3] smoke: verify deny on hash mismatch (exit 1)"
+echo "[3/4] smoke: inspect-report emits structured JSON"
+cargo run -q -p kernriftc -- \
+  inspect-report \
+  --report "$REPORT_OUT" \
+  --format json > "$INSPECT_REPORT_JSON"
+
+grep -q '"schema_version": "kernrift_inspect_report_v1"' "$INSPECT_REPORT_JSON"
+grep -q "\"file\": \"$REPORT_OUT\"" "$INSPECT_REPORT_JSON"
+grep -q '"result": "pass"' "$INSPECT_REPORT_JSON"
+
+echo "[4/4] smoke: verify deny on hash mismatch (exit 1)"
 printf '%064d\n' 0 > "$BAD_HASH_OUT"
 set +e
 cargo run -q -p kernriftc -- \

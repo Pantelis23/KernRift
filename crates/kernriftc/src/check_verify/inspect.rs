@@ -6,7 +6,9 @@ use emit::emit_report_json;
 use kernriftc::{analyze, compile_file};
 
 use super::PolicyOutputFormat;
-use super::verify::{decode_verify_report, format_verify_report_inspect_summary};
+use super::verify::{
+    decode_verify_report, emit_verify_report_inspect_json, format_verify_report_inspect_summary,
+};
 use crate::policy_engine::{
     decode_contracts_bundle, emit_policy_violations_json, evaluate_policy,
     format_contracts_inspect_summary, load_policy_file, print_policy_violations,
@@ -99,7 +101,7 @@ pub(crate) fn run_inspect(contracts_path: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-pub(crate) fn run_inspect_report(report_path: &str) -> ExitCode {
+pub(crate) fn run_inspect_report(report_path: &str, format: PolicyOutputFormat) -> ExitCode {
     let report_text = match fs::read_to_string(Path::new(report_path)) {
         Ok(text) => text,
         Err(err) => {
@@ -115,8 +117,22 @@ pub(crate) fn run_inspect_report(report_path: &str) -> ExitCode {
         }
     };
 
-    println!("{}", format_verify_report_inspect_summary(&report));
-    ExitCode::SUCCESS
+    match format {
+        PolicyOutputFormat::Text => {
+            println!("{}", format_verify_report_inspect_summary(&report));
+            ExitCode::SUCCESS
+        }
+        PolicyOutputFormat::Json => match emit_verify_report_inspect_json(&report, report_path) {
+            Ok(text) => {
+                print!("{}", text);
+                ExitCode::SUCCESS
+            }
+            Err(err) => {
+                eprintln!("{}", err);
+                ExitCode::from(EXIT_INVALID_INPUT)
+            }
+        },
+    }
 }
 
 pub(crate) fn run_report(metrics_csv: &str, path: &str) -> ExitCode {
