@@ -85,6 +85,12 @@ pub enum KrirOp {
         then_callee: String,
         else_callee: String,
     },
+    BranchIfMaskNonZero {
+        slot: String,
+        mask_value: String,
+        then_callee: String,
+        else_callee: String,
+    },
     CriticalEnter,
     CriticalExit,
     YieldPoint,
@@ -324,6 +330,12 @@ pub enum ExecutableOp {
         then_callee: String,
         else_callee: String,
     },
+    BranchIfMaskNonZeroImm {
+        ty: MmioScalarType,
+        mask_value: u64,
+        then_callee: String,
+        else_callee: String,
+    },
     MmioRead {
         ty: MmioScalarType,
         addr: u64,
@@ -528,6 +540,22 @@ impl ExecutableKrirModule {
                                 }
                             }
                         }
+                        ExecutableOp::BranchIfMaskNonZeroImm {
+                            then_callee,
+                            else_callee,
+                            ..
+                        } => {
+                            for callee in [then_callee, else_callee] {
+                                if !function_names.contains(callee.as_str())
+                                    && !extern_names.contains(callee.as_str())
+                                {
+                                    return Err(format!(
+                                        "executable KRIR function '{}' calls undeclared target '{}'",
+                                        function.name, callee
+                                    ));
+                                }
+                            }
+                        }
                         ExecutableOp::MmioRead { .. }
                         | ExecutableOp::MmioWriteImm { .. }
                         | ExecutableOp::MmioWriteValue { .. } => {}
@@ -697,6 +725,90 @@ pub fn lower_current_krir_to_executable_krir(
                     exec_ops.push(ExecutableOp::BranchIfEqImm {
                         ty: *read_ty,
                         compare_value: resolved_compare_value,
+                        then_callee: then_callee.clone(),
+                        else_callee: else_callee.clone(),
+                    });
+                }
+                KrirOp::BranchIfMaskNonZero {
+                    slot,
+                    mask_value,
+                    then_callee,
+                    else_callee,
+                } => {
+                    let Some(captured_slot) = executable_slot_name.as_deref() else {
+                        errors.push(format!(
+                            "canonical-exec: function '{}' contains unsupported {}: branch test slot '{}' requires a prior mmio_read<...>(..., {}) or raw_mmio_read<...>(..., {}) in the same function",
+                            function.name,
+                            format_branch_if_mask_nonzero_invocation(
+                                slot,
+                                mask_value,
+                                then_callee,
+                                else_callee
+                            ),
+                            slot,
+                            slot,
+                            slot
+                        ));
+                        continue;
+                    };
+                    if slot != captured_slot {
+                        errors.push(format!(
+                            "canonical-exec: function '{}' contains unsupported {}: branch test slot '{}' does not match the captured executable slot '{}' in this function",
+                            function.name,
+                            format_branch_if_mask_nonzero_invocation(
+                                slot,
+                                mask_value,
+                                then_callee,
+                                else_callee
+                            ),
+                            slot,
+                            captured_slot
+                        ));
+                        continue;
+                    }
+                    let Some((read_index, _, read_ty)) = last_read.as_ref() else {
+                        errors.push(format!(
+                            "canonical-exec: function '{}' contains unsupported {}: branch test slot '{}' requires a prior mmio_read<...>(..., {}) or raw_mmio_read<...>(..., {}) in the same function",
+                            function.name,
+                            format_branch_if_mask_nonzero_invocation(
+                                slot,
+                                mask_value,
+                                then_callee,
+                                else_callee
+                            ),
+                            slot,
+                            slot,
+                            slot
+                        ));
+                        continue;
+                    };
+                    let resolved_mask_value =
+                        match resolve_executable_branch_mask_value(*read_ty, mask_value) {
+                            Ok(value) => value,
+                            Err(err) => {
+                                errors.push(format!(
+                                    "canonical-exec: function '{}' contains unsupported {}: {}",
+                                    function.name,
+                                    format_branch_if_mask_nonzero_invocation(
+                                        slot,
+                                        mask_value,
+                                        then_callee,
+                                        else_callee
+                                    ),
+                                    err
+                                ));
+                                continue;
+                            }
+                        };
+                    let Some(ExecutableOp::MmioRead { capture_value, .. }) =
+                        exec_ops.get_mut(*read_index)
+                    else {
+                        unreachable!("branch-if-mask-nonzero must point at a prior mmio read op");
+                    };
+                    *capture_value = true;
+                    exec_ops.push(ExecutableOp::BranchIfMaskNonZeroImm {
+                        ty: *read_ty,
+                        mask_value: resolved_mask_value,
                         then_callee: then_callee.clone(),
                         else_callee: else_callee.clone(),
                     });
@@ -1031,6 +1143,28 @@ fn resolve_executable_branch_compare_value(
     }
 }
 
+fn resolve_executable_branch_mask_value(
+    ty: MmioScalarType,
+    mask_value: &str,
+) -> Result<u64, String> {
+    let parsed = parse_integer_literal_u64(mask_value)?;
+    let max_value = match ty {
+        MmioScalarType::U8 => u8::MAX as u64,
+        MmioScalarType::U16 => u16::MAX as u64,
+        MmioScalarType::U32 => u32::MAX as u64,
+        MmioScalarType::U64 => u64::MAX,
+    };
+    if parsed > max_value {
+        Err(format!(
+            "branch mask literal '{}' does not fit {}",
+            mask_value,
+            ty.as_str()
+        ))
+    } else {
+        Ok(parsed)
+    }
+}
+
 fn parse_integer_literal_u64(raw: &str) -> Result<u64, String> {
     if let Some(hex) = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X")) {
         u64::from_str_radix(hex, 16)
@@ -1083,6 +1217,18 @@ fn format_branch_if_eq_invocation(
     format!(
         "branch_if_eq({}, {}, {}, {})",
         slot, compare_value, then_callee, else_callee
+    )
+}
+
+fn format_branch_if_mask_nonzero_invocation(
+    slot: &str,
+    mask_value: &str,
+    then_callee: &str,
+    else_callee: &str,
+) -> String {
+    format!(
+        "branch_if_mask_nonzero({}, {}, {}, {})",
+        slot, mask_value, then_callee, else_callee
     )
 }
 
@@ -1415,6 +1561,12 @@ pub enum X86_64AsmInstruction {
     BranchIfEqImm {
         ty: MmioScalarType,
         compare_value: u64,
+        then_symbol: String,
+        else_symbol: String,
+    },
+    BranchIfMaskNonZeroImm {
+        ty: MmioScalarType,
+        mask_value: u64,
         then_symbol: String,
         else_symbol: String,
     },
@@ -1871,6 +2023,17 @@ pub fn lower_executable_krir_to_x86_64_asm(
                         then_symbol: then_callee,
                         else_symbol: else_callee,
                     },
+                    ExecutableOp::BranchIfMaskNonZeroImm {
+                        ty,
+                        mask_value,
+                        then_callee,
+                        else_callee,
+                    } => X86_64AsmInstruction::BranchIfMaskNonZeroImm {
+                        ty,
+                        mask_value,
+                        then_symbol: then_callee,
+                        else_symbol: else_callee,
+                    },
                     ExecutableOp::MmioRead {
                         ty,
                         addr,
@@ -1977,6 +2140,38 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                     out.push_str(mmio_saved_value_compare_mnemonic(*ty));
                     out.push('\n');
                     out.push_str("    jne ");
+                    out.push_str(&else_label);
+                    out.push('\n');
+                    out.push_str("    call ");
+                    out.push_str(then_symbol);
+                    out.push('\n');
+                    out.push_str("    jmp ");
+                    out.push_str(&end_label);
+                    out.push('\n');
+                    out.push_str(&else_label);
+                    out.push_str(":\n");
+                    out.push_str("    call ");
+                    out.push_str(else_symbol);
+                    out.push('\n');
+                    out.push_str(&end_label);
+                    out.push_str(":\n");
+                    branch_index += 1;
+                }
+                X86_64AsmInstruction::BranchIfMaskNonZeroImm {
+                    ty,
+                    mask_value,
+                    then_symbol,
+                    else_symbol,
+                } => {
+                    let else_label = format!(".L{}_branch_{}_else", function.symbol, branch_index);
+                    let end_label = format!(".L{}_branch_{}_end", function.symbol, branch_index);
+                    out.push_str("    ");
+                    out.push_str(&mmio_accumulator_immediate_mnemonic(*ty, *mask_value));
+                    out.push('\n');
+                    out.push_str("    ");
+                    out.push_str(mmio_saved_value_mask_test_mnemonic(*ty));
+                    out.push('\n');
+                    out.push_str("    je ");
                     out.push_str(&else_label);
                     out.push('\n');
                     out.push_str("    call ");
@@ -2193,6 +2388,9 @@ fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
             compare_value: _,
             ..
         } => mmio_saved_value_literal_compare_bytes(*ty) + 16,
+        ExecutableOp::BranchIfMaskNonZeroImm {
+            ty, mask_value: _, ..
+        } => mmio_saved_value_literal_mask_test_bytes(*ty) + 16,
         ExecutableOp::MmioRead {
             ty, capture_value, ..
         } => {
@@ -2258,6 +2456,17 @@ fn encode_branch_if_eq_imm_bytes(out: &mut Vec<u8>, ty: MmioScalarType, compare_
     push_mov_imm_to_accumulator_register(out, ty, compare_value);
     push_cmp_accumulator_to_saved_value_register(out, ty);
     out.extend_from_slice(&[0x0F, 0x85, 0x0A, 0x00, 0x00, 0x00]);
+    out.push(0xE8);
+    out.extend_from_slice(&[0, 0, 0, 0]);
+    out.extend_from_slice(&[0xE9, 0x05, 0x00, 0x00, 0x00]);
+    out.push(0xE8);
+    out.extend_from_slice(&[0, 0, 0, 0]);
+}
+
+fn encode_branch_if_mask_nonzero_imm_bytes(out: &mut Vec<u8>, ty: MmioScalarType, mask_value: u64) {
+    push_mov_imm_to_accumulator_register(out, ty, mask_value);
+    push_test_accumulator_with_saved_value_register(out, ty);
+    out.extend_from_slice(&[0x0F, 0x84, 0x0A, 0x00, 0x00, 0x00]);
     out.push(0xE8);
     out.extend_from_slice(&[0, 0, 0, 0]);
     out.extend_from_slice(&[0xE9, 0x05, 0x00, 0x00, 0x00]);
@@ -2339,6 +2548,15 @@ fn push_cmp_accumulator_to_saved_value_register(out: &mut Vec<u8>, ty: MmioScala
     }
 }
 
+fn push_test_accumulator_with_saved_value_register(out: &mut Vec<u8>, ty: MmioScalarType) {
+    match ty {
+        MmioScalarType::U8 => out.extend_from_slice(&[0x84, 0xC3]),
+        MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x85, 0xC3]),
+        MmioScalarType::U32 => out.extend_from_slice(&[0x85, 0xC3]),
+        MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x85, 0xC3]),
+    }
+}
+
 fn mmio_load_bytes(ty: MmioScalarType) -> u64 {
     match ty {
         MmioScalarType::U8 | MmioScalarType::U32 => 2,
@@ -2386,6 +2604,10 @@ fn mmio_saved_value_compare_bytes(ty: MmioScalarType) -> u64 {
 }
 
 fn mmio_saved_value_literal_compare_bytes(ty: MmioScalarType) -> u64 {
+    mmio_accumulator_immediate_bytes(ty) + mmio_saved_value_compare_bytes(ty)
+}
+
+fn mmio_saved_value_literal_mask_test_bytes(ty: MmioScalarType) -> u64 {
     mmio_accumulator_immediate_bytes(ty) + mmio_saved_value_compare_bytes(ty)
 }
 
@@ -2459,6 +2681,15 @@ fn mmio_saved_value_compare_mnemonic(ty: MmioScalarType) -> &'static str {
         MmioScalarType::U16 => "cmpw %ax, %bx",
         MmioScalarType::U32 => "cmpl %eax, %ebx",
         MmioScalarType::U64 => "cmpq %rax, %rbx",
+    }
+}
+
+fn mmio_saved_value_mask_test_mnemonic(ty: MmioScalarType) -> &'static str {
+    match ty {
+        MmioScalarType::U8 => "testb %al, %bl",
+        MmioScalarType::U16 => "testw %ax, %bx",
+        MmioScalarType::U32 => "testl %eax, %ebx",
+        MmioScalarType::U64 => "testq %rax, %rbx",
     }
 }
 
@@ -2624,6 +2855,41 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     }
                     let compare_bytes = mmio_saved_value_literal_compare_bytes(*ty);
                     encode_branch_if_eq_imm_bytes(&mut code_bytes, *ty, *compare_value);
+                    fixups.push(CompilerOwnedObjectFixup {
+                        source_symbol: function.name.clone(),
+                        patch_offset: function_offset + local_offset + compare_bytes + 7,
+                        kind: CompilerOwnedFixupKind::X86_64CallRel32,
+                        target_symbol: then_callee.clone(),
+                        width_bytes: 4,
+                    });
+                    fixups.push(CompilerOwnedObjectFixup {
+                        source_symbol: function.name.clone(),
+                        patch_offset: function_offset + local_offset + compare_bytes + 17,
+                        kind: CompilerOwnedFixupKind::X86_64CallRel32,
+                        target_symbol: else_callee.clone(),
+                        width_bytes: 4,
+                    });
+                    local_offset += executable_op_encoded_len(op);
+                }
+                ExecutableOp::BranchIfMaskNonZeroImm {
+                    ty,
+                    mask_value,
+                    then_callee,
+                    else_callee,
+                } => {
+                    for callee in [then_callee, else_callee] {
+                        if !function_offsets.contains_key(callee) {
+                            if !extern_names.contains(callee.as_str()) {
+                                return Err(format!(
+                                    "compiler-owned object emission requires declared extern target '{}' in function '{}'",
+                                    callee, function.name
+                                ));
+                            }
+                            unresolved_targets.insert(callee.clone());
+                        }
+                    }
+                    let compare_bytes = mmio_saved_value_literal_mask_test_bytes(*ty);
+                    encode_branch_if_mask_nonzero_imm_bytes(&mut code_bytes, *ty, *mask_value);
                     fixups.push(CompilerOwnedObjectFixup {
                         source_symbol: function.name.clone(),
                         patch_offset: function_offset + local_offset + compare_bytes + 7,
