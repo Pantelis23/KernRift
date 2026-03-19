@@ -553,6 +553,51 @@ fn emit_elfexe_supports_uart_console_branch_zero_proof_program_and_inspection_ve
 }
 
 #[test]
+fn emit_elfexe_supports_uart_console_branch_eq_proof_program_and_inspection_verifies() {
+    let root = repo_root();
+    let fixture = root.join("examples").join("uart_console_branch_eq.kr");
+    let artifact_path = unique_temp_output_path("emit-elfexe-uart-console-branch-eq", "elf");
+    fs::remove_file(&artifact_path).ok();
+
+    let mut emit_cmd: Command = cargo_bin_cmd!("kernriftc");
+    emit_cmd
+        .current_dir(&root)
+        .arg("--emit=elfexe")
+        .arg("-o")
+        .arg(artifact_path.as_os_str())
+        .arg(fixture.as_os_str());
+    emit_cmd.assert().success();
+
+    let output = inspect_artifact_output(&root, &artifact_path, Some("json"));
+    let json: Value = serde_json::from_str(&output).expect("parse inspect-artifact JSON");
+    validate_inspect_artifact_schema(&json);
+    assert_eq!(json["schema_version"], "kernrift_inspect_artifact_v2");
+    assert_eq!(json["file"], artifact_path.display().to_string());
+    assert_eq!(json["artifact_kind"], "elf_executable");
+    assert_eq!(json["machine"], "x86_64");
+    assert_eq!(json["undefined_symbols"], json!([]));
+    assert_eq!(json["flags"]["has_entry_symbol"], true);
+    assert_eq!(json["flags"]["has_undefined_symbols"], false);
+    assert_eq!(json["flags"]["has_text_relocations"], false);
+    let defined_symbols = json["defined_symbols"]
+        .as_array()
+        .expect("defined_symbols array")
+        .iter()
+        .map(|value| value.as_str().expect("defined symbol string"))
+        .collect::<Vec<_>>();
+    for required in ["_start", "entry", "send_idle_word", "send_ready_word"] {
+        assert!(
+            defined_symbols.contains(&required),
+            "expected defined symbol '{}' in {:?}",
+            required,
+            defined_symbols
+        );
+    }
+
+    fs::remove_file(&artifact_path).ok();
+}
+
+#[test]
 fn inspect_artifact_json_reports_uart_console_probe_elf_object_shape() {
     let root = repo_root();
     let fixture = root.join("examples").join("uart_console_probe.kr");
@@ -695,6 +740,56 @@ fn entry() {
         stderr.lines().collect::<Vec<_>>(),
         vec![
             "canonical-exec: function 'entry' contains unsupported branch_if_zero(other, zero_path, nonzero_path): branch test slot 'other' does not match the captured executable slot 'status' in this function"
+        ]
+    );
+
+    fs::remove_file(&fixture).ok();
+    fs::remove_file(&output_path).ok();
+}
+
+#[test]
+fn emit_elfexe_rejects_branch_if_eq_literal_width_mismatch_in_current_subset() {
+    let root = repo_root();
+    let fixture = write_temp_source_fixture(
+        "emit-elfexe-branch-if-eq-literal-width-mismatch",
+        r#"
+mmio UART0 = 0x1000;
+mmio_reg UART0.SR = 0x00 : u32 ro;
+mmio_reg UART0.DR = 0x04 : u32 rw;
+
+@ctx(thread, boot)
+fn ready_path() {
+  mmio_write<u32>(UART0 + 0x04, 1);
+}
+
+@ctx(thread, boot)
+fn fallback_path() {
+  mmio_write<u32>(UART0 + 0x04, 0);
+}
+
+@ctx(thread, boot)
+fn entry() {
+  mmio_read<u32>(UART0 + 0x00, status);
+  branch_if_eq(status, 0x100000000, ready_path, fallback_path);
+}
+"#,
+    );
+    let output_path =
+        unique_temp_output_path("emit-elfexe-branch-if-eq-literal-width-mismatch", "elf");
+    fs::remove_file(&output_path).ok();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("--emit=elfexe")
+        .arg("-o")
+        .arg(output_path.as_os_str())
+        .arg(fixture.as_os_str());
+    let assert = cmd.assert().failure().code(1);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().collect::<Vec<_>>(),
+        vec![
+            "canonical-exec: function 'entry' contains unsupported branch_if_eq(status, 0x100000000, ready_path, fallback_path): branch comparison literal '0x100000000' does not fit u32"
         ]
     );
 

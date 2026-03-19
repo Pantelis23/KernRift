@@ -1370,6 +1370,25 @@ pub fn lower_to_krir_with_surface(
                         });
                     }
                 }
+                KrirOp::BranchIfEq {
+                    then_callee,
+                    else_callee,
+                    ..
+                } => {
+                    for callee in [then_callee, else_callee] {
+                        if !names.contains(callee) {
+                            errors.push(format!(
+                                "undefined symbol '{}': add extern declaration with canonical facts (@ctx/@eff/@caps)",
+                                callee
+                            ));
+                            continue;
+                        }
+                        call_edges.push(CallEdge {
+                            caller: function.name.clone(),
+                            callee: callee.clone(),
+                        });
+                    }
+                }
                 _ => {}
             }
         }
@@ -2171,6 +2190,16 @@ fn lower_stmts_to_canonical_executable(
                 function_name,
                 format_branch_if_zero_invocation(slot, then_callee, else_callee)
             )),
+            Stmt::BranchIfEq {
+                slot,
+                compare_value,
+                then_callee,
+                else_callee,
+            } => errors.push(format!(
+                "canonical-exec: function '{}' contains unsupported {}",
+                function_name,
+                format_branch_if_eq_invocation(slot, compare_value, then_callee, else_callee)
+            )),
             Stmt::MmioRead { ty, addr, capture } => errors.push(format!(
                 "canonical-exec: function '{}' contains unsupported {}",
                 function_name,
@@ -2231,6 +2260,17 @@ fn lower_stmt(stmt: &Stmt, ops: &mut Vec<KrirOp>, eff_used: &mut BTreeSet<Eff>) 
             else_callee,
         } => ops.push(KrirOp::BranchIfZero {
             slot: slot.clone(),
+            then_callee: then_callee.clone(),
+            else_callee: else_callee.clone(),
+        }),
+        Stmt::BranchIfEq {
+            slot,
+            compare_value,
+            then_callee,
+            else_callee,
+        } => ops.push(KrirOp::BranchIfEq {
+            slot: slot.clone(),
+            compare_value: compare_value.clone(),
             then_callee: then_callee.clone(),
             else_callee: else_callee.clone(),
         }),
@@ -2368,6 +2408,18 @@ fn format_raw_mmio_write_invocation(
 
 fn format_branch_if_zero_invocation(slot: &str, then_callee: &str, else_callee: &str) -> String {
     format!("branch_if_zero({}, {}, {})", slot, then_callee, else_callee)
+}
+
+fn format_branch_if_eq_invocation(
+    slot: &str,
+    compare_value: &str,
+    then_callee: &str,
+    else_callee: &str,
+) -> String {
+    format!(
+        "branch_if_eq({}, {}, {}, {})",
+        slot, compare_value, then_callee, else_callee
+    )
 }
 
 fn parse_ctx_attr(attr: &RawAttr) -> Result<Vec<Ctx>, String> {

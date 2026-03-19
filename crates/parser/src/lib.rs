@@ -123,6 +123,12 @@ pub enum Stmt {
         then_callee: String,
         else_callee: String,
     },
+    BranchIfEq {
+        slot: String,
+        compare_value: String,
+        then_callee: String,
+        else_callee: String,
+    },
     MmioRead {
         ty: MmioScalarType,
         addr: MmioAddrExpr,
@@ -937,6 +943,26 @@ fn parse_stmt(stmt: &str) -> Result<Option<Stmt>, String> {
         }));
     }
 
+    if lowered == "branch_if_eq" {
+        let parts = split_csv(&args);
+        if parts.len() != 4 {
+            return Err(
+                "branch_if_eq(slot, literal, then_fn, else_fn) requires exactly four arguments"
+                    .to_string(),
+            );
+        }
+        let slot = parse_branch_slot_operand(parts[0].trim())?;
+        let compare_value = parse_branch_literal_operand(parts[1].trim())?;
+        let then_callee = parse_branch_target_operand(parts[2].trim())?;
+        let else_callee = parse_branch_target_operand(parts[3].trim())?;
+        return Ok(Some(Stmt::BranchIfEq {
+            slot,
+            compare_value,
+            then_callee,
+            else_callee,
+        }));
+    }
+
     if let Some(stmt) = parse_typed_mmio_stmt(&name, &args)? {
         return Ok(Some(stmt));
     }
@@ -1099,6 +1125,17 @@ fn parse_branch_target_operand(raw: &str) -> Result<String, String> {
     }
     Err(format!(
         "'{}' is not a valid branch target identifier",
+        operand
+    ))
+}
+
+fn parse_branch_literal_operand(raw: &str) -> Result<String, String> {
+    let operand = raw.trim();
+    if is_int_literal_token(operand) {
+        return Ok(operand.to_string());
+    }
+    Err(format!(
+        "'{}' is not a valid branch comparison literal",
         operand
     ))
 }
@@ -1388,6 +1425,41 @@ mod tests {
                     ty: MmioScalarType::U16,
                     addr: MmioAddrExpr::IntLiteral("0x1010".to_string()),
                     capture: Some("sample".to_string()),
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_branch_if_eq_is_structured() {
+        let src = r#"
+        fn entry() {
+          mmio_read<u32>(uart0 + 0x10, status);
+          branch_if_eq(status, 0x20, ready, idle);
+        }
+        "#;
+        let ast = parse_module(src).expect("parse");
+        let entry = ast
+            .items
+            .iter()
+            .find(|item| item.name == "entry")
+            .expect("entry function");
+        assert_eq!(
+            entry.body,
+            vec![
+                Stmt::MmioRead {
+                    ty: MmioScalarType::U32,
+                    addr: MmioAddrExpr::IdentPlusOffset {
+                        base: "uart0".to_string(),
+                        offset: "0x10".to_string(),
+                    },
+                    capture: Some("status".to_string()),
+                },
+                Stmt::BranchIfEq {
+                    slot: "status".to_string(),
+                    compare_value: "0x20".to_string(),
+                    then_callee: "ready".to_string(),
+                    else_callee: "idle".to_string(),
                 }
             ]
         );
@@ -1702,6 +1774,20 @@ mod tests {
                 src,
                 13,
                 "'0x10' is not a valid capture slot identifier",
+            )]
+        );
+    }
+
+    #[test]
+    fn parse_rejects_branch_if_eq_invalid_compare_literal_operand() {
+        let src = "fn entry() { branch_if_eq(status, ready, on_ready, on_idle); }";
+        let err = parse_module(src).expect_err("invalid branch compare literal should fail");
+        assert_eq!(
+            err,
+            vec![diagnostic_at(
+                src,
+                13,
+                "'ready' is not a valid branch comparison literal",
             )]
         );
     }
