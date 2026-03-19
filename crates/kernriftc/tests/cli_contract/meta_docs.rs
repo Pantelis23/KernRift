@@ -25,6 +25,20 @@ fn structured_output_conventions_spec_locks_future_json_command_transport_tests(
 }
 
 #[test]
+fn krir_spec_describes_noncanonical_migrate_preview_stable_default_and_stdin_boundary() {
+    assert!(
+        KRIR_SPEC_TEXT.contains("`kernriftc migrate-preview <file.kr>` is valid for file input")
+            && KRIR_SPEC_TEXT.contains("defaults omitted\n  `--surface` to `stable`."),
+        "KRIR spec must document that non-canonical migrate-preview defaults omitted surface to stable for file input"
+    );
+    assert!(
+        KRIR_SPEC_TEXT.contains("non-canonical `kernriftc migrate-preview --stdin` remains unsupported;")
+            && KRIR_SPEC_TEXT.contains("`--stdin` is only accepted with `--canonical-edits`."),
+        "KRIR spec must document that non-canonical migrate-preview stdin remains unsupported"
+    );
+}
+
+#[test]
 fn structured_output_command_matrix_spec_lists_current_json_capable_commands() {
     for surface in [
         "kernriftc inspect-report --report <verify-report.json> --format json",

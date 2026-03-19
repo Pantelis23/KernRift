@@ -269,6 +269,13 @@ Output write safety matches other guarded outputs:
 
 These transport rules apply to commands that already expose structured JSON output.
 
+Non-canonical `migrate-preview` CLI note:
+
+- `kernriftc migrate-preview <file.kr>` is valid for file input and defaults omitted
+  `--surface` to `stable`.
+- non-canonical `kernriftc migrate-preview --stdin` remains unsupported;
+  `--stdin` is only accepted with `--canonical-edits`.
+
 Current JSON-capable command surfaces:
 
 - `kernriftc inspect-artifact <artifact> --format json`
