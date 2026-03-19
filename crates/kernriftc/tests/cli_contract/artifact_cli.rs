@@ -3219,6 +3219,206 @@ fn inspect_report_rejects_malformed_report_deterministically() {
 }
 
 #[test]
+fn inspect_report_rejects_duplicate_format_flag() {
+    let root = repo_root();
+    let report_path = write_verify_report_fixture(
+        "duplicate-format",
+        &json!({
+            "schema_version": "kernrift_verify_report_v1",
+            "result": "pass",
+            "inputs": {
+                "contracts": "contracts.json",
+                "hash": "contracts.sha256",
+                "sig": Value::Null,
+                "pubkey": Value::Null
+            },
+            "hash": {
+                "expected_sha256": Value::Null,
+                "computed_sha256": "abcd",
+                "matched": true
+            },
+            "contracts": {
+                "utf8_valid": true,
+                "schema_valid": true,
+                "schema_version": "kernrift_contracts_v1"
+            },
+            "signature": {
+                "checked": false,
+                "valid": Value::Null
+            },
+            "diagnostics": []
+        }),
+    );
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("inspect-report")
+        .arg("--report")
+        .arg(report_path.as_os_str())
+        .arg("--format")
+        .arg("json")
+        .arg("--format")
+        .arg("text");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("invalid inspect-report mode: duplicate --format")
+    );
+
+    fs::remove_file(&report_path).ok();
+}
+
+#[test]
+fn inspect_report_rejects_format_missing_value() {
+    let root = repo_root();
+    let report_path = write_verify_report_fixture(
+        "missing-format-value",
+        &json!({
+            "schema_version": "kernrift_verify_report_v1",
+            "result": "pass",
+            "inputs": {
+                "contracts": "contracts.json",
+                "hash": "contracts.sha256",
+                "sig": Value::Null,
+                "pubkey": Value::Null
+            },
+            "hash": {
+                "expected_sha256": Value::Null,
+                "computed_sha256": "abcd",
+                "matched": true
+            },
+            "contracts": {
+                "utf8_valid": true,
+                "schema_valid": true,
+                "schema_version": "kernrift_contracts_v1"
+            },
+            "signature": {
+                "checked": false,
+                "valid": Value::Null
+            },
+            "diagnostics": []
+        }),
+    );
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("inspect-report")
+        .arg("--report")
+        .arg(report_path.as_os_str())
+        .arg("--format");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("invalid inspect-report mode: --format requires 'text' or 'json'")
+    );
+
+    fs::remove_file(&report_path).ok();
+}
+
+#[test]
+fn inspect_report_rejects_invalid_format_value() {
+    let root = repo_root();
+    let report_path = write_verify_report_fixture(
+        "invalid-format-value",
+        &json!({
+            "schema_version": "kernrift_verify_report_v1",
+            "result": "pass",
+            "inputs": {
+                "contracts": "contracts.json",
+                "hash": "contracts.sha256",
+                "sig": Value::Null,
+                "pubkey": Value::Null
+            },
+            "hash": {
+                "expected_sha256": Value::Null,
+                "computed_sha256": "abcd",
+                "matched": true
+            },
+            "contracts": {
+                "utf8_valid": true,
+                "schema_valid": true,
+                "schema_version": "kernrift_contracts_v1"
+            },
+            "signature": {
+                "checked": false,
+                "valid": Value::Null
+            },
+            "diagnostics": []
+        }),
+    );
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("inspect-report")
+        .arg("--report")
+        .arg(report_path.as_os_str())
+        .arg("--format")
+        .arg("yaml");
+    let assert = cmd.assert().failure().code(2);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
+    assert_eq!(
+        stderr.lines().next(),
+        Some("invalid inspect-report mode: unsupported --format 'yaml' (expected 'text' or 'json')")
+    );
+
+    fs::remove_file(&report_path).ok();
+}
+
+#[test]
+fn inspect_report_default_text_matches_explicit_text() {
+    let root = repo_root();
+    let report_path = write_verify_report_fixture(
+        "default-text-parity",
+        &json!({
+            "schema_version": "kernrift_verify_report_v1",
+            "result": "deny",
+            "inputs": {
+                "contracts": "contracts.json",
+                "hash": "contracts.sha256",
+                "sig": Value::Null,
+                "pubkey": Value::Null
+            },
+            "hash": {
+                "expected_sha256": "0000",
+                "computed_sha256": "1111",
+                "matched": false
+            },
+            "contracts": {
+                "utf8_valid": true,
+                "schema_valid": true,
+                "schema_version": "kernrift_contracts_v2"
+            },
+            "signature": {
+                "checked": false,
+                "valid": Value::Null
+            },
+            "diagnostics": [
+                "verify: HASH_MISMATCH: expected 0000, got 1111"
+            ]
+        }),
+    );
+
+    let run = |explicit_text: bool| {
+        let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+        cmd.current_dir(&root)
+            .arg("inspect-report")
+            .arg("--report")
+            .arg(report_path.as_os_str());
+        if explicit_text {
+            cmd.arg("--format").arg("text");
+        }
+        let assert = cmd.assert().success();
+        String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8")
+    };
+
+    assert_eq!(run(false), run(true));
+
+    fs::remove_file(&report_path).ok();
+}
+
+#[test]
 fn inspect_report_json_rejects_malformed_report_without_emitting_json() {
     let root = repo_root();
     let report_path = write_verify_report_fixture("malformed-json", &json!({}));
