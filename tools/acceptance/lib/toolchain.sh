@@ -35,6 +35,25 @@ acceptance_find_linker() {
   return 1
 }
 
+acceptance_find_c_compiler() {
+  if acceptance_optional_tool_discovery_disabled; then
+    return 1
+  fi
+  if command -v cc >/dev/null 2>&1; then
+    printf '%s\n' "cc"
+    return 0
+  fi
+  if command -v clang >/dev/null 2>&1; then
+    printf '%s\n' "clang"
+    return 0
+  fi
+  if command -v gcc >/dev/null 2>&1; then
+    printf '%s\n' "gcc"
+    return 0
+  fi
+  return 1
+}
+
 acceptance_find_asm_compiler() {
   if acceptance_optional_tool_discovery_disabled; then
     return 1

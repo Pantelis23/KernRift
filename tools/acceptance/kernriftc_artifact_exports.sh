@@ -117,6 +117,12 @@ VERIFY_NEGATIVE_STDERR="$TMP_DIR/verify.negative.stderr.txt"
 INSPECT_NEGATIVE_STDOUT="$TMP_DIR/inspect.negative.stdout.txt"
 INSPECT_NEGATIVE_STDERR="$TMP_DIR/inspect.negative.stderr.txt"
 
+FREESTANDING_FIXTURE="examples/uart_freestanding_lib.kr"
+FREESTANDING_STATICLIB_OUT="$TMP_DIR/uart_freestanding_lib.a"
+FREESTANDING_C_CALLER_SRC="$TMP_DIR/c_caller.c"
+FREESTANDING_C_CALLER_OBJ="$TMP_DIR/c_caller.o"
+FREESTANDING_LINKED_OUT="$TMP_DIR/freestanding_lib_c_caller.elf"
+
 RELINKED_BASIC_ELF_OUT="$TMP_DIR/basic.relinked.o"
 FINAL_RUNTIME_STUB_SRC="$TMP_DIR/runtime_stub.s"
 FINAL_RUNTIME_STUB_OBJ="$TMP_DIR/runtime_stub.o"
@@ -519,6 +525,88 @@ step_optional_downstream_matrix() {
   fi
 }
 
+step_optional_staticlib_c_caller() {
+  # KR0 exit criterion: "freestanding static library callable from C"
+  # Proves: kernriftc --emit staticlib produces a .a that a C program can link against.
+  # Requires: ar (binutils) + cc/clang + readelf (optional for symbol check)
+  set_context "$FREESTANDING_FIXTURE" "$FREESTANDING_STATICLIB_OUT" "$FREESTANDING_C_CALLER_OBJ" "$FREESTANDING_LINKED_OUT"
+
+  local CC_TOOL AR_TOOL
+  local missing_tools=()
+  CC_TOOL="$(acceptance_find_c_compiler 2>/dev/null || true)"
+  AR_TOOL="$(command -v ar 2>/dev/null || true)"
+
+  if [[ -z "$CC_TOOL" ]]; then
+    missing_tools+=("cc/clang/gcc")
+  fi
+  if [[ -z "$AR_TOOL" ]]; then
+    missing_tools+=("ar")
+  fi
+
+  if (( ${#missing_tools[@]} > 0 )); then
+    acceptance_optional_skip "staticlib C-caller linkage proof" "${missing_tools[*]}"
+    return 0
+  fi
+
+  echo "[optional] staticlib C-caller linkage proof with $CC_TOOL + $AR_TOOL"
+
+  # 1. Compile KernRift source to a static library archive.
+  emit_artifact "staticlib" "$FREESTANDING_STATICLIB_OUT" "$FREESTANDING_FIXTURE"
+  acceptance_assert_nonempty_file "$FREESTANDING_STATICLIB_OUT"
+
+  # Verify ar magic.
+  local magic
+  magic="$(head -c 8 "$FREESTANDING_STATICLIB_OUT")"
+  if [[ "$magic" != "!<arch>" ]]; then
+    echo "staticlib output must start with ar magic '!<arch>' but got: $magic" >&2
+    exit 1
+  fi
+
+  # 2. Write a C caller that calls the exported KernRift functions.
+  #    uart_init and uart_send are void(void) — no parameters, no libc dependency on KernRift side.
+  #    The C caller itself uses exit() to produce a verifiable exit code.
+  cat > "$FREESTANDING_C_CALLER_SRC" <<'EOF_C'
+extern void uart_init(void);
+extern void uart_send(void);
+
+int main(void) {
+    uart_init();
+    uart_send();
+    return 42;
+}
+EOF_C
+
+  # 3. Compile the C caller.
+  "$CC_TOOL" -c "$FREESTANDING_C_CALLER_SRC" -o "$FREESTANDING_C_CALLER_OBJ"
+  acceptance_assert_nonempty_file "$FREESTANDING_C_CALLER_OBJ"
+
+  # 4. Link C caller object against the KernRift static library.
+  #    -no-pie: avoid PLT indirection for simplicity; -lc not needed (no libc calls in KernRift).
+  "$CC_TOOL" -no-pie -o "$FREESTANDING_LINKED_OUT" \
+    "$FREESTANDING_C_CALLER_OBJ" \
+    "$FREESTANDING_STATICLIB_OUT" \
+    2>/dev/null \
+  || "$CC_TOOL" -o "$FREESTANDING_LINKED_OUT" \
+    "$FREESTANDING_C_CALLER_OBJ" \
+    "$FREESTANDING_STATICLIB_OUT"
+  acceptance_assert_nonempty_file "$FREESTANDING_LINKED_OUT"
+
+  # 5. Verify the linked binary exports both C and KernRift symbols as defined.
+  if READELF_TOOL="$(acceptance_find_readelf 2>/dev/null || true)"; then
+    acceptance_assert_elf_exec_x86_64 "$READELF_TOOL" "$FREESTANDING_LINKED_OUT"
+    acceptance_assert_symbol_present "$READELF_TOOL" "$FREESTANDING_LINKED_OUT" "uart_init"
+    acceptance_assert_symbol_present "$READELF_TOOL" "$FREESTANDING_LINKED_OUT" "uart_send"
+    acceptance_assert_symbol_not_undefined "$READELF_TOOL" "$FREESTANDING_LINKED_OUT" "uart_init"
+    acceptance_assert_symbol_not_undefined "$READELF_TOOL" "$FREESTANDING_LINKED_OUT" "uart_send"
+  fi
+
+  # Note: the linked binary is intentionally NOT executed here. uart_init and uart_send
+  # write to MMIO address 0x1000 which is unmapped on hosted systems (SIGSEGV). The
+  # linkage and symbol resolution checks above are the actual proof of C callability.
+  # Freestanding library correctness requires target hardware or a memory-mapped emulator.
+  echo "[staticlib] C-caller linkage proof: PASS (linked; execution skipped for freestanding MMIO)"
+}
+
 step_complete() {
   echo "kernriftc artifact export acceptance: PASS"
 }
@@ -527,15 +615,16 @@ if [[ "${ACCEPTANCE_KEEP_TMP:-0}" == "1" ]]; then
   echo "[info] using tmp dir: $TMP_DIR"
 fi
 
-step "[1/12] internal-only fixture: emit krbo/elfobj/asm" step_emit_internal_artifacts
-step "[2/12] internal-only fixture: verify sidecars" step_verify_internal_sidecars
-step "[3/12] simple extern fixture: emit elfobj/asm" step_emit_simple_extern_artifacts
-step "[4/12] simple extern fixture: verify elfobj sidecar" step_verify_simple_extern_sidecar
-step "[5/12] mixed internal+extern fixture: emit elfobj/asm" step_emit_mixed_artifacts
-step "[6/12] mixed internal+extern fixture: verify elfobj sidecar" step_verify_mixed_sidecar
-step "[7/12] asm text structure smoke" step_check_asm_text_shapes
-step "[8/12] inspect-artifact CLI smoke" step_inspect_artifact_cli_smoke
-step "[9/12] verify-artifact-meta JSON negative consumer smoke" step_verify_json_negative_consumer_smoke
-step "[10/12] optional emitted-ELF inspection matrix" step_optional_elf_inspection_matrix
-step "[11/12] optional downstream relink/final-link/runtime matrix" step_optional_downstream_matrix
-step "[12/12] hosted artifact matrix complete" step_complete
+step "[1/13] internal-only fixture: emit krbo/elfobj/asm" step_emit_internal_artifacts
+step "[2/13] internal-only fixture: verify sidecars" step_verify_internal_sidecars
+step "[3/13] simple extern fixture: emit elfobj/asm" step_emit_simple_extern_artifacts
+step "[4/13] simple extern fixture: verify elfobj sidecar" step_verify_simple_extern_sidecar
+step "[5/13] mixed internal+extern fixture: emit elfobj/asm" step_emit_mixed_artifacts
+step "[6/13] mixed internal+extern fixture: verify elfobj sidecar" step_verify_mixed_sidecar
+step "[7/13] asm text structure smoke" step_check_asm_text_shapes
+step "[8/13] inspect-artifact CLI smoke" step_inspect_artifact_cli_smoke
+step "[9/13] verify-artifact-meta JSON negative consumer smoke" step_verify_json_negative_consumer_smoke
+step "[10/13] optional emitted-ELF inspection matrix" step_optional_elf_inspection_matrix
+step "[11/13] optional downstream relink/final-link/runtime matrix" step_optional_downstream_matrix
+step "[12/13] optional staticlib C-caller linkage proof" step_optional_staticlib_c_caller
+step "[13/13] hosted artifact matrix complete" step_complete

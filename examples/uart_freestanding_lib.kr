@@ -1,0 +1,23 @@
+// Freestanding UART driver library.
+// KR0 proof: callable from C as a static library (.a).
+//
+// C callers declare:
+//   extern void uart_init(void);
+//   extern void uart_send(void);
+
+@module_caps(MmioRaw);
+
+mmio UART0 = 0x1000;
+mmio_reg UART0.DR = 0x00 : u8 rw;
+mmio_reg UART0.SR = 0x04 : u32 ro;
+mmio_reg UART0.CR = 0x08 : u32 rw;
+
+@ctx(thread, boot)
+fn uart_init() {
+  mmio_write<u32>(UART0 + 0x08, 0x01);
+}
+
+@ctx(thread, boot)
+fn uart_send() {
+  mmio_write<u8>(UART0 + 0x00, 0x00);
+}

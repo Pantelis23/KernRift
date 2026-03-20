@@ -53,6 +53,7 @@ pub enum BackendArtifactKind {
     ElfObject,
     ElfExecutable,
     Asm,
+    StaticLib,
 }
 
 impl BackendArtifactKind {
@@ -62,6 +63,7 @@ impl BackendArtifactKind {
             Self::ElfObject => "elfobj",
             Self::ElfExecutable => "elfexe",
             Self::Asm => "asm",
+            Self::StaticLib => "staticlib",
         }
     }
 
@@ -71,8 +73,9 @@ impl BackendArtifactKind {
             "elfobj" => Ok(Self::ElfObject),
             "elfexe" => Ok(Self::ElfExecutable),
             "asm" => Ok(Self::Asm),
+            "staticlib" => Ok(Self::StaticLib),
             _ => Err(format!(
-                "unsupported emit target '{}'; expected 'krbo', 'elfobj', 'elfexe', or 'asm'",
+                "unsupported emit target '{}'; expected 'krbo', 'elfobj', 'elfexe', 'asm', or 'staticlib'",
                 value
             )),
         }
@@ -132,7 +135,17 @@ pub fn emit_backend_artifact_file_with_surface(
                 .map_err(|err| vec![err])?;
             Ok(emit_x86_64_asm_text(&asm).into_bytes())
         }
+        BackendArtifactKind::StaticLib => {
+            emit_x86_64_static_library(&executable, &target).map_err(|err| vec![err])
+        }
     }
+}
+
+pub fn emit_backend_artifact_file(
+    path: &Path,
+    kind: BackendArtifactKind,
+) -> Result<Vec<u8>, Vec<String>> {
+    emit_backend_artifact_file_with_surface(path, SurfaceProfile::Stable, kind)
 }
 
 pub fn check_module(module: &KrirModule) -> Result<(), Vec<String>> {
@@ -556,6 +569,66 @@ fn link_x86_64_linux_executable(object_bytes: &[u8]) -> Result<Vec<u8>, String> 
         format!(
             "failed to read linked executable '{}': {}",
             output_path.display(),
+            err
+        )
+    })?;
+    drop(cleanup);
+    Ok(bytes)
+}
+
+fn emit_x86_64_static_library(
+    executable: &krir::ExecutableKrirModule,
+    target: &BackendTargetContract,
+) -> Result<Vec<u8>, String> {
+    let ar = find_host_tool(&["ar"])
+        .ok_or_else(|| "staticlib emit requires ar (from binutils)".to_string())?;
+
+    let object = lower_executable_krir_to_x86_64_object(executable, target)?;
+    let object_bytes = emit_x86_64_object_bytes(&object);
+
+    let temp_dir = unique_temp_dir("staticlib");
+    fs::create_dir_all(&temp_dir).map_err(|err| {
+        format!(
+            "failed to create temporary dir '{}': {}",
+            temp_dir.display(),
+            err
+        )
+    })?;
+
+    let cleanup = TempArtifactDir {
+        path: temp_dir.clone(),
+    };
+    let object_path = temp_dir.join("input.o");
+    let archive_path = temp_dir.join("output.a");
+
+    fs::write(&object_path, &object_bytes).map_err(|err| {
+        format!(
+            "failed to write temporary object '{}': {}",
+            object_path.display(),
+            err
+        )
+    })?;
+
+    let ar_output = Command::new(&ar)
+        .arg("rcs")
+        .arg(&archive_path)
+        .arg(&object_path)
+        .output()
+        .map_err(|err| format!("failed to run ar '{}': {}", ar, err))?;
+
+    if !ar_output.status.success() {
+        return Err(format!(
+            "staticlib emit failed while archiving with '{}'\nstdout:\n{}\nstderr:\n{}",
+            ar,
+            String::from_utf8_lossy(&ar_output.stdout),
+            String::from_utf8_lossy(&ar_output.stderr)
+        ));
+    }
+
+    let bytes = fs::read(&archive_path).map_err(|err| {
+        format!(
+            "failed to read archive '{}': {}",
+            archive_path.display(),
             err
         )
     })?;
