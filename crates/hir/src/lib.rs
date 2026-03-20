@@ -9,11 +9,11 @@ use krir::{
     MmioScalarType as KrirMmioScalarType, MmioValueExpr as KrirMmioValueExpr,
 };
 use parser::{
-    FnAst, MmioAddrExpr as ParserMmioAddrExpr,
-    MmioBaseDecl as ParserMmioBaseDecl, MmioRegAccess as ParserMmioRegAccess,
-    MmioRegisterDecl as ParserMmioRegisterDecl, MmioScalarType as ParserMmioScalarType,
-    MmioValueExpr as ParserMmioValueExpr, ModuleAst, RawAttr, Stmt, format_source_diagnostic,
-    int_literal_numeric_value, split_csv_allow_trailing_comma,
+    FnAst, MmioAddrExpr as ParserMmioAddrExpr, MmioBaseDecl as ParserMmioBaseDecl,
+    MmioRegAccess as ParserMmioRegAccess, MmioRegisterDecl as ParserMmioRegisterDecl,
+    MmioScalarType as ParserMmioScalarType, MmioValueExpr as ParserMmioValueExpr, ModuleAst,
+    RawAttr, Stmt, format_source_diagnostic, int_literal_numeric_value,
+    split_csv_allow_trailing_comma,
 };
 use serde::Serialize;
 
@@ -2551,9 +2551,7 @@ fn lower_mmio_addr_expr(
                     // At least one side is a symbolic mmio-base ident; emit
                     // IdentPlusOffset with the offset resolved to its literal
                     // string if possible (so the KRIR backend sees a number).
-                    let resolved_offset = offset_resolved
-                        .unwrap_or(offset.as_str())
-                        .to_string();
+                    let resolved_offset = offset_resolved.unwrap_or(offset.as_str()).to_string();
                     KrirMmioAddrExpr::IdentPlusOffset {
                         base: base.clone(),
                         offset: resolved_offset,

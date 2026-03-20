@@ -843,7 +843,11 @@ fn param_addr_mmio_symbol_layout_is_contiguous_in_x86_64_elf_object() {
             prev.offset + prev.size,
             next.offset,
             "symbol '{}' (offset={}, size={}) must end exactly where '{}' (offset={}) begins",
-            prev.name, prev.offset, prev.size, next.name, next.offset,
+            prev.name,
+            prev.offset,
+            prev.size,
+            next.name,
+            next.offset,
         );
     }
 

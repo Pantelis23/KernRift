@@ -754,11 +754,17 @@ impl<'a> Parser<'a> {
         };
         self.skip_ws_comments();
         if !self.consume_char(':') {
-            return Err(format!("invalid const declaration '{}': expected ':'", name));
+            return Err(format!(
+                "invalid const declaration '{}': expected ':'",
+                name
+            ));
         }
         self.skip_ws_comments();
         let Some(ty_raw) = self.parse_ident() else {
-            return Err(format!("invalid const declaration '{}': expected type", name));
+            return Err(format!(
+                "invalid const declaration '{}': expected type",
+                name
+            ));
         };
         let ty = MmioScalarType::parse(&ty_raw).map_err(|_| {
             format!(
@@ -768,7 +774,10 @@ impl<'a> Parser<'a> {
         })?;
         self.skip_ws_comments();
         if !self.consume_char('=') {
-            return Err(format!("invalid const declaration '{}': expected '='", name));
+            return Err(format!(
+                "invalid const declaration '{}': expected '='",
+                name
+            ));
         }
         self.skip_ws_comments();
         let value_start = self.pos;
@@ -779,11 +788,17 @@ impl<'a> Parser<'a> {
             self.pos += ch.len_utf8();
         }
         if self.eof() {
-            return Err(format!("invalid const declaration '{}': expected ';'", name));
+            return Err(format!(
+                "invalid const declaration '{}': expected ';'",
+                name
+            ));
         }
         let value = self.src[value_start..self.pos].trim().to_string();
         if !self.consume_char(';') {
-            return Err(format!("invalid const declaration '{}': expected ';'", name));
+            return Err(format!(
+                "invalid const declaration '{}': expected ';'",
+                name
+            ));
         }
         if !is_int_literal_token(&value) {
             return Err(format!(
@@ -805,7 +820,10 @@ impl<'a> Parser<'a> {
         }
         self.skip_ws_comments();
         let Some(ty_raw) = self.parse_ident() else {
-            return Err(format!("invalid enum declaration '{}': expected type", name));
+            return Err(format!(
+                "invalid enum declaration '{}': expected type",
+                name
+            ));
         };
         let ty = MmioScalarType::parse(&ty_raw).map_err(|_| {
             format!(
@@ -860,7 +878,10 @@ impl<'a> Parser<'a> {
                     name, variant_name, value
                 ));
             }
-            variants.push(EnumVariant { name: variant_name, value });
+            variants.push(EnumVariant {
+                name: variant_name,
+                value,
+            });
             self.skip_ws_comments();
             // optional trailing comma
             self.consume_char(',');
@@ -918,7 +939,10 @@ impl<'a> Parser<'a> {
                     name, field_name, ty_raw
                 )
             })?;
-            fields.push(StructField { name: field_name, ty });
+            fields.push(StructField {
+                name: field_name,
+                ty,
+            });
             self.skip_ws_comments();
             // optional trailing comma
             self.consume_char(',');
@@ -1533,8 +1557,7 @@ fn parse_mmio_addr_operand(raw: &str) -> Result<MmioAddrExpr, String> {
         let base = base.trim();
         let offset = offset.trim();
         let base_ok = is_ident_token(base) || is_qualified_ident_token(base);
-        let offset_ok =
-            is_int_literal_token(offset) || is_qualified_ident_token(offset);
+        let offset_ok = is_int_literal_token(offset) || is_qualified_ident_token(offset);
         if base_ok && offset_ok {
             return Ok(MmioAddrExpr::IdentPlusOffset {
                 base: base.to_string(),
