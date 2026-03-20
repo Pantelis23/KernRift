@@ -1008,3 +1008,56 @@ fn struct_field_offsets_fold_to_immediates_in_object() {
         "BAUD_115200=0x1A must appear as u16 immediate"
     );
 }
+
+#[test]
+fn slice_params_compile_to_correct_abi_in_x86_64_elf_object() {
+    // `fn f(data: [T])` must expand to two SysV ABI registers (ptr: u64, len: u64).
+    // The emitted ELF object must:
+    //   - spill both registers in the prologue (n_params = 2, frame = 16 bytes)
+    //   - `slice_ptr(data, slot)` → load from ABI slot 0 (rdi → offset 0)
+    //   - `slice_len(data, slot)` → load from ABI slot 1 (rsi → offset 8)
+    let root = repo_root();
+    let fixture = root.join("examples").join("slice_buf.kr");
+    let module = compile_file(&fixture).expect("compile slice_buf.kr");
+    let executable =
+        lower_current_krir_to_executable_krir(&module).expect("lower to executable krir");
+    let target = BackendTargetContract::x86_64_sysv();
+    let object = lower_executable_krir_to_x86_64_object(&executable, &target)
+        .expect("lower to x86_64 elf object");
+    let text = &object.text_bytes;
+
+    // Frame prologue for a 2-ABI-param function: `sub $16, %rsp`
+    // REX.W (0x48) + SUB r/m64, imm8 (0x83 /5) + ModRM(rsp=4) (0xEC) + imm8=16 (0x10)
+    assert!(
+        text.windows(4).any(|w| w == [0x48, 0x83, 0xEC, 0x10]),
+        "2-param slice prologue must allocate 16-byte stack frame (sub $16, %rsp)"
+    );
+
+    // Spill rdi (ptr, ABI slot 0) to [rsp+0]:
+    // REX.W 0x89 ModRM(mod=01,reg=rdi=7,rm=rsp=4) SIB(0x24) disp8=0
+    assert!(
+        text.windows(5).any(|w| w == [0x48, 0x89, 0x7C, 0x24, 0x00]),
+        "ptr (rdi) must be spilled to [rsp+0] in slice param prologue"
+    );
+
+    // Spill rsi (len, ABI slot 1) to [rsp+8]:
+    // REX.W 0x89 ModRM(mod=01,reg=rsi=6,rm=rsp=4) SIB(0x24) disp8=8
+    assert!(
+        text.windows(5).any(|w| w == [0x48, 0x89, 0x74, 0x24, 0x08]),
+        "len (rsi) must be spilled to [rsp+8] in slice param prologue"
+    );
+
+    // slice_ptr → ParamLoad { param_idx: 0, ty: U64 } → `movq 0(%rsp), %rbx`
+    // REX.W (0x48) + MOV r64,r/m64 (0x8B) + ModRM(mod=01,reg=rbx=3,rm=4) (0x5C) + SIB(0x24) + disp8=0
+    assert!(
+        text.windows(5).any(|w| w == [0x48, 0x8B, 0x5C, 0x24, 0x00]),
+        "slice_ptr must load from [rsp+0] (ptr slot, ABI idx 0)"
+    );
+
+    // slice_len → ParamLoad { param_idx: 1, ty: U64 } → `movq 8(%rsp), %rbx`
+    // REX.W (0x48) + MOV r64,r/m64 (0x8B) + ModRM(mod=01,reg=rbx=3,rm=4) (0x5C) + SIB(0x24) + disp8=8
+    assert!(
+        text.windows(5).any(|w| w == [0x48, 0x8B, 0x5C, 0x24, 0x08]),
+        "slice_len must load from [rsp+8] (len slot, ABI idx 1)"
+    );
+}

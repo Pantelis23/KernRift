@@ -86,6 +86,15 @@ impl MmioScalarType {
     }
 }
 
+/// A function parameter type — either a scalar or a fat-pointer slice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParamTy {
+    /// Single integer value (u8 / u16 / u32 / u64).
+    Scalar(MmioScalarType),
+    /// Fat-pointer slice `[T]`: passed as (ptr: u64, len: u64) pair under SysV ABI.
+    Slice(MmioScalarType),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MmioAddrExpr {
     Ident(String),
@@ -186,13 +195,23 @@ pub enum Stmt {
         addr: MmioAddrExpr,
         value: MmioValueExpr,
     },
+    /// `slice_len(slice, slot)` — loads the length component of a `[T]` param into `slot`.
+    SliceLen {
+        slice: String,
+        slot: String,
+    },
+    /// `slice_ptr(slice, slot)` — loads the pointer component of a `[T]` param into `slot`.
+    SlicePtr {
+        slice: String,
+        slot: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FnAst {
     pub name: String,
     pub is_extern: bool,
-    pub params: Vec<(String, MmioScalarType)>,
+    pub params: Vec<(String, ParamTy)>,
     pub attrs: Vec<RawAttr>,
     pub body: Vec<Stmt>,
     pub source: SourceNote,
@@ -1175,7 +1194,7 @@ impl<'a> Parser<'a> {
         self.src[self.pos..].chars().next()
     }
 
-    fn parse_fn_param_list(&mut self) -> Option<Vec<(String, MmioScalarType)>> {
+    fn parse_fn_param_list(&mut self) -> Option<Vec<(String, ParamTy)>> {
         self.skip_ws_comments();
         if !self.consume_char('(') {
             self.error_here("expected '(' to start parameter list");
@@ -1198,15 +1217,38 @@ impl<'a> Parser<'a> {
                 return None;
             }
             self.skip_ws_comments();
-            let Some(ty_name) = self.parse_ident() else {
-                self.error_here("expected parameter type (u8, u16, u32, u64)");
-                return None;
-            };
-            let ty = match MmioScalarType::parse(&ty_name) {
-                Ok(ty) => ty,
-                Err(msg) => {
-                    self.error_here(&msg);
+            // Slice type `[T]` or scalar type `u8/u16/u32/u64`.
+            let ty = if self.peek_char() == Some('[') {
+                self.pos += 1; // consume '['
+                self.skip_ws_comments();
+                let Some(elem_name) = self.parse_ident() else {
+                    self.error_here("expected element type after '['");
                     return None;
+                };
+                let elem_ty = match MmioScalarType::parse(&elem_name) {
+                    Ok(ty) => ty,
+                    Err(msg) => {
+                        self.error_here(&msg);
+                        return None;
+                    }
+                };
+                self.skip_ws_comments();
+                if !self.consume_char(']') {
+                    self.error_here("expected ']' to close slice type");
+                    return None;
+                }
+                ParamTy::Slice(elem_ty)
+            } else {
+                let Some(ty_name) = self.parse_ident() else {
+                    self.error_here("expected parameter type (u8, u16, u32, u64, or [T])");
+                    return None;
+                };
+                match MmioScalarType::parse(&ty_name) {
+                    Ok(ty) => ParamTy::Scalar(ty),
+                    Err(msg) => {
+                        self.error_here(&msg);
+                        return None;
+                    }
                 }
             };
             params.push((name, ty));
@@ -1540,6 +1582,30 @@ fn parse_typed_mmio_stmt(name: &str, args: &str) -> Result<Option<Stmt>, String>
         return Ok(Some(Stmt::RawMmioWrite { ty, addr, value }));
     }
 
+    if lowered == "slice_len" {
+        let parts = split_csv(args);
+        if parts.len() != 2 {
+            return Err(
+                "slice_len(slice, slot) requires exactly two identifier arguments".to_string(),
+            );
+        }
+        let slice = parse_mmio_capture_operand(parts[0].trim())?;
+        let slot = parse_mmio_capture_operand(parts[1].trim())?;
+        return Ok(Some(Stmt::SliceLen { slice, slot }));
+    }
+
+    if lowered == "slice_ptr" {
+        let parts = split_csv(args);
+        if parts.len() != 2 {
+            return Err(
+                "slice_ptr(slice, slot) requires exactly two identifier arguments".to_string(),
+            );
+        }
+        let slice = parse_mmio_capture_operand(parts[0].trim())?;
+        let slot = parse_mmio_capture_operand(parts[1].trim())?;
+        return Ok(Some(Stmt::SlicePtr { slice, slot }));
+    }
+
     Ok(None)
 }
 
@@ -1750,8 +1816,8 @@ fn parse_invocation(stmt: &str) -> Result<(String, String), String> {
 mod tests {
     use super::{
         MmioAddrExpr, MmioBaseDecl, MmioRegAccess, MmioRegisterDecl, MmioScalarType, MmioValueExpr,
-        SourceNote, Stmt, format_source_diagnostic, int_literal_numeric_value, parse_module,
-        split_csv_allow_trailing_comma,
+        ParamTy, SourceNote, Stmt, format_source_diagnostic, int_literal_numeric_value,
+        parse_module, split_csv_allow_trailing_comma,
     };
     use proptest::prelude::*;
 
@@ -2555,6 +2621,48 @@ mod tests {
                 13,
                 "unsupported mmio value operand 'a + b'; expected identifier or integer literal",
             )]
+        );
+    }
+
+    #[test]
+    fn parse_slice_param_roundtrip() {
+        let src = "fn process(data: [u8]) {}";
+        let ast = parse_module(src).expect("parse");
+        let f = &ast.items[0];
+        assert_eq!(f.params.len(), 1);
+        assert_eq!(f.params[0].0, "data");
+        assert_eq!(f.params[0].1, ParamTy::Slice(MmioScalarType::U8));
+    }
+
+    #[test]
+    fn parse_mixed_scalar_and_slice_params() {
+        let src = "fn copy(base: u64, data: [u32]) {}";
+        let ast = parse_module(src).expect("parse");
+        let f = &ast.items[0];
+        assert_eq!(f.params.len(), 2);
+        assert_eq!(f.params[0].1, ParamTy::Scalar(MmioScalarType::U64));
+        assert_eq!(f.params[1].1, ParamTy::Slice(MmioScalarType::U32));
+    }
+
+    #[test]
+    fn parse_slice_len_stmt() {
+        let src = "fn f(data: [u8]) { slice_len(data, len_val); }";
+        let ast = parse_module(src).expect("parse");
+        let body = &ast.items[0].body;
+        assert_eq!(body.len(), 1);
+        assert!(
+            matches!(&body[0], Stmt::SliceLen { slice, slot } if slice == "data" && slot == "len_val")
+        );
+    }
+
+    #[test]
+    fn parse_slice_ptr_stmt() {
+        let src = "fn f(data: [u8]) { slice_ptr(data, ptr_val); }";
+        let ast = parse_module(src).expect("parse");
+        let body = &ast.items[0].body;
+        assert_eq!(body.len(), 1);
+        assert!(
+            matches!(&body[0], Stmt::SlicePtr { slice, slot } if slice == "data" && slot == "ptr_val")
         );
     }
 

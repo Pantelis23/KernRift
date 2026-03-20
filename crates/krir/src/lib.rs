@@ -145,6 +145,16 @@ pub enum KrirOp {
         addr: MmioAddrExpr,
         value: MmioValueExpr,
     },
+    /// `slice_len(slice, slot)` — extract the `len` (u64) component of a `[T]` param.
+    SliceLen {
+        slice: String,
+        slot: String,
+    },
+    /// `slice_ptr(slice, slot)` — extract the `ptr` (u64) component of a `[T]` param.
+    SlicePtr {
+        slice: String,
+        slot: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -201,12 +211,22 @@ impl MmioScalarType {
     }
 }
 
+/// A KRIR function parameter type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum KrirParamTy {
+    /// Single integer value (u8/u16/u32/u64).
+    Scalar { ty: MmioScalarType },
+    /// Fat-pointer slice `[T]`: (ptr: u64, len: u64) under SysV ABI.
+    Slice { elem: MmioScalarType },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Function {
     pub name: String,
     pub is_extern: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub params: Vec<(String, MmioScalarType)>,
+    pub params: Vec<(String, KrirParamTy)>,
     pub ctx_ok: Vec<Ctx>,
     pub eff_used: Vec<Eff>,
     pub caps_req: Vec<String>,
@@ -810,13 +830,25 @@ pub fn lower_current_krir_to_executable_krir(
         let mut executable_slot_name = None::<String>;
         let mut stack_cell = None::<ExecutableStackCell>;
         let mut last_value = None::<ExecutableCapturedValue>;
-        // Build a lookup from param name -> (index, type) for this function
-        let param_map: std::collections::BTreeMap<&str, (u8, MmioScalarType)> = function
-            .params
-            .iter()
-            .enumerate()
-            .map(|(i, (name, ty))| (name.as_str(), (i as u8, *ty)))
-            .collect();
+        // Build lookup maps from param name to ABI slot indices.
+        // Scalar params: 1 ABI slot each.  Slice params: 2 ABI slots (ptr then len).
+        let mut param_map: std::collections::BTreeMap<&str, (u8, MmioScalarType)> =
+            std::collections::BTreeMap::new();
+        let mut slice_param_map: std::collections::BTreeMap<&str, (u8, u8, MmioScalarType)> =
+            std::collections::BTreeMap::new();
+        let mut abi_idx: u8 = 0;
+        for (name, ty) in &function.params {
+            match ty {
+                KrirParamTy::Scalar { ty: scalar_ty } => {
+                    param_map.insert(name.as_str(), (abi_idx, *scalar_ty));
+                    abi_idx += 1;
+                }
+                KrirParamTy::Slice { elem } => {
+                    slice_param_map.insert(name.as_str(), (abi_idx, abi_idx + 1, *elem));
+                    abi_idx += 2;
+                }
+            }
+        }
         for op in &function.ops {
             match op {
                 KrirOp::Call { callee } => exec_ops.push(ExecutableOp::Call {
@@ -1506,20 +1538,89 @@ pub fn lower_current_krir_to_executable_krir(
                         }
                     }
                 }
+                KrirOp::SliceLen { slice, slot } => {
+                    if let Some(&(_, len_abi_idx, _)) = slice_param_map.get(slice.as_str()) {
+                        if let Some(existing) = &executable_slot_name {
+                            if existing != slot {
+                                errors.push(format!(
+                                    "canonical-exec: function '{}' contains unsupported slice_len({}, {}): executable value slot '{}' conflicts with already-captured slot '{}' in the same function",
+                                    function.name, slice, slot, slot, existing
+                                ));
+                                continue;
+                            }
+                        } else {
+                            executable_slot_name = Some(slot.clone());
+                        }
+                        exec_ops.push(ExecutableOp::ParamLoad {
+                            param_idx: len_abi_idx,
+                            ty: MmioScalarType::U64,
+                        });
+                        last_value = Some(ExecutableCapturedValue {
+                            slot: slot.clone(),
+                            ty: MmioScalarType::U64,
+                            source: ExecutableCapturedValueSource::SavedSlot,
+                        });
+                    } else {
+                        errors.push(format!(
+                            "canonical-exec: function '{}' contains unsupported slice_len({}, {}): '{}' is not a slice parameter",
+                            function.name, slice, slot, slice
+                        ));
+                    }
+                }
+                KrirOp::SlicePtr { slice, slot } => {
+                    if let Some(&(ptr_abi_idx, _, _)) = slice_param_map.get(slice.as_str()) {
+                        if let Some(existing) = &executable_slot_name {
+                            if existing != slot {
+                                errors.push(format!(
+                                    "canonical-exec: function '{}' contains unsupported slice_ptr({}, {}): executable value slot '{}' conflicts with already-captured slot '{}' in the same function",
+                                    function.name, slice, slot, slot, existing
+                                ));
+                                continue;
+                            }
+                        } else {
+                            executable_slot_name = Some(slot.clone());
+                        }
+                        exec_ops.push(ExecutableOp::ParamLoad {
+                            param_idx: ptr_abi_idx,
+                            ty: MmioScalarType::U64,
+                        });
+                        last_value = Some(ExecutableCapturedValue {
+                            slot: slot.clone(),
+                            ty: MmioScalarType::U64,
+                            source: ExecutableCapturedValueSource::SavedSlot,
+                        });
+                    } else {
+                        errors.push(format!(
+                            "canonical-exec: function '{}' contains unsupported slice_ptr({}, {}): '{}' is not a slice parameter",
+                            function.name, slice, slot, slice
+                        ));
+                    }
+                }
             }
         }
 
         let result_ty = function_result_types.get(&function.name).copied().flatten();
 
+        // Expand slice params to their ABI slots in the ExecutableSignature.
+        // A Scalar param occupies 1 slot; a Slice param occupies 2 (ptr: u64, len: u64).
+        let abi_params: Vec<ExecutableValueType> = function
+            .params
+            .iter()
+            .flat_map(|(_, ty)| match ty {
+                KrirParamTy::Scalar { ty } => {
+                    vec![executable_value_type_from_mmio_scalar(*ty)]
+                }
+                KrirParamTy::Slice { .. } => {
+                    vec![ExecutableValueType::U64, ExecutableValueType::U64]
+                }
+            })
+            .collect();
+
         lowered.functions.push(ExecutableFunction {
             name: function.name.clone(),
             is_extern: false,
             signature: ExecutableSignature {
-                params: function
-                    .params
-                    .iter()
-                    .map(|(_, ty)| executable_value_type_from_mmio_scalar(*ty))
-                    .collect(),
+                params: abi_params,
                 result: result_ty
                     .map(executable_value_type_from_mmio_scalar)
                     .unwrap_or(ExecutableValueType::Unit),

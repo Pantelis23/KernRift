@@ -4,15 +4,16 @@ use krir::{
     CallEdge, Ctx, Eff, ExecutableBlock, ExecutableExternDecl, ExecutableFacts, ExecutableFunction,
     ExecutableKrirModule, ExecutableOp as KrExecutableOp, ExecutableSignature,
     ExecutableTerminator, ExecutableValue, ExecutableValueType, Function, FunctionAttrs,
-    KrirModule, KrirOp, MmioAddrExpr as KrirMmioAddrExpr, MmioBaseDecl as KrirMmioBaseDecl,
-    MmioRegAccess as KrirMmioRegAccess, MmioRegisterDecl as KrirMmioRegisterDecl,
-    MmioScalarType as KrirMmioScalarType, MmioValueExpr as KrirMmioValueExpr,
+    KrirModule, KrirOp, KrirParamTy, MmioAddrExpr as KrirMmioAddrExpr,
+    MmioBaseDecl as KrirMmioBaseDecl, MmioRegAccess as KrirMmioRegAccess,
+    MmioRegisterDecl as KrirMmioRegisterDecl, MmioScalarType as KrirMmioScalarType,
+    MmioValueExpr as KrirMmioValueExpr,
 };
 use parser::{
     FnAst, MmioAddrExpr as ParserMmioAddrExpr, MmioBaseDecl as ParserMmioBaseDecl,
     MmioRegAccess as ParserMmioRegAccess, MmioRegisterDecl as ParserMmioRegisterDecl,
     MmioScalarType as ParserMmioScalarType, MmioValueExpr as ParserMmioValueExpr, ModuleAst,
-    RawAttr, Stmt, format_source_diagnostic, int_literal_numeric_value,
+    ParamTy as ParserParamTy, RawAttr, Stmt, format_source_diagnostic, int_literal_numeric_value,
     split_csv_allow_trailing_comma,
 };
 use serde::Serialize;
@@ -1507,7 +1508,7 @@ fn lower_function(
         params: item
             .params
             .iter()
-            .map(|(name, ty)| (name.clone(), lower_mmio_scalar_type(*ty)))
+            .map(|(name, ty)| (name.clone(), lower_param_ty(*ty)))
             .collect(),
         ctx_ok: facts.ctx_ok.into_iter().collect(),
         eff_used: eff_used.into_iter().collect(),
@@ -2362,6 +2363,14 @@ fn lower_stmts_to_canonical_executable(
                 function_name,
                 format_raw_mmio_write_invocation(*ty, addr, value)
             )),
+            Stmt::SliceLen { slice, slot } => errors.push(format!(
+                "canonical-exec: function '{}' contains unsupported slice_len({}, {})",
+                function_name, slice, slot
+            )),
+            Stmt::SlicePtr { slice, slot } => errors.push(format!(
+                "canonical-exec: function '{}' contains unsupported slice_ptr({}, {})",
+                function_name, slice, slot
+            )),
         }
     }
 }
@@ -2488,6 +2497,14 @@ fn lower_stmt(
             });
             eff_used.insert(Eff::Mmio);
         }
+        Stmt::SliceLen { slice, slot } => ops.push(KrirOp::SliceLen {
+            slice: slice.clone(),
+            slot: slot.clone(),
+        }),
+        Stmt::SlicePtr { slice, slot } => ops.push(KrirOp::SlicePtr {
+            slice: slice.clone(),
+            slot: slot.clone(),
+        }),
     }
 }
 
@@ -2497,6 +2514,17 @@ fn lower_mmio_scalar_type(ty: ParserMmioScalarType) -> KrirMmioScalarType {
         ParserMmioScalarType::U16 => KrirMmioScalarType::U16,
         ParserMmioScalarType::U32 => KrirMmioScalarType::U32,
         ParserMmioScalarType::U64 => KrirMmioScalarType::U64,
+    }
+}
+
+fn lower_param_ty(ty: ParserParamTy) -> KrirParamTy {
+    match ty {
+        ParserParamTy::Scalar(s) => KrirParamTy::Scalar {
+            ty: lower_mmio_scalar_type(s),
+        },
+        ParserParamTy::Slice(elem) => KrirParamTy::Slice {
+            elem: lower_mmio_scalar_type(elem),
+        },
     }
 }
 
