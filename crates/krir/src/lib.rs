@@ -109,6 +109,20 @@ pub enum KrirOp {
     ReturnSlot {
         slot: String,
     },
+    StackCell {
+        ty: MmioScalarType,
+        cell: String,
+    },
+    StackStore {
+        ty: MmioScalarType,
+        cell: String,
+        value: MmioValueExpr,
+    },
+    StackLoad {
+        ty: MmioScalarType,
+        cell: String,
+        slot: String,
+    },
     MmioRead {
         ty: MmioScalarType,
         addr: MmioAddrExpr,
@@ -380,6 +394,16 @@ pub enum ExecutableOp {
         ty: MmioScalarType,
         addr: u64,
     },
+    StackStoreImm {
+        ty: MmioScalarType,
+        value: u64,
+    },
+    StackStoreValue {
+        ty: MmioScalarType,
+    },
+    StackLoad {
+        ty: MmioScalarType,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -614,7 +638,10 @@ impl ExecutableKrirModule {
                         }
                         ExecutableOp::MmioRead { .. }
                         | ExecutableOp::MmioWriteImm { .. }
-                        | ExecutableOp::MmioWriteValue { .. } => {}
+                        | ExecutableOp::MmioWriteValue { .. }
+                        | ExecutableOp::StackStoreImm { .. }
+                        | ExecutableOp::StackStoreValue { .. }
+                        | ExecutableOp::StackLoad { .. } => {}
                     }
                 }
             }
@@ -635,6 +662,12 @@ struct ExecutableCapturedValue {
     slot: String,
     ty: MmioScalarType,
     source: ExecutableCapturedValueSource,
+}
+
+#[derive(Clone)]
+struct ExecutableStackCell {
+    cell: String,
+    ty: MmioScalarType,
 }
 
 fn infer_executable_function_result_types(
@@ -757,6 +790,7 @@ pub fn lower_current_krir_to_executable_krir(
 
         let mut exec_ops = Vec::new();
         let mut executable_slot_name = None::<String>;
+        let mut stack_cell = None::<ExecutableStackCell>;
         let mut last_value = None::<ExecutableCapturedValue>;
         for op in &function.ops {
             match op {
@@ -1075,6 +1109,147 @@ pub fn lower_current_krir_to_executable_krir(
                     function.name, lock_class
                 )),
                 KrirOp::ReturnSlot { .. } => {}
+                KrirOp::StackCell { ty, cell } => {
+                    let invocation = format_stack_cell_invocation(*ty, cell);
+                    if let Some(existing) = stack_cell.as_ref() {
+                        if existing.cell != *cell {
+                            errors.push(format!(
+                                "canonical-exec: function '{}' contains unsupported {}: executable stack cell '{}' conflicts with already-declared cell '{}' in the same function",
+                                function.name,
+                                invocation,
+                                cell,
+                                existing.cell
+                            ));
+                            continue;
+                        }
+                        if existing.ty != *ty {
+                            errors.push(format!(
+                                "canonical-exec: function '{}' contains unsupported {}: executable stack cell '{}' is redeclared as {} but was already declared as {} in this function",
+                                function.name,
+                                invocation,
+                                cell,
+                                ty.as_str(),
+                                existing.ty.as_str()
+                            ));
+                            continue;
+                        }
+                    } else {
+                        stack_cell = Some(ExecutableStackCell {
+                            cell: cell.clone(),
+                            ty: *ty,
+                        });
+                    }
+                }
+                KrirOp::StackStore { ty, cell, value } => {
+                    let invocation = format_cell_store_invocation(*ty, cell, value);
+                    if let Err(reason) =
+                        validate_executable_stack_cell_access(*ty, cell, stack_cell.as_ref())
+                    {
+                        errors.push(format!(
+                            "canonical-exec: function '{}' contains unsupported {}: {}",
+                            function.name, invocation, reason
+                        ));
+                        continue;
+                    }
+                    let resolved_value = match value {
+                        MmioValueExpr::IntLiteral { .. } => resolve_executable_mmio_write_value(
+                            *ty,
+                            value,
+                            executable_slot_name.as_deref(),
+                            None,
+                        ),
+                        MmioValueExpr::Ident { name } => {
+                            if matches!(
+                                last_value.as_ref().map(|value| value.source),
+                                Some(ExecutableCapturedValueSource::SavedSlot)
+                            ) {
+                                resolve_executable_saved_slot_write_value(
+                                    *ty,
+                                    name,
+                                    executable_slot_name.as_deref(),
+                                    last_value
+                                        .as_ref()
+                                        .map(|value| (value.slot.as_str(), value.ty)),
+                                )
+                            } else {
+                                resolve_executable_mmio_write_value(
+                                    *ty,
+                                    value,
+                                    executable_slot_name.as_deref(),
+                                    last_value.as_ref().and_then(|value| match value.source {
+                                        ExecutableCapturedValueSource::DeferredRead { .. } => {
+                                            Some((value.slot.as_str(), value.ty))
+                                        }
+                                        ExecutableCapturedValueSource::SavedSlot => None,
+                                    }),
+                                )
+                            }
+                        }
+                    };
+                    let resolved_value = match resolved_value {
+                        Ok(value) => value,
+                        Err(reason) => {
+                            errors.push(format!(
+                                "canonical-exec: function '{}' contains unsupported {}: {}",
+                                function.name, invocation, reason
+                            ));
+                            continue;
+                        }
+                    };
+                    match resolved_value {
+                        ExecutableMmioWriteValue::Immediate(value) => {
+                            exec_ops.push(ExecutableOp::StackStoreImm { ty: *ty, value });
+                        }
+                        ExecutableMmioWriteValue::SavedValue => {
+                            if let Some(current_value) = last_value.as_ref()
+                                && let ExecutableCapturedValueSource::DeferredRead { op_index } =
+                                    current_value.source
+                            {
+                                let Some(ExecutableOp::MmioRead { capture_value, .. }) =
+                                    exec_ops.get_mut(op_index)
+                                else {
+                                    unreachable!(
+                                        "saved executable stack store must point at a prior mmio read op"
+                                    );
+                                };
+                                *capture_value = true;
+                            }
+                            exec_ops.push(ExecutableOp::StackStoreValue { ty: *ty });
+                        }
+                    }
+                }
+                KrirOp::StackLoad { ty, cell, slot } => {
+                    let invocation = format_cell_load_invocation(*ty, cell, slot);
+                    if let Err(reason) =
+                        validate_executable_stack_cell_access(*ty, cell, stack_cell.as_ref())
+                    {
+                        errors.push(format!(
+                            "canonical-exec: function '{}' contains unsupported {}: {}",
+                            function.name, invocation, reason
+                        ));
+                        continue;
+                    }
+                    if let Some(existing) = &executable_slot_name {
+                        if existing != slot {
+                            errors.push(format!(
+                                "canonical-exec: function '{}' contains unsupported {}: executable value slot '{}' conflicts with already-captured slot '{}' in the same function",
+                                function.name,
+                                invocation,
+                                slot,
+                                existing
+                            ));
+                            continue;
+                        }
+                    } else {
+                        executable_slot_name = Some(slot.clone());
+                    }
+                    exec_ops.push(ExecutableOp::StackLoad { ty: *ty });
+                    last_value = Some(ExecutableCapturedValue {
+                        slot: slot.clone(),
+                        ty: *ty,
+                        source: ExecutableCapturedValueSource::SavedSlot,
+                    });
+                }
                 KrirOp::MmioRead {
                     ty,
                     addr,
@@ -1307,6 +1482,36 @@ enum ExecutableMmioWriteValue {
 }
 
 const DEFAULT_EXECUTABLE_MMIO_SLOT: &str = "value";
+
+fn validate_executable_stack_cell_access(
+    ty: MmioScalarType,
+    cell: &str,
+    stack_cell: Option<&ExecutableStackCell>,
+) -> Result<(), String> {
+    let Some(existing) = stack_cell else {
+        return Err(format!(
+            "stack cell '{}' requires a prior stack_cell<{}>({}) declaration in the same function",
+            cell,
+            ty.as_str(),
+            cell
+        ));
+    };
+    if existing.cell != cell {
+        return Err(format!(
+            "stack cell '{}' does not match the declared executable stack cell '{}' in this function",
+            cell, existing.cell
+        ));
+    }
+    if existing.ty != ty {
+        return Err(format!(
+            "stack cell '{}' has type {} from its declaration and does not match access type {}",
+            cell,
+            existing.ty.as_str(),
+            ty.as_str()
+        ));
+    }
+    Ok(())
+}
 
 fn resolve_executable_mmio_write_value(
     ty: MmioScalarType,
@@ -1551,6 +1756,23 @@ fn format_call_capture_invocation(callee: &str, slot: &str) -> String {
 
 fn format_return_slot_invocation(slot: &str) -> String {
     format!("return_slot({})", slot)
+}
+
+fn format_stack_cell_invocation(ty: MmioScalarType, cell: &str) -> String {
+    format!("stack_cell<{}>({})", ty.as_str(), cell)
+}
+
+fn format_cell_store_invocation(ty: MmioScalarType, cell: &str, value: &MmioValueExpr) -> String {
+    format!(
+        "cell_store<{}>({}, {})",
+        ty.as_str(),
+        cell,
+        value.as_source()
+    )
+}
+
+fn format_cell_load_invocation(ty: MmioScalarType, cell: &str, slot: &str) -> String {
+    format!("cell_load<{}>({}, {})", ty.as_str(), cell, slot)
 }
 
 fn format_branch_if_zero_invocation(slot: &str, then_callee: &str, else_callee: &str) -> String {
@@ -1893,6 +2115,7 @@ pub struct X86_64AsmModule {
 pub struct X86_64AsmFunction {
     pub symbol: String,
     pub uses_saved_value_slot: bool,
+    pub uses_stack_cell: bool,
     pub instructions: Vec<X86_64AsmInstruction>,
 }
 
@@ -1936,6 +2159,16 @@ pub enum X86_64AsmInstruction {
     MmioWriteValue {
         ty: MmioScalarType,
         addr: u64,
+    },
+    StackStoreImm {
+        ty: MmioScalarType,
+        value: u64,
+    },
+    StackStoreValue {
+        ty: MmioScalarType,
+    },
+    StackLoad {
+        ty: MmioScalarType,
     },
     ReturnSavedValue {
         ty: MmioScalarType,
@@ -2328,6 +2561,7 @@ pub fn export_compiler_owned_object_to_x86_64_asm(
             Ok(X86_64AsmFunction {
                 symbol: symbol.name.clone(),
                 uses_saved_value_slot,
+                uses_stack_cell: false,
                 instructions,
             })
         })
@@ -2353,6 +2587,7 @@ pub fn lower_executable_krir_to_x86_64_asm(
         .map(|function| X86_64AsmFunction {
             symbol: function.name.clone(),
             uses_saved_value_slot: executable_function_uses_saved_value_slot(function),
+            uses_stack_cell: executable_function_uses_stack_cell(function),
             instructions: function.blocks[0]
                 .ops
                 .iter()
@@ -2408,6 +2643,13 @@ pub fn lower_executable_krir_to_x86_64_asm(
                     ExecutableOp::MmioWriteValue { ty, addr } => {
                         X86_64AsmInstruction::MmioWriteValue { ty, addr }
                     }
+                    ExecutableOp::StackStoreImm { ty, value } => {
+                        X86_64AsmInstruction::StackStoreImm { ty, value }
+                    }
+                    ExecutableOp::StackStoreValue { ty } => {
+                        X86_64AsmInstruction::StackStoreValue { ty }
+                    }
+                    ExecutableOp::StackLoad { ty } => X86_64AsmInstruction::StackLoad { ty },
                 })
                 .chain(match function.blocks[0].terminator {
                     ExecutableTerminator::Return {
@@ -2442,10 +2684,25 @@ fn executable_function_uses_saved_value_slot(function: &ExecutableFunction) -> b
                     | ExecutableOp::BranchIfEqImm { .. }
                     | ExecutableOp::BranchIfMaskNonZeroImm { .. }
                     | ExecutableOp::MmioWriteValue { .. }
+                    | ExecutableOp::StackStoreValue { .. }
+                    | ExecutableOp::StackLoad { .. }
                     | ExecutableOp::MmioRead {
                         capture_value: true,
                         ..
                     }
+            )
+        })
+    })
+}
+
+fn executable_function_uses_stack_cell(function: &ExecutableFunction) -> bool {
+    function.blocks.iter().any(|block| {
+        block.ops.iter().any(|op| {
+            matches!(
+                op,
+                ExecutableOp::StackStoreImm { .. }
+                    | ExecutableOp::StackStoreValue { .. }
+                    | ExecutableOp::StackLoad { .. }
             )
         })
     })
@@ -2465,6 +2722,9 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
         out.push_str(":\n");
         if function.uses_saved_value_slot {
             out.push_str("    push %rbx\n");
+        }
+        if function.uses_stack_cell {
+            out.push_str("    sub $8, %rsp\n");
         }
         for instruction in &function.instructions {
             match instruction {
@@ -2623,6 +2883,30 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                     out.push_str(mmio_saved_value_register(*ty));
                     out.push_str(", (%rax)\n");
                 }
+                X86_64AsmInstruction::StackStoreImm { ty, value } => {
+                    out.push_str("    ");
+                    out.push_str(&mmio_immediate_mnemonic(*ty, *value));
+                    out.push('\n');
+                    out.push_str("    ");
+                    out.push_str(mmio_store_mnemonic(*ty));
+                    out.push(' ');
+                    out.push_str(mmio_value_register(*ty));
+                    out.push_str(", (%rsp)\n");
+                }
+                X86_64AsmInstruction::StackStoreValue { ty } => {
+                    out.push_str("    ");
+                    out.push_str(mmio_store_mnemonic(*ty));
+                    out.push(' ');
+                    out.push_str(mmio_saved_value_register(*ty));
+                    out.push_str(", (%rsp)\n");
+                }
+                X86_64AsmInstruction::StackLoad { ty } => {
+                    out.push_str("    ");
+                    out.push_str(mmio_load_mnemonic(*ty));
+                    out.push_str(" (%rsp), ");
+                    out.push_str(mmio_saved_value_register(*ty));
+                    out.push('\n');
+                }
                 X86_64AsmInstruction::ReturnSavedValue { ty } => {
                     out.push_str("    ");
                     out.push_str(mmio_move_return_value_mnemonic(*ty));
@@ -2633,6 +2917,9 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                     out.push('\n');
                 }
                 X86_64AsmInstruction::Ret => {
+                    if function.uses_stack_cell {
+                        out.push_str("    add $8, %rsp\n");
+                    }
                     if function.uses_saved_value_slot {
                         out.push_str("    pop %rbx\n");
                     }
@@ -2780,15 +3067,16 @@ fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
     match op {
         ExecutableOp::Call { .. } => 5,
         ExecutableOp::CallCapture { ty, .. } => 5 + mmio_saved_value_copy_bytes(*ty),
-        ExecutableOp::BranchIfZero { ty, .. } => mmio_saved_value_zero_test_bytes(*ty) + 16,
+        // Branch encoding: test_bytes + cond_jump(6) + call_then(5) + jmp_over(5) + call_else(5) = test_bytes + 21
+        ExecutableOp::BranchIfZero { ty, .. } => mmio_saved_value_zero_test_bytes(*ty) + 21,
         ExecutableOp::BranchIfEqImm {
             ty,
             compare_value: _,
             ..
-        } => mmio_saved_value_literal_compare_bytes(*ty) + 16,
+        } => mmio_saved_value_literal_compare_bytes(*ty) + 21,
         ExecutableOp::BranchIfMaskNonZeroImm {
             ty, mask_value: _, ..
-        } => mmio_saved_value_literal_mask_test_bytes(*ty) + 16,
+        } => mmio_saved_value_literal_mask_test_bytes(*ty) + 21,
         ExecutableOp::MmioRead {
             ty, capture_value, ..
         } => {
@@ -2803,30 +3091,31 @@ fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
             10 + mmio_value_load_immediate_bytes(*ty) + mmio_store_bytes(*ty)
         }
         ExecutableOp::MmioWriteValue { ty, .. } => 10 + mmio_saved_value_store_bytes(*ty),
+        ExecutableOp::StackStoreImm { ty, .. } => {
+            mmio_value_load_immediate_bytes(*ty) + stack_cell_store_bytes(*ty)
+        }
+        ExecutableOp::StackStoreValue { ty } => stack_cell_store_bytes(*ty),
+        ExecutableOp::StackLoad { ty } => stack_cell_load_bytes(*ty),
     }
 }
 
 fn executable_terminator_encoded_len(function: &ExecutableFunction) -> u64 {
+    let epilogue_bytes = (if executable_function_uses_stack_cell(function) {
+        4
+    } else {
+        0
+    }) + if executable_function_uses_saved_value_slot(function) {
+        2
+    } else {
+        1
+    };
     match function.blocks[0].terminator {
         ExecutableTerminator::Return {
             value: ExecutableValue::SavedValue { ty },
-        } => {
-            mmio_saved_value_copy_bytes(ty)
-                + if executable_function_uses_saved_value_slot(function) {
-                    2
-                } else {
-                    1
-                }
-        }
+        } => mmio_saved_value_copy_bytes(ty) + epilogue_bytes,
         ExecutableTerminator::Return {
             value: ExecutableValue::Unit,
-        } => {
-            if executable_function_uses_saved_value_slot(function) {
-                2
-            } else {
-                1
-            }
-        }
+        } => epilogue_bytes,
     }
 }
 
@@ -2861,6 +3150,34 @@ fn encode_mmio_write_saved_value_bytes(out: &mut Vec<u8>, ty: MmioScalarType, ad
         MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x18]),
         MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x18]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x18]),
+    }
+}
+
+fn encode_stack_cell_store_imm_bytes(out: &mut Vec<u8>, ty: MmioScalarType, value: u64) {
+    push_mov_imm_to_value_register(out, ty, value);
+    match ty {
+        MmioScalarType::U8 => out.extend_from_slice(&[0x88, 0x0C, 0x24]),
+        MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x0C, 0x24]),
+        MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x0C, 0x24]),
+        MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x0C, 0x24]),
+    }
+}
+
+fn encode_stack_cell_store_saved_value_bytes(out: &mut Vec<u8>, ty: MmioScalarType) {
+    match ty {
+        MmioScalarType::U8 => out.extend_from_slice(&[0x88, 0x1C, 0x24]),
+        MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x1C, 0x24]),
+        MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x1C, 0x24]),
+        MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x1C, 0x24]),
+    }
+}
+
+fn encode_stack_cell_load_bytes(out: &mut Vec<u8>, ty: MmioScalarType) {
+    match ty {
+        MmioScalarType::U8 => out.extend_from_slice(&[0x8A, 0x1C, 0x24]),
+        MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x8B, 0x1C, 0x24]),
+        MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x1C, 0x24]),
+        MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x1C, 0x24]),
     }
 }
 
@@ -3059,6 +3376,20 @@ fn mmio_saved_value_store_bytes(ty: MmioScalarType) -> u64 {
     mmio_store_bytes(ty)
 }
 
+fn stack_cell_load_bytes(ty: MmioScalarType) -> u64 {
+    match ty {
+        MmioScalarType::U8 | MmioScalarType::U32 => 3,
+        MmioScalarType::U16 | MmioScalarType::U64 => 4,
+    }
+}
+
+fn stack_cell_store_bytes(ty: MmioScalarType) -> u64 {
+    match ty {
+        MmioScalarType::U8 | MmioScalarType::U32 => 3,
+        MmioScalarType::U16 | MmioScalarType::U64 => 4,
+    }
+}
+
 fn mmio_accumulator_register(ty: MmioScalarType) -> &'static str {
     match ty {
         MmioScalarType::U8 => "%al",
@@ -3193,7 +3524,15 @@ pub fn lower_executable_krir_to_compiler_owned_object(
     let mut cursor = 0u64;
     for function in &canonical.functions {
         let block = &function.blocks[0];
-        let size = block.ops.iter().map(executable_op_encoded_len).sum::<u64>()
+        let size = (if executable_function_uses_saved_value_slot(function) {
+            1
+        } else {
+            0
+        }) + if executable_function_uses_stack_cell(function) {
+            4
+        } else {
+            0
+        } + block.ops.iter().map(executable_op_encoded_len).sum::<u64>()
             + executable_terminator_encoded_len(function);
         function_offsets.insert(function.name.clone(), cursor);
         function_sizes.insert(function.name.clone(), size);
@@ -3213,10 +3552,15 @@ pub fn lower_executable_krir_to_compiler_owned_object(
             .get(&function.name)
             .expect("function size must exist");
         let uses_saved_value_slot = executable_function_uses_saved_value_slot(function);
+        let uses_stack_cell = executable_function_uses_stack_cell(function);
         let mut local_offset = 0u64;
         if uses_saved_value_slot {
             code_bytes.push(0x53);
             local_offset += 1;
+        }
+        if uses_stack_cell {
+            code_bytes.extend_from_slice(&[0x48, 0x83, 0xEC, 0x08]);
+            local_offset += 4;
         }
         for op in &block.ops {
             match op {
@@ -3381,6 +3725,18 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     encode_mmio_write_saved_value_bytes(&mut code_bytes, *ty, *addr);
                     local_offset += executable_op_encoded_len(op);
                 }
+                ExecutableOp::StackStoreImm { ty, value } => {
+                    encode_stack_cell_store_imm_bytes(&mut code_bytes, *ty, *value);
+                    local_offset += executable_op_encoded_len(op);
+                }
+                ExecutableOp::StackStoreValue { ty } => {
+                    encode_stack_cell_store_saved_value_bytes(&mut code_bytes, *ty);
+                    local_offset += executable_op_encoded_len(op);
+                }
+                ExecutableOp::StackLoad { ty } => {
+                    encode_stack_cell_load_bytes(&mut code_bytes, *ty);
+                    local_offset += executable_op_encoded_len(op);
+                }
             }
         }
         if let ExecutableTerminator::Return {
@@ -3388,6 +3744,9 @@ pub fn lower_executable_krir_to_compiler_owned_object(
         } = function.blocks[0].terminator
         {
             push_mov_saved_value_to_accumulator_register(&mut code_bytes, ty);
+        }
+        if uses_stack_cell {
+            code_bytes.extend_from_slice(&[0x48, 0x83, 0xC4, 0x08]);
         }
         if uses_saved_value_slot {
             code_bytes.push(0x5B);

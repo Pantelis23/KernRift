@@ -142,6 +142,20 @@ pub enum Stmt {
         then_callee: String,
         else_callee: String,
     },
+    StackCell {
+        ty: MmioScalarType,
+        cell: String,
+    },
+    CellStore {
+        ty: MmioScalarType,
+        cell: String,
+        value: MmioValueExpr,
+    },
+    CellLoad {
+        ty: MmioScalarType,
+        cell: String,
+        slot: String,
+    },
     MmioRead {
         ty: MmioScalarType,
         addr: MmioAddrExpr,
@@ -1047,6 +1061,53 @@ fn parse_typed_mmio_stmt(name: &str, args: &str) -> Result<Option<Stmt>, String>
                 .to_string(),
         );
     }
+    if lowered == "stack_cell" {
+        return Err("stack_cell() legacy form is unsupported; use stack_cell<T>(cell)".to_string());
+    }
+    if lowered == "cell_store" {
+        return Err(
+            "cell_store() legacy form is unsupported; use cell_store<T>(cell, value)".to_string(),
+        );
+    }
+    if lowered == "cell_load" {
+        return Err(
+            "cell_load() legacy form is unsupported; use cell_load<T>(cell, slot)".to_string(),
+        );
+    }
+
+    if let Some(ty) = parse_mmio_scalar_from_name(name, "stack_cell")? {
+        let parts = split_csv(args);
+        if parts.len() != 1 {
+            return Err("stack_cell<T>(cell) requires exactly one cell identifier".to_string());
+        }
+        let cell = parse_mmio_capture_operand(parts[0].trim())?;
+        return Ok(Some(Stmt::StackCell { ty, cell }));
+    }
+
+    if let Some(ty) = parse_mmio_scalar_from_name(name, "cell_store")? {
+        let parts = split_csv(args);
+        if parts.len() != 2 {
+            return Err(
+                "cell_store<T>(cell, value) requires exactly two arguments: cell and value"
+                    .to_string(),
+            );
+        }
+        let cell = parse_mmio_capture_operand(parts[0].trim())?;
+        let value = parse_mmio_value_operand(parts[1].trim())?;
+        return Ok(Some(Stmt::CellStore { ty, cell, value }));
+    }
+
+    if let Some(ty) = parse_mmio_scalar_from_name(name, "cell_load")? {
+        let parts = split_csv(args);
+        if parts.len() != 2 {
+            return Err(
+                "cell_load<T>(cell, slot) requires exactly two identifier arguments".to_string(),
+            );
+        }
+        let cell = parse_mmio_capture_operand(parts[0].trim())?;
+        let slot = parse_mmio_capture_operand(parts[1].trim())?;
+        return Ok(Some(Stmt::CellLoad { ty, cell, slot }));
+    }
 
     if let Some(ty) = parse_mmio_scalar_from_name(name, "mmio_read")? {
         let parts = split_csv(args);
@@ -1579,6 +1640,51 @@ mod tests {
     }
 
     #[test]
+    fn parse_stack_cell_and_load_store_are_structured() {
+        let src = r#"
+        fn entry() {
+          stack_cell<u32>(saved_status);
+          mmio_read<u32>(uart0 + 0x10, value);
+          cell_store<u32>(saved_status, value);
+          cell_load<u32>(saved_status, value);
+        }
+        "#;
+        let ast = parse_module(src).expect("parse");
+        let entry = ast
+            .items
+            .iter()
+            .find(|item| item.name == "entry")
+            .expect("entry function");
+        assert_eq!(
+            entry.body,
+            vec![
+                Stmt::StackCell {
+                    ty: MmioScalarType::U32,
+                    cell: "saved_status".to_string(),
+                },
+                Stmt::MmioRead {
+                    ty: MmioScalarType::U32,
+                    addr: MmioAddrExpr::IdentPlusOffset {
+                        base: "uart0".to_string(),
+                        offset: "0x10".to_string(),
+                    },
+                    capture: Some("value".to_string()),
+                },
+                Stmt::CellStore {
+                    ty: MmioScalarType::U32,
+                    cell: "saved_status".to_string(),
+                    value: MmioValueExpr::Ident("value".to_string()),
+                },
+                Stmt::CellLoad {
+                    ty: MmioScalarType::U32,
+                    cell: "saved_status".to_string(),
+                    slot: "value".to_string(),
+                }
+            ]
+        );
+    }
+
+    #[test]
     fn parse_branch_if_mask_nonzero_is_structured() {
         let src = r#"
         fn entry() {
@@ -1964,6 +2070,20 @@ mod tests {
                 src,
                 13,
                 "'0x10' is not a valid branch slot identifier",
+            )]
+        );
+    }
+
+    #[test]
+    fn parse_rejects_cell_load_invalid_slot_operand() {
+        let src = "fn entry() { cell_load<u32>(saved_status, 0x10); }";
+        let err = parse_module(src).expect_err("invalid cell_load slot should fail");
+        assert_eq!(
+            err,
+            vec![diagnostic_at(
+                src,
+                13,
+                "'0x10' is not a valid capture slot identifier",
             )]
         );
     }

@@ -15,6 +15,7 @@ BRANCH_ZERO_FIXTURE="examples/uart_console_branch_zero.kr"
 BRANCH_EQ_FIXTURE="examples/uart_console_branch_eq.kr"
 BRANCH_MASK_FIXTURE="examples/uart_console_branch_mask.kr"
 CALL_RETURN_FIXTURE="examples/uart_console_call_return.kr"
+STACK_CELL_FIXTURE="examples/uart_console_stack_cell.kr"
 CONTRACTS_OUT="$TMP_DIR/contracts.json"
 HASH_OUT="$TMP_DIR/contracts.sha256"
 REPORT_OUT="$TMP_DIR/verify.report.json"
@@ -37,6 +38,8 @@ BRANCH_MASK_ELFEXE_OUT="$TMP_DIR/uart_console_branch_mask.elf"
 BRANCH_MASK_INSPECT_JSON="$TMP_DIR/uart_console_branch_mask.inspect.json"
 CALL_RETURN_ELFEXE_OUT="$TMP_DIR/uart_console_call_return.elf"
 CALL_RETURN_INSPECT_JSON="$TMP_DIR/uart_console_call_return.inspect.json"
+STACK_CELL_ELFEXE_OUT="$TMP_DIR/uart_console_stack_cell.elf"
+STACK_CELL_INSPECT_JSON="$TMP_DIR/uart_console_stack_cell.inspect.json"
 
 echo "[1/3] smoke: check emits contracts/hash"
 cargo run -q -p kernriftc -- \
@@ -202,7 +205,7 @@ grep -q '"has_undefined_symbols": false' "$BRANCH_MASK_INSPECT_JSON"
 grep -q '"send_idle_word"' "$BRANCH_MASK_INSPECT_JSON"
 grep -q '"send_ready_word"' "$BRANCH_MASK_INSPECT_JSON"
 
-echo "[12/12] smoke: call-return proof program emits backend elf executable"
+echo "[12/13] smoke: call-return proof program emits backend elf executable"
 cargo run -q -p kernriftc -- \
   --emit=elfexe \
   -o "$CALL_RETURN_ELFEXE_OUT" \
@@ -220,5 +223,25 @@ grep -q '"has_undefined_symbols": false' "$CALL_RETURN_INSPECT_JSON"
 grep -q '"read_status"' "$CALL_RETURN_INSPECT_JSON"
 grep -q '"send_idle_word"' "$CALL_RETURN_INSPECT_JSON"
 grep -q '"send_ready_word"' "$CALL_RETURN_INSPECT_JSON"
+
+echo "[13/13] smoke: stack-cell proof program emits backend elf executable"
+cargo run -q -p kernriftc -- \
+  --emit=elfexe \
+  -o "$STACK_CELL_ELFEXE_OUT" \
+  "$STACK_CELL_FIXTURE"
+
+cargo run -q -p kernriftc -- \
+  inspect-artifact \
+  "$STACK_CELL_ELFEXE_OUT" \
+  --format json > "$STACK_CELL_INSPECT_JSON"
+
+grep -q '"artifact_kind": "elf_executable"' "$STACK_CELL_INSPECT_JSON"
+grep -q '"machine": "x86_64"' "$STACK_CELL_INSPECT_JSON"
+grep -q '"has_entry_symbol": true' "$STACK_CELL_INSPECT_JSON"
+grep -q '"has_undefined_symbols": false' "$STACK_CELL_INSPECT_JSON"
+grep -q '"read_status"' "$STACK_CELL_INSPECT_JSON"
+grep -q '"read_control"' "$STACK_CELL_INSPECT_JSON"
+grep -q '"send_idle_word"' "$STACK_CELL_INSPECT_JSON"
+grep -q '"send_ready_word"' "$STACK_CELL_INSPECT_JSON"
 
 echo "KRIR v0.1 acceptance: PASS"
