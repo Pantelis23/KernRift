@@ -1082,6 +1082,7 @@ mod tests {
             eff_used,
             caps_req: Vec::new(),
             attrs: FunctionAttrs::default(),
+                params: vec![],
             ops,
         }
     }

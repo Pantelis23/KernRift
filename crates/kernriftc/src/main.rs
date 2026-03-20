@@ -325,10 +325,13 @@ fn main() -> ExitCode {
             }
             run_report(&args[2], &args[3])
         }
-        _ => {
-            print_usage();
-            ExitCode::from(EXIT_INVALID_INPUT)
-        }
+        _ => match parse_backend_emit_args("elfobj", &args[1..], SurfaceProfile::Stable) {
+            Ok(parsed) => run_backend_emit(&parsed),
+            Err(_) => {
+                print_usage();
+                ExitCode::from(EXIT_INVALID_INPUT)
+            }
+        },
     }
 }
 
@@ -1625,6 +1628,7 @@ fn print_errors(errs: &[String]) {
 
 fn print_usage() {
     eprintln!("usage:");
+    eprintln!("  kernriftc -o <output.o> <file.kr>");
     eprintln!("  kernriftc --version");
     eprintln!("  kernriftc check <file.kr>");
     eprintln!("  kernriftc check --canonical <file.kr>");

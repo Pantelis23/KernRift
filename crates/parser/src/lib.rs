@@ -63,6 +63,15 @@ impl MmioScalarType {
         }
     }
 
+    pub fn byte_size(self) -> u8 {
+        match self {
+            Self::U8 => 1,
+            Self::U16 => 2,
+            Self::U32 => 4,
+            Self::U64 => 8,
+        }
+    }
+
     fn parse(raw: &str) -> Result<Self, String> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "u8" => Ok(Self::U8),
@@ -117,6 +126,7 @@ pub enum Stmt {
         slot: String,
     },
     Critical(Vec<Stmt>),
+    Unsafe(Vec<Stmt>),
     YieldPoint,
     AllocPoint,
     BlockPoint,
@@ -182,6 +192,7 @@ pub enum Stmt {
 pub struct FnAst {
     pub name: String,
     pub is_extern: bool,
+    pub params: Vec<(String, MmioScalarType)>,
     pub attrs: Vec<RawAttr>,
     pub body: Vec<Stmt>,
     pub source: SourceNote,
@@ -219,11 +230,67 @@ pub struct MmioRegisterDecl {
     pub access: MmioRegAccess,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConstDecl {
+    pub name: String,
+    pub ty: MmioScalarType,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumVariant {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumDecl {
+    pub name: String,
+    pub ty: MmioScalarType,
+    pub variants: Vec<EnumVariant>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructField {
+    pub name: String,
+    pub ty: MmioScalarType,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructDecl {
+    pub name: String,
+    pub fields: Vec<StructField>,
+}
+
+impl StructDecl {
+    /// Returns the byte offset of the named field within this struct, or `None`
+    /// if the field does not exist. Layout is C-style: fields are packed in
+    /// declaration order with no padding (explicit, deterministic).
+    pub fn field_offset(&self, field_name: &str) -> Option<u64> {
+        let mut offset: u64 = 0;
+        for field in &self.fields {
+            if field.name == field_name {
+                return Some(offset);
+            }
+            offset += field.ty.byte_size() as u64;
+        }
+        None
+    }
+
+    /// Total byte size of the struct (sum of all field sizes, no padding).
+    pub fn byte_size(&self) -> u64 {
+        self.fields.iter().map(|f| f.ty.byte_size() as u64).sum()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ModuleAst {
     pub module_caps: Vec<String>,
     pub mmio_bases: Vec<MmioBaseDecl>,
     pub mmio_registers: Vec<MmioRegisterDecl>,
+    pub constants: Vec<ConstDecl>,
+    pub enums: Vec<EnumDecl>,
+    pub structs: Vec<StructDecl>,
     pub items: Vec<FnAst>,
 }
 
@@ -372,6 +439,39 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
+            if self.consume_keyword("const") {
+                match self.parse_const_decl() {
+                    Ok(decl) => module.constants.push(decl),
+                    Err(msg) => {
+                        self.error_here(&msg);
+                        self.recover_to_next_module_item();
+                    }
+                }
+                continue;
+            }
+
+            if self.consume_keyword("enum") {
+                match self.parse_enum_decl() {
+                    Ok(decl) => module.enums.push(decl),
+                    Err(msg) => {
+                        self.error_here(&msg);
+                        self.recover_to_next_module_item();
+                    }
+                }
+                continue;
+            }
+
+            if self.consume_keyword("struct") {
+                match self.parse_struct_decl() {
+                    Ok(decl) => module.structs.push(decl),
+                    Err(msg) => {
+                        self.error_here(&msg);
+                        self.recover_to_next_module_item();
+                    }
+                }
+                continue;
+            }
+
             let mut attrs = Vec::new();
             let mut is_extern = false;
 
@@ -423,7 +523,7 @@ impl<'a> Parser<'a> {
 
             if !self.consume_keyword("fn") {
                 self.error_here(
-                    "expected 'fn', 'mmio', 'mmio_reg', or @module_caps(...) at item boundary",
+                    "expected 'fn', 'mmio', 'mmio_reg', 'const', 'enum', 'struct', or @module_caps(...) at item boundary",
                 );
                 self.recover_to_next_module_item();
                 continue;
@@ -435,12 +535,13 @@ impl<'a> Parser<'a> {
                 continue;
             };
 
-            self.skip_ws_comments();
-            if !self.consume_char('(') || !self.consume_char(')') {
-                self.error_here("expected empty parameter list '()' in KR0");
-                self.recover_to_next_module_item();
-                continue;
-            }
+            let params = match self.parse_fn_param_list() {
+                Some(params) => params,
+                None => {
+                    self.recover_to_next_module_item();
+                    continue;
+                }
+            };
 
             if is_extern {
                 self.skip_ws_comments();
@@ -452,6 +553,7 @@ impl<'a> Parser<'a> {
                 module.items.push(FnAst {
                     name,
                     is_extern: true,
+                    params,
                     attrs,
                     body: Vec::new(),
                     source: self.source_note(item_start),
@@ -470,6 +572,7 @@ impl<'a> Parser<'a> {
             module.items.push(FnAst {
                 name,
                 is_extern: false,
+                params,
                 attrs,
                 body,
                 source: self.source_note(item_start),
@@ -643,6 +746,192 @@ impl<'a> Parser<'a> {
         })
     }
 
+    // Parse `const NAME: type = value;` (the 'const' keyword has already been consumed).
+    fn parse_const_decl(&mut self) -> Result<ConstDecl, String> {
+        self.skip_ws_comments();
+        let Some(name) = self.parse_ident() else {
+            return Err("expected constant name after 'const'".to_string());
+        };
+        self.skip_ws_comments();
+        if !self.consume_char(':') {
+            return Err(format!("invalid const declaration '{}': expected ':'", name));
+        }
+        self.skip_ws_comments();
+        let Some(ty_raw) = self.parse_ident() else {
+            return Err(format!("invalid const declaration '{}': expected type", name));
+        };
+        let ty = MmioScalarType::parse(&ty_raw).map_err(|_| {
+            format!(
+                "invalid const declaration '{}': unsupported type '{}'",
+                name, ty_raw
+            )
+        })?;
+        self.skip_ws_comments();
+        if !self.consume_char('=') {
+            return Err(format!("invalid const declaration '{}': expected '='", name));
+        }
+        self.skip_ws_comments();
+        let value_start = self.pos;
+        while let Some(ch) = self.peek_char() {
+            if ch == ';' {
+                break;
+            }
+            self.pos += ch.len_utf8();
+        }
+        if self.eof() {
+            return Err(format!("invalid const declaration '{}': expected ';'", name));
+        }
+        let value = self.src[value_start..self.pos].trim().to_string();
+        if !self.consume_char(';') {
+            return Err(format!("invalid const declaration '{}': expected ';'", name));
+        }
+        if !is_int_literal_token(&value) {
+            return Err(format!(
+                "invalid const declaration '{}': expected integer literal, got '{}'",
+                name, value
+            ));
+        }
+        Ok(ConstDecl { name, ty, value })
+    }
+
+    fn parse_enum_decl(&mut self) -> Result<EnumDecl, String> {
+        self.skip_ws_comments();
+        let Some(name) = self.parse_ident() else {
+            return Err("expected enum name after 'enum'".to_string());
+        };
+        self.skip_ws_comments();
+        if !self.consume_char(':') {
+            return Err(format!("invalid enum declaration '{}': expected ':'", name));
+        }
+        self.skip_ws_comments();
+        let Some(ty_raw) = self.parse_ident() else {
+            return Err(format!("invalid enum declaration '{}': expected type", name));
+        };
+        let ty = MmioScalarType::parse(&ty_raw).map_err(|_| {
+            format!(
+                "invalid enum declaration '{}': unsupported type '{}'",
+                name, ty_raw
+            )
+        })?;
+        self.skip_ws_comments();
+        if !self.consume_char('{') {
+            return Err(format!(
+                "invalid enum declaration '{}': expected '{{'",
+                name
+            ));
+        }
+        let mut variants = Vec::new();
+        loop {
+            self.skip_ws_comments();
+            if self.consume_char('}') {
+                break;
+            }
+            if self.eof() {
+                return Err(format!(
+                    "invalid enum declaration '{}': unterminated body",
+                    name
+                ));
+            }
+            let Some(variant_name) = self.parse_ident() else {
+                return Err(format!(
+                    "invalid enum declaration '{}': expected variant name",
+                    name
+                ));
+            };
+            self.skip_ws_comments();
+            if !self.consume_char('=') {
+                return Err(format!(
+                    "invalid enum declaration '{}': expected '=' after variant '{}'",
+                    name, variant_name
+                ));
+            }
+            self.skip_ws_comments();
+            let value_start = self.pos;
+            while let Some(ch) = self.peek_char() {
+                if ch == ',' || ch == '}' {
+                    break;
+                }
+                self.pos += ch.len_utf8();
+            }
+            let value = self.src[value_start..self.pos].trim().to_string();
+            if !is_int_literal_token(&value) {
+                return Err(format!(
+                    "invalid enum declaration '{}': variant '{}' expected integer literal, got '{}'",
+                    name, variant_name, value
+                ));
+            }
+            variants.push(EnumVariant { name: variant_name, value });
+            self.skip_ws_comments();
+            // optional trailing comma
+            self.consume_char(',');
+        }
+        Ok(EnumDecl { name, ty, variants })
+    }
+
+    fn parse_struct_decl(&mut self) -> Result<StructDecl, String> {
+        self.skip_ws_comments();
+        let Some(name) = self.parse_ident() else {
+            return Err("expected struct name after 'struct'".to_string());
+        };
+        self.skip_ws_comments();
+        if !self.consume_char('{') {
+            return Err(format!(
+                "invalid struct declaration '{}': expected '{{'",
+                name
+            ));
+        }
+        let mut fields = Vec::new();
+        loop {
+            self.skip_ws_comments();
+            if self.consume_char('}') {
+                break;
+            }
+            if self.eof() {
+                return Err(format!(
+                    "invalid struct declaration '{}': unterminated body",
+                    name
+                ));
+            }
+            let Some(field_name) = self.parse_ident() else {
+                return Err(format!(
+                    "invalid struct declaration '{}': expected field name",
+                    name
+                ));
+            };
+            self.skip_ws_comments();
+            if !self.consume_char(':') {
+                return Err(format!(
+                    "invalid struct declaration '{}': expected ':' after field '{}'",
+                    name, field_name
+                ));
+            }
+            self.skip_ws_comments();
+            let Some(ty_raw) = self.parse_ident() else {
+                return Err(format!(
+                    "invalid struct declaration '{}': expected type for field '{}'",
+                    name, field_name
+                ));
+            };
+            let ty = MmioScalarType::parse(&ty_raw).map_err(|_| {
+                format!(
+                    "invalid struct declaration '{}': field '{}' has unsupported type '{}'",
+                    name, field_name, ty_raw
+                )
+            })?;
+            fields.push(StructField { name: field_name, ty });
+            self.skip_ws_comments();
+            // optional trailing comma
+            self.consume_char(',');
+        }
+        if fields.is_empty() {
+            return Err(format!(
+                "invalid struct declaration '{}': struct must have at least one field",
+                name
+            ));
+        }
+        Ok(StructDecl { name, fields })
+    }
+
     fn parse_body(&mut self) -> Vec<Stmt> {
         let mut body = Vec::new();
 
@@ -666,6 +955,18 @@ impl<'a> Parser<'a> {
                 }
                 let inner = self.parse_body();
                 body.push(Stmt::Critical(inner));
+                continue;
+            }
+
+            if self.consume_keyword("unsafe") {
+                self.skip_ws_comments();
+                if !self.consume_char('{') {
+                    self.error_here("expected '{' after 'unsafe'");
+                    self.recover_to_next_item();
+                    break;
+                }
+                let inner = self.parse_body();
+                body.push(Stmt::Unsafe(inner));
                 continue;
             }
 
@@ -848,6 +1149,52 @@ impl<'a> Parser<'a> {
 
     fn peek_char(&self) -> Option<char> {
         self.src[self.pos..].chars().next()
+    }
+
+    fn parse_fn_param_list(&mut self) -> Option<Vec<(String, MmioScalarType)>> {
+        self.skip_ws_comments();
+        if !self.consume_char('(') {
+            self.error_here("expected '(' to start parameter list");
+            return None;
+        }
+        self.skip_ws_comments();
+        if self.consume_char(')') {
+            return Some(vec![]);
+        }
+        let mut params = Vec::new();
+        loop {
+            self.skip_ws_comments();
+            let Some(name) = self.parse_ident() else {
+                self.error_here("expected parameter name");
+                return None;
+            };
+            self.skip_ws_comments();
+            if !self.consume_char(':') {
+                self.error_here("expected ':' after parameter name");
+                return None;
+            }
+            self.skip_ws_comments();
+            let Some(ty_name) = self.parse_ident() else {
+                self.error_here("expected parameter type (u8, u16, u32, u64)");
+                return None;
+            };
+            let ty = match MmioScalarType::parse(&ty_name) {
+                Ok(ty) => ty,
+                Err(msg) => {
+                    self.error_here(&msg);
+                    return None;
+                }
+            };
+            params.push((name, ty));
+            self.skip_ws_comments();
+            if self.consume_char(')') {
+                return Some(params);
+            }
+            if !self.consume_char(',') {
+                self.error_here("expected ',' or ')' in parameter list");
+                return None;
+            }
+        }
     }
 
     fn recover_to_next_item(&mut self) {
@@ -1174,7 +1521,7 @@ fn parse_typed_mmio_stmt(name: &str, args: &str) -> Result<Option<Stmt>, String>
 
 fn parse_mmio_addr_operand(raw: &str) -> Result<MmioAddrExpr, String> {
     let operand = raw.trim();
-    if is_ident_token(operand) {
+    if is_ident_token(operand) || is_qualified_ident_token(operand) {
         return Ok(MmioAddrExpr::Ident(operand.to_string()));
     }
     if is_int_literal_token(operand) {
@@ -1185,7 +1532,10 @@ fn parse_mmio_addr_operand(raw: &str) -> Result<MmioAddrExpr, String> {
         let (base, offset) = operand.split_once('+').expect("single plus");
         let base = base.trim();
         let offset = offset.trim();
-        if is_ident_token(base) && is_int_literal_token(offset) {
+        let base_ok = is_ident_token(base) || is_qualified_ident_token(base);
+        let offset_ok =
+            is_int_literal_token(offset) || is_qualified_ident_token(offset);
+        if base_ok && offset_ok {
             return Ok(MmioAddrExpr::IdentPlusOffset {
                 base: base.to_string(),
                 offset: offset.to_string(),
@@ -1201,7 +1551,7 @@ fn parse_mmio_addr_operand(raw: &str) -> Result<MmioAddrExpr, String> {
 
 fn parse_mmio_value_operand(raw: &str) -> Result<MmioValueExpr, String> {
     let operand = raw.trim();
-    if is_ident_token(operand) {
+    if is_ident_token(operand) || is_qualified_ident_token(operand) {
         return Ok(MmioValueExpr::Ident(operand.to_string()));
     }
     if is_int_literal_token(operand) {
@@ -1282,6 +1632,14 @@ fn is_ident_token(raw: &str) -> bool {
         return false;
     }
     chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
+/// Returns true for `IDENT::IDENT` (qualified enum variant path).
+fn is_qualified_ident_token(raw: &str) -> bool {
+    match raw.split_once("::") {
+        Some((scope, variant)) => is_ident_token(scope) && is_ident_token(variant),
+        None => false,
+    }
 }
 
 fn is_int_literal_token(raw: &str) -> bool {
