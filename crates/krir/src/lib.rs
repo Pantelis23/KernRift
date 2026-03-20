@@ -3067,15 +3067,16 @@ fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
     match op {
         ExecutableOp::Call { .. } => 5,
         ExecutableOp::CallCapture { ty, .. } => 5 + mmio_saved_value_copy_bytes(*ty),
-        ExecutableOp::BranchIfZero { ty, .. } => mmio_saved_value_zero_test_bytes(*ty) + 16,
+        // Branch encoding: test_bytes + cond_jump(6) + call_then(5) + jmp_over(5) + call_else(5) = test_bytes + 21
+        ExecutableOp::BranchIfZero { ty, .. } => mmio_saved_value_zero_test_bytes(*ty) + 21,
         ExecutableOp::BranchIfEqImm {
             ty,
             compare_value: _,
             ..
-        } => mmio_saved_value_literal_compare_bytes(*ty) + 16,
+        } => mmio_saved_value_literal_compare_bytes(*ty) + 21,
         ExecutableOp::BranchIfMaskNonZeroImm {
             ty, mask_value: _, ..
-        } => mmio_saved_value_literal_mask_test_bytes(*ty) + 16,
+        } => mmio_saved_value_literal_mask_test_bytes(*ty) + 21,
         ExecutableOp::MmioRead {
             ty, capture_value, ..
         } => {

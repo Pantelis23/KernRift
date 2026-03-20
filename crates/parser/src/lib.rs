@@ -1673,9 +1673,7 @@ mod tests {
                 Stmt::CellStore {
                     ty: MmioScalarType::U32,
                     cell: "saved_status".to_string(),
-                    value: MmioValueExpr::Ident {
-                        name: "value".to_string(),
-                    },
+                    value: MmioValueExpr::Ident("value".to_string()),
                 },
                 Stmt::CellLoad {
                     ty: MmioScalarType::U32,
