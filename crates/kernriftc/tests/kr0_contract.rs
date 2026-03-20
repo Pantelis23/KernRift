@@ -687,8 +687,8 @@ fn branch_op_symbol_layout_is_contiguous_in_x86_64_elf_object() {
     let root = repo_root();
     let fixture = root.join("examples").join("uart_console_branch_mask.kr");
     let module = compile_file(&fixture).expect("compile uart_console_branch_mask.kr");
-    let executable = lower_current_krir_to_executable_krir(&module)
-        .expect("lower to executable krir");
+    let executable =
+        lower_current_krir_to_executable_krir(&module).expect("lower to executable krir");
     let target = BackendTargetContract::x86_64_sysv();
     let object = lower_executable_krir_to_x86_64_object(&executable, &target)
         .expect("lower to x86_64 elf object");
@@ -703,7 +703,11 @@ fn branch_op_symbol_layout_is_contiguous_in_x86_64_elf_object() {
             next.offset,
             "symbol '{}' (offset={}, size={}) must end exactly where '{}' (offset={}) begins; \
              branch op size mismatch causes gaps/overlaps",
-            prev.name, prev.offset, prev.size, next.name, next.offset,
+            prev.name,
+            prev.offset,
+            prev.size,
+            next.name,
+            next.offset,
         );
     }
 
@@ -712,6 +716,9 @@ fn branch_op_symbol_layout_is_contiguous_in_x86_64_elf_object() {
         last.offset + last.size,
         object.text_bytes.len() as u64,
         "last symbol '{}' (offset={}, size={}) must end at text boundary ({})",
-        last.name, last.offset, last.size, object.text_bytes.len(),
+        last.name,
+        last.offset,
+        last.size,
+        object.text_bytes.len(),
     );
 }
