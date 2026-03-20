@@ -1070,6 +1070,7 @@ mod tests {
                     eff_used: vec![Eff::Mmio],
                     caps_req: vec!["PhysMap".to_string(), "PhysMap".to_string()],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: Vec::new(),
                 },
                 Function {
@@ -1079,6 +1080,7 @@ mod tests {
                     eff_used: vec![Eff::Mmio],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: Vec::new(),
                 },
             ],
@@ -1166,6 +1168,7 @@ mod tests {
                     eff_used: vec![Eff::Mmio],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: Vec::new(),
                 },
                 Function {
@@ -1175,6 +1178,7 @@ mod tests {
                     eff_used: vec![Eff::Alloc],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: Vec::new(),
                 },
             ],
@@ -1243,6 +1247,7 @@ mod tests {
                         hotpath: true,
                         lock_budget: Some(2),
                     },
+                    params: vec![],
                     ops: Vec::new(),
                 },
                 Function {
@@ -1252,6 +1257,7 @@ mod tests {
                     eff_used: vec![Eff::Alloc],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: Vec::new(),
                 },
             ],
@@ -1400,6 +1406,7 @@ mod tests {
                     eff_used: vec![Eff::Alloc],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![KrirOp::AllocPoint],
                 },
                 Function {
@@ -1409,6 +1416,7 @@ mod tests {
                     eff_used: vec![],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![KrirOp::Call {
                         callee: "helper".to_string(),
                     }],
@@ -1487,6 +1495,7 @@ mod tests {
                     eff_used: vec![],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![KrirOp::Call {
                         callee: "helper".to_string(),
                     }],
@@ -1498,6 +1507,7 @@ mod tests {
                     eff_used: vec![],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: Vec::new(),
                 },
             ],
@@ -1563,6 +1573,7 @@ mod tests {
                     eff_used: vec![],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![KrirOp::Call {
                         callee: "dispatch".to_string(),
                     }],
@@ -1574,6 +1585,7 @@ mod tests {
                     eff_used: vec![],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![KrirOp::Call {
                         callee: "helper".to_string(),
                     }],
@@ -1585,6 +1597,7 @@ mod tests {
                     eff_used: vec![],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: Vec::new(),
                 },
             ],
@@ -1639,6 +1652,7 @@ mod tests {
                     eff_used: vec![],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![KrirOp::Call {
                         callee: "helper".to_string(),
                     }],
@@ -1650,6 +1664,7 @@ mod tests {
                     eff_used: vec![],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![KrirOp::Call {
                         callee: "helper".to_string(),
                     }],
@@ -1661,6 +1676,7 @@ mod tests {
                     eff_used: vec![],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: Vec::new(),
                 },
             ],
@@ -1715,6 +1731,7 @@ mod tests {
                     eff_used: vec![Eff::Alloc],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: Vec::new(),
                 },
                 Function {
@@ -1724,6 +1741,7 @@ mod tests {
                     eff_used: vec![],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![KrirOp::Call {
                         callee: "kmalloc".to_string(),
                     }],
@@ -1773,6 +1791,7 @@ mod tests {
                     eff_used: vec![Eff::Mmio],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![KrirOp::MmioWrite {
                         ty: MmioScalarType::U32,
                         addr: MmioAddrExpr::IntLiteral {
@@ -1790,6 +1809,7 @@ mod tests {
                     eff_used: vec![Eff::Mmio],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![KrirOp::RawMmioWrite {
                         ty: MmioScalarType::U32,
                         addr: MmioAddrExpr::IntLiteral {
@@ -1846,6 +1866,7 @@ mod tests {
                     eff_used: vec![],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![KrirOp::Call {
                         callee: "b".to_string(),
                     }],
@@ -1857,6 +1878,7 @@ mod tests {
                     eff_used: vec![Eff::Block],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![KrirOp::Call {
                         callee: "a".to_string(),
                     }],
@@ -1893,6 +1915,7 @@ mod tests {
                 eff_used: vec![Eff::Alloc],
                 caps_req: vec![],
                 attrs: FunctionAttrs::default(),
+                params: vec![],
                 ops: vec![KrirOp::AllocPoint],
             }],
             call_edges: vec![],
@@ -1921,6 +1944,7 @@ mod tests {
                     eff_used: vec![Eff::Alloc],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![KrirOp::AllocPoint],
                 },
                 Function {
@@ -1930,6 +1954,7 @@ mod tests {
                     eff_used: vec![],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![KrirOp::Call {
                         callee: "helper".to_string(),
                     }],
@@ -1967,6 +1992,7 @@ mod tests {
                     eff_used: vec![Eff::Alloc],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![],
                 },
                 Function {
@@ -1976,6 +2002,7 @@ mod tests {
                     eff_used: vec![],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![KrirOp::Call {
                         callee: "kmalloc".to_string(),
                     }],
@@ -2013,6 +2040,7 @@ mod tests {
                     eff_used: vec![Eff::Alloc],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![],
                 },
                 Function {
@@ -2022,6 +2050,7 @@ mod tests {
                     eff_used: vec![Eff::Alloc],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![KrirOp::Call {
                         callee: "kmalloc".to_string(),
                     }],
@@ -2033,6 +2062,7 @@ mod tests {
                     eff_used: vec![],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![KrirOp::Call {
                         callee: "helper".to_string(),
                     }],
@@ -2081,6 +2111,7 @@ mod tests {
                     eff_used: vec![Eff::Alloc],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![],
                 },
                 Function {
@@ -2090,6 +2121,7 @@ mod tests {
                     eff_used: vec![Eff::Alloc],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![KrirOp::Call {
                         callee: "b".to_string(),
                     }],
@@ -2101,6 +2133,7 @@ mod tests {
                     eff_used: vec![],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![
                         KrirOp::Call {
                             callee: "a".to_string(),
@@ -2117,6 +2150,7 @@ mod tests {
                     eff_used: vec![Eff::Block],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![KrirOp::Call {
                         callee: "self_fn".to_string(),
                     }],
@@ -2175,6 +2209,7 @@ mod tests {
                 eff_used: vec![],
                 caps_req: vec!["PhysMap".to_string()],
                 attrs: FunctionAttrs::default(),
+                params: vec![],
                 ops: vec![],
             }],
             call_edges: vec![],
@@ -2203,6 +2238,7 @@ mod tests {
                     eff_used: vec![],
                     caps_req: vec!["PhysMap".to_string()],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![],
                 },
                 Function {
@@ -2212,6 +2248,7 @@ mod tests {
                     eff_used: vec![],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![KrirOp::Call {
                         callee: "helper".to_string(),
                     }],
@@ -2249,6 +2286,7 @@ mod tests {
                     eff_used: vec![],
                     caps_req: vec!["PhysMap".to_string()],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![],
                 },
                 Function {
@@ -2258,6 +2296,7 @@ mod tests {
                     eff_used: vec![],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![KrirOp::Call {
                         callee: "map_io".to_string(),
                     }],
@@ -2295,6 +2334,7 @@ mod tests {
                     eff_used: vec![],
                     caps_req: vec!["PhysMap".to_string()],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![],
                 },
                 Function {
@@ -2304,6 +2344,7 @@ mod tests {
                     eff_used: vec![],
                     caps_req: vec!["PhysMap".to_string()],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![KrirOp::Call {
                         callee: "map_io".to_string(),
                     }],
@@ -2315,6 +2356,7 @@ mod tests {
                     eff_used: vec![],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![KrirOp::Call {
                         callee: "helper".to_string(),
                     }],
@@ -2364,6 +2406,7 @@ mod tests {
                     eff_used: vec![],
                     caps_req: vec!["PhysMap".to_string()],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![],
                 },
                 Function {
@@ -2373,6 +2416,7 @@ mod tests {
                     eff_used: vec![],
                     caps_req: vec!["PhysMap".to_string()],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![KrirOp::Call {
                         callee: "b".to_string(),
                     }],
@@ -2384,6 +2428,7 @@ mod tests {
                     eff_used: vec![],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![
                         KrirOp::Call {
                             callee: "a".to_string(),
@@ -2400,6 +2445,7 @@ mod tests {
                     eff_used: vec![],
                     caps_req: vec!["IoPort".to_string()],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![KrirOp::Call {
                         callee: "self_fn".to_string(),
                     }],
@@ -2459,6 +2505,7 @@ mod tests {
                     eff_used: vec![Eff::Yield],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![KrirOp::YieldPoint],
                 },
                 Function {
@@ -2468,6 +2515,7 @@ mod tests {
                     eff_used: vec![],
                     caps_req: vec![],
                     attrs: FunctionAttrs::default(),
+                    params: vec![],
                     ops: vec![
                         KrirOp::CriticalEnter,
                         KrirOp::Call {

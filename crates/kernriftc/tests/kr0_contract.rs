@@ -760,3 +760,251 @@ fn staticlib_emit_produces_ar_archive_with_global_symbols() {
         archive_bytes.len()
     );
 }
+
+#[test]
+fn typed_params_symbol_layout_is_contiguous_in_x86_64_elf_object() {
+    // Regression: functions with typed parameters must spill params to the stack
+    // frame and reload them before use. The pre-pass size calculation must match
+    // the actual emitted bytes (SUB RSP + n_params * MOV spill + ParamLoad).
+    // Any mismatch would manifest as gaps/overlaps between consecutive symbols.
+    let root = repo_root();
+    let fixture = root.join("examples").join("uart_console_typed_params.kr");
+    let module = compile_file(&fixture).expect("compile uart_console_typed_params.kr");
+    let executable =
+        lower_current_krir_to_executable_krir(&module).expect("lower to executable krir");
+    let target = BackendTargetContract::x86_64_sysv();
+    let object = lower_executable_krir_to_x86_64_object(&executable, &target)
+        .expect("lower to x86_64 elf object");
+
+    let mut by_offset: Vec<_> = object.function_symbols.iter().collect();
+    by_offset.sort_by_key(|s| s.offset);
+
+    for window in by_offset.windows(2) {
+        let (prev, next) = (&window[0], &window[1]);
+        assert_eq!(
+            prev.offset + prev.size,
+            next.offset,
+            "symbol '{}' (offset={}, size={}) must end exactly where '{}' (offset={}) begins; \
+             typed-param frame size mismatch causes gaps/overlaps",
+            prev.name,
+            prev.offset,
+            prev.size,
+            next.name,
+            next.offset,
+        );
+    }
+
+    let last = by_offset.last().expect("at least one symbol");
+    assert_eq!(
+        last.offset + last.size,
+        object.text_bytes.len() as u64,
+        "last symbol '{}' (offset={}, size={}) must end at text boundary ({})",
+        last.name,
+        last.offset,
+        last.size,
+        object.text_bytes.len(),
+    );
+
+    // Every parametrised function must export a global symbol.
+    let names: Vec<_> = by_offset.iter().map(|s| s.name.as_str()).collect();
+    assert!(
+        names.contains(&"write_char"),
+        "write_char must be a global symbol; got {:?}",
+        names
+    );
+    assert!(
+        names.contains(&"write_word"),
+        "write_word must be a global symbol; got {:?}",
+        names
+    );
+}
+
+#[test]
+fn param_addr_mmio_symbol_layout_is_contiguous_in_x86_64_elf_object() {
+    // Regression: functions that use a u64 parameter as a raw MMIO address
+    // (MmioReadParamAddr / MmioWriteImmParamAddr / MmioWriteValueParamAddr) must
+    // compute their encoded sizes correctly or symbol offsets will diverge from
+    // actual bytes, causing broken call displacements.
+    let root = repo_root();
+    let fixture = root.join("examples").join("uart_console_param_addr.kr");
+    let module = compile_file(&fixture).expect("compile uart_console_param_addr.kr");
+    let executable =
+        lower_current_krir_to_executable_krir(&module).expect("lower to executable krir");
+    let target = BackendTargetContract::x86_64_sysv();
+    let object = lower_executable_krir_to_x86_64_object(&executable, &target)
+        .expect("lower to x86_64 elf object");
+
+    let mut by_offset: Vec<_> = object.function_symbols.iter().collect();
+    by_offset.sort_by_key(|s| s.offset);
+
+    for window in by_offset.windows(2) {
+        let (prev, next) = (&window[0], &window[1]);
+        assert_eq!(
+            prev.offset + prev.size,
+            next.offset,
+            "symbol '{}' (offset={}, size={}) must end exactly where '{}' (offset={}) begins",
+            prev.name,
+            prev.offset,
+            prev.size,
+            next.name,
+            next.offset,
+        );
+    }
+
+    let last = by_offset.last().expect("at least one symbol");
+    assert_eq!(
+        last.offset + last.size,
+        object.text_bytes.len() as u64,
+        "last symbol '{}' must end at text boundary",
+        last.name,
+    );
+}
+
+#[test]
+fn unsafe_block_compiles_raw_mmio_without_module_caps() {
+    // An `unsafe { }` block must grant raw MMIO access locally, without
+    // requiring @module_caps(MmioRaw) at the module level.
+    let source = r#"
+        @ctx(thread, boot)
+        fn poke() {
+          unsafe {
+            raw_mmio_write<u32>(0x1000, 0x01);
+          }
+        }
+    "#;
+    let result = kernriftc::compile_source(source);
+    assert!(
+        result.is_ok(),
+        "unsafe block without @module_caps(MmioRaw) must compile; got: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn named_constants_resolve_to_immediates_in_object() {
+    // `const NAME: type = value;` declarations must be resolved to integer
+    // literals when used as MMIO write values, producing the same object as
+    // writing the literal directly.
+    let root = repo_root();
+    let fixture = root.join("examples").join("uart_console_constants.kr");
+    let module = compile_file(&fixture).expect("compile uart_console_constants.kr");
+    let executable =
+        lower_current_krir_to_executable_krir(&module).expect("lower to executable krir");
+    let target = BackendTargetContract::x86_64_sysv();
+    let object = lower_executable_krir_to_x86_64_object(&executable, &target)
+        .expect("lower to x86_64 elf object");
+
+    // The text must contain the constant values as immediate bytes.
+    // UART_ENABLE=0x01, UART_TX_READY=0x02, UART_BAUD_9600=0x1A
+    let text = &object.text_bytes;
+    assert!(
+        text.windows(5).any(|w| w == [0xB9, 0x01, 0x00, 0x00, 0x00]),
+        "UART_ENABLE=0x01 must appear as `mov $1, %ecx` in object"
+    );
+    assert!(
+        text.windows(5).any(|w| w == [0xB9, 0x1A, 0x00, 0x00, 0x00]),
+        "UART_BAUD_9600=0x1A must appear as `mov $0x1a, %ecx` in object"
+    );
+    assert!(
+        text.windows(5).any(|w| w == [0xB9, 0x02, 0x00, 0x00, 0x00]),
+        "UART_TX_READY=0x02 must appear as `mov $2, %ecx` in object"
+    );
+}
+
+#[test]
+fn enum_variants_resolve_as_addresses_and_values_in_object() {
+    // `enum NAME: type { VARIANT = value, ... }` variants must be resolved to
+    // integer literals at compile time when used as MMIO addresses or values.
+    // The emitted object must contain the variant numeric values as immediates.
+    let root = repo_root();
+    let fixture = root.join("examples").join("uart_console_enum.kr");
+    let module = compile_file(&fixture).expect("compile uart_console_enum.kr");
+    let executable =
+        lower_current_krir_to_executable_krir(&module).expect("lower to executable krir");
+    let target = BackendTargetContract::x86_64_sysv();
+    let object = lower_executable_krir_to_x86_64_object(&executable, &target)
+        .expect("lower to x86_64 elf object");
+
+    let text = &object.text_bytes;
+
+    // UartCtrl::Enable=0x01 must appear as `mov $1, %ecx` (value operand)
+    assert!(
+        text.windows(5).any(|w| w == [0xB9, 0x01, 0x00, 0x00, 0x00]),
+        "UartCtrl::Enable=0x01 must appear as immediate in object"
+    );
+    // UartCtrl::TxFlush=0x02 must appear as `mov $2, %ecx`
+    assert!(
+        text.windows(5).any(|w| w == [0xB9, 0x02, 0x00, 0x00, 0x00]),
+        "UartCtrl::TxFlush=0x02 must appear as immediate in object"
+    );
+    // UartCtrl::Reset=0x04 must appear as `mov $4, %ecx`
+    assert!(
+        text.windows(5).any(|w| w == [0xB9, 0x04, 0x00, 0x00, 0x00]),
+        "UartCtrl::Reset=0x04 must appear as immediate in object"
+    );
+    // UartReg::Control=0x1000 must appear as movabs addr (10-byte form for u64 addr)
+    // The 8-byte little-endian encoding of 0x1000 must be present.
+    let addr_bytes: [u8; 8] = 0x1000u64.to_le_bytes();
+    assert!(
+        text.windows(8).any(|w| w == addr_bytes),
+        "UartReg::Control=0x1000 must appear as address immediate in object"
+    );
+}
+
+#[test]
+fn struct_field_offsets_fold_to_immediates_in_object() {
+    // `struct NAME { FIELD: type, ... }` field offsets must be resolved to
+    // deterministic byte offsets at compile time and folded with any base address
+    // into a single integer immediate in the emitted ELF object.
+    //
+    // Layout: Control=0, Status=4, Data=8, BaudDiv=12, Mode=14 (no padding).
+    // UartBase::Uart0 = 0x40000000, Uart1 = 0x40001000.
+    //
+    // Verified: each `raw_mmio_read/write(BASE + StructName::Field, ...)` emits
+    // a single movabs with the folded address — no runtime arithmetic.
+    let root = repo_root();
+    let fixture = root.join("examples").join("uart_struct_layout.kr");
+    let module = compile_file(&fixture).expect("compile uart_struct_layout.kr");
+    let executable =
+        lower_current_krir_to_executable_krir(&module).expect("lower to executable krir");
+    let target = BackendTargetContract::x86_64_sysv();
+    let object = lower_executable_krir_to_x86_64_object(&executable, &target)
+        .expect("lower to x86_64 elf object");
+    let text = &object.text_bytes;
+
+    // Uart0 + Control (offset 0) = 0x40000000
+    let addr_uart0_ctrl: [u8; 8] = 0x40000000u64.to_le_bytes();
+    assert!(
+        text.windows(8).any(|w| w == addr_uart0_ctrl),
+        "Uart0+Control must fold to 0x40000000"
+    );
+    // Uart0 + Status (offset 4) = 0x40000004
+    let addr_uart0_status: [u8; 8] = 0x40000004u64.to_le_bytes();
+    assert!(
+        text.windows(8).any(|w| w == addr_uart0_status),
+        "Uart0+Status must fold to 0x40000004"
+    );
+    // Uart0 + Data (offset 8) = 0x40000008
+    let addr_uart0_data: [u8; 8] = 0x40000008u64.to_le_bytes();
+    assert!(
+        text.windows(8).any(|w| w == addr_uart0_data),
+        "Uart0+Data must fold to 0x40000008"
+    );
+    // Uart0 + BaudDiv (offset 12 = 0x0C) = 0x4000000C
+    let addr_uart0_baud: [u8; 8] = 0x4000000Cu64.to_le_bytes();
+    assert!(
+        text.windows(8).any(|w| w == addr_uart0_baud),
+        "Uart0+BaudDiv must fold to 0x4000000C"
+    );
+    // Uart1 + Control (offset 0) = 0x40001000
+    let addr_uart1_ctrl: [u8; 8] = 0x40001000u64.to_le_bytes();
+    assert!(
+        text.windows(8).any(|w| w == addr_uart1_ctrl),
+        "Uart1+Control must fold to 0x40001000"
+    );
+    // BaudDiv field is u16 — verify the 16-bit immediate 0x1A (BAUD_115200) appears.
+    assert!(
+        text.windows(2).any(|w| w == [0x1A, 0x00]),
+        "BAUD_115200=0x1A must appear as u16 immediate"
+    );
+}

@@ -1311,20 +1311,58 @@ pub fn lower_to_krir_with_surface(
         }
     }
 
+    // Build enum_addr_keys: the set of "ENUM::VARIANT" strings that are valid as raw addresses.
+    let enum_addr_keys: std::collections::BTreeSet<String> = ast
+        .enums
+        .iter()
+        .flat_map(|e| {
+            e.variants
+                .iter()
+                .map(move |v| format!("{}::{}", e.name, v.name))
+        })
+        .collect();
+
+    let validation_ctx = MmioValidationCtx {
+        declared_bases: &mmio_base_names,
+        declared_registers: &mmio_register_rules,
+        declared_absolute_registers: &mmio_absolute_register_rules,
+        module_declares_mmio_structure,
+        module_allows_raw_mmio_literals,
+        enum_addr_keys: &enum_addr_keys,
+    };
     for item in &ast.items {
+        let param_names: std::collections::BTreeSet<&str> =
+            item.params.iter().map(|(n, _)| n.as_str()).collect();
         validate_mmio_address_bases_in_stmts(
             &item.body,
-            &mmio_base_names,
-            &mmio_register_rules,
-            &mmio_absolute_register_rules,
-            module_declares_mmio_structure,
-            module_allows_raw_mmio_literals,
+            &validation_ctx,
+            &param_names,
             &mut errors,
         );
     }
 
+    let mut const_map: std::collections::BTreeMap<String, String> = ast
+        .constants
+        .iter()
+        .map(|c| (c.name.clone(), c.value.clone()))
+        .collect();
+    for enum_decl in &ast.enums {
+        for variant in &enum_decl.variants {
+            let key = format!("{}::{}", enum_decl.name, variant.name);
+            const_map.insert(key, variant.value.clone());
+        }
+    }
+    for struct_decl in &ast.structs {
+        for field in &struct_decl.fields {
+            if let Some(offset) = struct_decl.field_offset(&field.name) {
+                let key = format!("{}::{}", struct_decl.name, field.name);
+                const_map.insert(key, offset.to_string());
+            }
+        }
+    }
+
     for item in &ast.items {
-        match lower_function(item, surface_profile) {
+        match lower_function(item, surface_profile, &const_map) {
             Ok(function) => functions.push(function),
             Err(errs) => errors.extend(errs),
         }
@@ -1450,18 +1488,27 @@ fn collect_mmio_base_numeric_addrs(mmio_bases: &[KrirMmioBaseDecl]) -> BTreeMap<
         .collect()
 }
 
-fn lower_function(item: &FnAst, surface_profile: SurfaceProfile) -> Result<Function, Vec<String>> {
+fn lower_function(
+    item: &FnAst,
+    surface_profile: SurfaceProfile,
+    const_map: &std::collections::BTreeMap<String, String>,
+) -> Result<Function, Vec<String>> {
     let facts = normalize_function_facts(item, surface_profile)?;
 
     let mut ops = Vec::new();
     let mut eff_used = facts.eff_used;
     for stmt in &item.body {
-        lower_stmt(stmt, &mut ops, &mut eff_used);
+        lower_stmt(stmt, &mut ops, &mut eff_used, const_map);
     }
 
     Ok(Function {
         name: item.name.clone(),
         is_extern: item.is_extern,
+        params: item
+            .params
+            .iter()
+            .map(|(name, ty)| (name.clone(), lower_mmio_scalar_type(*ty)))
+            .collect(),
         ctx_ok: facts.ctx_ok.into_iter().collect(),
         eff_used: eff_used.into_iter().collect(),
         caps_req: facts.caps_req.into_iter().collect(),
@@ -1603,29 +1650,39 @@ fn collect_mmio_registers(
     (out, by_base_and_offset, by_absolute_addr, errors)
 }
 
-fn validate_mmio_address_bases_in_stmts(
-    stmts: &[Stmt],
-    declared_bases: &BTreeSet<String>,
-    declared_registers: &MmioRegisterRules,
-    declared_absolute_registers: &MmioAbsoluteRegisterRules,
+/// Module-level context shared across all validation calls within one module.
+struct MmioValidationCtx<'a> {
+    declared_bases: &'a BTreeSet<String>,
+    declared_registers: &'a MmioRegisterRules,
+    declared_absolute_registers: &'a MmioAbsoluteRegisterRules,
     module_declares_mmio_structure: bool,
     module_allows_raw_mmio_literals: bool,
+    enum_addr_keys: &'a std::collections::BTreeSet<String>,
+}
+
+fn validate_mmio_address_bases_in_stmts(
+    stmts: &[Stmt],
+    ctx: &MmioValidationCtx<'_>,
+    param_names: &std::collections::BTreeSet<&str>,
     errors: &mut Vec<String>,
 ) {
     for stmt in stmts {
         match stmt {
-            Stmt::Critical(inner) => validate_mmio_address_bases_in_stmts(
-                inner,
-                declared_bases,
-                declared_registers,
-                declared_absolute_registers,
-                module_declares_mmio_structure,
-                module_allows_raw_mmio_literals,
-                errors,
-            ),
+            Stmt::Critical(inner) => {
+                validate_mmio_address_bases_in_stmts(inner, ctx, param_names, errors)
+            }
+            // unsafe { } suppresses the module-level MmioRaw capability requirement,
+            // allowing raw_mmio_read/write within the block without @module_caps(MmioRaw).
+            Stmt::Unsafe(inner) => {
+                let unsafe_ctx = MmioValidationCtx {
+                    module_allows_raw_mmio_literals: true, // unsafe block grants raw MMIO access
+                    ..*ctx
+                };
+                validate_mmio_address_bases_in_stmts(inner, &unsafe_ctx, param_names, errors)
+            }
             Stmt::MmioRead { ty, addr, capture } => {
                 if let Some(base) = mmio_addr_base_name(addr)
-                    && !declared_bases.contains(base)
+                    && !ctx.declared_bases.contains(base)
                 {
                     errors.push(format!(
                         "undeclared mmio base '{}' used in {}",
@@ -1640,7 +1697,7 @@ fn validate_mmio_address_bases_in_stmts(
                             *ty,
                             addr,
                             capture.as_deref(),
-                            declared_registers,
+                            ctx.declared_registers,
                             errors,
                         ),
                         ParserMmioAddrExpr::IdentPlusOffset { base, offset } => {
@@ -1650,7 +1707,7 @@ fn validate_mmio_address_bases_in_stmts(
                                 *ty,
                                 addr,
                                 capture.as_deref(),
-                                declared_registers,
+                                ctx.declared_registers,
                                 errors,
                             );
                         }
@@ -1660,12 +1717,12 @@ fn validate_mmio_address_bases_in_stmts(
                                 *ty,
                                 addr,
                                 capture.as_deref(),
-                                declared_absolute_registers,
+                                ctx.declared_absolute_registers,
                                 errors,
                             );
                             if !matched
-                                && module_declares_mmio_structure
-                                && !module_allows_raw_mmio_literals
+                                && ctx.module_declares_mmio_structure
+                                && !ctx.module_allows_raw_mmio_literals
                             {
                                 errors.push(format!(
                                     "unresolved raw mmio address '{}'; declare a matching mmio_reg or enable raw mmio access",
@@ -1677,7 +1734,7 @@ fn validate_mmio_address_bases_in_stmts(
                 }
             }
             Stmt::RawMmioRead { ty, addr, capture } => {
-                if !module_allows_raw_mmio_literals {
+                if !ctx.module_allows_raw_mmio_literals {
                     errors.push(format!(
                         "{} requires @module_caps({})",
                         format_raw_mmio_read_invocation(*ty, addr, capture.as_deref()),
@@ -1686,7 +1743,9 @@ fn validate_mmio_address_bases_in_stmts(
                     continue;
                 }
                 if let Some(base) = mmio_addr_base_name(addr)
-                    && !declared_bases.contains(base)
+                    && !ctx.declared_bases.contains(base)
+                    && !param_names.contains(base)
+                    && !ctx.enum_addr_keys.contains(base)
                 {
                     errors.push(format!(
                         "undeclared mmio base '{}' used in {}",
@@ -1697,7 +1756,7 @@ fn validate_mmio_address_bases_in_stmts(
             }
             Stmt::MmioWrite { ty, addr, value } => {
                 if let Some(base) = mmio_addr_base_name(addr)
-                    && !declared_bases.contains(base)
+                    && !ctx.declared_bases.contains(base)
                 {
                     errors.push(format!(
                         "undeclared mmio base '{}' used in {}",
@@ -1712,7 +1771,7 @@ fn validate_mmio_address_bases_in_stmts(
                             *ty,
                             addr,
                             value,
-                            declared_registers,
+                            ctx.declared_registers,
                             errors,
                         ),
                         ParserMmioAddrExpr::IdentPlusOffset { base, offset } => {
@@ -1722,7 +1781,7 @@ fn validate_mmio_address_bases_in_stmts(
                                 *ty,
                                 addr,
                                 value,
-                                declared_registers,
+                                ctx.declared_registers,
                                 errors,
                             );
                         }
@@ -1732,12 +1791,12 @@ fn validate_mmio_address_bases_in_stmts(
                                 *ty,
                                 addr,
                                 value,
-                                declared_absolute_registers,
+                                ctx.declared_absolute_registers,
                                 errors,
                             );
                             if !matched
-                                && module_declares_mmio_structure
-                                && !module_allows_raw_mmio_literals
+                                && ctx.module_declares_mmio_structure
+                                && !ctx.module_allows_raw_mmio_literals
                             {
                                 errors.push(format!(
                                     "unresolved raw mmio address '{}'; declare a matching mmio_reg or enable raw mmio access",
@@ -1749,7 +1808,7 @@ fn validate_mmio_address_bases_in_stmts(
                 }
             }
             Stmt::RawMmioWrite { ty, addr, value } => {
-                if !module_allows_raw_mmio_literals {
+                if !ctx.module_allows_raw_mmio_literals {
                     errors.push(format!(
                         "{} requires @module_caps({})",
                         format_raw_mmio_write_invocation(*ty, addr, value),
@@ -1758,7 +1817,9 @@ fn validate_mmio_address_bases_in_stmts(
                     continue;
                 }
                 if let Some(base) = mmio_addr_base_name(addr)
-                    && !declared_bases.contains(base)
+                    && !ctx.declared_bases.contains(base)
+                    && !param_names.contains(base)
+                    && !ctx.enum_addr_keys.contains(base)
                 {
                     errors.push(format!(
                         "undeclared mmio base '{}' used in {}",
@@ -2198,6 +2259,15 @@ fn lower_stmts_to_canonical_executable(
                 "canonical-exec: function '{}' contains unsupported critical region",
                 function_name
             )),
+            Stmt::Unsafe(inner) => lower_stmts_to_canonical_executable(
+                inner,
+                function_name,
+                all_names,
+                executable_names,
+                extern_names,
+                ops,
+                errors,
+            ),
             Stmt::YieldPoint => errors.push(format!(
                 "canonical-exec: function '{}' contains unsupported yieldpoint()",
                 function_name
@@ -2296,7 +2366,12 @@ fn lower_stmts_to_canonical_executable(
     }
 }
 
-fn lower_stmt(stmt: &Stmt, ops: &mut Vec<KrirOp>, eff_used: &mut BTreeSet<Eff>) {
+fn lower_stmt(
+    stmt: &Stmt,
+    ops: &mut Vec<KrirOp>,
+    eff_used: &mut BTreeSet<Eff>,
+    const_map: &std::collections::BTreeMap<String, String>,
+) {
     match stmt {
         Stmt::Call(callee) => ops.push(KrirOp::Call {
             callee: callee.clone(),
@@ -2308,9 +2383,14 @@ fn lower_stmt(stmt: &Stmt, ops: &mut Vec<KrirOp>, eff_used: &mut BTreeSet<Eff>) 
         Stmt::Critical(inner) => {
             ops.push(KrirOp::CriticalEnter);
             for stmt in inner {
-                lower_stmt(stmt, ops, eff_used);
+                lower_stmt(stmt, ops, eff_used, const_map);
             }
             ops.push(KrirOp::CriticalExit);
+        }
+        Stmt::Unsafe(inner) => {
+            for stmt in inner {
+                lower_stmt(stmt, ops, eff_used, const_map);
+            }
         }
         Stmt::YieldPoint => {
             ops.push(KrirOp::YieldPoint);
@@ -2369,7 +2449,7 @@ fn lower_stmt(stmt: &Stmt, ops: &mut Vec<KrirOp>, eff_used: &mut BTreeSet<Eff>) 
         Stmt::CellStore { ty, cell, value } => ops.push(KrirOp::StackStore {
             ty: lower_mmio_scalar_type(*ty),
             cell: cell.clone(),
-            value: lower_mmio_value_expr(value),
+            value: lower_mmio_value_expr(value, const_map),
         }),
         Stmt::CellLoad { ty, cell, slot } => ops.push(KrirOp::StackLoad {
             ty: lower_mmio_scalar_type(*ty),
@@ -2379,7 +2459,7 @@ fn lower_stmt(stmt: &Stmt, ops: &mut Vec<KrirOp>, eff_used: &mut BTreeSet<Eff>) 
         Stmt::MmioRead { ty, addr, capture } => {
             ops.push(KrirOp::MmioRead {
                 ty: lower_mmio_scalar_type(*ty),
-                addr: lower_mmio_addr_expr(addr),
+                addr: lower_mmio_addr_expr(addr, const_map),
                 capture_slot: capture.clone(),
             });
             eff_used.insert(Eff::Mmio);
@@ -2387,15 +2467,15 @@ fn lower_stmt(stmt: &Stmt, ops: &mut Vec<KrirOp>, eff_used: &mut BTreeSet<Eff>) 
         Stmt::MmioWrite { ty, addr, value } => {
             ops.push(KrirOp::MmioWrite {
                 ty: lower_mmio_scalar_type(*ty),
-                addr: lower_mmio_addr_expr(addr),
-                value: lower_mmio_value_expr(value),
+                addr: lower_mmio_addr_expr(addr, const_map),
+                value: lower_mmio_value_expr(value, const_map),
             });
             eff_used.insert(Eff::Mmio);
         }
         Stmt::RawMmioRead { ty, addr, capture } => {
             ops.push(KrirOp::RawMmioRead {
                 ty: lower_mmio_scalar_type(*ty),
-                addr: lower_mmio_addr_expr(addr),
+                addr: lower_mmio_addr_expr(addr, const_map),
                 capture_slot: capture.clone(),
             });
             eff_used.insert(Eff::Mmio);
@@ -2403,8 +2483,8 @@ fn lower_stmt(stmt: &Stmt, ops: &mut Vec<KrirOp>, eff_used: &mut BTreeSet<Eff>) 
         Stmt::RawMmioWrite { ty, addr, value } => {
             ops.push(KrirOp::RawMmioWrite {
                 ty: lower_mmio_scalar_type(*ty),
-                addr: lower_mmio_addr_expr(addr),
-                value: lower_mmio_value_expr(value),
+                addr: lower_mmio_addr_expr(addr, const_map),
+                value: lower_mmio_value_expr(value, const_map),
             });
             eff_used.insert(Eff::Mmio);
         }
@@ -2428,22 +2508,69 @@ fn lower_mmio_reg_access(access: ParserMmioRegAccess) -> KrirMmioRegAccess {
     }
 }
 
-fn lower_mmio_addr_expr(expr: &ParserMmioAddrExpr) -> KrirMmioAddrExpr {
+fn lower_mmio_addr_expr(
+    expr: &ParserMmioAddrExpr,
+    const_map: &std::collections::BTreeMap<String, String>,
+) -> KrirMmioAddrExpr {
     match expr {
-        ParserMmioAddrExpr::Ident(name) => KrirMmioAddrExpr::Ident { name: name.clone() },
+        ParserMmioAddrExpr::Ident(name) => {
+            if let Some(lit) = const_map.get(name.as_str()) {
+                KrirMmioAddrExpr::IntLiteral { value: lit.clone() }
+            } else {
+                KrirMmioAddrExpr::Ident { name: name.clone() }
+            }
+        }
         ParserMmioAddrExpr::IntLiteral(value) => KrirMmioAddrExpr::IntLiteral {
             value: value.clone(),
         },
-        ParserMmioAddrExpr::IdentPlusOffset { base, offset } => KrirMmioAddrExpr::IdentPlusOffset {
-            base: base.clone(),
-            offset: offset.clone(),
-        },
+        ParserMmioAddrExpr::IdentPlusOffset { base, offset } => {
+            // Resolve base and offset independently from const_map (catches
+            // enum variants and struct field offsets on either side).
+            let base_resolved = const_map.get(base.as_str()).map(String::as_str);
+            let offset_resolved = const_map.get(offset.as_str()).map(String::as_str);
+
+            let base_num = base_resolved
+                .and_then(int_literal_numeric_value)
+                .or_else(|| int_literal_numeric_value(base));
+            let off_num = offset_resolved
+                .and_then(int_literal_numeric_value)
+                .or_else(|| int_literal_numeric_value(offset));
+
+            match (base_num, off_num) {
+                (Some(b), Some(o)) => {
+                    // Both sides resolve to numbers — fold to a single IntLiteral.
+                    KrirMmioAddrExpr::IntLiteral {
+                        value: format!("0x{:X}", b.wrapping_add(o) as u64),
+                    }
+                }
+                _ => {
+                    // At least one side is a symbolic mmio-base ident; emit
+                    // IdentPlusOffset with the offset resolved to its literal
+                    // string if possible (so the KRIR backend sees a number).
+                    let resolved_offset = offset_resolved.unwrap_or(offset.as_str()).to_string();
+                    KrirMmioAddrExpr::IdentPlusOffset {
+                        base: base.clone(),
+                        offset: resolved_offset,
+                    }
+                }
+            }
+        }
     }
 }
 
-fn lower_mmio_value_expr(expr: &ParserMmioValueExpr) -> KrirMmioValueExpr {
+fn lower_mmio_value_expr(
+    expr: &ParserMmioValueExpr,
+    const_map: &std::collections::BTreeMap<String, String>,
+) -> KrirMmioValueExpr {
     match expr {
-        ParserMmioValueExpr::Ident(name) => KrirMmioValueExpr::Ident { name: name.clone() },
+        ParserMmioValueExpr::Ident(name) => {
+            // Resolve named constants to integer literals at HIR lowering time.
+            if let Some(lit) = const_map.get(name.as_str()) {
+                KrirMmioValueExpr::IntLiteral { value: lit.clone() }
+            } else {
+                KrirMmioValueExpr::Ident { name: name.clone() }
+            }
+        }
         ParserMmioValueExpr::IntLiteral(value) => KrirMmioValueExpr::IntLiteral {
             value: value.clone(),
         },
