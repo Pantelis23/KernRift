@@ -7,7 +7,7 @@ use emit::{
     emit_krir_json, emit_lockgraph_json, emit_report_json,
 };
 use kernriftc::{
-    BackendArtifactKind, analyze, check_file, check_module, compile_file, compile_source,
+    BackendArtifactKind, analyze, check_file, check_module, compile_file,
     emit_backend_artifact_file,
 };
 use krir::{

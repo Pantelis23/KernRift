@@ -1322,18 +1322,21 @@ pub fn lower_to_krir_with_surface(
         })
         .collect();
 
+    let validation_ctx = MmioValidationCtx {
+        declared_bases: &mmio_base_names,
+        declared_registers: &mmio_register_rules,
+        declared_absolute_registers: &mmio_absolute_register_rules,
+        module_declares_mmio_structure,
+        module_allows_raw_mmio_literals,
+        enum_addr_keys: &enum_addr_keys,
+    };
     for item in &ast.items {
         let param_names: std::collections::BTreeSet<&str> =
             item.params.iter().map(|(n, _)| n.as_str()).collect();
         validate_mmio_address_bases_in_stmts(
             &item.body,
-            &mmio_base_names,
-            &mmio_register_rules,
-            &mmio_absolute_register_rules,
-            module_declares_mmio_structure,
-            module_allows_raw_mmio_literals,
+            &validation_ctx,
             &param_names,
-            &enum_addr_keys,
             &mut errors,
         );
     }
@@ -1647,46 +1650,39 @@ fn collect_mmio_registers(
     (out, by_base_and_offset, by_absolute_addr, errors)
 }
 
-fn validate_mmio_address_bases_in_stmts(
-    stmts: &[Stmt],
-    declared_bases: &BTreeSet<String>,
-    declared_registers: &MmioRegisterRules,
-    declared_absolute_registers: &MmioAbsoluteRegisterRules,
+/// Module-level context shared across all validation calls within one module.
+struct MmioValidationCtx<'a> {
+    declared_bases: &'a BTreeSet<String>,
+    declared_registers: &'a MmioRegisterRules,
+    declared_absolute_registers: &'a MmioAbsoluteRegisterRules,
     module_declares_mmio_structure: bool,
     module_allows_raw_mmio_literals: bool,
+    enum_addr_keys: &'a std::collections::BTreeSet<String>,
+}
+
+fn validate_mmio_address_bases_in_stmts(
+    stmts: &[Stmt],
+    ctx: &MmioValidationCtx<'_>,
     param_names: &std::collections::BTreeSet<&str>,
-    enum_addr_keys: &std::collections::BTreeSet<String>,
     errors: &mut Vec<String>,
 ) {
     for stmt in stmts {
         match stmt {
-            Stmt::Critical(inner) => validate_mmio_address_bases_in_stmts(
-                inner,
-                declared_bases,
-                declared_registers,
-                declared_absolute_registers,
-                module_declares_mmio_structure,
-                module_allows_raw_mmio_literals,
-                param_names,
-                enum_addr_keys,
-                errors,
-            ),
+            Stmt::Critical(inner) => {
+                validate_mmio_address_bases_in_stmts(inner, ctx, param_names, errors)
+            }
             // unsafe { } suppresses the module-level MmioRaw capability requirement,
             // allowing raw_mmio_read/write within the block without @module_caps(MmioRaw).
-            Stmt::Unsafe(inner) => validate_mmio_address_bases_in_stmts(
-                inner,
-                declared_bases,
-                declared_registers,
-                declared_absolute_registers,
-                module_declares_mmio_structure,
-                true, // unsafe block grants raw MMIO access
-                param_names,
-                enum_addr_keys,
-                errors,
-            ),
+            Stmt::Unsafe(inner) => {
+                let unsafe_ctx = MmioValidationCtx {
+                    module_allows_raw_mmio_literals: true, // unsafe block grants raw MMIO access
+                    ..*ctx
+                };
+                validate_mmio_address_bases_in_stmts(inner, &unsafe_ctx, param_names, errors)
+            }
             Stmt::MmioRead { ty, addr, capture } => {
                 if let Some(base) = mmio_addr_base_name(addr)
-                    && !declared_bases.contains(base)
+                    && !ctx.declared_bases.contains(base)
                 {
                     errors.push(format!(
                         "undeclared mmio base '{}' used in {}",
@@ -1701,7 +1697,7 @@ fn validate_mmio_address_bases_in_stmts(
                             *ty,
                             addr,
                             capture.as_deref(),
-                            declared_registers,
+                            ctx.declared_registers,
                             errors,
                         ),
                         ParserMmioAddrExpr::IdentPlusOffset { base, offset } => {
@@ -1711,7 +1707,7 @@ fn validate_mmio_address_bases_in_stmts(
                                 *ty,
                                 addr,
                                 capture.as_deref(),
-                                declared_registers,
+                                ctx.declared_registers,
                                 errors,
                             );
                         }
@@ -1721,12 +1717,12 @@ fn validate_mmio_address_bases_in_stmts(
                                 *ty,
                                 addr,
                                 capture.as_deref(),
-                                declared_absolute_registers,
+                                ctx.declared_absolute_registers,
                                 errors,
                             );
                             if !matched
-                                && module_declares_mmio_structure
-                                && !module_allows_raw_mmio_literals
+                                && ctx.module_declares_mmio_structure
+                                && !ctx.module_allows_raw_mmio_literals
                             {
                                 errors.push(format!(
                                     "unresolved raw mmio address '{}'; declare a matching mmio_reg or enable raw mmio access",
@@ -1738,7 +1734,7 @@ fn validate_mmio_address_bases_in_stmts(
                 }
             }
             Stmt::RawMmioRead { ty, addr, capture } => {
-                if !module_allows_raw_mmio_literals {
+                if !ctx.module_allows_raw_mmio_literals {
                     errors.push(format!(
                         "{} requires @module_caps({})",
                         format_raw_mmio_read_invocation(*ty, addr, capture.as_deref()),
@@ -1747,9 +1743,9 @@ fn validate_mmio_address_bases_in_stmts(
                     continue;
                 }
                 if let Some(base) = mmio_addr_base_name(addr)
-                    && !declared_bases.contains(base)
+                    && !ctx.declared_bases.contains(base)
                     && !param_names.contains(base)
-                    && !enum_addr_keys.contains(base)
+                    && !ctx.enum_addr_keys.contains(base)
                 {
                     errors.push(format!(
                         "undeclared mmio base '{}' used in {}",
@@ -1760,7 +1756,7 @@ fn validate_mmio_address_bases_in_stmts(
             }
             Stmt::MmioWrite { ty, addr, value } => {
                 if let Some(base) = mmio_addr_base_name(addr)
-                    && !declared_bases.contains(base)
+                    && !ctx.declared_bases.contains(base)
                 {
                     errors.push(format!(
                         "undeclared mmio base '{}' used in {}",
@@ -1775,7 +1771,7 @@ fn validate_mmio_address_bases_in_stmts(
                             *ty,
                             addr,
                             value,
-                            declared_registers,
+                            ctx.declared_registers,
                             errors,
                         ),
                         ParserMmioAddrExpr::IdentPlusOffset { base, offset } => {
@@ -1785,7 +1781,7 @@ fn validate_mmio_address_bases_in_stmts(
                                 *ty,
                                 addr,
                                 value,
-                                declared_registers,
+                                ctx.declared_registers,
                                 errors,
                             );
                         }
@@ -1795,12 +1791,12 @@ fn validate_mmio_address_bases_in_stmts(
                                 *ty,
                                 addr,
                                 value,
-                                declared_absolute_registers,
+                                ctx.declared_absolute_registers,
                                 errors,
                             );
                             if !matched
-                                && module_declares_mmio_structure
-                                && !module_allows_raw_mmio_literals
+                                && ctx.module_declares_mmio_structure
+                                && !ctx.module_allows_raw_mmio_literals
                             {
                                 errors.push(format!(
                                     "unresolved raw mmio address '{}'; declare a matching mmio_reg or enable raw mmio access",
@@ -1812,7 +1808,7 @@ fn validate_mmio_address_bases_in_stmts(
                 }
             }
             Stmt::RawMmioWrite { ty, addr, value } => {
-                if !module_allows_raw_mmio_literals {
+                if !ctx.module_allows_raw_mmio_literals {
                     errors.push(format!(
                         "{} requires @module_caps({})",
                         format_raw_mmio_write_invocation(*ty, addr, value),
@@ -1821,9 +1817,9 @@ fn validate_mmio_address_bases_in_stmts(
                     continue;
                 }
                 if let Some(base) = mmio_addr_base_name(addr)
-                    && !declared_bases.contains(base)
+                    && !ctx.declared_bases.contains(base)
                     && !param_names.contains(base)
-                    && !enum_addr_keys.contains(base)
+                    && !ctx.enum_addr_keys.contains(base)
                 {
                     errors.push(format!(
                         "undeclared mmio base '{}' used in {}",
