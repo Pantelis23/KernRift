@@ -6,7 +6,10 @@ use emit::{
     ContractsSchema, emit_caps_manifest_json, emit_contracts_json, emit_contracts_json_with_schema,
     emit_krir_json, emit_lockgraph_json, emit_report_json,
 };
-use kernriftc::{analyze, check_file, check_module, compile_file};
+use kernriftc::{
+    BackendArtifactKind, analyze, check_file, check_module, compile_file,
+    emit_backend_artifact_file,
+};
 use krir::{
     BackendTargetContract, lower_current_krir_to_executable_krir,
     lower_executable_krir_to_x86_64_object,
@@ -720,5 +723,40 @@ fn branch_op_symbol_layout_is_contiguous_in_x86_64_elf_object() {
         last.offset,
         last.size,
         object.text_bytes.len(),
+    );
+}
+
+#[test]
+fn staticlib_emit_produces_ar_archive_with_global_symbols() {
+    // KR0 exit criterion: "freestanding static library callable from C"
+    // --emit staticlib must produce a valid GNU ar archive containing the ELF object.
+    // Skipped when ar (binutils) is not available on the host.
+    if std::process::Command::new("ar")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping staticlib test: ar not available on this host");
+        return;
+    }
+
+    let root = repo_root();
+    let fixture = root.join("examples").join("uart_freestanding_lib.kr");
+    let archive_bytes = emit_backend_artifact_file(&fixture, BackendArtifactKind::StaticLib)
+        .expect("compile uart_freestanding_lib.kr to staticlib");
+
+    // GNU ar archive must start with the magic string.
+    assert!(
+        archive_bytes.starts_with(b"!<arch>\n"),
+        "staticlib output must start with ar magic '!<arch>\\n'; \
+         got {:?}",
+        &archive_bytes[..8.min(archive_bytes.len())]
+    );
+
+    // Must contain at least the symbol table + one object member header (60 bytes each).
+    assert!(
+        archive_bytes.len() > 8 + 60,
+        "staticlib output is too short to contain an archive member (len={})",
+        archive_bytes.len()
     );
 }

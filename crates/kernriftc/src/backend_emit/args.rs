@@ -60,7 +60,9 @@ pub(crate) fn parse_backend_emit_args(
     if meta_output_path.is_some()
         && matches!(
             kind,
-            BackendArtifactKind::Asm | BackendArtifactKind::ElfExecutable
+            BackendArtifactKind::Asm
+                | BackendArtifactKind::ElfExecutable
+                | BackendArtifactKind::StaticLib
         )
     {
         return Err(format!(

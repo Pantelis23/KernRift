@@ -38,6 +38,9 @@ fn build_backend_artifact_metadata(
         BackendArtifactKind::Asm => {
             return Err("invalid emit mode: --meta-out is unsupported for 'asm'".to_string());
         }
+        BackendArtifactKind::StaticLib => {
+            return Err("invalid emit mode: --meta-out is unsupported for 'staticlib'".to_string());
+        }
     };
     let (normalized_input_path, input_path_kind) =
         normalize_backend_artifact_input_path(input_path);
