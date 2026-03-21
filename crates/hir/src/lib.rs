@@ -3158,11 +3158,14 @@ fn lower_stmt(
         }
         Stmt::Break => ops.push(KrirOp::LoopBreak),
         Stmt::Continue => ops.push(KrirOp::LoopContinue),
-        Stmt::Return(_) => {
-            errors.push(format!(
-                "surface syntax statement not yet lowered (Task 13): {:?}",
-                stmt
-            ));
+        Stmt::Return(Some(expr)) => {
+            match lower_expr(expr, ops, slot_counter, device_regs, eff_used) {
+                Ok(slot) => ops.push(KrirOp::ReturnSlot { slot }),
+                Err(e) => errors.push(e),
+            }
+        }
+        Stmt::Return(None) => {
+            // void return — function falls off its end
         }
     }
 }

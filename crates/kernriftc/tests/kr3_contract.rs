@@ -1246,3 +1246,35 @@ fn sum(uint32 n) {
     assert!(f.ops.iter().any(|op| matches!(op, KrirOp::BranchIfNonZeroLoopBreak { .. })),
         "expected BranchIfNonZeroLoopBreak, got: {:?}", f.ops);
 }
+
+#[test]
+fn return_stmt_emits_return_slot_op() {
+    use krir::KrirOp;
+    let src = r#"
+@ctx(thread)
+fn get_val() -> uint32 {
+    uint32 x = 42
+    return x
+}
+"#;
+    let module = compile_source(src).unwrap();
+    let f = module.functions.iter().find(|f| f.name == "get_val").unwrap();
+    assert!(f.ops.iter().any(|op| matches!(op, KrirOp::ReturnSlot { .. })),
+        "expected ReturnSlot in get_val ops, got: {:?}", f.ops);
+}
+
+#[test]
+fn mul_op_in_expr_returns_compile_error() {
+    let src = r#"
+@ctx(thread)
+fn bad(uint32 x) -> uint32 {
+    uint32 result = x * 4
+    return result
+}
+"#;
+    let result = compile_source(src);
+    assert!(result.is_err(), "expected compile error for multiplication");
+    let errs = result.unwrap_err();
+    assert!(errs.iter().any(|e| e.contains("multiplication")),
+        "expected 'multiplication' in error, got: {:?}", errs);
+}
