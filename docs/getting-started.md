@@ -1,13 +1,96 @@
 # Getting Started with KernRift
 
-## Prerequisites
+## Prerequisites: Installing Rust
 
-- **Rust 1.93.1** — install via [rustup](https://rustup.rs). Once you clone this repo, `rust-toolchain.toml` auto-selects the correct version; no manual pinning needed.
-- **Cargo** — bundled with Rust
+KernRift requires **Rust 1.93.1+** and **Cargo**. Both come from [rustup](https://rustup.rs) — the official Rust toolchain manager. Once installed, `rust-toolchain.toml` in the repo automatically selects the right version.
 
-> **Do not use `apt install cargo` / `apt install rustc` on Ubuntu/Debian.** The distro-packaged Rust is several major versions behind and will fail with a `feature 'edition2024' is required` error. Always install via rustup.rs.
+> **Do not use your OS package manager to install Rust.** `apt install cargo`, `dnf install rust`, `pacman -S rust`, and similar all ship outdated versions that will fail with `feature 'edition2024' is required`. Always use rustup.
 
-## Install
+---
+
+### Install rustup on Linux
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+When prompted, choose option **1** (default installation). Then reload your shell:
+
+```sh
+source "$HOME/.cargo/env"
+```
+
+To verify:
+
+```sh
+rustc --version   # should print 1.93.x or newer
+cargo --version
+```
+
+If you already installed Rust via `apt`/`dnf`/`pacman`, remove it first:
+
+```sh
+# Debian/Ubuntu
+sudo apt remove --purge cargo rustc rustup libstd-rust-dev 'libstd-rust-*'
+sudo apt autoremove
+
+# Fedora/RHEL
+sudo dnf remove cargo rust
+
+# Arch
+sudo pacman -Rs rust cargo
+```
+
+Then run the `curl` command above.
+
+---
+
+### Install rustup on macOS
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+If you don't have `curl`, install Xcode Command Line Tools first:
+
+```sh
+xcode-select --install
+```
+
+If you installed Rust via Homebrew, unlink it first to avoid conflicts:
+
+```sh
+brew unlink rust
+```
+
+Then reload your shell and verify:
+
+```sh
+source "$HOME/.cargo/env"
+rustc --version
+cargo --version
+```
+
+---
+
+### Install rustup on Windows
+
+1. Download **rustup-init.exe** from [rustup.rs](https://rustup.rs) (the site auto-detects Windows and offers the `.exe` directly).
+2. Run it and choose option **1** (default installation).
+3. Open a **new** terminal — Cargo's `bin` directory (`%USERPROFILE%\.cargo\bin`) is added to your PATH automatically.
+
+To verify (in a new terminal):
+
+```powershell
+rustc --version
+cargo --version
+```
+
+> **Do not install Rust via winget, choco, or scoop** — those packages lag behind and may conflict with rustup. Use the official installer from rustup.rs.
+
+---
+
+## Install KernRift
 
 ### Quick install (recommended)
 
