@@ -15,4 +15,7 @@ test-list.txt
 *.swp
 .DS_Store
 
+# compiled KernRift output
+*.krbo
+
 /dist
