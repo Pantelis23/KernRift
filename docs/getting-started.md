@@ -59,17 +59,14 @@ Move-Item kernriftc.exe "$env:USERPROFILE\bin\kernriftc.exe"
 The repo includes `hello.kr`:
 
 ```kr
-@module_caps(MmioRaw);         // this module uses raw MMIO
-
-@ctx(thread, boot)             // callable from thread and boot contexts
+@ctx(thread, boot)
 fn entry() {
-    raw_write<u8>(0x10000000, 0x48);  // write 'H' to UART base address
+    print("Hello, World!\n")
 }
 ```
 
-- `@module_caps(MmioRaw)` — declares that this module performs raw memory-mapped I/O. Without it, `raw_write` is a compile error.
 - `@ctx(thread, boot)` — this function may only be called from thread or boot contexts. Calling it from `@ctx(irq)` is a compile error.
-- `raw_write<u8>(addr, value)` — a typed volatile write. The type parameter enforces width.
+- `print("...")` — compiler intrinsic that emits a debug string (maps to a platform debug port in kernel context).
 
 Compile it:
 
@@ -77,7 +74,9 @@ Compile it:
 kernriftc hello.kr
 ```
 
-On success, `kernriftc` exits 0 and produces `hello.krbo` in the current directory. No output to stdout.
+On success, `kernriftc` exits 0 and produces `hello.krbo` in the current directory.
+
+> **Note:** `.krbo` is a relocatable kernel object — like a `.o` file. It is **not** a standalone executable and cannot be run directly with `./hello.krbo`. KernRift targets bare-metal kernel environments; the output is meant to be linked into a kernel image.
 
 A context violation looks like this:
 

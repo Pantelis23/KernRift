@@ -25,21 +25,19 @@ Generic systems languages don't model kernel reality. KernRift bakes interrupt c
 
 ```sh
 # Write a kernel function
-cat > entry.kr << 'EOF'
-@module_caps(MmioRaw);
-
+cat > hello.kr << 'EOF'
 @ctx(thread, boot)
 fn entry() {
-    raw_write<u8>(0x10000000, 0x48);
+    print("Hello, World!\n")
 }
 EOF
 
-# Compile it
-kernriftc entry.kr
-# → entry.krbo
+# Compile to a kernel object
+kernriftc hello.kr
+# → hello.krbo  (relocatable kernel object, not a userspace binary)
 
 # Or run the analysis pass only
-kernriftc check entry.kr
+kernriftc check hello.kr
 ```
 
 ## Documentation
