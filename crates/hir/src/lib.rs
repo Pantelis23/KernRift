@@ -1,20 +1,20 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use krir::{
-    CallEdge, Ctx, Eff, ExecutableBlock, ExecutableExternDecl, ExecutableFacts, ExecutableFunction,
-    ExecutableKrirModule, ExecutableOp as KrExecutableOp, ExecutableSignature,
-    ExecutableTerminator, ExecutableValue, ExecutableValueType, Function, FunctionAttrs,
-    KrirModule, KrirOp, KrirParamTy, MmioAddrExpr as KrirMmioAddrExpr,
+    ArithOp as KrirArithOp, CallEdge, Ctx, Eff, ExecutableBlock, ExecutableExternDecl,
+    ExecutableFacts, ExecutableFunction, ExecutableKrirModule, ExecutableOp as KrExecutableOp,
+    ExecutableSignature, ExecutableTerminator, ExecutableValue, ExecutableValueType, Function,
+    FunctionAttrs, KrirModule, KrirOp, KrirParamTy, MmioAddrExpr as KrirMmioAddrExpr,
     MmioBaseDecl as KrirMmioBaseDecl, MmioRegAccess as KrirMmioRegAccess,
     MmioRegisterDecl as KrirMmioRegisterDecl, MmioScalarType as KrirMmioScalarType,
     MmioValueExpr as KrirMmioValueExpr, PercpuDecl as KrirPercpuDecl, SchedHook,
 };
 use parser::{
-    FnAst, MmioAddrExpr as ParserMmioAddrExpr, MmioBaseDecl as ParserMmioBaseDecl,
-    MmioRegAccess as ParserMmioRegAccess, MmioRegisterDecl as ParserMmioRegisterDecl,
-    MmioScalarType as ParserMmioScalarType, MmioValueExpr as ParserMmioValueExpr, ModuleAst,
-    ParamTy as ParserParamTy, RawAttr, Stmt, format_source_diagnostic, int_literal_numeric_value,
-    split_csv_allow_trailing_comma,
+    ArithOp as ParserArithOp, FnAst, MmioAddrExpr as ParserMmioAddrExpr,
+    MmioBaseDecl as ParserMmioBaseDecl, MmioRegAccess as ParserMmioRegAccess,
+    MmioRegisterDecl as ParserMmioRegisterDecl, MmioScalarType as ParserMmioScalarType,
+    MmioValueExpr as ParserMmioValueExpr, ModuleAst, ParamTy as ParserParamTy, RawAttr, Stmt,
+    format_source_diagnostic, int_literal_numeric_value, split_csv_allow_trailing_comma,
 };
 use serde::Serialize;
 
@@ -1538,8 +1538,12 @@ fn lower_function(
 
     let mut ops = Vec::new();
     let mut eff_used = facts.eff_used;
+    let mut stmt_errors: Vec<String> = Vec::new();
     for stmt in &item.body {
-        lower_stmt(stmt, &mut ops, &mut eff_used, const_map);
+        lower_stmt(stmt, &mut ops, &mut eff_used, const_map, surface_profile, &mut stmt_errors);
+    }
+    if !stmt_errors.is_empty() {
+        return Err(stmt_errors);
     }
 
     Ok(Function {
@@ -2439,6 +2443,13 @@ fn lower_stmts_to_canonical_executable(
                 name,
                 value.as_source()
             )),
+            Stmt::CellArithImm { ty, cell, op, .. } => errors.push(format!(
+                "canonical-exec: function '{}' contains unsupported cell_{}<{}>({})",
+                function_name,
+                op.as_str(),
+                ty.as_str(),
+                cell
+            )),
         }
     }
 }
@@ -2448,6 +2459,8 @@ fn lower_stmt(
     ops: &mut Vec<KrirOp>,
     eff_used: &mut BTreeSet<Eff>,
     const_map: &std::collections::BTreeMap<String, String>,
+    surface_profile: SurfaceProfile,
+    errors: &mut Vec<String>,
 ) {
     match stmt {
         Stmt::Call(callee) => ops.push(KrirOp::Call {
@@ -2460,13 +2473,13 @@ fn lower_stmt(
         Stmt::Critical(inner) => {
             ops.push(KrirOp::CriticalEnter);
             for stmt in inner {
-                lower_stmt(stmt, ops, eff_used, const_map);
+                lower_stmt(stmt, ops, eff_used, const_map, surface_profile, errors);
             }
             ops.push(KrirOp::CriticalExit);
         }
         Stmt::Unsafe(inner) => {
             for stmt in inner {
-                lower_stmt(stmt, ops, eff_used, const_map);
+                lower_stmt(stmt, ops, eff_used, const_map, surface_profile, errors);
             }
         }
         Stmt::YieldPoint => {
@@ -2583,6 +2596,22 @@ fn lower_stmt(
             name: name.clone(),
             value: lower_mmio_value_expr(value, const_map),
         }),
+        Stmt::CellArithImm { ty, cell, op, imm } => {
+            if surface_profile != SurfaceProfile::Experimental {
+                errors.push(format!(
+                    "cell_{}<{}> requires --surface experimental",
+                    op.as_str(),
+                    ty.as_str()
+                ));
+                return;
+            }
+            ops.push(KrirOp::CellArithImm {
+                ty: lower_mmio_scalar_type(*ty),
+                cell: cell.clone(),
+                arith_op: lower_arith_op(*op),
+                imm: *imm,
+            });
+        }
     }
 }
 
@@ -2592,6 +2621,18 @@ fn lower_mmio_scalar_type(ty: ParserMmioScalarType) -> KrirMmioScalarType {
         ParserMmioScalarType::U16 => KrirMmioScalarType::U16,
         ParserMmioScalarType::U32 => KrirMmioScalarType::U32,
         ParserMmioScalarType::U64 => KrirMmioScalarType::U64,
+    }
+}
+
+fn lower_arith_op(op: ParserArithOp) -> KrirArithOp {
+    match op {
+        ParserArithOp::Add => KrirArithOp::Add,
+        ParserArithOp::Sub => KrirArithOp::Sub,
+        ParserArithOp::And => KrirArithOp::And,
+        ParserArithOp::Or => KrirArithOp::Or,
+        ParserArithOp::Xor => KrirArithOp::Xor,
+        ParserArithOp::Shl => KrirArithOp::Shl,
+        ParserArithOp::Shr => KrirArithOp::Shr,
     }
 }
 

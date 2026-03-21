@@ -11,9 +11,9 @@
 
 use std::path::{Path, PathBuf};
 
-use kernriftc::{check_module, compile_file, compile_source};
+use kernriftc::{SurfaceProfile, check_module, compile_file, compile_source, compile_source_with_surface};
 use krir::{
-    BackendTargetContract, ExecutableOp, lower_current_krir_to_executable_krir,
+    ArithOp, BackendTargetContract, ExecutableOp, lower_current_krir_to_executable_krir,
     lower_executable_krir_to_x86_64_object,
 };
 
@@ -363,4 +363,105 @@ fn multiple_stack_cells_produce_correct_n_stack_cells_in_executable_krir() {
         "expected StackStore at slot 1; got: {:?}",
         store_slots
     );
+}
+
+// ── PR-3: Arithmetic ops behind --surface experimental ───────────────────────
+
+#[test]
+fn cell_arith_imm_rejected_on_stable_surface() {
+    let src = r#"
+        @module_caps(Mmio);
+        mmio DEV = 0xFEB00000;
+        mmio_reg DEV.A = 0x00 : u32 rw;
+        @ctx(thread, boot) @eff(mmio) @caps(Mmio)
+        fn f() {
+            stack_cell<u32>(x);
+            cell_store<u32>(x, 0x01);
+            cell_add<u32>(x, 1);
+        }
+    "#;
+    // compile_source uses Stable surface — arith op must be rejected.
+    let result = compile_source(src);
+    assert!(
+        result.is_err(),
+        "cell_add must be rejected under stable surface"
+    );
+    let errs = result.unwrap_err();
+    assert!(
+        errs.iter().any(|e| e.contains("experimental")),
+        "expected 'experimental' in error; got: {:?}",
+        errs
+    );
+}
+
+#[test]
+fn cell_arith_imm_accepted_on_experimental_surface() {
+    let src = r#"
+        @module_caps(Mmio);
+        mmio DEV = 0xFEB00000;
+        mmio_reg DEV.Control = 0x00 : u32 rw;
+        @ctx(thread, boot) @eff(mmio) @caps(Mmio)
+        fn counter() {
+            stack_cell<u32>(n);
+            cell_store<u32>(n, 0x00);
+            cell_add<u32>(n, 1);
+            cell_sub<u32>(n, 1);
+            cell_and<u32>(n, 0xFF);
+            cell_or<u32>(n, 0x01);
+            cell_xor<u32>(n, 0xF0);
+            cell_shl<u32>(n, 2);
+            cell_shr<u32>(n, 1);
+        }
+    "#;
+    let module =
+        compile_source_with_surface(src, SurfaceProfile::Experimental).expect("must compile");
+    let exec = lower_current_krir_to_executable_krir(&module).expect("must lower");
+    let f = exec
+        .functions
+        .iter()
+        .find(|f| f.name == "counter")
+        .expect("counter must exist");
+    let arith_ops: Vec<ArithOp> = f.blocks[0]
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            ExecutableOp::SlotArithImm { arith_op, .. } => Some(*arith_op),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        arith_ops.contains(&ArithOp::Add),
+        "expected SlotArithImm(Add); got: {:?}",
+        arith_ops
+    );
+    assert!(
+        arith_ops.contains(&ArithOp::Shl),
+        "expected SlotArithImm(Shl); got: {:?}",
+        arith_ops
+    );
+}
+
+#[test]
+fn cell_arith_imm_compiles_to_x86_64_elf_object() {
+    // Verifies that SlotArithImm ops survive the full pipeline to ELF bytes.
+    let src = r#"
+        @module_caps(Mmio);
+        mmio DEV = 0xFEB00000;
+        mmio_reg DEV.Control = 0x00 : u32 rw;
+        @ctx(thread, boot) @eff(mmio) @caps(Mmio)
+        fn bump() {
+            stack_cell<u32>(val);
+            cell_store<u32>(val, 0x00);
+            cell_add<u32>(val, 5);
+            cell_shl<u32>(val, 2);
+            cell_and<u32>(val, 0xFF);
+        }
+    "#;
+    let module =
+        compile_source_with_surface(src, SurfaceProfile::Experimental).expect("must compile");
+    let exec = lower_current_krir_to_executable_krir(&module).expect("must lower");
+    let target = BackendTargetContract::x86_64_sysv();
+    let object =
+        lower_executable_krir_to_x86_64_object(&exec, &target).expect("must lower to x86_64 ELF");
+    assert!(!object.text_bytes.is_empty(), "must emit non-empty text section");
 }

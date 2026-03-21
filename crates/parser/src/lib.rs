@@ -86,6 +86,32 @@ impl MmioScalarType {
     }
 }
 
+/// Arithmetic operation for `cell_<op><T>` statements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArithOp {
+    Add,
+    Sub,
+    And,
+    Or,
+    Xor,
+    Shl,
+    Shr,
+}
+
+impl ArithOp {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Add => "add",
+            Self::Sub => "sub",
+            Self::And => "and",
+            Self::Or => "or",
+            Self::Xor => "xor",
+            Self::Shl => "shl",
+            Self::Shr => "shr",
+        }
+    }
+}
+
 /// A function parameter type — either a scalar or a fat-pointer slice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParamTy {
@@ -174,6 +200,12 @@ pub enum Stmt {
         ty: MmioScalarType,
         cell: String,
         slot: String,
+    },
+    CellArithImm {
+        ty: MmioScalarType,
+        cell: String,
+        op: ArithOp,
+        imm: u64,
     },
     MmioRead {
         ty: MmioScalarType,
@@ -1622,6 +1654,27 @@ fn parse_typed_mmio_stmt(name: &str, args: &str) -> Result<Option<Stmt>, String>
         return Ok(Some(Stmt::CellLoad { ty, cell, slot }));
     }
 
+    if let Some((ty, op)) = parse_cell_arith_from_name(name)? {
+        let parts = split_csv(args);
+        if parts.len() != 2 {
+            return Err(format!(
+                "cell_{}<T>(cell, imm) requires exactly two arguments: cell name and integer literal",
+                op.as_str()
+            ));
+        }
+        let cell = parse_mmio_capture_operand(parts[0].trim())?;
+        let imm_str = parts[1].trim();
+        if !is_int_literal_token(imm_str) {
+            return Err(format!(
+                "cell_{}<T>(cell, imm): '{}' is not a valid integer literal",
+                op.as_str(),
+                imm_str
+            ));
+        }
+        let imm = parse_integer_literal_u64(imm_str)?;
+        return Ok(Some(Stmt::CellArithImm { ty, cell, op, imm }));
+    }
+
     if let Some(ty) = parse_mmio_scalar_from_name(name, "mmio_read")? {
         let parts = split_csv(args);
         if parts.len() != 1 && parts.len() != 2 {
@@ -1877,6 +1930,37 @@ fn is_int_literal_token(raw: &str) -> bool {
         return false;
     }
     saw_digit
+}
+
+fn parse_integer_literal_u64(raw: &str) -> Result<u64, String> {
+    if let Some(hex) = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X")) {
+        let clean: String = hex.chars().filter(|&c| c != '_').collect();
+        u64::from_str_radix(&clean, 16)
+            .map_err(|_| format!("'{}' is not a valid u64 integer literal", raw))
+    } else {
+        let clean: String = raw.chars().filter(|&c| c != '_').collect();
+        clean
+            .parse::<u64>()
+            .map_err(|_| format!("'{}' is not a valid u64 integer literal", raw))
+    }
+}
+
+fn parse_cell_arith_from_name(name: &str) -> Result<Option<(MmioScalarType, ArithOp)>, String> {
+    const OPS: [(&str, ArithOp); 7] = [
+        ("cell_add", ArithOp::Add),
+        ("cell_sub", ArithOp::Sub),
+        ("cell_and", ArithOp::And),
+        ("cell_or", ArithOp::Or),
+        ("cell_xor", ArithOp::Xor),
+        ("cell_shl", ArithOp::Shl),
+        ("cell_shr", ArithOp::Shr),
+    ];
+    for (base, op) in &OPS {
+        if let Some(ty) = parse_mmio_scalar_from_name(name, base)? {
+            return Ok(Some((ty, *op)));
+        }
+    }
+    Ok(None)
 }
 
 fn parse_mmio_scalar_from_name(name: &str, base: &str) -> Result<Option<MmioScalarType>, String> {

@@ -95,6 +95,33 @@ pub struct PercpuDecl {
     pub ty: MmioScalarType,
 }
 
+/// Arithmetic operation for `CellArithImm` / `SlotArithImm`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArithOp {
+    Add,
+    Sub,
+    And,
+    Or,
+    Xor,
+    Shl,
+    Shr,
+}
+
+impl ArithOp {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Add => "add",
+            Self::Sub => "sub",
+            Self::And => "and",
+            Self::Or => "or",
+            Self::Xor => "xor",
+            Self::Shl => "shl",
+            Self::Shr => "shr",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum KrirOp {
@@ -149,6 +176,12 @@ pub enum KrirOp {
         ty: MmioScalarType,
         cell: String,
         slot: String,
+    },
+    CellArithImm {
+        ty: MmioScalarType,
+        cell: String,
+        arith_op: ArithOp,
+        imm: u64,
     },
     MmioRead {
         ty: MmioScalarType,
@@ -474,6 +507,12 @@ pub enum ExecutableOp {
         ty: MmioScalarType,
         slot_idx: u8,
     },
+    SlotArithImm {
+        ty: MmioScalarType,
+        slot_idx: u8,
+        arith_op: ArithOp,
+        imm: u64,
+    },
     ParamLoad {
         param_idx: u8,
         ty: MmioScalarType,
@@ -724,6 +763,7 @@ impl ExecutableKrirModule {
                         | ExecutableOp::StackStoreImm { .. }
                         | ExecutableOp::StackStoreValue { .. }
                         | ExecutableOp::StackLoad { .. }
+                        | ExecutableOp::SlotArithImm { .. }
                         | ExecutableOp::ParamLoad { .. }
                         | ExecutableOp::MmioReadParamAddr { .. }
                         | ExecutableOp::MmioWriteImmParamAddr { .. }
@@ -1344,6 +1384,53 @@ pub fn lower_current_krir_to_executable_krir(
                         slot: slot.clone(),
                         ty: *ty,
                         source: ExecutableCapturedValueSource::SavedSlot,
+                    });
+                }
+                KrirOp::CellArithImm { ty, cell, arith_op, imm } => {
+                    let invocation =
+                        format!("cell_{}<{}>({})", arith_op.as_str(), ty.as_str(), cell);
+                    let slot_idx = match resolve_executable_stack_cell_slot(*ty, cell, &cell_slot_map) {
+                        Ok(idx) => idx,
+                        Err(reason) => {
+                            errors.push(format!(
+                                "canonical-exec: function '{}' contains unsupported {}: {}",
+                                function.name, invocation, reason
+                            ));
+                            continue;
+                        }
+                    };
+                    let valid = match arith_op {
+                        ArithOp::Shl | ArithOp::Shr => {
+                            if *imm > 63 {
+                                Err(format!("shift count {} is out of range 0-63", imm))
+                            } else {
+                                Ok(())
+                            }
+                        }
+                        _ => {
+                            if *imm > u32::MAX as u64 {
+                                Err(format!(
+                                    "immediate {} does not fit in u32 for {} operation",
+                                    imm,
+                                    arith_op.as_str()
+                                ))
+                            } else {
+                                Ok(())
+                            }
+                        }
+                    };
+                    if let Err(reason) = valid {
+                        errors.push(format!(
+                            "canonical-exec: function '{}' contains unsupported {}: {}",
+                            function.name, invocation, reason
+                        ));
+                        continue;
+                    }
+                    exec_ops.push(ExecutableOp::SlotArithImm {
+                        ty: *ty,
+                        slot_idx,
+                        arith_op: *arith_op,
+                        imm: *imm,
                     });
                 }
                 KrirOp::MmioRead {
@@ -2436,6 +2523,12 @@ pub enum X86_64AsmInstruction {
         ty: MmioScalarType,
         slot_idx: u8,
     },
+    SlotArithImm {
+        ty: MmioScalarType,
+        slot_idx: u8,
+        arith_op: ArithOp,
+        imm: u64,
+    },
     ParamLoad {
         param_idx: u8,
         ty: MmioScalarType,
@@ -2938,6 +3031,9 @@ pub fn lower_executable_krir_to_x86_64_asm(
                     ExecutableOp::StackLoad { ty, slot_idx } => {
                         X86_64AsmInstruction::StackLoad { ty, slot_idx }
                     }
+                    ExecutableOp::SlotArithImm { ty, slot_idx, arith_op, imm } => {
+                        X86_64AsmInstruction::SlotArithImm { ty, slot_idx, arith_op, imm }
+                    }
                     ExecutableOp::ParamLoad { param_idx, ty } => {
                         X86_64AsmInstruction::ParamLoad { param_idx, ty }
                     }
@@ -2998,6 +3094,7 @@ fn executable_function_uses_saved_value_slot(function: &ExecutableFunction) -> b
                     | ExecutableOp::MmioWriteValue { .. }
                     | ExecutableOp::StackStoreValue { .. }
                     | ExecutableOp::StackLoad { .. }
+                    | ExecutableOp::SlotArithImm { .. }
                     | ExecutableOp::ParamLoad { .. }
                     | ExecutableOp::MmioWriteValueParamAddr { .. }
                     | ExecutableOp::MmioRead {
@@ -3021,6 +3118,7 @@ fn executable_function_n_stack_cells(function: &ExecutableFunction) -> u8 {
                 ExecutableOp::StackStoreImm { slot_idx, .. } => Some(*slot_idx),
                 ExecutableOp::StackStoreValue { slot_idx, .. } => Some(*slot_idx),
                 ExecutableOp::StackLoad { slot_idx, .. } => Some(*slot_idx),
+                ExecutableOp::SlotArithImm { slot_idx, .. } => Some(*slot_idx),
                 _ => None,
             };
             if let Some(s) = slot {
@@ -3259,6 +3357,40 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                     }
                     out.push_str(mmio_saved_value_register(*ty));
                     out.push('\n');
+                }
+                X86_64AsmInstruction::SlotArithImm { ty, slot_idx, arith_op, imm } => {
+                    let offset = 8u32 * u32::from(*slot_idx);
+                    // load from stack slot into saved-value register (%rbx family)
+                    out.push_str("    ");
+                    out.push_str(mmio_load_mnemonic(*ty));
+                    if offset == 0 {
+                        out.push_str(" (%rsp), ");
+                    } else {
+                        out.push_str(&format!(" {}(%rsp), ", offset));
+                    }
+                    out.push_str(mmio_saved_value_register(*ty));
+                    out.push('\n');
+                    // 64-bit arithmetic on %rbx
+                    let mnemonic = match arith_op {
+                        ArithOp::Add => "addq",
+                        ArithOp::Sub => "subq",
+                        ArithOp::And => "andq",
+                        ArithOp::Or => "orq",
+                        ArithOp::Xor => "xorq",
+                        ArithOp::Shl => "shlq",
+                        ArithOp::Shr => "shrq",
+                    };
+                    out.push_str(&format!("    {} ${}, %rbx\n", mnemonic, imm));
+                    // store from saved-value register back to stack slot
+                    out.push_str("    ");
+                    out.push_str(mmio_store_mnemonic(*ty));
+                    out.push(' ');
+                    out.push_str(mmio_saved_value_register(*ty));
+                    if offset == 0 {
+                        out.push_str(", (%rsp)\n");
+                    } else {
+                        out.push_str(&format!(", {}(%rsp)\n", offset));
+                    }
                 }
                 X86_64AsmInstruction::ParamLoad { param_idx, ty } => {
                     let sc_bytes = 8u32 * u32::from(function.n_stack_cells);
@@ -3511,6 +3643,12 @@ fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
         }
         ExecutableOp::StackStoreValue { ty, slot_idx } => stack_cell_access_bytes(*ty, *slot_idx),
         ExecutableOp::StackLoad { ty, slot_idx } => stack_cell_access_bytes(*ty, *slot_idx),
+        ExecutableOp::SlotArithImm { ty, slot_idx, arith_op, imm } => {
+            // load + arith_op + store
+            let access = stack_cell_access_bytes(*ty, *slot_idx);
+            let op_bytes = slot_arith_imm_op_bytes(*arith_op, *imm);
+            access + op_bytes + access
+        }
         // ParamLoad: movb/movw/movl/movq disp8(%rsp), %bl/%bx/%ebx/%rbx
         ExecutableOp::ParamLoad { ty, .. } => match ty {
             MmioScalarType::U8 | MmioScalarType::U32 => 4,
@@ -3643,6 +3781,47 @@ fn encode_stack_cell_load_slot_bytes(out: &mut Vec<u8>, ty: MmioScalarType, slot
             MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x5C, 0x24, offset]),
             MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x5C, 0x24, offset]),
         }
+    }
+}
+
+/// Encode a 64-bit arithmetic-immediate instruction on %rbx.
+/// Arithmetic (add/sub/and/or/xor): imm ≤ 127 → imm8 form, else imm32 form.
+/// Shifts (shl/shr): count == 1 → one-bit shift form, else imm8 count form.
+fn encode_slot_arith_imm_bytes(out: &mut Vec<u8>, op: ArithOp, imm: u64) {
+    match op {
+        // 64-bit arithmetic on %rbx:
+        // imm8:  REX.W 0x83 ModRM imm8   (4 bytes, sign-extends imm8 to 64 bits)
+        // imm32: REX.W 0x81 ModRM imm32  (7 bytes, sign-extends imm32 to 64 bits)
+        // ModRM encoding for %rbx: mod=11 rm=011; /n from opcode group:
+        //   ADD  /0 → 0xC3, SUB /5 → 0xEB, AND /4 → 0xE3, OR /1 → 0xCB, XOR /6 → 0xF3
+        ArithOp::Add => encode_rbx_arith_imm(out, 0xC3, imm),
+        ArithOp::Sub => encode_rbx_arith_imm(out, 0xEB, imm),
+        ArithOp::And => encode_rbx_arith_imm(out, 0xE3, imm),
+        ArithOp::Or  => encode_rbx_arith_imm(out, 0xCB, imm),
+        ArithOp::Xor => encode_rbx_arith_imm(out, 0xF3, imm),
+        // 64-bit shift on %rbx:
+        // SHL /4 → ModRM 0xE3, SHR /5 → ModRM 0xEB
+        // count=1: REX.W 0xD1 ModRM      (3 bytes)
+        // count>1: REX.W 0xC1 ModRM imm8 (4 bytes)
+        ArithOp::Shl => encode_rbx_shift_imm(out, 0xE3, imm),
+        ArithOp::Shr => encode_rbx_shift_imm(out, 0xEB, imm),
+    }
+}
+
+fn encode_rbx_arith_imm(out: &mut Vec<u8>, modrm: u8, imm: u64) {
+    if imm <= 127 {
+        out.extend_from_slice(&[0x48, 0x83, modrm, imm as u8]);
+    } else {
+        let b = (imm as u32).to_le_bytes();
+        out.extend_from_slice(&[0x48, 0x81, modrm, b[0], b[1], b[2], b[3]]);
+    }
+}
+
+fn encode_rbx_shift_imm(out: &mut Vec<u8>, modrm: u8, count: u64) {
+    if count == 1 {
+        out.extend_from_slice(&[0x48, 0xD1, modrm]);
+    } else {
+        out.extend_from_slice(&[0x48, 0xC1, modrm, count as u8]);
     }
 }
 
@@ -3964,6 +4143,20 @@ fn stack_cell_access_bytes(ty: MmioScalarType, slot_idx: u8) -> u64 {
         MmioScalarType::U16 | MmioScalarType::U64 => 4,
     };
     base + if slot_idx > 0 { 1 } else { 0 }
+}
+
+/// Byte count of the arithmetic instruction on %rbx for `SlotArithImm`.
+/// add/sub/and/or/xor: 4 bytes if imm ≤ 127 (imm8), 7 bytes otherwise (imm32).
+/// shl/shr: 3 bytes if count == 1, 4 bytes otherwise.
+fn slot_arith_imm_op_bytes(op: ArithOp, imm: u64) -> u64 {
+    match op {
+        ArithOp::Shl | ArithOp::Shr => {
+            if imm == 1 { 3 } else { 4 }
+        }
+        _ => {
+            if imm <= 127 { 4 } else { 7 }
+        }
+    }
 }
 
 fn mmio_accumulator_register(ty: MmioScalarType) -> &'static str {
@@ -4338,6 +4531,12 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                 }
                 ExecutableOp::StackLoad { ty, slot_idx } => {
                     encode_stack_cell_load_slot_bytes(&mut code_bytes, *ty, *slot_idx);
+                    local_offset += executable_op_encoded_len(op);
+                }
+                ExecutableOp::SlotArithImm { ty, slot_idx, arith_op, imm } => {
+                    encode_stack_cell_load_slot_bytes(&mut code_bytes, *ty, *slot_idx);
+                    encode_slot_arith_imm_bytes(&mut code_bytes, *arith_op, *imm);
+                    encode_stack_cell_store_saved_value_slot_bytes(&mut code_bytes, *ty, *slot_idx);
                     local_offset += executable_op_encoded_len(op);
                 }
                 ExecutableOp::ParamLoad { param_idx, ty } => {
