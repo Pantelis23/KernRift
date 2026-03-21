@@ -15,11 +15,14 @@ Generic systems languages don't model kernel reality. KernRift bakes interrupt c
 
 ## Install
 
-| Platform | Command |
-|----------|---------|
-| Linux / macOS | `cargo install --git https://github.com/Pantelis23/KernRift --bin kernriftc` |
-| Windows | See [Getting Started](docs/getting-started.md#prebuilt-binary----windows) |
+| Platform | One-liner |
+|----------|-----------|
+| Linux | `bash <(curl -sSf https://raw.githubusercontent.com/Pantelis23/KernRift/main/scripts/install-linux.sh)` |
+| macOS | `bash <(curl -sSf https://raw.githubusercontent.com/Pantelis23/KernRift/main/scripts/install-macos.sh)` |
+| Windows | `powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/Pantelis23/KernRift/main/scripts/install-windows.ps1 \| iex"` |
 | All (prebuilt) | See [Releases](../../releases) |
+
+See [Getting Started](docs/getting-started.md) for manual install and prebuilt binaries.
 
 ## Quickstart
 

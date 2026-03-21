@@ -9,9 +9,28 @@
 
 ## Install
 
-### From source (all platforms)
+### Quick install (recommended)
 
-Clone the repo and run from the repo root:
+These scripts handle everything: installing rustup if needed, removing conflicting system Rust, and placing both `kernriftc` and `kernrift` on your PATH.
+
+**Linux**
+```sh
+bash <(curl -sSf https://raw.githubusercontent.com/Pantelis23/KernRift/main/scripts/install-linux.sh)
+```
+
+**macOS**
+```sh
+bash <(curl -sSf https://raw.githubusercontent.com/Pantelis23/KernRift/main/scripts/install-macos.sh)
+```
+
+**Windows** (PowerShell, run as your user — no admin needed)
+```powershell
+powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/Pantelis23/KernRift/main/scripts/install-windows.ps1 | iex"
+```
+
+### From source (manual)
+
+If you already have Rust 1.93.1+ via rustup:
 
 ```sh
 git clone https://github.com/Pantelis23/KernRift
@@ -19,7 +38,7 @@ cd KernRift
 cargo install --path crates/kernriftc
 ```
 
-This builds and installs the `kernriftc` binary to `~/.cargo/bin/` (Linux/macOS) or `%USERPROFILE%\.cargo\bin\` (Windows), which Cargo adds to your PATH automatically.
+This builds and installs both `kernriftc` and `kernrift` to `~/.cargo/bin/` (Linux/macOS) or `%USERPROFILE%\.cargo\bin\` (Windows).
 
 ### Prebuilt binary — Linux / macOS
 
