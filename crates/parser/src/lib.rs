@@ -540,7 +540,26 @@ pub struct ModuleAst {
 }
 
 pub fn parse_module(src: &str) -> Result<ModuleAst, Vec<String>> {
-    Parser::new(src).parse_module()
+    let tokens = match Lexer::new(src).collect_all() {
+        Ok(t) => t,
+        Err(_) => {
+            // Lex error (e.g. old syntax chars) — try old parser
+            return Parser::new(src).parse_module();
+        }
+    };
+    match TokParser::new(tokens).parse_module() {
+        ok @ Ok(_) => ok,
+        Err(new_errs) => {
+            // TokParser failed — try old character-level parser as fallback
+            match Parser::new(src).parse_module() {
+                ok @ Ok(_) => ok,
+                // Both failed: prefer old parser errors for old-syntax files (better
+                // diagnostics), but only if old parser produced any errors.
+                Err(old_errs) if !old_errs.is_empty() => Err(old_errs),
+                Err(_) => Err(new_errs),
+            }
+        }
+    }
 }
 
 pub fn split_csv(input: &str) -> Vec<String> {
@@ -887,7 +906,7 @@ impl<'a> Lexer<'a> {
                 }
             }
             Some(c) if c.is_alphabetic() || c == '_' => {
-                let start = self.pos - 1;
+                let start = self.pos - c.len_utf8();
                 while self.peek_char().map(|c| c.is_alphanumeric() || c == '_').unwrap_or(false) { self.advance(); }
                 let word = &self.src[start..self.pos];
                 match word {
@@ -1047,6 +1066,589 @@ impl TokParser {
         }
         Ok(lhs)
     }
+
+    pub fn parse_module(&mut self) -> Result<ModuleAst, Vec<String>> {
+        let mut module = ModuleAst::default();
+        let mut errors: Vec<String> = Vec::new();
+        let mut pending_attrs: Vec<RawAttr> = Vec::new();
+
+        while !self.at(&TokenKind::Eof) {
+            // Skip stray semicolons (backward compat)
+            if self.eat(&TokenKind::Semicolon) { continue; }
+
+            match self.peek().kind.clone() {
+                // @annotation — may be module_caps or function annotation
+                TokenKind::AtSign => {
+                    match self.parse_attr_tok() {
+                        Ok(attr) => {
+                            if attr.name == "module_caps" {
+                                let args_str = attr.args.as_deref().unwrap_or("");
+                                match split_csv_allow_trailing_comma(args_str) {
+                                    Ok(caps) => {
+                                        for cap in caps {
+                                            module.module_caps.push(cap);
+                                        }
+                                    }
+                                    Err(_) => {
+                                        errors.push(format_source_diagnostic(
+                                            &attr.source,
+                                            "@module_caps(...) contains an empty capability entry",
+                                            None,
+                                        ));
+                                    }
+                                }
+                            } else {
+                                pending_attrs.push(attr);
+                            }
+                        }
+                        Err(e) => { errors.push(e); self.skip_to_next_item(); }
+                    }
+                }
+                // fn
+                TokenKind::Fn => {
+                    self.advance();
+                    match self.parse_fn_tok(pending_attrs.drain(..).collect(), false) {
+                        Ok(f) => module.items.push(f),
+                        Err(e) => { errors.push(e); self.skip_to_next_item(); }
+                    }
+                }
+                // extern fn
+                TokenKind::Extern => {
+                    self.advance();
+                    if !self.eat(&TokenKind::Fn) {
+                        errors.push(format!("expected 'fn' after 'extern' at {}:{}", self.peek().source.line, self.peek().source.column));
+                        self.skip_to_next_item();
+                        continue;
+                    }
+                    match self.parse_fn_tok(pending_attrs.drain(..).collect(), true) {
+                        Ok(f) => module.items.push(f),
+                        Err(e) => { errors.push(e); self.skip_to_next_item(); }
+                    }
+                }
+                // device NAME at ADDR { ... }
+                TokenKind::Device => {
+                    self.advance();
+                    match self.parse_device_tok() {
+                        Ok(d) => module.devices.push(d),
+                        Err(e) => { errors.push(e); self.skip_to_next_item(); }
+                    }
+                }
+                // lock NAME
+                TokenKind::Lock => {
+                    self.advance();
+                    match self.peek().kind.clone() {
+                        TokenKind::Ident(name) => { self.advance(); module.locks.push(name); }
+                        _ => errors.push(format!("expected lock name at {}:{}", self.peek().source.line, self.peek().source.column)),
+                    }
+                    self.eat(&TokenKind::Semicolon);
+                }
+                // const TYPE NAME = VALUE
+                TokenKind::Const => {
+                    self.advance();
+                    match self.parse_const_tok() {
+                        Ok(c) => module.constants.push(c),
+                        Err(e) => { errors.push(e); self.skip_to_next_item(); }
+                    }
+                }
+                // percpu NAME : TYPE
+                TokenKind::Percpu => {
+                    self.advance();
+                    match self.parse_percpu_tok() {
+                        Ok(p) => module.percpu_vars.push(p),
+                        Err(e) => { errors.push(e); self.skip_to_next_item(); }
+                    }
+                }
+                other => {
+                    errors.push(format!(
+                        "unexpected token {:?} at top level ({}:{})",
+                        other, self.peek().source.line, self.peek().source.column
+                    ));
+                    self.skip_to_next_item();
+                }
+            }
+        }
+
+        if errors.is_empty() { Ok(module) } else { Err(errors) }
+    }
+
+    /// Parse `@name(args)` — the leading `@` has not been consumed.
+    fn parse_attr_tok(&mut self) -> Result<RawAttr, String> {
+        let note = self.peek().source.clone();
+        self.expect_kind(&TokenKind::AtSign)?;
+        let name = match self.advance().kind.clone() {
+            TokenKind::Ident(n) => n,
+            other => return Err(format!("expected attribute name, got {:?}", other)),
+        };
+        let args = if self.eat(&TokenKind::LParen) {
+            let mut depth = 1i32;
+            let mut s = String::new();
+            loop {
+                match self.advance().kind.clone() {
+                    TokenKind::LParen => { depth += 1; s.push('('); }
+                    TokenKind::RParen => {
+                        depth -= 1;
+                        if depth == 0 { break; }
+                        s.push(')');
+                    }
+                    TokenKind::Eof => return Err("unterminated attribute".into()),
+                    kind => {
+                        s.push_str(&token_kind_to_str(&kind));
+                    }
+                }
+            }
+            Some(s)
+        } else {
+            None
+        };
+        self.eat(&TokenKind::Semicolon);
+        Ok(RawAttr { name, args, source: note })
+    }
+
+    /// Parse `fn name(params) -> ty { body }` — `fn` keyword already consumed.
+    fn parse_fn_tok(&mut self, attrs: Vec<RawAttr>, is_extern: bool) -> Result<FnAst, String> {
+        let source = self.peek().source.clone();
+        let name = match self.advance().kind.clone() {
+            TokenKind::Ident(n) => n,
+            other => return Err(format!("expected function name, got {:?}", other)),
+        };
+        self.expect_kind(&TokenKind::LParen)?;
+        let params = self.parse_param_list_tok()?;
+        self.expect_kind(&TokenKind::RParen)?;
+
+        // Optional `-> type`
+        let return_ty = if self.eat(&TokenKind::Arrow) {
+            Some(match self.advance().kind.clone() {
+                TokenKind::TypeKw(ty) => ty,
+                other => return Err(format!("expected return type, got {:?}", other)),
+            })
+        } else {
+            None
+        };
+
+        if is_extern {
+            self.eat(&TokenKind::Semicolon);
+            return Ok(FnAst { name, is_extern: true, params, return_ty, attrs, body: Vec::new(), source });
+        }
+
+        self.expect_kind(&TokenKind::LBrace)?;
+        let body = self.parse_block_tok()?;
+        Ok(FnAst { name, is_extern: false, params, return_ty, attrs, body, source })
+    }
+
+    /// Parse parameter list: `TYPE name, ...` — inside `(` and `)`.
+    fn parse_param_list_tok(&mut self) -> Result<Vec<(String, ParamTy)>, String> {
+        let mut params = Vec::new();
+        while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+            let is_slice = self.eat(&TokenKind::LBracket);
+            let ty = match self.advance().kind.clone() {
+                TokenKind::TypeKw(t) => t,
+                other => return Err(format!("expected parameter type, got {:?}", other)),
+            };
+            if is_slice {
+                self.expect_kind(&TokenKind::RBracket)?;
+            }
+            let name = match self.advance().kind.clone() {
+                TokenKind::Ident(n) => n,
+                other => return Err(format!("expected parameter name, got {:?}", other)),
+            };
+            let param_ty = if is_slice { ParamTy::Slice(ty) } else { ParamTy::Scalar(ty) };
+            params.push((name, param_ty));
+            if !self.eat(&TokenKind::Comma) { break; }
+        }
+        Ok(params)
+    }
+
+    /// Parse a block body `stmt* }` — `{` already consumed.
+    fn parse_block_tok(&mut self) -> Result<Vec<Stmt>, String> {
+        let mut stmts = Vec::new();
+        while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
+            if self.eat(&TokenKind::Semicolon) { continue; }
+            if self.at(&TokenKind::RBrace) { break; }
+            match self.parse_stmt_tok() {
+                Ok(s) => stmts.push(s),
+                Err(e) => return Err(e),
+            }
+            self.eat(&TokenKind::Semicolon);
+        }
+        self.expect_kind(&TokenKind::RBrace)?;
+        Ok(stmts)
+    }
+
+    /// Parse a single statement.
+    fn parse_stmt_tok(&mut self) -> Result<Stmt, String> {
+        let note = self.peek().source.clone();
+        match self.peek().kind.clone() {
+            // Variable declaration: `TypeKw name = expr` or `TypeKw name`
+            TokenKind::TypeKw(ty) => {
+                self.advance();
+                let name = match self.advance().kind.clone() {
+                    TokenKind::Ident(n) => n,
+                    other => return Err(format!("expected variable name after type, got {:?}", other)),
+                };
+                let init = if self.eat(&TokenKind::Eq) {
+                    Some(self.parse_expr(0)?)
+                } else {
+                    None
+                };
+                Ok(Stmt::VarDecl { ty, name, init })
+            }
+            // if expr { body } else { body }
+            TokenKind::If => {
+                self.advance();
+                let cond = self.parse_expr(0)?;
+                self.expect_kind(&TokenKind::LBrace)?;
+                let then_body = self.parse_block_tok()?;
+                let else_body = if self.eat(&TokenKind::Else) {
+                    self.expect_kind(&TokenKind::LBrace)?;
+                    self.parse_block_tok()?
+                } else {
+                    Vec::new()
+                };
+                Ok(Stmt::If { cond, then_body, else_body })
+            }
+            // while expr { body }
+            TokenKind::While => {
+                self.advance();
+                let cond = self.parse_expr(0)?;
+                self.expect_kind(&TokenKind::LBrace)?;
+                let body = self.parse_block_tok()?;
+                Ok(Stmt::While { cond, body })
+            }
+            // for var in start..end { body }
+            TokenKind::For => {
+                self.advance();
+                let var = match self.advance().kind.clone() {
+                    TokenKind::Ident(n) => n,
+                    other => return Err(format!("expected loop variable, got {:?}", other)),
+                };
+                self.expect_kind(&TokenKind::In)?;
+                let start = self.parse_expr(0)?;
+                let inclusive = if self.eat(&TokenKind::DotDotEq) {
+                    true
+                } else {
+                    self.expect_kind(&TokenKind::DotDot)?;
+                    false
+                };
+                let end = self.parse_expr(0)?;
+                self.expect_kind(&TokenKind::LBrace)?;
+                let body = self.parse_block_tok()?;
+                Ok(Stmt::For { var, start, end, inclusive, body })
+            }
+            // return expr?
+            TokenKind::Return => {
+                self.advance();
+                if self.at(&TokenKind::RBrace) || self.at(&TokenKind::Semicolon) || self.at(&TokenKind::Eof) {
+                    Ok(Stmt::Return(None))
+                } else {
+                    Ok(Stmt::Return(Some(self.parse_expr(0)?)))
+                }
+            }
+            TokenKind::Break    => { self.advance(); Ok(Stmt::Break) }
+            TokenKind::Continue => { self.advance(); Ok(Stmt::Continue) }
+            // print("string")
+            TokenKind::Print => {
+                self.advance();
+                self.expect_kind(&TokenKind::LParen)?;
+                let s = match self.advance().kind.clone() {
+                    TokenKind::StrLit(s) => s,
+                    other => return Err(format!("print() requires a string literal, got {:?}", other)),
+                };
+                self.expect_kind(&TokenKind::RParen)?;
+                Ok(Stmt::Print(s))
+            }
+            // acquire(NAME) / release(NAME)
+            TokenKind::Acquire => {
+                self.advance();
+                self.expect_kind(&TokenKind::LParen)?;
+                let name = match self.advance().kind.clone() {
+                    TokenKind::Ident(n) => n,
+                    other => return Err(format!("expected lock name, got {:?}", other)),
+                };
+                self.expect_kind(&TokenKind::RParen)?;
+                Ok(Stmt::Acquire(name))
+            }
+            TokenKind::Release => {
+                self.advance();
+                self.expect_kind(&TokenKind::LParen)?;
+                let name = match self.advance().kind.clone() {
+                    TokenKind::Ident(n) => n,
+                    other => return Err(format!("expected lock name, got {:?}", other)),
+                };
+                self.expect_kind(&TokenKind::RParen)?;
+                Ok(Stmt::Release(name))
+            }
+            // critical { } / unsafe { }
+            TokenKind::Critical => {
+                self.advance();
+                self.expect_kind(&TokenKind::LBrace)?;
+                let body = self.parse_block_tok()?;
+                Ok(Stmt::Critical(body))
+            }
+            TokenKind::Unsafe => {
+                self.advance();
+                self.expect_kind(&TokenKind::LBrace)?;
+                let body = self.parse_block_tok()?;
+                Ok(Stmt::Unsafe(body))
+            }
+            // yieldpoint
+            TokenKind::Yieldpoint => { self.advance(); Ok(Stmt::YieldPoint) }
+            // Ident — assignment, compound-assign, field-assign, or call
+            // Also handles `raw_write` and `raw_read` which are tokenized as Ident
+            TokenKind::Ident(name) => {
+                // Check for raw_write<T>(addr, val) / raw_read<T>(addr, cap)
+                if name == "raw_write" || name == "raw_write" {
+                    // handled below after advance
+                }
+                self.advance();
+                // raw intrinsics: raw_write<T>(addr, val) and raw_read<T>(addr, cap)
+                if name == "raw_write" {
+                    let ty = self.parse_type_param_tok()?;
+                    self.expect_kind(&TokenKind::LParen)?;
+                    let addr_expr = self.parse_mmio_addr_expr_tok()?;
+                    self.expect_kind(&TokenKind::Comma)?;
+                    let val_expr = self.parse_mmio_value_expr_tok()?;
+                    self.expect_kind(&TokenKind::RParen)?;
+                    return Ok(Stmt::RawMmioWrite { ty, addr: addr_expr, value: val_expr });
+                }
+                if name == "raw_read" {
+                    let ty = self.parse_type_param_tok()?;
+                    self.expect_kind(&TokenKind::LParen)?;
+                    let addr_expr = self.parse_mmio_addr_expr_tok()?;
+                    let capture = if self.eat(&TokenKind::Comma) {
+                        Some(match self.advance().kind.clone() {
+                            TokenKind::Ident(n) => n,
+                            other => return Err(format!("expected capture slot, got {:?}", other)),
+                        })
+                    } else { None };
+                    self.expect_kind(&TokenKind::RParen)?;
+                    return Ok(Stmt::RawMmioRead { ty, addr: addr_expr, capture });
+                }
+                // Check next token for assignment variants
+                match self.peek().kind.clone() {
+                    // name = expr
+                    TokenKind::Eq => {
+                        self.advance();
+                        let value = self.parse_expr(0)?;
+                        Ok(Stmt::Assign { target: AssignTarget::Ident(name), value })
+                    }
+                    // name op= expr
+                    ref k if compound_assign_op(k).is_some() => {
+                        let op = compound_assign_op(&self.advance().kind.clone()).unwrap();
+                        let value = self.parse_expr(0)?;
+                        Ok(Stmt::CompoundAssign { target: AssignTarget::Ident(name), op, value })
+                    }
+                    // name.field = expr
+                    TokenKind::Dot => {
+                        self.advance();
+                        let field = match self.advance().kind.clone() {
+                            TokenKind::Ident(f) => f,
+                            other => return Err(format!("expected field name after '.', got {:?}", other)),
+                        };
+                        self.expect_kind(&TokenKind::Eq)?;
+                        let value = self.parse_expr(0)?;
+                        Ok(Stmt::Assign {
+                            target: AssignTarget::DeviceField { device: name, field },
+                            value,
+                        })
+                    }
+                    // name(args)
+                    TokenKind::LParen => {
+                        self.advance();
+                        let mut args = Vec::new();
+                        while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+                            args.push(self.parse_expr(0)?);
+                            if !self.eat(&TokenKind::Comma) { break; }
+                        }
+                        self.expect_kind(&TokenKind::RParen)?;
+                        // Map well-known old-syntax zero-arg intrinsics to their Stmt variants.
+                        if args.is_empty() {
+                            match name.as_str() {
+                                "allocpoint" => return Ok(Stmt::AllocPoint),
+                                "blockpoint" => return Ok(Stmt::BlockPoint),
+                                "yieldpoint" => return Ok(Stmt::YieldPoint),
+                                _ => {}
+                            }
+                        }
+                        // Reject known old-syntax intrinsic names so TokParser falls back
+                        // to the old character-level parser which handles them correctly.
+                        match name.as_str() {
+                            "tail_call" | "call_with_args" | "call_capture"
+                            | "return_slot" | "branch_if_zero" | "branch_if_eq"
+                            | "branch_if_mask_nonzero"
+                            | "mmio_read" | "mmio_write"
+                            | "raw_mmio_read" | "raw_mmio_write"
+                            | "stack_cell" | "cell_store" | "cell_load"
+                            | "cell_add" | "cell_sub" | "cell_and" | "cell_or"
+                            | "cell_xor" | "cell_shl" | "cell_shr"
+                            | "slot_add" | "slot_sub" | "slot_and" | "slot_or"
+                            | "slot_xor" | "slot_shl" | "slot_shr"
+                            | "slice_len" | "slice_ptr"
+                            | "percpu_read" | "percpu_write" => {
+                                return Err(format!(
+                                    "old-syntax intrinsic '{}' — use old parser",
+                                    name
+                                ));
+                            }
+                            _ => {}
+                        }
+                        if args.is_empty() {
+                            Ok(Stmt::Call(name))
+                        } else {
+                            Ok(Stmt::ExprStmt(Expr::Call { callee: name, args }))
+                        }
+                    }
+                    other => Err(format!("unexpected token {:?} after identifier '{}' ({}:{})", other, name, note.line, note.column)),
+                }
+            }
+            other => Err(format!("unexpected token {:?} at start of statement ({}:{})", other, note.line, note.column)),
+        }
+    }
+
+    /// Parse `<TYPE>` type parameter for raw_write/raw_read intrinsics.
+    fn parse_type_param_tok(&mut self) -> Result<MmioScalarType, String> {
+        self.expect_kind(&TokenKind::Lt)?;
+        let ty = match self.advance().kind.clone() {
+            TokenKind::TypeKw(t) => t,
+            other => return Err(format!("expected type in <>, got {:?}", other)),
+        };
+        self.expect_kind(&TokenKind::Gt)?;
+        Ok(ty)
+    }
+
+    /// Parse an MMIO address expression.
+    fn parse_mmio_addr_expr_tok(&mut self) -> Result<MmioAddrExpr, String> {
+        match self.peek().kind.clone() {
+            TokenKind::IntLit(n) => {
+                self.advance();
+                Ok(MmioAddrExpr::IntLiteral(format!("0x{:X}", n)))
+            }
+            TokenKind::Ident(base) => {
+                self.advance();
+                if self.eat(&TokenKind::Plus) {
+                    match self.advance().kind.clone() {
+                        TokenKind::IntLit(offset) => Ok(MmioAddrExpr::IdentPlusOffset {
+                            base,
+                            offset: format!("0x{:X}", offset),
+                        }),
+                        other => Err(format!("expected integer offset, got {:?}", other)),
+                    }
+                } else {
+                    Ok(MmioAddrExpr::Ident(base))
+                }
+            }
+            other => Err(format!("expected MMIO address expression, got {:?}", other)),
+        }
+    }
+
+    /// Parse an MMIO value expression.
+    fn parse_mmio_value_expr_tok(&mut self) -> Result<MmioValueExpr, String> {
+        match self.advance().kind.clone() {
+            TokenKind::IntLit(n) => Ok(MmioValueExpr::IntLiteral(format!("0x{:X}", n))),
+            TokenKind::Ident(n)  => Ok(MmioValueExpr::Ident(n)),
+            other => Err(format!("expected value expression, got {:?}", other)),
+        }
+    }
+
+    /// Parse `device NAME at ADDR { regs... }` — `device` keyword already consumed.
+    fn parse_device_tok(&mut self) -> Result<DeviceDecl, String> {
+        let source = self.peek().source.clone();
+        let name = match self.advance().kind.clone() {
+            TokenKind::Ident(n) => n,
+            other => return Err(format!("expected device name, got {:?}", other)),
+        };
+        self.expect_kind(&TokenKind::At)?;
+        let base_addr = match self.advance().kind.clone() {
+            TokenKind::IntLit(n) => format!("0x{:X}", n),
+            TokenKind::Ident(s)  => s,
+            other => return Err(format!("expected device base address, got {:?}", other)),
+        };
+        self.expect_kind(&TokenKind::LBrace)?;
+        let mut registers = Vec::new();
+        while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
+            if self.eat(&TokenKind::Semicolon) { continue; }
+            if self.at(&TokenKind::RBrace) { break; }
+            let reg_name = match self.advance().kind.clone() {
+                TokenKind::Ident(n) => n,
+                other => return Err(format!("expected register name, got {:?}", other)),
+            };
+            self.expect_kind(&TokenKind::At)?;
+            let offset = match self.advance().kind.clone() {
+                TokenKind::IntLit(n) => format!("0x{:X}", n),
+                TokenKind::Ident(s) => s,
+                other => return Err(format!("expected register offset, got {:?}", other)),
+            };
+            self.expect_kind(&TokenKind::Colon)?;
+            let ty = match self.advance().kind.clone() {
+                TokenKind::TypeKw(t) => t,
+                other => return Err(format!("expected register type, got {:?}", other)),
+            };
+            let access = match self.advance().kind.clone() {
+                TokenKind::Ident(s) => match s.as_str() {
+                    "rw" => MmioRegAccess::Rw,
+                    "ro" => MmioRegAccess::Ro,
+                    "wo" => MmioRegAccess::Wo,
+                    other => return Err(format!("expected 'rw', 'ro', or 'wo', got '{}'", other)),
+                },
+                other => return Err(format!("expected access mode, got {:?}", other)),
+            };
+            self.eat(&TokenKind::Semicolon);
+            registers.push(DeviceRegDecl { name: reg_name, offset, ty, access });
+        }
+        self.expect_kind(&TokenKind::RBrace)?;
+        Ok(DeviceDecl { name, base_addr, registers, source })
+    }
+
+    /// Parse `const TYPE NAME = VALUE` — `const` keyword already consumed.
+    fn parse_const_tok(&mut self) -> Result<ConstDecl, String> {
+        // Support both `TYPE NAME = VALUE` (new) and `NAME : TYPE = VALUE` (old fallback)
+        let (name, ty) = if let TokenKind::TypeKw(t) = self.peek().kind.clone() {
+            self.advance();
+            let name = match self.advance().kind.clone() {
+                TokenKind::Ident(n) => n,
+                other => return Err(format!("expected constant name, got {:?}", other)),
+            };
+            (name, t)
+        } else {
+            let name = match self.advance().kind.clone() {
+                TokenKind::Ident(n) => n,
+                other => return Err(format!("expected constant name, got {:?}", other)),
+            };
+            (name, MmioScalarType::U64)
+        };
+        self.expect_kind(&TokenKind::Eq)?;
+        let value = match self.advance().kind.clone() {
+            TokenKind::IntLit(n) => format!("{}", n),
+            other => return Err(format!("expected constant value, got {:?}", other)),
+        };
+        self.eat(&TokenKind::Semicolon);
+        Ok(ConstDecl { name, ty, value })
+    }
+
+    /// Parse `percpu NAME : TYPE` — `percpu` keyword already consumed.
+    fn parse_percpu_tok(&mut self) -> Result<PercpuDecl, String> {
+        let name = match self.advance().kind.clone() {
+            TokenKind::Ident(n) => n,
+            other => return Err(format!("expected percpu variable name, got {:?}", other)),
+        };
+        self.expect_kind(&TokenKind::Colon)?;
+        let ty = match self.advance().kind.clone() {
+            TokenKind::TypeKw(t) => t,
+            other => return Err(format!("expected type after ':', got {:?}", other)),
+        };
+        self.eat(&TokenKind::Semicolon);
+        Ok(PercpuDecl { name, ty })
+    }
+
+    /// Skip to the next top-level item on error.
+    fn skip_to_next_item(&mut self) {
+        while !self.at(&TokenKind::Eof) {
+            match self.peek().kind {
+                TokenKind::Fn | TokenKind::Device | TokenKind::Lock | TokenKind::Const
+                | TokenKind::Percpu | TokenKind::Extern | TokenKind::AtSign => break,
+                _ => { self.advance(); }
+            }
+        }
+    }
 }
 
 fn token_to_binop(kind: &TokenKind) -> Option<BinOpKind> {
@@ -1087,6 +1689,70 @@ fn prefix_bp(op: UnOpKind) -> ((), u8) {
     match op {
         UnOpKind::Not | UnOpKind::BitNot | UnOpKind::Neg => ((), 110),
     }
+}
+
+/// Map a compound-assignment token to its BinOpKind (returns None if not a compound-assign).
+fn compound_assign_op(kind: &TokenKind) -> Option<BinOpKind> {
+    Some(match kind {
+        TokenKind::PlusEq    => BinOpKind::Add,
+        TokenKind::MinusEq   => BinOpKind::Sub,
+        TokenKind::AmpEq     => BinOpKind::And,
+        TokenKind::PipeEq    => BinOpKind::Or,
+        TokenKind::CaretEq   => BinOpKind::Xor,
+        TokenKind::ShlEq     => BinOpKind::Shl,
+        TokenKind::ShrEq     => BinOpKind::Shr,
+        TokenKind::StarEq    => BinOpKind::Mul,
+        TokenKind::SlashEq   => BinOpKind::Div,
+        TokenKind::PercentEq => BinOpKind::Rem,
+        _ => return None,
+    })
+}
+
+/// Reconstruct approximate source text for a token kind (used in attribute arg collection).
+fn token_kind_to_str(kind: &TokenKind) -> String {
+    match kind {
+        TokenKind::Ident(s)    => s.clone(),
+        TokenKind::IntLit(n)   => n.to_string(),
+        TokenKind::StrLit(s)   => format!("\"{}\"", s),
+        TokenKind::Comma       => ",".into(),
+        TokenKind::Colon       => ":".into(),
+        TokenKind::Dot         => ".".into(),
+        TokenKind::Eq          => "=".into(),
+        TokenKind::Plus        => "+".into(),
+        TokenKind::Minus       => "-".into(),
+        TokenKind::Star        => "*".into(),
+        TokenKind::Slash       => "/".into(),
+        TokenKind::Amp         => "&".into(),
+        TokenKind::Pipe        => "|".into(),
+        TokenKind::Bang        => "!".into(),
+        TokenKind::Lt          => "<".into(),
+        TokenKind::Gt          => ">".into(),
+        TokenKind::TypeKw(ty)  => ty.as_str().into(),
+        other                  => format!("{:?}", other),
+    }
+}
+
+/// Minimal CSV splitter for annotation args (splits on top-level commas only).
+#[allow(dead_code)]
+fn split_csv_simple(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut depth = 0i32;
+    for ch in s.chars() {
+        match ch {
+            '(' | '[' => { depth += 1; cur.push(ch); }
+            ')' | ']' => { depth -= 1; cur.push(ch); }
+            ',' if depth == 0 => {
+                let t = cur.trim().to_string();
+                if !t.is_empty() { out.push(t); }
+                cur = String::new();
+            }
+            c => cur.push(c),
+        }
+    }
+    let t = cur.trim().to_string();
+    if !t.is_empty() { out.push(t); }
+    out
 }
 
 struct Parser<'a> {
