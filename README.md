@@ -32,11 +32,14 @@ fn entry() {
 }
 EOF
 
-# Compile to an executable
+# Compile
 kernriftc hello.kr
-# → hello  (ELF executable)
+# → hello.krbo
 
-# Or run the analysis pass only
+# Run
+kernrift hello.krbo
+
+# Or just analyse (no binary output)
 kernriftc check hello.kr
 ```
 

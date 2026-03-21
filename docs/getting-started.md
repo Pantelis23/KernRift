@@ -74,7 +74,11 @@ Compile it:
 kernriftc hello.kr
 ```
 
-On success, `kernriftc` exits 0 and produces `hello` (an ELF executable) in the current directory.
+On success, `kernriftc` exits 0 and produces `hello.krbo` in the current directory. Run it with:
+
+```sh
+kernrift hello.krbo
+```
 
 A context violation looks like this:
 
@@ -96,7 +100,8 @@ error[E0002]: context mismatch: `entry` requires {thread, boot}, called from {ir
 
 | Command | Output | Description |
 |---------|--------|-------------|
-| `kernriftc <file.kr>` | `<stem>` executable in CWD | **Default compile** |
+| `kernriftc <file.kr>` | `<stem>.krbo` in CWD | **Default compile** |
+| `kernrift <file.krbo>` | — | **Run a compiled program** |
 | `kernriftc check <file.kr>` | stderr diagnostics | Analysis only, no binary |
 | `kernriftc check --emit=krir <file.kr>` | JSON to **stdout** | KRIR canonical IR |
 | `kernriftc check --emit=lockgraph <file.kr>` | JSON to **stdout** | Lock graph analysis |

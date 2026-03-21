@@ -341,11 +341,23 @@ fn main() -> ExitCode {
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("output");
-            let output = stem.to_string();
+            let output = format!("{}.krbo", stem);
             let synthetic: Vec<String> =
-                vec!["-o".to_string(), output, arg.to_string()];
+                vec!["-o".to_string(), output.clone(), arg.to_string()];
             match parse_backend_emit_args("elfexe", &synthetic, SurfaceProfile::Stable) {
-                Ok(parsed) => run_backend_emit(&parsed),
+                Ok(parsed) => {
+                    let result = run_backend_emit(&parsed);
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        if let Ok(meta) = std::fs::metadata(&output) {
+                            let mut perms = meta.permissions();
+                            perms.set_mode(perms.mode() | 0o111);
+                            let _ = std::fs::set_permissions(&output, perms);
+                        }
+                    }
+                    result
+                }
                 Err(err) => {
                     eprintln!("{}", err);
                     ExitCode::from(EXIT_INVALID_INPUT)
@@ -1673,7 +1685,7 @@ fn print_errors(errs: &[String]) {
 
 fn print_usage() {
     eprintln!("usage:");
-    eprintln!("  kernriftc <file.kr>                  # compile to executable <stem>");
+    eprintln!("  kernriftc <file.kr>                  # compile to <stem>.krbo");
     eprintln!("  kernriftc --version");
     eprintln!("  kernriftc check <file.kr>");
     eprintln!("  kernriftc check --canonical <file.kr>");

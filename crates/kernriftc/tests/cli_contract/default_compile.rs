@@ -19,8 +19,8 @@ fn default_compile_produces_executable_in_cwd() {
         .success();
 
     assert!(
-        tmp.join("hello").exists(),
-        "expected hello (ELF executable) in CWD after kernriftc hello.kr"
+        tmp.join("hello.krbo").exists(),
+        "expected hello.krbo in CWD after kernriftc hello.kr"
     );
 
     std::fs::remove_dir_all(&tmp).ok();
