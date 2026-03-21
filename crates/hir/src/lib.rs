@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use krir::{
     ArithOp as KrirArithOp, CallEdge, CmpOp as KrirCmpOp, Ctx, Eff, ExecutableBlock,
+    FArithOp as KrirFArithOp,
     ExecutableExternDecl, ExecutableFacts, ExecutableFunction, ExecutableKrirModule,
     ExecutableOp as KrExecutableOp, ExecutableSignature, ExecutableTerminator, ExecutableValue,
     ExecutableValueType, Function, FunctionAttrs, KrirModule, KrirOp, KrirParamTy,
@@ -2638,6 +2639,16 @@ fn lower_expr(
             });
             Ok(slot)
         }
+        ParserExpr::FloatLiteral(v) => {
+            let slot = fresh_slot(slot_counter);
+            ops.push(KrirOp::StackCell { ty: KrirMmioScalarType::F64, cell: slot.clone() });
+            ops.push(KrirOp::StackStore {
+                ty: KrirMmioScalarType::F64,
+                cell: slot.clone(),
+                value: KrirMmioValueExpr::FloatLiteral { value: v.to_string() },
+            });
+            Ok(slot)
+        }
         ParserExpr::Ident(name) => Ok(name.clone()),
         ParserExpr::DeviceField { device, field } => {
             let reg = device_regs
@@ -2663,8 +2674,16 @@ fn lower_expr(
             Ok(slot)
         }
         ParserExpr::BinOp { op, lhs, rhs } => {
+            let is_float = expr_is_float(lhs) || expr_is_float(rhs);
             let l = lower_expr(lhs, ops, slot_counter, device_regs, eff_used)?;
             let r = lower_expr(rhs, ops, slot_counter, device_regs, eff_used)?;
+            if is_float {
+                let fop = binop_to_krir_farith(*op)
+                    .ok_or_else(|| format!("unsupported float operator {:?}", op))?;
+                let float_ty = KrirMmioScalarType::F64;
+                ops.push(KrirOp::FloatArith { ty: float_ty, fop, dst: l.clone(), src: r });
+                return Ok(l);
+            }
             match op {
                 ParserBinOpKind::Mul | ParserBinOpKind::Div | ParserBinOpKind::Rem => {
                     return Err(
@@ -2727,6 +2746,25 @@ fn binop_to_krir_cmp(op: ParserBinOpKind) -> Option<KrirCmpOp> {
         ParserBinOpKind::Ge => KrirCmpOp::Ge,
         _ => return None,
     })
+}
+
+fn binop_to_krir_farith(op: ParserBinOpKind) -> Option<KrirFArithOp> {
+    Some(match op {
+        ParserBinOpKind::Add => KrirFArithOp::FAdd,
+        ParserBinOpKind::Sub => KrirFArithOp::FSub,
+        ParserBinOpKind::Mul => KrirFArithOp::FMul,
+        ParserBinOpKind::Div => KrirFArithOp::FDiv,
+        _ => return None,
+    })
+}
+
+/// Returns true if `expr` contains any floating-point literal (directly or in sub-expressions).
+fn expr_is_float(expr: &ParserExpr) -> bool {
+    match expr {
+        ParserExpr::FloatLiteral(_) => true,
+        ParserExpr::BinOp { lhs, rhs, .. } => expr_is_float(lhs) || expr_is_float(rhs),
+        _ => false,
+    }
 }
 
 fn lower_stmt(
@@ -3171,18 +3209,15 @@ fn lower_stmt(
 }
 
 fn lower_mmio_scalar_type(ty: ParserMmioScalarType) -> KrirMmioScalarType {
-    // Map new signed/float/bool/char variants to their unsigned storage equivalent.
-    match ty.storage_type() {
-        ParserMmioScalarType::U8  => KrirMmioScalarType::U8,
-        ParserMmioScalarType::U16 => KrirMmioScalarType::U16,
-        ParserMmioScalarType::U32 => KrirMmioScalarType::U32,
-        ParserMmioScalarType::U64 => KrirMmioScalarType::U64,
-        ParserMmioScalarType::F32 | ParserMmioScalarType::F64 | ParserMmioScalarType::F16 => {
-            // Float MMIO lowering not yet implemented (Task 14).
-            // This should be caught at parse time — float types are not valid in mmio_read/write contexts.
-            panic!("float MMIO lowering not yet implemented; use mmio_read<uint32> and reinterpret")
-        }
-        other => unreachable!("storage_type() returned non-unsigned variant {:?}", other),
+    match ty {
+        ParserMmioScalarType::U8  | ParserMmioScalarType::I8
+        | ParserMmioScalarType::Bool | ParserMmioScalarType::Char => KrirMmioScalarType::U8,
+        ParserMmioScalarType::U16 | ParserMmioScalarType::I16 | ParserMmioScalarType::F16
+            => KrirMmioScalarType::U16,
+        ParserMmioScalarType::U32 | ParserMmioScalarType::I32 => KrirMmioScalarType::U32,
+        ParserMmioScalarType::U64 | ParserMmioScalarType::I64 => KrirMmioScalarType::U64,
+        ParserMmioScalarType::F32 => KrirMmioScalarType::F32,
+        ParserMmioScalarType::F64 => KrirMmioScalarType::F64,
     }
 }
 

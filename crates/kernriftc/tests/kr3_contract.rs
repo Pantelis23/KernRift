@@ -1278,3 +1278,19 @@ fn bad(uint32 x) -> uint32 {
     assert!(errs.iter().any(|e| e.contains("multiplication")),
         "expected 'multiplication' in error, got: {:?}", errs);
 }
+
+#[test]
+fn float_arith_emits_float_arith_op() {
+    use krir::KrirOp;
+    let src = r#"
+@ctx(thread)
+fn scale_f(float32 x) -> float32 {
+    float32 result = x + 1.0
+    return result
+}
+"#;
+    let module = compile_source(src).unwrap();
+    let f = module.functions.iter().find(|f| f.name == "scale_f").unwrap();
+    assert!(f.ops.iter().any(|op| matches!(op, KrirOp::FloatArith { .. })),
+        "expected FloatArith in scale_f ops, got: {:?}", f.ops);
+}

@@ -943,6 +943,7 @@ fn telemetry_op_discriminant(op: &KrirOp) -> String {
         KrirOp::LoopContinue => "loop_continue",
         KrirOp::BranchIfZeroLoopBreak { .. } => "branch_if_zero_loop_break",
         KrirOp::BranchIfNonZeroLoopBreak { .. } => "branch_if_nonzero_loop_break",
+        KrirOp::FloatArith { .. } => "float_arith",
     }
     .to_string()
 }

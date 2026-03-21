@@ -134,6 +134,27 @@ impl CmpOp {
     }
 }
 
+/// Floating-point arithmetic operation (SSE2 scalar).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FArithOp {
+    FAdd,
+    FSub,
+    FMul,
+    FDiv,
+}
+
+impl FArithOp {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::FAdd => "fadd",
+            Self::FSub => "fsub",
+            Self::FMul => "fmul",
+            Self::FDiv => "fdiv",
+        }
+    }
+}
+
 /// Arithmetic operation for `CellArithImm` / `SlotArithImm`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -305,6 +326,13 @@ pub enum KrirOp {
     BranchIfZeroLoopBreak { slot: String },
     /// If `slot != 0`, exit the innermost loop.
     BranchIfNonZeroLoopBreak { slot: String },
+    /// Floating-point arithmetic: `dst = dst op src` (SSE2 scalar). Requires Task 11 backend.
+    FloatArith {
+        ty: MmioScalarType,
+        fop: FArithOp,
+        dst: String,
+        src: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -330,6 +358,7 @@ impl MmioAddrExpr {
 pub enum MmioValueExpr {
     Ident { name: String },
     IntLiteral { value: String },
+    FloatLiteral { value: String },
 }
 
 impl MmioValueExpr {
@@ -337,6 +366,7 @@ impl MmioValueExpr {
         match self {
             Self::Ident { name } => name.clone(),
             Self::IntLiteral { value } => value.clone(),
+            Self::FloatLiteral { value } => value.clone(),
         }
     }
 }
@@ -348,6 +378,8 @@ pub enum MmioScalarType {
     U16,
     U32,
     U64,
+    F32,
+    F64,
 }
 
 impl MmioScalarType {
@@ -357,7 +389,24 @@ impl MmioScalarType {
             Self::U16 => "u16",
             Self::U32 => "u32",
             Self::U64 => "u64",
+            Self::F32 => "f32",
+            Self::F64 => "f64",
         }
+    }
+
+    /// Width in bytes.
+    pub fn byte_width(self) -> usize {
+        match self {
+            Self::U8 => 1,
+            Self::U16 => 2,
+            Self::U32 | Self::F32 => 4,
+            Self::U64 | Self::F64 => 8,
+        }
+    }
+
+    /// True for the two floating-point variants.
+    pub fn is_float(self) -> bool {
+        matches!(self, Self::F32 | Self::F64)
     }
 }
 
@@ -498,6 +547,8 @@ fn executable_value_type_from_mmio_scalar(ty: MmioScalarType) -> ExecutableValue
         MmioScalarType::U16 => ExecutableValueType::U16,
         MmioScalarType::U32 => ExecutableValueType::U32,
         MmioScalarType::U64 => ExecutableValueType::U64,
+        MmioScalarType::F32 => ExecutableValueType::U32,
+        MmioScalarType::F64 => ExecutableValueType::U64,
     }
 }
 
@@ -1057,6 +1108,14 @@ pub fn lower_current_krir_to_executable_krir(
                                     }
                                 }
                             }
+                            MmioValueExpr::FloatLiteral { value } => {
+                                errors.push(format!(
+                                    "float literal '{}' not supported in MMIO write",
+                                    value
+                                ));
+                                arg_ok = false;
+                                break;
+                            }
                             MmioValueExpr::Ident { name } => {
                                 if let Some(&(slot_idx, _)) = cell_slot_map.get(name.as_str()) {
                                     ExecutableCallArg::Slot {
@@ -1112,6 +1171,14 @@ pub fn lower_current_krir_to_executable_krir(
                                         break;
                                     }
                                 }
+                            }
+                            MmioValueExpr::FloatLiteral { value } => {
+                                errors.push(format!(
+                                    "float literal '{}' not supported in MMIO write",
+                                    value
+                                ));
+                                arg_ok = false;
+                                break;
                             }
                             MmioValueExpr::Ident { name } => {
                                 if let Some(&(slot_idx, _)) = cell_slot_map.get(name.as_str()) {
@@ -1485,6 +1552,9 @@ pub fn lower_current_krir_to_executable_krir(
                         }
                     };
                     let resolved_value = match value {
+                        MmioValueExpr::FloatLiteral { value: fv } => {
+                            Err(format!("float literal '{}' not supported in MMIO write", fv))
+                        }
                         MmioValueExpr::IntLiteral { .. } => resolve_executable_mmio_write_value(
                             *ty,
                             value,
@@ -1793,6 +1863,9 @@ pub fn lower_current_krir_to_executable_krir(
                         }
                     };
                     let resolved_value = match value {
+                        MmioValueExpr::FloatLiteral { value: fv } => {
+                            Err(format!("float literal '{}' not supported in MMIO write", fv))
+                        }
                         MmioValueExpr::IntLiteral { .. } => resolve_executable_mmio_write_value(
                             *ty,
                             value,
@@ -1986,6 +2059,12 @@ pub fn lower_current_krir_to_executable_krir(
                         function.name, slot
                     ));
                 }
+                KrirOp::FloatArith { .. } => {
+                    errors.push(format!(
+                        "float arithmetic requires SSE2 backend (Task 14): function '{}'",
+                        function.name
+                    ));
+                }
             }
         }
 
@@ -2129,6 +2208,9 @@ fn resolve_executable_mmio_write_value(
     available_read_value: Option<(&str, MmioScalarType)>,
 ) -> Result<ExecutableMmioWriteValue, String> {
     match value {
+        MmioValueExpr::FloatLiteral { value } => {
+            return Err(format!("float literal '{}' not supported in MMIO write", value));
+        }
         MmioValueExpr::IntLiteral { value } => {
             let parsed = parse_integer_literal_u64(value)?;
             let max_value = match ty {
@@ -2136,6 +2218,8 @@ fn resolve_executable_mmio_write_value(
                 MmioScalarType::U16 => u16::MAX as u64,
                 MmioScalarType::U32 => u32::MAX as u64,
                 MmioScalarType::U64 => u64::MAX,
+                MmioScalarType::F32 => u32::MAX as u64,
+                MmioScalarType::F64 => u64::MAX,
             };
             if parsed > max_value {
                 Err(format!(
@@ -2286,6 +2370,8 @@ fn resolve_executable_branch_compare_value(
         MmioScalarType::U16 => u16::MAX as u64,
         MmioScalarType::U32 => u32::MAX as u64,
         MmioScalarType::U64 => u64::MAX,
+        MmioScalarType::F32 => u32::MAX as u64,
+        MmioScalarType::F64 => u64::MAX,
     };
     if parsed > max_value {
         Err(format!(
@@ -2308,6 +2394,8 @@ fn resolve_executable_branch_mask_value(
         MmioScalarType::U16 => u16::MAX as u64,
         MmioScalarType::U32 => u32::MAX as u64,
         MmioScalarType::U64 => u64::MAX,
+        MmioScalarType::F32 => u32::MAX as u64,
+        MmioScalarType::F64 => u64::MAX,
     };
     if parsed > max_value {
         Err(format!(
@@ -4126,6 +4214,8 @@ fn decode_x86_64_mmio_instruction(
                 MmioScalarType::U16 => 2usize,
                 MmioScalarType::U32 => 4usize,
                 MmioScalarType::U64 => 8usize,
+                MmioScalarType::F32 => 4usize,
+                MmioScalarType::F64 => 8usize,
             };
             if rest.len() < imm.len() + immediate_bytes + store.len() {
                 return Ok(None);
@@ -4147,6 +4237,16 @@ fn decode_x86_64_mmio_instruction(
                     bytes[value_offset..value_offset + 8]
                         .try_into()
                         .expect("u64 immediate bytes"),
+                ),
+                MmioScalarType::F32 => u32::from_le_bytes(
+                    bytes[value_offset..value_offset + 4]
+                        .try_into()
+                        .expect("f32 immediate bytes"),
+                ) as u64,
+                MmioScalarType::F64 => u64::from_le_bytes(
+                    bytes[value_offset..value_offset + 8]
+                        .try_into()
+                        .expect("f64 immediate bytes"),
                 ),
             };
             let store_offset = value_offset + immediate_bytes;
@@ -4227,6 +4327,7 @@ fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
         ExecutableOp::ParamLoad { ty, .. } => match ty {
             MmioScalarType::U8 | MmioScalarType::U32 => 4,
             MmioScalarType::U16 | MmioScalarType::U64 => 5,
+            MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
         },
         // Param-addr MMIO: load addr from stack (5 bytes) then same as constant-addr variant minus movabs (10 bytes).
         ExecutableOp::MmioReadParamAddr {
@@ -4285,6 +4386,7 @@ fn encode_mmio_read_bytes(out: &mut Vec<u8>, ty: MmioScalarType, addr: u64, capt
         MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x8B, 0x00]),
         MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x00]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x00]),
+        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
     }
     if capture_value {
         push_mov_accumulator_to_saved_value_register(out, ty);
@@ -4299,6 +4401,7 @@ fn encode_mmio_write_imm_bytes(out: &mut Vec<u8>, ty: MmioScalarType, addr: u64,
         MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x08]),
         MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x08]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x08]),
+        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
     }
 }
 
@@ -4309,6 +4412,7 @@ fn encode_mmio_write_saved_value_bytes(out: &mut Vec<u8>, ty: MmioScalarType, ad
         MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x18]),
         MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x18]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x18]),
+        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
     }
 }
 
@@ -4321,6 +4425,7 @@ fn encode_stack_cell_store_imm_slot_bytes(out: &mut Vec<u8>, ty: MmioScalarType,
             MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x0C, 0x24]),
             MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x0C, 0x24]),
             MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x0C, 0x24]),
+            MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
         }
     } else {
         match ty {
@@ -4328,6 +4433,7 @@ fn encode_stack_cell_store_imm_slot_bytes(out: &mut Vec<u8>, ty: MmioScalarType,
             MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x4C, 0x24, offset]),
             MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x4C, 0x24, offset]),
             MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x4C, 0x24, offset]),
+            MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
         }
     }
 }
@@ -4340,6 +4446,7 @@ fn encode_stack_cell_store_saved_value_slot_bytes(out: &mut Vec<u8>, ty: MmioSca
             MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x1C, 0x24]),
             MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x1C, 0x24]),
             MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x1C, 0x24]),
+            MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
         }
     } else {
         match ty {
@@ -4347,6 +4454,7 @@ fn encode_stack_cell_store_saved_value_slot_bytes(out: &mut Vec<u8>, ty: MmioSca
             MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x5C, 0x24, offset]),
             MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x5C, 0x24, offset]),
             MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x5C, 0x24, offset]),
+            MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
         }
     }
 }
@@ -4359,6 +4467,7 @@ fn encode_stack_cell_load_slot_bytes(out: &mut Vec<u8>, ty: MmioScalarType, slot
             MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x8B, 0x1C, 0x24]),
             MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x1C, 0x24]),
             MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x1C, 0x24]),
+            MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
         }
     } else {
         match ty {
@@ -4366,6 +4475,7 @@ fn encode_stack_cell_load_slot_bytes(out: &mut Vec<u8>, ty: MmioScalarType, slot
             MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x8B, 0x5C, 0x24, offset]),
             MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x5C, 0x24, offset]),
             MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x5C, 0x24, offset]),
+            MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
         }
     }
 }
@@ -4379,6 +4489,7 @@ fn encode_stack_cell_load_slot_bytes_into_rax(out: &mut Vec<u8>, ty: MmioScalarT
             MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x8B, 0x04, 0x24]),
             MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x04, 0x24]),
             MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x04, 0x24]),
+            MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
         }
     } else {
         match ty {
@@ -4386,6 +4497,7 @@ fn encode_stack_cell_load_slot_bytes_into_rax(out: &mut Vec<u8>, ty: MmioScalarT
             MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x8B, 0x44, 0x24, offset]),
             MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x44, 0x24, offset]),
             MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x44, 0x24, offset]),
+            MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
         }
     }
 }
@@ -4399,6 +4511,7 @@ fn encode_stack_cell_load_slot_bytes_into_rcx(out: &mut Vec<u8>, ty: MmioScalarT
             MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x8B, 0x0C, 0x24]),
             MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x0C, 0x24]),
             MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x0C, 0x24]),
+            MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
         }
     } else {
         match ty {
@@ -4406,6 +4519,7 @@ fn encode_stack_cell_load_slot_bytes_into_rcx(out: &mut Vec<u8>, ty: MmioScalarT
             MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x8B, 0x4C, 0x24, offset]),
             MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x4C, 0x24, offset]),
             MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x4C, 0x24, offset]),
+            MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
         }
     }
 }
@@ -4442,6 +4556,7 @@ fn encode_slot_arith_slot_op_bytes(
                     MmioScalarType::U16 => out.extend_from_slice(&[0x66, opcode8 + 1, modrm_no, 0x24]),
                     MmioScalarType::U32 => out.extend_from_slice(&[opcode8 + 1, modrm_no, 0x24]),
                     MmioScalarType::U64 => out.extend_from_slice(&[0x48, opcode8 + 1, modrm_no, 0x24]),
+                    MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
                 }
             } else {
                 match ty {
@@ -4449,6 +4564,7 @@ fn encode_slot_arith_slot_op_bytes(
                     MmioScalarType::U16 => out.extend_from_slice(&[0x66, opcode8 + 1, modrm_d8, 0x24, offset]),
                     MmioScalarType::U32 => out.extend_from_slice(&[opcode8 + 1, modrm_d8, 0x24, offset]),
                     MmioScalarType::U64 => out.extend_from_slice(&[0x48, opcode8 + 1, modrm_d8, 0x24, offset]),
+                    MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
                 }
             }
         }
@@ -4466,6 +4582,7 @@ fn encode_slot_arith_slot_op_bytes(
                     MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0xD3, modrm_no, 0x24]),
                     MmioScalarType::U32 => out.extend_from_slice(&[0xD3, modrm_no, 0x24]),
                     MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0xD3, modrm_no, 0x24]),
+                    MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
                 }
             } else {
                 match ty {
@@ -4473,6 +4590,7 @@ fn encode_slot_arith_slot_op_bytes(
                     MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0xD3, modrm_d8, 0x24, offset]),
                     MmioScalarType::U32 => out.extend_from_slice(&[0xD3, modrm_d8, 0x24, offset]),
                     MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0xD3, modrm_d8, 0x24, offset]),
+                    MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
                 }
             }
         }
@@ -4627,6 +4745,7 @@ fn encode_param_load_bytes(out: &mut Vec<u8>, ty: MmioScalarType, offset: u8) {
         MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x5C, 0x24, offset]),
         // movq  disp8(%rsp), %rbx — REX.W 0x8B /r
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x5C, 0x24, offset]),
+        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
     }
 }
 
@@ -4648,6 +4767,7 @@ fn encode_mmio_read_param_addr_bytes(
         MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x8B, 0x00]),
         MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x00]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x00]),
+        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
     }
     if capture_value {
         push_mov_accumulator_to_saved_value_register(out, ty);
@@ -4667,6 +4787,7 @@ fn encode_mmio_write_imm_param_addr_bytes(
         MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x08]),
         MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x08]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x08]),
+        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
     }
 }
 
@@ -4681,6 +4802,7 @@ fn encode_mmio_write_saved_value_param_addr_bytes(
         MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x18]),
         MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x18]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x18]),
+        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
     }
 }
 
@@ -4745,6 +4867,7 @@ fn push_mov_imm_to_accumulator_register(out: &mut Vec<u8>, ty: MmioScalarType, v
             out.extend_from_slice(&[0x48, 0xB8]);
             push_u64_le(out, value);
         }
+        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
     }
 }
 
@@ -4766,6 +4889,7 @@ fn push_mov_imm_to_value_register(out: &mut Vec<u8>, ty: MmioScalarType, value: 
             out.extend_from_slice(&[0x48, 0xB9]);
             push_u64_le(out, value);
         }
+        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
     }
 }
 
@@ -4775,6 +4899,7 @@ fn push_mov_accumulator_to_saved_value_register(out: &mut Vec<u8>, ty: MmioScala
         MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0xC3]),
         MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0xC3]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0xC3]),
+        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
     }
 }
 
@@ -4784,6 +4909,7 @@ fn push_mov_saved_value_to_accumulator_register(out: &mut Vec<u8>, ty: MmioScala
         MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0xD8]),
         MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0xD8]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0xD8]),
+        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
     }
 }
 
@@ -4793,6 +4919,7 @@ fn push_test_saved_value_register_zero(out: &mut Vec<u8>, ty: MmioScalarType) {
         MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x85, 0xDB]),
         MmioScalarType::U32 => out.extend_from_slice(&[0x85, 0xDB]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x85, 0xDB]),
+        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
     }
 }
 
@@ -4802,6 +4929,7 @@ fn push_cmp_accumulator_to_saved_value_register(out: &mut Vec<u8>, ty: MmioScala
         MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x39, 0xC3]),
         MmioScalarType::U32 => out.extend_from_slice(&[0x39, 0xC3]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x39, 0xC3]),
+        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
     }
 }
 
@@ -4811,6 +4939,7 @@ fn push_test_accumulator_with_saved_value_register(out: &mut Vec<u8>, ty: MmioSc
         MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x85, 0xC3]),
         MmioScalarType::U32 => out.extend_from_slice(&[0x85, 0xC3]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x85, 0xC3]),
+        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
     }
 }
 
@@ -4818,6 +4947,7 @@ fn mmio_load_bytes(ty: MmioScalarType) -> u64 {
     match ty {
         MmioScalarType::U8 | MmioScalarType::U32 => 2,
         MmioScalarType::U16 | MmioScalarType::U64 => 3,
+        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
     }
 }
 
@@ -4827,6 +4957,7 @@ fn mmio_value_load_immediate_bytes(ty: MmioScalarType) -> u64 {
         MmioScalarType::U16 => 4,
         MmioScalarType::U32 => 5,
         MmioScalarType::U64 => 10,
+        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
     }
 }
 
@@ -4834,6 +4965,7 @@ fn mmio_saved_value_copy_bytes(ty: MmioScalarType) -> u64 {
     match ty {
         MmioScalarType::U8 | MmioScalarType::U32 => 2,
         MmioScalarType::U16 | MmioScalarType::U64 => 3,
+        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
     }
 }
 
@@ -4841,6 +4973,7 @@ fn mmio_saved_value_zero_test_bytes(ty: MmioScalarType) -> u64 {
     match ty {
         MmioScalarType::U8 | MmioScalarType::U32 => 2,
         MmioScalarType::U16 | MmioScalarType::U64 => 3,
+        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
     }
 }
 
@@ -4850,6 +4983,7 @@ fn mmio_accumulator_immediate_bytes(ty: MmioScalarType) -> u64 {
         MmioScalarType::U16 => 4,
         MmioScalarType::U32 => 5,
         MmioScalarType::U64 => 10,
+        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
     }
 }
 
@@ -4857,6 +4991,7 @@ fn mmio_saved_value_compare_bytes(ty: MmioScalarType) -> u64 {
     match ty {
         MmioScalarType::U8 | MmioScalarType::U32 => 2,
         MmioScalarType::U16 | MmioScalarType::U64 => 3,
+        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
     }
 }
 
@@ -4872,6 +5007,7 @@ fn mmio_store_bytes(ty: MmioScalarType) -> u64 {
     match ty {
         MmioScalarType::U8 | MmioScalarType::U32 => 2,
         MmioScalarType::U16 | MmioScalarType::U64 => 3,
+        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
     }
 }
 
@@ -4886,6 +5022,7 @@ fn stack_cell_access_bytes(ty: MmioScalarType, slot_idx: u8) -> u64 {
     let base: u64 = match ty {
         MmioScalarType::U8 | MmioScalarType::U32 => 3,
         MmioScalarType::U16 | MmioScalarType::U64 => 4,
+        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
     };
     base + if slot_idx > 0 { 1 } else { 0 }
 }
@@ -4935,6 +5072,7 @@ fn slot_arith_slot_op_mnemonic(ty: MmioScalarType, op: ArithOp) -> &'static str 
         (MmioScalarType::U64, ArithOp::Xor) => "xorq",
         (MmioScalarType::U64, ArithOp::Shl) => "shlq",
         (MmioScalarType::U64, ArithOp::Shr) => "shrq",
+        (MmioScalarType::F32 | MmioScalarType::F64, _) => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
     }
 }
 
@@ -4944,6 +5082,7 @@ fn mmio_accumulator_register(ty: MmioScalarType) -> &'static str {
         MmioScalarType::U16 => "%ax",
         MmioScalarType::U32 => "%eax",
         MmioScalarType::U64 => "%rax",
+        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
     }
 }
 
@@ -4953,6 +5092,7 @@ fn mmio_value_register(ty: MmioScalarType) -> &'static str {
         MmioScalarType::U16 => "%cx",
         MmioScalarType::U32 => "%ecx",
         MmioScalarType::U64 => "%rcx",
+        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
     }
 }
 
@@ -4974,6 +5114,7 @@ fn mmio_saved_value_register(ty: MmioScalarType) -> &'static str {
         MmioScalarType::U16 => "%bx",
         MmioScalarType::U32 => "%ebx",
         MmioScalarType::U64 => "%rbx",
+        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
     }
 }
 
@@ -4983,6 +5124,7 @@ fn mmio_load_mnemonic(ty: MmioScalarType) -> &'static str {
         MmioScalarType::U16 => "movw",
         MmioScalarType::U32 => "movl",
         MmioScalarType::U64 => "movq",
+        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
     }
 }
 
@@ -5004,6 +5146,7 @@ fn mmio_saved_value_zero_test_mnemonic(ty: MmioScalarType) -> &'static str {
         MmioScalarType::U16 => "testw %bx, %bx",
         MmioScalarType::U32 => "testl %ebx, %ebx",
         MmioScalarType::U64 => "testq %rbx, %rbx",
+        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
     }
 }
 
@@ -5013,6 +5156,7 @@ fn mmio_saved_value_compare_mnemonic(ty: MmioScalarType) -> &'static str {
         MmioScalarType::U16 => "cmpw %ax, %bx",
         MmioScalarType::U32 => "cmpl %eax, %ebx",
         MmioScalarType::U64 => "cmpq %rax, %rbx",
+        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
     }
 }
 
@@ -5022,6 +5166,7 @@ fn mmio_saved_value_mask_test_mnemonic(ty: MmioScalarType) -> &'static str {
         MmioScalarType::U16 => "testw %ax, %bx",
         MmioScalarType::U32 => "testl %eax, %ebx",
         MmioScalarType::U64 => "testq %rax, %rbx",
+        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
     }
 }
 
@@ -5031,6 +5176,7 @@ fn mmio_accumulator_immediate_mnemonic(ty: MmioScalarType, value: u64) -> String
         MmioScalarType::U16 => "movw",
         MmioScalarType::U32 => "movl",
         MmioScalarType::U64 => "movabs",
+        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
     };
     format!(
         "{} ${}, {}",
@@ -5046,6 +5192,7 @@ fn mmio_immediate_mnemonic(ty: MmioScalarType, value: u64) -> String {
         MmioScalarType::U16 => "movw",
         MmioScalarType::U32 => "movl",
         MmioScalarType::U64 => "movabs",
+        MmioScalarType::F32 | MmioScalarType::F64 => unreachable!("float MMIO encoding requires SSE2 backend (Task 14)"),
     };
     format!(
         "{mnemonic} ${}, {}",
