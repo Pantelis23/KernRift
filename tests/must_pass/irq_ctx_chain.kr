@@ -1,5 +1,8 @@
-mmio MMIO_STATUS = 0x2000;
-mmio_reg MMIO_STATUS.SR = 0x00 : u32 ro;
+@module_caps(Mmio)
+
+device MMIO_STATUS at 0x2000 {
+    SR at 0x00 : uint32 ro
+}
 
 @ctx(irq)
 fn isr() { mid(); }
@@ -8,4 +11,6 @@ fn isr() { mid(); }
 fn mid() { helper(); }
 
 @ctx(irq)
-fn helper() { mmio_read<u32>(MMIO_STATUS); }
+fn helper() {
+    uint32 v = MMIO_STATUS.SR
+}

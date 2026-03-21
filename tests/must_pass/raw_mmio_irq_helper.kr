@@ -1,12 +1,11 @@
-@module_caps(MmioRaw);
-mmio UART0 = 0x1000;
+@module_caps(MmioRaw)
 
 @ctx(irq)
 fn helper() {
-  raw_mmio_write<u32>(0x1018, y);
+    raw_write<uint32>(0x1018, y)
 }
 
 @ctx(irq)
 fn entry() {
-  helper();
+    helper();
 }

@@ -1,8 +1,13 @@
-mmio A = 0x1000;
-mmio B = 0x0FFC;
-mmio_reg A.R0 = 0x04 : u32 rw;
-mmio_reg B.R1 = 0x08 : u32 rw;
+@module_caps(Mmio)
+
+device A at 0x1000 {
+    R0 at 0x04 : uint32 rw
+}
+
+device B at 0x0FFC {
+    R1 at 0x08 : uint32 rw
+}
 
 fn entry() {
-  mmio_read<u32>(A + 4);
+    uint32 v = A.R0
 }

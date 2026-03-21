@@ -1,4 +1,4 @@
-spinlock SchedLock;
+lock SchedLock
 fn helper_leaf() { }
 
 fn helper() {

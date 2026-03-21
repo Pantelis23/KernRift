@@ -1,4 +1,4 @@
-spinlock ConsoleLock;
+lock ConsoleLock
 @leaf
 fn tiny() { }
 

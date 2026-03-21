@@ -1,6 +1,6 @@
-spinlock SchedLock;
+lock SchedLock
 fn inner() {
-  yieldpoint();
+  yieldpoint
 }
 
 @leaf

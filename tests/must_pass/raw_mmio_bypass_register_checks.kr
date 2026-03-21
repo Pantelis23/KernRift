@@ -1,9 +1,11 @@
-@module_caps(MmioRaw);
-mmio UART0 = 0x1000;
-mmio_reg UART0.SR = 0x04 : u32 ro;
-mmio_reg UART0.CR = 0x08 : u16 rw;
+@module_caps(MmioRaw)
+
+device UART0 at 0x1000 {
+    SR at 0x04 : uint32 ro
+    CR at 0x08 : uint16 rw
+}
 
 fn entry() {
-  raw_mmio_write<u32>(0x1004, x);
-  raw_mmio_write<u32>(0x1008, x);
+    raw_write<uint32>(0x1004, x)
+    raw_write<uint32>(0x1008, x)
 }

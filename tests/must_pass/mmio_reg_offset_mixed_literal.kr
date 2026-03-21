@@ -1,6 +1,9 @@
-mmio UART0 = 0x1000;
-mmio_reg UART0.DR = 4 : u32 rw;
+@module_caps(Mmio)
+
+device UART0 at 0x1000 {
+    DR at 0x04 : uint32 rw
+}
 
 fn entry() {
-  mmio_write<u32>(UART0 + 0x04, value);
+    UART0.DR = value
 }

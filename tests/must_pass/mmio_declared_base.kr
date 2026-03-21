@@ -1,10 +1,13 @@
-mmio UART0 = 0x1000;
-mmio_reg UART0.B0 = 0x00 : u32 ro;
-mmio_reg UART0.SR = 0x10 : u32 ro;
-mmio_reg UART0.DR = 4 : u8 rw;
+@module_caps(Mmio)
+
+device UART0 at 0x1000 {
+    B0 at 0x00 : uint32 ro
+    SR at 0x10 : uint32 ro
+    DR at 0x04 : uint8  rw
+}
 
 fn entry() {
-  mmio_read<u32>(UART0);
-  mmio_read<u32>(UART0 + 0x10);
-  mmio_write<u8>(UART0 + 4, 0xff);
+    uint32 v0 = UART0.B0
+    uint32 v1 = UART0.SR
+    UART0.DR = 0xff
 }
