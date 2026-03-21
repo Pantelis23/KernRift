@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use krir::{Ctx, Eff, Function, KrirModule, KrirOp};
+use krir::{Ctx, Eff, ExecutableKrirModule, ExecutableOp, Function, KrirModule, KrirOp};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckError {
@@ -1042,6 +1042,70 @@ fn sched_hook_check(module: &KrirModule) -> Vec<CheckError> {
         }
     }
     errs
+}
+
+/// Peephole optimizer for executable KRIR.
+///
+/// Currently applies two passes:
+/// - **Trivial branch fold**: a `BranchIf*` op whose `then_callee == else_callee` is
+///   replaced by `Call { callee: then_callee }`, eliminating a redundant test.
+/// - **Dead extern strip**: removes extern declarations that are never called.
+pub fn optimize_executable_krir(module: &mut ExecutableKrirModule) {
+    fold_trivial_branches(module);
+    strip_dead_extern_decls(module);
+}
+
+fn fold_trivial_branches(module: &mut ExecutableKrirModule) {
+    for function in &mut module.functions {
+        for block in &mut function.blocks {
+            block.ops = block
+                .ops
+                .drain(..)
+                .map(|op| match op {
+                    ExecutableOp::BranchIfZero {
+                        ref then_callee,
+                        ref else_callee,
+                        ..
+                    } if then_callee == else_callee => ExecutableOp::Call {
+                        callee: then_callee.clone(),
+                    },
+                    ExecutableOp::BranchIfEqImm {
+                        ref then_callee,
+                        ref else_callee,
+                        ..
+                    } if then_callee == else_callee => ExecutableOp::Call {
+                        callee: then_callee.clone(),
+                    },
+                    ExecutableOp::BranchIfMaskNonZeroImm {
+                        ref then_callee,
+                        ref else_callee,
+                        ..
+                    } if then_callee == else_callee => ExecutableOp::Call {
+                        callee: then_callee.clone(),
+                    },
+                    op => op,
+                })
+                .collect();
+        }
+    }
+}
+
+fn strip_dead_extern_decls(module: &mut ExecutableKrirModule) {
+    let called: BTreeSet<&str> = module
+        .functions
+        .iter()
+        .flat_map(|f| f.blocks.iter())
+        .flat_map(|b| b.ops.iter())
+        .filter_map(|op| match op {
+            ExecutableOp::Call { callee } | ExecutableOp::CallCapture { callee, .. } => {
+                Some(callee.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    module
+        .extern_declarations
+        .retain(|e| called.contains(e.name.as_str()));
 }
 
 fn canonicalize_report(report: &mut AnalysisReport) {
