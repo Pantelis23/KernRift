@@ -1,20 +1,4 @@
-@module_caps(MmioRaw);
-
 @ctx(thread, boot)
 fn entry() {
-    raw_write<uint8>(0x10000000, 0x48);  // H
-    raw_write<uint8>(0x10000001, 0x65);  // e
-    raw_write<uint8>(0x10000002, 0x6C);  // l
-    raw_write<uint8>(0x10000003, 0x6C);  // l
-    raw_write<uint8>(0x10000004, 0x6F);  // o
-    raw_write<uint8>(0x10000005, 0x2C);  // ,
-    raw_write<uint8>(0x10000006, 0x20);  // (space)
-    raw_write<uint8>(0x10000007, 0x57);  // W
-    raw_write<uint8>(0x10000008, 0x6F);  // o
-    raw_write<uint8>(0x10000009, 0x72);  // r
-    raw_write<uint8>(0x1000000A, 0x6C);  // l
-    raw_write<uint8>(0x1000000B, 0x64);  // d
-    raw_write<uint8>(0x1000000C, 0x21);  // !
-    raw_write<uint8>(0x1000000D, 0x0A);  // newline
-    raw_write<uint8>(0x1000000E, 0x00);  // null terminator
+    print("Hello, World!\n")
 }
