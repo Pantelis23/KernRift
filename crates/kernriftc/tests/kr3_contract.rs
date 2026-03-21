@@ -1294,3 +1294,102 @@ fn scale_f(float32 x) -> float32 {
     assert!(f.ops.iter().any(|op| matches!(op, KrirOp::FloatArith { .. })),
         "expected FloatArith in scale_f ops, got: {:?}", f.ops);
 }
+
+#[test]
+fn while_loop_compiles_to_asm_with_labels() {
+    use krir::{
+        BackendTargetContract, CmpOp, ExecutableBlock, ExecutableFunction, ExecutableFacts,
+        ExecutableKrirModule, ExecutableOp, ExecutableSignature, ExecutableTerminator,
+        ExecutableValue, ExecutableValueType, FunctionAttrs, KrirOp, MmioScalarType,
+    };
+
+    // Part 1: verify KrirOp::LoopBegin is emitted at HIR level for a while loop.
+    let src = r#"
+@ctx(thread)
+fn simple_loop() {
+    uint64 i = 0
+    while i < 10 {
+        i = i + 1
+    }
+}
+"#;
+    let module = compile_source(src).unwrap();
+    let f = module.functions.iter().find(|f| f.name == "simple_loop").unwrap();
+    assert!(
+        f.ops.iter().any(|op| matches!(op, KrirOp::LoopBegin)),
+        "expected KrirOp::LoopBegin in simple_loop, got: {:?}", f.ops
+    );
+
+    // Part 2: directly construct an ExecutableKrirModule with loop ops and verify
+    // the full ASM text pipeline produces correct label/jmp output.
+    // This tests the backend (Task 11) independently of HIR-to-KRIR lowering completeness.
+    //
+    // Models: slot 0 = bool cond; loop body is: check cond, break if zero, end loop.
+    //   LoopBegin
+    //   BranchIfZeroLoopBreak { slot_idx: 0 }   -- break if cond == 0
+    //   LoopEnd
+    let target = BackendTargetContract::x86_64_sysv();
+    let exec = ExecutableKrirModule {
+        module_caps: vec![],
+        functions: vec![ExecutableFunction {
+            name: "loop_fn".to_string(),
+            is_extern: false,
+            signature: ExecutableSignature {
+                params: vec![],
+                result: ExecutableValueType::Unit,
+            },
+            facts: ExecutableFacts {
+                ctx_ok: vec![],
+                eff_used: vec![],
+                caps_req: vec![],
+                attrs: FunctionAttrs::default(),
+            },
+            entry_block: "entry".to_string(),
+            blocks: vec![ExecutableBlock {
+                label: "entry".to_string(),
+                ops: vec![
+                    ExecutableOp::StackStoreImm {
+                        ty: MmioScalarType::U64,
+                        value: 1,
+                        slot_idx: 0,
+                    },
+                    ExecutableOp::LoopBegin,
+                    ExecutableOp::BranchIfZeroLoopBreak { slot_idx: 0 },
+                    ExecutableOp::LoopEnd,
+                ],
+                terminator: ExecutableTerminator::Return {
+                    value: ExecutableValue::Unit,
+                },
+            }],
+        }],
+        extern_declarations: vec![],
+        call_edges: vec![],
+    };
+
+    // Verify ExecutableOp variants are present
+    let ef = &exec.functions[0];
+    assert!(ef.blocks[0].ops.iter().any(|op| matches!(op, ExecutableOp::LoopBegin)));
+    assert!(ef.blocks[0].ops.iter().any(|op| matches!(op, ExecutableOp::LoopEnd)));
+    assert!(ef.blocks[0].ops.iter().any(|op| matches!(op, ExecutableOp::BranchIfZeroLoopBreak { .. })));
+
+    // Lower to ASM text and verify labels and jumps are emitted
+    let asm_module = lower_executable_krir_to_x86_64_asm(&exec, &target)
+        .expect("must lower to x86_64 ASM");
+    let asm_text = emit_x86_64_asm_text(&asm_module);
+    assert!(
+        asm_text.contains("loop_fn__loop_0_head:"),
+        "expected loop head label in ASM output, got:\n{}", asm_text
+    );
+    assert!(
+        asm_text.contains("loop_fn__loop_0_end:"),
+        "expected loop end label in ASM output, got:\n{}", asm_text
+    );
+    assert!(
+        asm_text.contains("jmp loop_fn__loop_0_head"),
+        "expected backward jmp to head in ASM output, got:\n{}", asm_text
+    );
+    assert!(
+        asm_text.contains("jz loop_fn__loop_0_end"),
+        "expected jz to end in ASM output, got:\n{}", asm_text
+    );
+}

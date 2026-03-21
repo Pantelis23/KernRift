@@ -671,6 +671,29 @@ pub enum ExecutableOp {
         param_idx: u8,
         ty: MmioScalarType,
     },
+    /// Loop begin marker — generates a head label in ASM.
+    LoopBegin,
+    /// Jump back to loop head — generates a backward jmp in ASM.
+    LoopEnd,
+    /// Unconditional jump to loop end — break.
+    LoopBreak,
+    /// Jump to loop head — continue.
+    LoopContinue,
+    /// Conditional break: if slot_idx == 0, jump to loop end.
+    BranchIfZeroLoopBreak {
+        slot_idx: u8,
+    },
+    /// Conditional break: if slot_idx != 0, jump to loop end.
+    BranchIfNonZeroLoopBreak {
+        slot_idx: u8,
+    },
+    /// Compare lhs_idx op rhs_idx and store 0 or 1 in out_idx.
+    CompareIntoSlot {
+        cmp_op: CmpOp,
+        lhs_idx: u8,
+        rhs_idx: u8,
+        out_idx: u8,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -912,7 +935,14 @@ impl ExecutableKrirModule {
                         | ExecutableOp::ParamLoad { .. }
                         | ExecutableOp::MmioReadParamAddr { .. }
                         | ExecutableOp::MmioWriteImmParamAddr { .. }
-                        | ExecutableOp::MmioWriteValueParamAddr { .. } => {}
+                        | ExecutableOp::MmioWriteValueParamAddr { .. }
+                        | ExecutableOp::LoopBegin
+                        | ExecutableOp::LoopEnd
+                        | ExecutableOp::LoopBreak
+                        | ExecutableOp::LoopContinue
+                        | ExecutableOp::BranchIfZeroLoopBreak { .. }
+                        | ExecutableOp::BranchIfNonZeroLoopBreak { .. }
+                        | ExecutableOp::CompareIntoSlot { .. } => {}
                     }
                 }
             }
@@ -2039,25 +2069,84 @@ pub fn lower_current_krir_to_executable_krir(
                     name,
                     value.as_source()
                 )),
-                KrirOp::CompareIntoSlot { cmp_op, lhs, rhs, out } => errors.push(format!(
-                    "canonical-exec: function '{}' contains unsupported compare_{}_into_slot({}, {}, {})",
-                    function.name,
-                    cmp_op.as_str(),
-                    lhs,
-                    rhs,
-                    out
-                )),
-                KrirOp::LoopBegin | KrirOp::LoopEnd | KrirOp::LoopBreak | KrirOp::LoopContinue => {
-                    errors.push(format!(
-                        "canonical-exec: function '{}' contains loop op (requires backend Task 11)",
-                        function.name
-                    ));
+                KrirOp::CompareIntoSlot { cmp_op, lhs, rhs, out } => {
+                    let lhs_idx = if let Some(&(idx, _)) = cell_slot_map.get(lhs.as_str()) {
+                        Some(idx)
+                    } else if let Some(&(pidx, _)) = param_map.get(lhs.as_str()) {
+                        Some(next_slot_idx + pidx)
+                    } else {
+                        errors.push(format!(
+                            "canonical-exec: function '{}' compare_{}: lhs '{}' not a declared stack cell or param",
+                            function.name, cmp_op.as_str(), lhs
+                        ));
+                        None
+                    };
+                    let rhs_idx = if let Some(&(idx, _)) = cell_slot_map.get(rhs.as_str()) {
+                        Some(idx)
+                    } else if let Some(&(pidx, _)) = param_map.get(rhs.as_str()) {
+                        Some(next_slot_idx + pidx)
+                    } else {
+                        errors.push(format!(
+                            "canonical-exec: function '{}' compare_{}: rhs '{}' not a declared stack cell or param",
+                            function.name, cmp_op.as_str(), rhs
+                        ));
+                        None
+                    };
+                    let out_idx = if let Some(&(idx, _)) = cell_slot_map.get(out.as_str()) {
+                        Some(idx)
+                    } else if let Some(&(pidx, _)) = param_map.get(out.as_str()) {
+                        Some(next_slot_idx + pidx)
+                    } else {
+                        errors.push(format!(
+                            "canonical-exec: function '{}' compare_{}: out '{}' not a declared stack cell or param",
+                            function.name, cmp_op.as_str(), out
+                        ));
+                        None
+                    };
+                    if let (Some(li), Some(ri), Some(oi)) = (lhs_idx, rhs_idx, out_idx) {
+                        exec_ops.push(ExecutableOp::CompareIntoSlot {
+                            cmp_op: *cmp_op,
+                            lhs_idx: li,
+                            rhs_idx: ri,
+                            out_idx: oi,
+                        });
+                    }
                 }
-                KrirOp::BranchIfZeroLoopBreak { slot } | KrirOp::BranchIfNonZeroLoopBreak { slot } => {
-                    errors.push(format!(
-                        "canonical-exec: function '{}' contains loop-break branch on '{}' (requires backend Task 11)",
-                        function.name, slot
-                    ));
+                KrirOp::LoopBegin => exec_ops.push(ExecutableOp::LoopBegin),
+                KrirOp::LoopEnd => exec_ops.push(ExecutableOp::LoopEnd),
+                KrirOp::LoopBreak => exec_ops.push(ExecutableOp::LoopBreak),
+                KrirOp::LoopContinue => exec_ops.push(ExecutableOp::LoopContinue),
+                KrirOp::BranchIfZeroLoopBreak { slot } => {
+                    let slot_idx = if let Some(&(idx, _)) = cell_slot_map.get(slot.as_str()) {
+                        Some(idx)
+                    } else if let Some(&(pidx, _)) = param_map.get(slot.as_str()) {
+                        Some(next_slot_idx + pidx)
+                    } else {
+                        errors.push(format!(
+                            "canonical-exec: function '{}' branch_if_zero_loop_break: '{}' not a declared stack cell or param",
+                            function.name, slot
+                        ));
+                        None
+                    };
+                    if let Some(idx) = slot_idx {
+                        exec_ops.push(ExecutableOp::BranchIfZeroLoopBreak { slot_idx: idx });
+                    }
+                }
+                KrirOp::BranchIfNonZeroLoopBreak { slot } => {
+                    let slot_idx = if let Some(&(idx, _)) = cell_slot_map.get(slot.as_str()) {
+                        Some(idx)
+                    } else if let Some(&(pidx, _)) = param_map.get(slot.as_str()) {
+                        Some(next_slot_idx + pidx)
+                    } else {
+                        errors.push(format!(
+                            "canonical-exec: function '{}' branch_if_nonzero_loop_break: '{}' not a declared stack cell or param",
+                            function.name, slot
+                        ));
+                        None
+                    };
+                    if let Some(idx) = slot_idx {
+                        exec_ops.push(ExecutableOp::BranchIfNonZeroLoopBreak { slot_idx: idx });
+                    }
                 }
                 KrirOp::FloatArith { .. } => {
                     errors.push(format!(
@@ -3105,6 +3194,27 @@ pub enum X86_64AsmInstruction {
         ty: MmioScalarType,
     },
     Ret,
+    /// Emits `name:` in ASM text; zero bytes in object.
+    Label(String),
+    /// Emits `jmp name` — REL32 relative jump.
+    JmpLabel(String),
+    /// Emits `jz name` — jump if zero flag set.
+    JmpIfZeroLabel(String),
+    /// Emits `jnz name` — jump if zero flag not set.
+    JmpIfNonZeroLabel(String),
+    /// `movzx eax, byte [rsp + 8*slot_idx]` — load U8 bool slot into eax.
+    LoadSlotU8ToEax {
+        slot_idx: u8,
+    },
+    /// `test eax, eax` — sets ZF if eax == 0.
+    TestEaxEax,
+    /// Compare lhs_idx op rhs_idx and store 0 or 1 in out_idx.
+    CompareSlots {
+        cmp_op: CmpOp,
+        lhs_idx: u8,
+        rhs_idx: u8,
+        out_idx: u8,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -3508,136 +3618,191 @@ pub fn lower_executable_krir_to_x86_64_asm(
 
     let mut canonical = module.clone();
     canonical.canonicalize();
+
+    struct LoopFrame {
+        head_label: String,
+        end_label: String,
+    }
+
     let functions = canonical
         .functions
         .iter()
-        .map(|function| X86_64AsmFunction {
-            symbol: format!("{}{}", target.symbols.function_prefix, function.name),
-            uses_saved_value_slot: executable_function_uses_saved_value_slot(function),
-            n_stack_cells: executable_function_n_stack_cells(function),
-            n_params: function.signature.params.len(),
-            instructions: function.blocks[0]
-                .ops
-                .iter()
-                .cloned()
-                .map(|op| match op {
-                    ExecutableOp::Call { callee } => X86_64AsmInstruction::Call { symbol: callee },
-                    ExecutableOp::CallCapture { callee, ty } => {
-                        X86_64AsmInstruction::CallCapture { ty, symbol: callee }
+        .map(|function| {
+            let mut instrs: Vec<X86_64AsmInstruction> = Vec::new();
+            let mut loop_stack: Vec<LoopFrame> = Vec::new();
+            let mut loop_counter = 0usize;
+
+            for op in &function.blocks[0].ops {
+                match op {
+                    ExecutableOp::Call { callee } => {
+                        instrs.push(X86_64AsmInstruction::Call { symbol: callee.clone() });
                     }
-                    ExecutableOp::BranchIfZero {
-                        ty,
-                        then_callee,
-                        else_callee,
-                    } => X86_64AsmInstruction::BranchIfZero {
-                        ty,
-                        then_symbol: then_callee,
-                        else_symbol: else_callee,
-                    },
-                    ExecutableOp::BranchIfEqImm {
-                        ty,
-                        compare_value,
-                        then_callee,
-                        else_callee,
-                    } => X86_64AsmInstruction::BranchIfEqImm {
-                        ty,
-                        compare_value,
-                        then_symbol: then_callee,
-                        else_symbol: else_callee,
-                    },
-                    ExecutableOp::BranchIfMaskNonZeroImm {
-                        ty,
-                        mask_value,
-                        then_callee,
-                        else_callee,
-                    } => X86_64AsmInstruction::BranchIfMaskNonZeroImm {
-                        ty,
-                        mask_value,
-                        then_symbol: then_callee,
-                        else_symbol: else_callee,
-                    },
-                    ExecutableOp::MmioRead {
-                        ty,
-                        addr,
-                        capture_value,
-                    } => X86_64AsmInstruction::MmioRead {
-                        ty,
-                        addr,
-                        capture_value,
-                    },
+                    ExecutableOp::CallCapture { callee, ty } => {
+                        instrs.push(X86_64AsmInstruction::CallCapture { ty: *ty, symbol: callee.clone() });
+                    }
+                    ExecutableOp::BranchIfZero { ty, then_callee, else_callee } => {
+                        instrs.push(X86_64AsmInstruction::BranchIfZero {
+                            ty: *ty,
+                            then_symbol: then_callee.clone(),
+                            else_symbol: else_callee.clone(),
+                        });
+                    }
+                    ExecutableOp::BranchIfEqImm { ty, compare_value, then_callee, else_callee } => {
+                        instrs.push(X86_64AsmInstruction::BranchIfEqImm {
+                            ty: *ty,
+                            compare_value: *compare_value,
+                            then_symbol: then_callee.clone(),
+                            else_symbol: else_callee.clone(),
+                        });
+                    }
+                    ExecutableOp::BranchIfMaskNonZeroImm { ty, mask_value, then_callee, else_callee } => {
+                        instrs.push(X86_64AsmInstruction::BranchIfMaskNonZeroImm {
+                            ty: *ty,
+                            mask_value: *mask_value,
+                            then_symbol: then_callee.clone(),
+                            else_symbol: else_callee.clone(),
+                        });
+                    }
+                    ExecutableOp::MmioRead { ty, addr, capture_value } => {
+                        instrs.push(X86_64AsmInstruction::MmioRead {
+                            ty: *ty,
+                            addr: *addr,
+                            capture_value: *capture_value,
+                        });
+                    }
                     ExecutableOp::MmioWriteImm { ty, addr, value } => {
-                        X86_64AsmInstruction::MmioWriteImm { ty, addr, value }
+                        instrs.push(X86_64AsmInstruction::MmioWriteImm {
+                            ty: *ty,
+                            addr: *addr,
+                            value: *value,
+                        });
                     }
                     ExecutableOp::MmioWriteValue { ty, addr } => {
-                        X86_64AsmInstruction::MmioWriteValue { ty, addr }
+                        instrs.push(X86_64AsmInstruction::MmioWriteValue { ty: *ty, addr: *addr });
                     }
                     ExecutableOp::StackStoreImm { ty, value, slot_idx } => {
-                        X86_64AsmInstruction::StackStoreImm { ty, value, slot_idx }
+                        instrs.push(X86_64AsmInstruction::StackStoreImm {
+                            ty: *ty,
+                            value: *value,
+                            slot_idx: *slot_idx,
+                        });
                     }
                     ExecutableOp::StackStoreValue { ty, slot_idx } => {
-                        X86_64AsmInstruction::StackStoreValue { ty, slot_idx }
+                        instrs.push(X86_64AsmInstruction::StackStoreValue { ty: *ty, slot_idx: *slot_idx });
                     }
                     ExecutableOp::StackLoad { ty, slot_idx } => {
-                        X86_64AsmInstruction::StackLoad { ty, slot_idx }
+                        instrs.push(X86_64AsmInstruction::StackLoad { ty: *ty, slot_idx: *slot_idx });
                     }
                     ExecutableOp::SlotArithImm { ty, slot_idx, arith_op, imm } => {
-                        X86_64AsmInstruction::SlotArithImm { ty, slot_idx, arith_op, imm }
+                        instrs.push(X86_64AsmInstruction::SlotArithImm {
+                            ty: *ty,
+                            slot_idx: *slot_idx,
+                            arith_op: *arith_op,
+                            imm: *imm,
+                        });
                     }
-                    ExecutableOp::SlotArithSlot {
-                        ty,
-                        dst_slot_idx,
-                        src_slot_idx,
-                        arith_op,
-                    } => X86_64AsmInstruction::SlotArithSlot {
-                        ty,
-                        dst_slot_idx,
-                        src_slot_idx,
-                        arith_op,
-                    },
+                    ExecutableOp::SlotArithSlot { ty, dst_slot_idx, src_slot_idx, arith_op } => {
+                        instrs.push(X86_64AsmInstruction::SlotArithSlot {
+                            ty: *ty,
+                            dst_slot_idx: *dst_slot_idx,
+                            src_slot_idx: *src_slot_idx,
+                            arith_op: *arith_op,
+                        });
+                    }
                     ExecutableOp::ParamLoad { param_idx, ty } => {
-                        X86_64AsmInstruction::ParamLoad { param_idx, ty }
+                        instrs.push(X86_64AsmInstruction::ParamLoad { param_idx: *param_idx, ty: *ty });
                     }
-                    ExecutableOp::MmioReadParamAddr {
-                        param_idx,
-                        ty,
-                        capture_value,
-                    } => X86_64AsmInstruction::MmioReadParamAddr {
-                        param_idx,
-                        ty,
-                        capture_value,
-                    },
-                    ExecutableOp::MmioWriteImmParamAddr {
-                        param_idx,
-                        ty,
-                        value,
-                    } => X86_64AsmInstruction::MmioWriteImmParamAddr {
-                        param_idx,
-                        ty,
-                        value,
-                    },
+                    ExecutableOp::MmioReadParamAddr { param_idx, ty, capture_value } => {
+                        instrs.push(X86_64AsmInstruction::MmioReadParamAddr {
+                            param_idx: *param_idx,
+                            ty: *ty,
+                            capture_value: *capture_value,
+                        });
+                    }
+                    ExecutableOp::MmioWriteImmParamAddr { param_idx, ty, value } => {
+                        instrs.push(X86_64AsmInstruction::MmioWriteImmParamAddr {
+                            param_idx: *param_idx,
+                            ty: *ty,
+                            value: *value,
+                        });
+                    }
                     ExecutableOp::MmioWriteValueParamAddr { param_idx, ty } => {
-                        X86_64AsmInstruction::MmioWriteValueParamAddr { param_idx, ty }
+                        instrs.push(X86_64AsmInstruction::MmioWriteValueParamAddr {
+                            param_idx: *param_idx,
+                            ty: *ty,
+                        });
                     }
                     ExecutableOp::CallWithArgs { callee, args } => {
-                        X86_64AsmInstruction::CallWithArgs { symbol: callee, args }
+                        instrs.push(X86_64AsmInstruction::CallWithArgs {
+                            symbol: callee.clone(),
+                            args: args.clone(),
+                        });
                     }
-                })
-                .chain(match function.blocks[0].terminator.clone() {
-                    ExecutableTerminator::Return {
-                        value: ExecutableValue::SavedValue { ty },
-                    } => vec![
-                        X86_64AsmInstruction::ReturnSavedValue { ty },
-                        X86_64AsmInstruction::Ret,
-                    ]
-                    .into_iter(),
-                    ExecutableTerminator::Return {
-                        value: ExecutableValue::Unit,
-                    } => vec![X86_64AsmInstruction::Ret].into_iter(),
-                    ExecutableTerminator::TailCall { callee, args } => {
-                        vec![X86_64AsmInstruction::TailCall { symbol: callee, args }].into_iter()
+                    ExecutableOp::LoopBegin => {
+                        let head = format!("{}__loop_{}_head", function.name, loop_counter);
+                        let end = format!("{}__loop_{}_end", function.name, loop_counter);
+                        loop_counter += 1;
+                        instrs.push(X86_64AsmInstruction::Label(head.clone()));
+                        loop_stack.push(LoopFrame { head_label: head, end_label: end });
                     }
-                })
-                .collect(),
+                    ExecutableOp::LoopEnd => {
+                        let frame = loop_stack.last().expect("LoopEnd without LoopBegin");
+                        instrs.push(X86_64AsmInstruction::JmpLabel(frame.head_label.clone()));
+                        let frame = loop_stack.pop().unwrap();
+                        instrs.push(X86_64AsmInstruction::Label(frame.end_label));
+                    }
+                    ExecutableOp::LoopBreak => {
+                        let end = loop_stack.last().expect("LoopBreak outside loop").end_label.clone();
+                        instrs.push(X86_64AsmInstruction::JmpLabel(end));
+                    }
+                    ExecutableOp::LoopContinue => {
+                        let head = loop_stack.last().expect("LoopContinue outside loop").head_label.clone();
+                        instrs.push(X86_64AsmInstruction::JmpLabel(head));
+                    }
+                    ExecutableOp::BranchIfZeroLoopBreak { slot_idx } => {
+                        let end = loop_stack.last().expect("BranchIfZeroLoopBreak outside loop").end_label.clone();
+                        instrs.push(X86_64AsmInstruction::LoadSlotU8ToEax { slot_idx: *slot_idx });
+                        instrs.push(X86_64AsmInstruction::TestEaxEax);
+                        instrs.push(X86_64AsmInstruction::JmpIfZeroLabel(end));
+                    }
+                    ExecutableOp::BranchIfNonZeroLoopBreak { slot_idx } => {
+                        let end = loop_stack.last().expect("BranchIfNonZeroLoopBreak outside loop").end_label.clone();
+                        instrs.push(X86_64AsmInstruction::LoadSlotU8ToEax { slot_idx: *slot_idx });
+                        instrs.push(X86_64AsmInstruction::TestEaxEax);
+                        instrs.push(X86_64AsmInstruction::JmpIfNonZeroLabel(end));
+                    }
+                    ExecutableOp::CompareIntoSlot { cmp_op, lhs_idx, rhs_idx, out_idx } => {
+                        instrs.push(X86_64AsmInstruction::CompareSlots {
+                            cmp_op: *cmp_op,
+                            lhs_idx: *lhs_idx,
+                            rhs_idx: *rhs_idx,
+                            out_idx: *out_idx,
+                        });
+                    }
+                }
+            }
+
+            // Terminator
+            match function.blocks[0].terminator.clone() {
+                ExecutableTerminator::Return { value: ExecutableValue::SavedValue { ty } } => {
+                    instrs.push(X86_64AsmInstruction::ReturnSavedValue { ty });
+                    instrs.push(X86_64AsmInstruction::Ret);
+                }
+                ExecutableTerminator::Return { value: ExecutableValue::Unit } => {
+                    instrs.push(X86_64AsmInstruction::Ret);
+                }
+                ExecutableTerminator::TailCall { callee, args } => {
+                    instrs.push(X86_64AsmInstruction::TailCall { symbol: callee, args });
+                }
+            }
+
+            X86_64AsmFunction {
+                symbol: format!("{}{}", target.symbols.function_prefix, function.name),
+                uses_saved_value_slot: executable_function_uses_saved_value_slot(function),
+                n_stack_cells: executable_function_n_stack_cells(function),
+                n_params: function.signature.params.len(),
+                instructions: instrs,
+            }
         })
         .collect();
 
@@ -3686,6 +3851,11 @@ fn executable_function_n_stack_cells(function: &ExecutableFunction) -> u8 {
                 ExecutableOp::SlotArithImm { slot_idx, .. } => Some(*slot_idx),
                 ExecutableOp::SlotArithSlot { dst_slot_idx, src_slot_idx, .. } => {
                     Some((*dst_slot_idx).max(*src_slot_idx))
+                }
+                ExecutableOp::BranchIfZeroLoopBreak { slot_idx } => Some(*slot_idx),
+                ExecutableOp::BranchIfNonZeroLoopBreak { slot_idx } => Some(*slot_idx),
+                ExecutableOp::CompareIntoSlot { lhs_idx, rhs_idx, out_idx, .. } => {
+                    Some((*lhs_idx).max(*rhs_idx).max(*out_idx))
                 }
                 _ => None,
             };
@@ -4130,6 +4300,71 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                     }
                     out.push_str("    ret\n");
                 }
+                X86_64AsmInstruction::Label(name) => {
+                    out.push_str(name);
+                    out.push_str(":\n");
+                }
+                X86_64AsmInstruction::JmpLabel(name) => {
+                    out.push_str("    jmp ");
+                    out.push_str(name);
+                    out.push('\n');
+                }
+                X86_64AsmInstruction::JmpIfZeroLabel(name) => {
+                    out.push_str("    jz ");
+                    out.push_str(name);
+                    out.push('\n');
+                }
+                X86_64AsmInstruction::JmpIfNonZeroLabel(name) => {
+                    out.push_str("    jnz ");
+                    out.push_str(name);
+                    out.push('\n');
+                }
+                X86_64AsmInstruction::LoadSlotU8ToEax { slot_idx } => {
+                    let offset = 8u32 * u32::from(*slot_idx);
+                    if offset == 0 {
+                        out.push_str("    movzx (%rsp), %eax\n");
+                    } else {
+                        out.push_str(&format!("    movzx {}(%rsp), %eax\n", offset));
+                    }
+                }
+                X86_64AsmInstruction::TestEaxEax => {
+                    out.push_str("    test %eax, %eax\n");
+                }
+                X86_64AsmInstruction::CompareSlots { cmp_op, lhs_idx, rhs_idx, out_idx } => {
+                    // Load lhs into eax (zero-extended from qword slot)
+                    let lhs_offset = 8u32 * u32::from(*lhs_idx);
+                    let rhs_offset = 8u32 * u32::from(*rhs_idx);
+                    let out_offset = 8u32 * u32::from(*out_idx);
+                    if lhs_offset == 0 {
+                        out.push_str("    movq (%rsp), %rax\n");
+                    } else {
+                        out.push_str(&format!("    movq {}(%rsp), %rax\n", lhs_offset));
+                    }
+                    // cmp rax, [rhs slot]
+                    if rhs_offset == 0 {
+                        out.push_str("    cmpq (%rsp), %rax\n");
+                    } else {
+                        out.push_str(&format!("    cmpq {}(%rsp), %rax\n", rhs_offset));
+                    }
+                    // setCC al
+                    let setcc = match cmp_op {
+                        CmpOp::Eq => "sete",
+                        CmpOp::Ne => "setne",
+                        CmpOp::Lt => "setl",
+                        CmpOp::Gt => "setg",
+                        CmpOp::Le => "setle",
+                        CmpOp::Ge => "setge",
+                    };
+                    out.push_str(&format!("    {} %al\n", setcc));
+                    // movzx eax, al
+                    out.push_str("    movzx %al, %eax\n");
+                    // store 32-bit result into out slot (zero upper bytes)
+                    if out_offset == 0 {
+                        out.push_str("    movl %eax, (%rsp)\n");
+                    } else {
+                        out.push_str(&format!("    movl %eax, {}(%rsp)\n", out_offset));
+                    }
+                }
             }
         }
     }
@@ -4347,6 +4582,16 @@ fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
         ExecutableOp::CallWithArgs { args, .. } => {
             args.iter().map(call_arg_encoded_bytes).sum::<u64>() + 5
         }
+        // Loop ops:
+        ExecutableOp::LoopBegin => 0,   // label only, no bytes
+        ExecutableOp::LoopEnd => 5,     // jmp rel32
+        ExecutableOp::LoopBreak => 5,   // jmp rel32
+        ExecutableOp::LoopContinue => 5, // jmp rel32
+        // movzx eax, byte ptr [rsp+disp8] (4 bytes) + test eax, eax (2 bytes) + jz rel32 (6 bytes) = 12
+        ExecutableOp::BranchIfZeroLoopBreak { .. } => 12,
+        ExecutableOp::BranchIfNonZeroLoopBreak { .. } => 12,
+        // movq [rsp+disp8], rax (5) + cmpq [rsp+disp8], rax (5) + setCC al (3) + movzx eax,al (3) + movl eax,[rsp+disp8] (5) = 21
+        ExecutableOp::CompareIntoSlot { .. } => 21,
     }
 }
 
@@ -5539,6 +5784,18 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         width_bytes: 4,
                     });
                     local_offset += executable_op_encoded_len(op);
+                }
+                ExecutableOp::LoopBegin
+                | ExecutableOp::LoopEnd
+                | ExecutableOp::LoopBreak
+                | ExecutableOp::LoopContinue
+                | ExecutableOp::BranchIfZeroLoopBreak { .. }
+                | ExecutableOp::BranchIfNonZeroLoopBreak { .. }
+                | ExecutableOp::CompareIntoSlot { .. } => {
+                    return Err(format!(
+                        "compiler-owned object emission: loop/compare ops require Task 11 intra-function relocation (function '{}')",
+                        function.name
+                    ));
                 }
             }
         }
