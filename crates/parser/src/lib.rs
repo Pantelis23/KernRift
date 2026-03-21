@@ -621,6 +621,314 @@ pub fn split_csv_allow_trailing_comma(input: &str) -> Result<Vec<String>, String
     Ok(out)
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Lexer — token-stream interface (new; replaces character-level parser in Task 5)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TokenKind {
+    // Keywords
+    Fn, Extern, Return, Break, Continue,
+    If, Else, While, For, In,
+    Const, Struct, Enum, Device, At, Lock, Percpu,
+    Acquire, Release, Critical, Unsafe, Yieldpoint,
+    Print, RawWrite, RawRead,
+    True, False,
+    // Type keywords — carry the resolved type
+    TypeKw(MmioScalarType),
+    StringKw,       // `string` type keyword (special: []char)
+    // Literals
+    IntLit(u64),
+    FloatLit(f64),
+    CharLit(u8),
+    StrLit(String),
+    // Identifier
+    Ident(String),
+    // Punctuation
+    LBrace, RBrace, LParen, RParen, LBracket, RBracket,
+    Comma, Colon, Semicolon, Dot, DotDot, DotDotEq,
+    Arrow,          // `->`
+    // Operators
+    Plus, Minus, Star, Slash, Percent,
+    Amp, Pipe, Caret, Tilde, Bang,
+    Shl, Shr,
+    Eq, EqEq, BangEq, Lt, Gt, LtEq, GtEq,
+    AmpAmp, PipePipe,
+    // Compound assignment
+    PlusEq, MinusEq, StarEq, SlashEq, PercentEq,
+    AmpEq, PipeEq, CaretEq, ShlEq, ShrEq,
+    // Attributes
+    AtSign,         // `@` before attribute names
+    // End of file
+    Eof,
+}
+
+#[derive(Debug, Clone)]
+pub struct Token {
+    pub kind: TokenKind,
+    pub source: SourceNote,
+}
+
+pub struct Lexer<'a> {
+    src: &'a str,
+    pos: usize,
+}
+
+impl<'a> Lexer<'a> {
+    pub fn new(src: &'a str) -> Self {
+        Self { src, pos: 0 }
+    }
+
+    pub fn collect_all(mut self) -> Result<Vec<Token>, String> {
+        let mut tokens = Vec::new();
+        loop {
+            let tok = self.next_token()?;
+            let is_eof = matches!(tok.kind, TokenKind::Eof);
+            tokens.push(tok);
+            if is_eof { break; }
+        }
+        Ok(tokens)
+    }
+
+    fn peek_char(&self) -> Option<char> {
+        self.src[self.pos..].chars().next()
+    }
+
+    fn advance(&mut self) -> Option<char> {
+        let ch = self.peek_char()?;
+        self.pos += ch.len_utf8();
+        Some(ch)
+    }
+
+    fn skip_whitespace_and_comments(&mut self) {
+        loop {
+            while self.peek_char().map(|c| c.is_whitespace()).unwrap_or(false) {
+                self.advance();
+            }
+            if self.src[self.pos..].starts_with("//") {
+                while self.peek_char().map(|c| c != '\n').unwrap_or(false) {
+                    self.advance();
+                }
+                continue;
+            }
+            if self.src[self.pos..].starts_with("/*") {
+                self.pos += 2;
+                while self.pos < self.src.len() {
+                    if self.src[self.pos..].starts_with("*/") {
+                        self.pos += 2;
+                        break;
+                    }
+                    self.advance();
+                }
+                continue;
+            }
+            break;
+        }
+    }
+
+    fn source_note(&self) -> SourceNote {
+        SourceNote::from_source(self.src, self.pos)
+    }
+
+    fn lex_string_literal(&mut self) -> Result<String, String> {
+        let mut s = String::new();
+        loop {
+            match self.advance() {
+                None | Some('\n') => return Err("unterminated string literal".into()),
+                Some('"') => break,
+                Some('\\') => s.push(self.lex_escape()?),
+                Some(c) => s.push(c),
+            }
+        }
+        Ok(s)
+    }
+
+    fn lex_char_literal(&mut self) -> Result<u8, String> {
+        let ch = match self.advance() {
+            None => return Err("unterminated char literal".into()),
+            Some('\\') => self.lex_escape()?,
+            Some(c) => c,
+        };
+        match self.advance() {
+            Some('\'') => Ok(ch as u8),
+            _ => Err("char literal must be exactly one character".into()),
+        }
+    }
+
+    fn lex_escape(&mut self) -> Result<char, String> {
+        match self.advance() {
+            Some('n')  => Ok('\n'),
+            Some('r')  => Ok('\r'),
+            Some('t')  => Ok('\t'),
+            Some('b')  => Ok('\x08'),
+            Some('a')  => Ok('\x07'),
+            Some('f')  => Ok('\x0C'),
+            Some('v')  => Ok('\x0B'),
+            Some('\\') => Ok('\\'),
+            Some('\'') => Ok('\''),
+            Some('"')  => Ok('"'),
+            Some('0')  => Ok('\0'),
+            Some('x')  => {
+                let h1 = self.advance().ok_or("expected hex digit after \\x")?;
+                let h2 = self.advance().ok_or("expected two hex digits after \\x")?;
+                let hex = format!("{}{}", h1, h2);
+                let byte = u8::from_str_radix(&hex, 16)
+                    .map_err(|_| format!("invalid hex escape \\x{}", hex))?;
+                Ok(byte as char)
+            }
+            Some(c) => Err(format!("unknown escape sequence '\\{}'", c)),
+            None => Err("unexpected end of file in escape".into()),
+        }
+    }
+
+    fn next_token(&mut self) -> Result<Token, String> {
+        self.skip_whitespace_and_comments();
+        let note = self.source_note();
+        let kind = match self.advance() {
+            None => TokenKind::Eof,
+            Some('{') => TokenKind::LBrace,
+            Some('}') => TokenKind::RBrace,
+            Some('(') => TokenKind::LParen,
+            Some(')') => TokenKind::RParen,
+            Some('[') => TokenKind::LBracket,
+            Some(']') => TokenKind::RBracket,
+            Some(',') => TokenKind::Comma,
+            Some(':') => TokenKind::Colon,
+            Some(';') => TokenKind::Semicolon,
+            Some('~') => TokenKind::Tilde,
+            Some('@') => TokenKind::AtSign,
+            Some('"') => TokenKind::StrLit(self.lex_string_literal()?),
+            Some('\'') => TokenKind::CharLit(self.lex_char_literal()?),
+            Some('.') => {
+                if self.src[self.pos..].starts_with(".=") { self.pos += 2; TokenKind::DotDotEq }
+                else if self.src[self.pos..].starts_with('.') { self.pos += 1; TokenKind::DotDot }
+                else { TokenKind::Dot }
+            }
+            Some('-') => {
+                if self.src[self.pos..].starts_with('>') { self.pos += 1; TokenKind::Arrow }
+                else if self.src[self.pos..].starts_with('=') { self.pos += 1; TokenKind::MinusEq }
+                else { TokenKind::Minus }
+            }
+            Some('+') => if self.src[self.pos..].starts_with('=') { self.pos += 1; TokenKind::PlusEq  } else { TokenKind::Plus  },
+            Some('*') => if self.src[self.pos..].starts_with('=') { self.pos += 1; TokenKind::StarEq  } else { TokenKind::Star  },
+            Some('/') => if self.src[self.pos..].starts_with('=') { self.pos += 1; TokenKind::SlashEq } else { TokenKind::Slash },
+            Some('%') => if self.src[self.pos..].starts_with('=') { self.pos += 1; TokenKind::PercentEq } else { TokenKind::Percent },
+            Some('^') => if self.src[self.pos..].starts_with('=') { self.pos += 1; TokenKind::CaretEq } else { TokenKind::Caret },
+            Some('!') => if self.src[self.pos..].starts_with('=') { self.pos += 1; TokenKind::BangEq  } else { TokenKind::Bang  },
+            Some('=') => if self.src[self.pos..].starts_with('=') { self.pos += 1; TokenKind::EqEq    } else { TokenKind::Eq    },
+            Some('<') => {
+                // After consuming '<':
+                // - remaining "<=": input was "<<=", produce ShlEq (advance 2 more)
+                // - remaining "=":  input was "<=",  produce LtEq  (advance 1 more)
+                // - remaining "<":  input was "<<",  produce Shl   (advance 1 more)
+                // - otherwise:      input was "<",   produce Lt
+                if self.src[self.pos..].starts_with("<=") { self.pos += 2; TokenKind::ShlEq }
+                else if self.src[self.pos..].starts_with('=') { self.pos += 1; TokenKind::LtEq }
+                else if self.src[self.pos..].starts_with('<') { self.pos += 1; TokenKind::Shl }
+                else { TokenKind::Lt }
+            }
+            Some('>') => {
+                // After consuming '>':
+                // - remaining ">=": input was ">>=", produce ShrEq (advance 2 more)
+                // - remaining "=":  input was ">=",  produce GtEq  (advance 1 more)
+                // - remaining ">":  input was ">>",  produce Shr   (advance 1 more)
+                // - otherwise:      input was ">",   produce Gt
+                if self.src[self.pos..].starts_with(">=") { self.pos += 2; TokenKind::ShrEq }
+                else if self.src[self.pos..].starts_with('=') { self.pos += 1; TokenKind::GtEq }
+                else if self.src[self.pos..].starts_with('>') { self.pos += 1; TokenKind::Shr }
+                else { TokenKind::Gt }
+            }
+            Some('&') => {
+                if self.src[self.pos..].starts_with('&') { self.pos += 1; TokenKind::AmpAmp }
+                else if self.src[self.pos..].starts_with('=') { self.pos += 1; TokenKind::AmpEq }
+                else { TokenKind::Amp }
+            }
+            Some('|') => {
+                if self.src[self.pos..].starts_with('|') { self.pos += 1; TokenKind::PipePipe }
+                else if self.src[self.pos..].starts_with('=') { self.pos += 1; TokenKind::PipeEq }
+                else { TokenKind::Pipe }
+            }
+            Some(c) if c.is_ascii_digit() => {
+                let start = self.pos - 1;
+                if c == '0' && self.src[self.pos..].starts_with('x') {
+                    self.pos += 1;
+                    while self.peek_char().map(|c| c.is_ascii_hexdigit()).unwrap_or(false) { self.advance(); }
+                    let s = &self.src[start..self.pos];
+                    let n = u64::from_str_radix(&s[2..], 16).map_err(|e| e.to_string())?;
+                    TokenKind::IntLit(n)
+                } else if c == '0' && self.src[self.pos..].starts_with('b') {
+                    self.pos += 1;
+                    while self.peek_char().map(|c| c == '0' || c == '1').unwrap_or(false) { self.advance(); }
+                    let s = &self.src[start..self.pos];
+                    let n = u64::from_str_radix(&s[2..], 2).map_err(|e| e.to_string())?;
+                    TokenKind::IntLit(n)
+                } else {
+                    while self.peek_char().map(|c| c.is_ascii_digit()).unwrap_or(false) { self.advance(); }
+                    // Float if followed by '.' then digit
+                    let is_float = self.peek_char() == Some('.')
+                        && self.src[self.pos + 1..].chars().next()
+                            .map(|c| c.is_ascii_digit()).unwrap_or(false);
+                    if is_float {
+                        self.advance(); // consume '.'
+                        while self.peek_char().map(|c| c.is_ascii_digit()).unwrap_or(false) { self.advance(); }
+                        if self.peek_char() == Some('e') || self.peek_char() == Some('E') {
+                            self.advance();
+                            if self.peek_char() == Some('-') || self.peek_char() == Some('+') { self.advance(); }
+                            while self.peek_char().map(|c| c.is_ascii_digit()).unwrap_or(false) { self.advance(); }
+                        }
+                        let f: f64 = self.src[start..self.pos].parse()
+                            .map_err(|e: std::num::ParseFloatError| e.to_string())?;
+                        TokenKind::FloatLit(f)
+                    } else {
+                        let n: u64 = self.src[start..self.pos].parse()
+                            .map_err(|e: std::num::ParseIntError| e.to_string())?;
+                        TokenKind::IntLit(n)
+                    }
+                }
+            }
+            Some(c) if c.is_alphabetic() || c == '_' => {
+                let start = self.pos - 1;
+                while self.peek_char().map(|c| c.is_alphanumeric() || c == '_').unwrap_or(false) { self.advance(); }
+                let word = &self.src[start..self.pos];
+                match word {
+                    "fn"         => TokenKind::Fn,
+                    "extern"     => TokenKind::Extern,
+                    "return"     => TokenKind::Return,
+                    "break"      => TokenKind::Break,
+                    "continue"   => TokenKind::Continue,
+                    "if"         => TokenKind::If,
+                    "else"       => TokenKind::Else,
+                    "while"      => TokenKind::While,
+                    "for"        => TokenKind::For,
+                    "in"         => TokenKind::In,
+                    "const"      => TokenKind::Const,
+                    "struct"     => TokenKind::Struct,
+                    "enum"       => TokenKind::Enum,
+                    "device"     => TokenKind::Device,
+                    "at"         => TokenKind::At,
+                    "lock"       => TokenKind::Lock,
+                    "percpu"     => TokenKind::Percpu,
+                    "acquire"    => TokenKind::Acquire,
+                    "release"    => TokenKind::Release,
+                    "critical"   => TokenKind::Critical,
+                    "unsafe"     => TokenKind::Unsafe,
+                    "yieldpoint" => TokenKind::Yieldpoint,
+                    "print"      => TokenKind::Print,
+                    "true"       => TokenKind::True,
+                    "false"      => TokenKind::False,
+                    "string"     => TokenKind::StringKw,
+                    _ => match MmioScalarType::parse(word) {
+                        Ok(ty)  => TokenKind::TypeKw(ty),
+                        Err(_)  => TokenKind::Ident(word.to_string()),
+                    }
+                }
+            }
+            Some(c) => return Err(format!("unexpected character '{}'", c)),
+        };
+        Ok(Token { kind, source: note })
+    }
+}
+
 struct Parser<'a> {
     src: &'a str,
     pos: usize,
@@ -3164,5 +3472,102 @@ mod type_tests {
             registers: vec![],
             source: SourceNote { byte_offset: 0, line: 1, column: 1, line_text: String::new() },
         };
+    }
+}
+
+#[cfg(test)]
+mod lexer_tests {
+    use super::*;
+
+    fn tok(src: &str) -> Vec<Token> {
+        Lexer::new(src).collect_all().unwrap()
+    }
+
+    #[test]
+    fn lex_keywords_and_idents() {
+        let t = tok("fn entry() { }");
+        assert!(t.iter().any(|t| matches!(t.kind, TokenKind::Fn)));
+        assert!(t.iter().any(|t| matches!(&t.kind, TokenKind::Ident(s) if s == "entry")));
+    }
+
+    #[test]
+    fn lex_type_keywords() {
+        let t = tok("uint32 int8 float32 bool char byte addr string");
+        let types: Vec<_> = t.iter()
+            .filter_map(|t| if let TokenKind::TypeKw(ty) = &t.kind { Some(*ty) } else { None })
+            .collect();
+        // `string` produces StringKw (not TypeKw), so 7 entries, not 8
+        assert_eq!(types, vec![
+            MmioScalarType::U32, MmioScalarType::I8, MmioScalarType::F32,
+            MmioScalarType::Bool, MmioScalarType::Char, MmioScalarType::U8,
+            MmioScalarType::U64, // addr -> U64
+        ]);
+    }
+
+    #[test]
+    fn lex_int_literals() {
+        let t = tok("42 0xFF 0b1010");
+        let ints: Vec<u64> = t.iter()
+            .filter_map(|t| if let TokenKind::IntLit(n) = t.kind { Some(n) } else { None })
+            .collect();
+        assert_eq!(ints, vec![42, 255, 10]);
+    }
+
+    #[test]
+    fn lex_char_literal_escapes() {
+        let t = tok(r"'\n' '\t' '\xFF' 'A'");
+        let chars: Vec<u8> = t.iter()
+            .filter_map(|t| if let TokenKind::CharLit(c) = t.kind { Some(c) } else { None })
+            .collect();
+        assert_eq!(chars, vec![b'\n', b'\t', 0xFF, b'A']);
+    }
+
+    #[test]
+    fn lex_float_literal() {
+        let t = tok("3.14 0.5 1.0e-3");
+        assert_eq!(t.iter().filter(|t| matches!(t.kind, TokenKind::FloatLit(_))).count(), 3);
+    }
+
+    #[test]
+    fn lex_string_literal_escapes() {
+        let t = tok(r#""Hello\nWorld\xFF""#);
+        let s: Vec<_> = t.iter()
+            .filter_map(|t| if let TokenKind::StrLit(s) = &t.kind { Some(s.clone()) } else { None })
+            .collect();
+        // \xFF in the lexer produces byte 0xFF cast to char → U+00FF (ÿ)
+        assert_eq!(s[0], "Hello\nWorld\u{00FF}");
+    }
+
+    #[test]
+    fn lex_operators_and_punctuation() {
+        let t = tok("+= -= &= |= ^= <<= >>= .. ..= ->");
+        let ops: Vec<_> = t.iter().map(|t| &t.kind).collect();
+        assert!(ops.iter().any(|o| matches!(o, TokenKind::PlusEq)));
+        assert!(ops.iter().any(|o| matches!(o, TokenKind::ShlEq)));
+        assert!(ops.iter().any(|o| matches!(o, TokenKind::ShrEq)));
+        assert!(ops.iter().any(|o| matches!(o, TokenKind::DotDot)));
+        assert!(ops.iter().any(|o| matches!(o, TokenKind::DotDotEq)));
+        assert!(ops.iter().any(|o| matches!(o, TokenKind::Arrow)));
+    }
+
+    #[test]
+    fn lex_no_semicolons_needed() {
+        // newlines are NOT statement terminators — the lexer just ignores them
+        let t = tok("uint32 x = 5\nuint32 y = 10");
+        assert_eq!(t.iter().filter(|t| matches!(t.kind, TokenKind::TypeKw(_))).count(), 2);
+    }
+
+    #[test]
+    fn lex_shift_comparison_operators() {
+        // Verify <, <=, <<, <<= are all distinct
+        let t = tok("< <= << <<=");
+        let kinds: Vec<_> = t.iter()
+            .filter(|t| !matches!(t.kind, TokenKind::Eof))
+            .map(|t| &t.kind)
+            .collect();
+        assert!(kinds.iter().any(|k| matches!(k, TokenKind::Lt)));
+        assert!(kinds.iter().any(|k| matches!(k, TokenKind::LtEq)));
+        assert!(kinds.iter().any(|k| matches!(k, TokenKind::Shl)));
+        assert!(kinds.iter().any(|k| matches!(k, TokenKind::ShlEq)));
     }
 }
