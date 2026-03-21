@@ -1,191 +1,75 @@
 # KernRift
 
-Kernel-first systems language and compiler for OS architecture work: kernels, drivers, schedulers, memory, and IPC.
+A kernel-first systems language that turns OS invariants into compile-time errors — not boot-time crashes.
 
-## Project Goal
+Generic systems languages don't model kernel reality. KernRift bakes interrupt contexts, lock ordering, MMIO semantics, and capability requirements directly into the type system. Invalid kernel behaviour fails at compile time.
 
-KernRift keeps C-level control while making core kernel invariants compile-time enforceable:
+## Features
 
-- Interrupt and preemption context correctness
-- Lock ordering and deadlock prevention metadata
-- MMIO correctness (volatile semantics and ordering)
-- Allocation and stack bounds in critical paths
-- Capability-gated privileged operations
+- **Context safety** — functions are annotated with allowed execution contexts (`boot`, `thread`, `irq`, `nmi`); invalid call edges are rejected
+- **Lock ordering** — deadlock cycles are detected and rejected at compile time
+- **MMIO correctness** — hardware register access is typed and volatile-safe
+- **Capability gating** — privileged operations require explicit module capability declarations
+- **Effect tracking** — allocation, blocking, and yield in disallowed paths are compile errors
+- **Signed artifacts** — contracts can be hashed and signed with Ed25519 for supply-chain verification
 
-## Why This Exists
+## Install
 
-Generic systems languages and compilers do not model kernel reality directly. KernRift bakes OS-native semantics into the type system and compiler passes so invalid kernel behavior fails at compile time instead of in runtime boot/debug loops.
+| Platform | Command |
+|----------|---------|
+| Linux / macOS | `cargo install --git https://github.com/Pantelis23/KernRift --bin kernriftc` |
+| Windows | See [Getting Started](docs/getting-started.md#prebuilt-binary----windows) |
+| All (prebuilt) | See [Releases](../../releases) |
 
-## Adaptive OS Alignment
+## Quickstart
 
-This workspace includes `Adaptive_OS`, so KernRift is scoped to directly address issues observed there first.
+```sh
+# Write a kernel function
+cat > entry.kr << 'EOF'
+@module_caps(MmioRaw);
 
-Key baseline constraints observed in `Adaptive_OS`:
+@ctx(thread, boot)
+fn entry() {
+    raw_write<u8>(0x10000000, 0x48);
+}
+EOF
 
-- No preemption in key paths (`STATUS.md:456`)
-- Ring 3/user isolation still missing (`STATUS.md:419`)
-- Polling-based interrupt transfers in USB path (`STATUS.md:889`)
-- Frame allocator linear-scan limitations (`STATUS.md:177`)
-- Existing policy intent already expressed as contracts (`README.md:241`, `README.md:242`)
+# Compile it
+kernriftc entry.kr
+# → entry.krbo
 
-Details are documented in `docs/ADAPTIVE_OS_CONTEXT.md`.
+# Or run the analysis pass only
+kernriftc check entry.kr
+```
 
-## MVP Path
+## Documentation
 
-- `KR0`: Freestanding static library output, pointers/slices, `unsafe`, typed `mmio<T>`
-- `KR1`: Driver subset with effects (`@irq`, `@alloc`, `@block`, `@preempt`)
-- `KR2`: Kernel module demo with spinlocks, scheduler hooks, per-cpu data
-- `KR3`: Microkernel slice or Linux-side experimental subsystem
+| Doc | Description |
+|-----|-------------|
+| [Getting Started](docs/getting-started.md) | Install, first program, full command reference |
+| [Language Reference](docs/LANGUAGE.md) | Complete syntax and type system |
+| [Architecture](docs/ARCHITECTURE.md) | Compiler pipeline and design decisions |
+| [Contributing](CONTRIBUTING.md) | Build, test, crate map, PR checklist |
+| [Changelog](CHANGELOG.md) | Release history |
 
-Execution criteria are in `docs/KR0_KR3_PLAN.md`.
+## Testing
 
-## Initial Layout
-
-- `docs/ARCHITECTURE.md` language and compiler architecture
-- `docs/KRIR_SPEC.md` KRIR data model, ops, and mandatory verification passes
-- `docs/ADAPTIVE_OS_CONTEXT.md` Adaptive OS problem mapping
-- `docs/KR0_KR3_PLAN.md` staged delivery plan
-
-## KR0 Status
-
-Facts-only KR0 compiler pipeline is implemented as a Rust workspace:
-
-- `crates/parser` minimal `.kr` parser
-- `crates/hir` lowering + defaults + strict extern resolution
-- `crates/krir` canonical KRIR structures
-- `crates/passes` `ctx/effect/cap` checks
-- `crates/emit` canonical JSON output
-- `crates/kernriftc` CLI
-
-CLI:
-
-- `kernriftc check <file.kr>`
-- `kernriftc check --policy <policy.toml> <file.kr>`
-- `kernriftc check --contracts-out <contracts.json> <file.kr>` (canonical/minified contracts file for hashing/signing)
-- `kernriftc check --policy <policy.toml> --contracts-out <contracts.json> <file.kr>`
-- `kernriftc check --policy <policy.toml> --contracts-out <contracts.json> --hash-out <contracts.sha256> <file.kr>`
-- `kernriftc check --policy <policy.toml> --contracts-out <contracts.json> --hash-out <contracts.sha256> --sign-ed25519 <secret.hex> --sig-out <contracts.sig> <file.kr>`
-- `kernriftc --emit krir <file.kr>`
-- `kernriftc --emit lockgraph <file.kr>`
-- `kernriftc --emit caps <file.kr>`
-- `kernriftc --emit contracts <file.kr>`
-- `kernriftc --report max_lock_depth,no_yield_spans <file.kr>`
-- `kernriftc policy --policy <policy.toml> --contracts <contracts.json>`
-- `kernriftc verify --contracts <contracts.json> --hash <contracts.sha256>`
-- `kernriftc verify --contracts <contracts.json> --hash <contracts.sha256> --sig <contracts.sig> --pubkey <pubkey.hex>`
-- `kernriftc inspect-artifact <artifact-path>`
-- `kernriftc inspect-artifact <artifact-path> --format json`
-
-Contracts ABI:
-
-- Schema file: `docs/schemas/kernrift_contracts_v1.schema.json`
-
-Artifact inspection notes:
-
-- `inspect-artifact` is descriptive inspection from artifact bytes only (KRBO/ELF/ASM best-effort text), with deterministic text/JSON output.
-- `verify-artifact-meta` rechecks sidecar/header-derived byte facts for sidecar-bearing artifacts (`krbo`, `elfobj`).
-- `inspect-artifact` does not prove source provenance and does not re-lower source.
-- Quick fixture matrix helper: `./scripts/inspect_fixture_artifacts.sh` (set `KEEP_TMP=1` to keep generated outputs).
-
-## Quality Gate
-
-Run the local gate before merging:
-
-- Linux/macOS: `./scripts/local_gate.sh`
-- Windows PowerShell: `.\scripts\local_gate.ps1`
-  - Script uses `cargo` from `PATH` or falls back to `%USERPROFILE%\.cargo\bin\cargo.exe`.
-
-Gate contents:
-
-- `cargo fmt --all -- --check`
-- `cargo test --workspace`
-- `cargo test -p kernriftc --tests`
-- `cargo test -p kernriftc --test kr0_contract`
-- `cargo test -p kernriftc --test cli_contract`
-- `cargo clippy --workspace --all-targets -- -D warnings`
-- `cargo run -q -p kernriftc -- --emit lockgraph tests/must_pass/callee_acquires_lock.kr`
-
-## Acceptance Smoke
-
-Run acceptance smoke checks with:
-
-- `./tools/acceptance/all.sh`
-
-For the default repo-owned local-safe validation path on 32 GB class machines, use:
-
-- `bash tools/validation/local_safe.sh`
-
-This wrapper keeps `CARGO_BUILD_JOBS=1`, runs one command at a time, and intentionally skips the
-heavier local `hir` randomized coverage that can destabilize this machine class.
-
-For the heavier repo-owned full serialized validation path, use:
-
-- `bash tools/validation/full_serial.sh`
-
-This wrapper is intentionally split into explicit per-crate serialized test steps instead of
-`cargo test --workspace`, but it still includes the heavier local `hir` coverage and remains closer to the CI-style path.
-
-Current acceptance smoke covers downstream artifact compatibility for KRBO/ELF/ASM export paths. Tool-dependent checks are optional and skip explicitly when required host tools are unavailable. Hosted runtime smoke is Linux x86_64 only and can skip when binary execution is unavailable (for example, `noexec` temporary directories).
-
-Useful acceptance toggles:
-
-- `ACCEPTANCE_TMPDIR=<dir>`: override temp workspace location
-- `ACCEPTANCE_KEEP_TMP=1`: keep temp workspace for debugging
-- `ACCEPTANCE_TRACE=1`: enable shell trace output
-- `ACCEPTANCE_DISABLE_RUNTIME_SMOKE=1`: disable runtime execution checks explicitly
-
-## Dev
-
-Enable repo hooks:
+Run the default repo-owned local-safe validation path on 32 GB class machines:
 
 ```bash
-git config core.hooksPath tools/hooks
+bash tools/validation/local_safe.sh
 ```
 
-## Download Verification
-
-Linux/macOS:
+For the heavier local `hir` coverage and per-crate serialized test steps closer to the CI-style path:
 
 ```bash
-TAG=v0.2.3
-gh release download "$TAG" -R Pantelis23/KernRift
-sha256sum -c "kernriftc-$TAG-linux-amd64.tar.gz.sha256"
+bash tools/validation/full_serial.sh
 ```
 
-Windows PowerShell:
+## Status
 
-```powershell
-$TAG="v0.2.3"
-gh release download $TAG -R Pantelis23/KernRift
-$zip="kernriftc-$TAG-windows-amd64.zip"
-$expected=(Get-Content "$zip.sha256").Split()[0]
-$actual=(Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
-if ($actual -ne $expected) { throw "sha256 mismatch" }
-"OK"
-```
+KR0 (facts-only pipeline + artifact emission) is complete. KR1–KR3 (driver subset, kernel module, real OS integration) are in progress. See [KR0_KR3_PLAN.md](docs/KR0_KR3_PLAN.md) for the roadmap.
 
-### Signature Verification (cosign keyless)
+## License
 
-Linux/macOS:
-
-```bash
-TAG=v0.2.3
-cosign verify-blob \
-  --certificate "kernriftc-$TAG-linux-amd64.tar.gz.cert" \
-  --signature   "kernriftc-$TAG-linux-amd64.tar.gz.sig" \
-  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-  --certificate-identity-regexp "^https://github.com/Pantelis23/KernRift/\\.github/workflows/release\\.yml@refs/tags/$TAG$" \
-  "kernriftc-$TAG-linux-amd64.tar.gz"
-```
-
-Windows PowerShell:
-
-```powershell
-$TAG="v0.2.3"
-cosign verify-blob `
-  --certificate "kernriftc-$TAG-windows-amd64.zip.cert" `
-  --signature   "kernriftc-$TAG-windows-amd64.zip.sig" `
-  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" `
-  --certificate-identity-regexp "^https://github.com/Pantelis23/KernRift/\.github/workflows/release\.yml@refs/tags/$TAG$" `
-  "kernriftc-$TAG-windows-amd64.zip"
-```
+MIT
