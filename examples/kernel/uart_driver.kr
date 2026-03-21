@@ -1,0 +1,87 @@
+// 8250-compatible UART driver — KR3 real-integration subsystem.
+//
+// Demonstrates all KernRift features through KR3:
+//   - MMIO device declarations (KR0)
+//   - @ctx / @eff / @caps annotations and enforcement (KR1)
+//   - @hook(sched_in|sched_out) + @noyield scheduler callbacks (KR2)
+//   - Spinlock declarations and lock-order safety (KR2)
+//   - extern fn boundary to C (KR3 C ABI)
+//   - Mixed-ctx driver: thread init + IRQ handler
+
+@module_caps(Mmio, MmioRaw);
+
+// COM1 UART — MMIO-mapped at 0xFED00000 for bare-metal / emulator use.
+mmio UART = 0xFED00000;
+mmio_reg UART.Data = 0x00 : u8 rw;   // Transmit / Receive Data
+mmio_reg UART.IER  = 0x01 : u8 rw;   // Interrupt Enable Register
+mmio_reg UART.LSR  = 0x05 : u8 ro;   // Line Status Register
+
+// Lock class for UART register access.
+spinlock UartLock;
+
+// Called by the C interrupt subsystem to acknowledge the UART IRQ.
+// No arguments — the C side knows the IRQ line.
+extern @ctx(irq) @eff() @caps() fn uart_irq_ack();
+
+// ── Scheduler hooks ───────────────────────────────────────────────────────────
+
+// On context-switch out: disable UART receive interrupt so the device does not
+// deliver IRQs to the outgoing context.
+@hook(sched_out)
+@noyield
+@ctx(thread, boot)
+fn uart_sched_out() {
+    mmio_write<u8>(UART + 0x01, 0x00);
+}
+
+// On context-switch in: re-enable UART receive interrupt for the new context.
+@hook(sched_in)
+@noyield
+@ctx(thread, boot)
+fn uart_sched_in() {
+    mmio_write<u8>(UART + 0x01, 0x01);
+}
+
+// ── Initialisation (thread/boot context, acquires lock) ───────────────────────
+
+// Initialise the UART: enable the receive-data-available interrupt.
+// Must be called once at boot before any other UART operation.
+@ctx(thread, boot) @eff(mmio) @caps(Mmio)
+fn uart_init() {
+    acquire(UartLock);
+    mmio_write<u8>(UART + 0x01, 0x01);
+    mmio_write<u8>(UART + 0x00, 0x00);
+    release(UartLock);
+}
+
+// ── Data-path (thread/boot context, acquires lock) ────────────────────────────
+
+// Write a single byte to the UART transmit register.
+// The caller places the byte in the first argument register (%rdi under SysV).
+@ctx(thread, boot) @eff(mmio) @caps(Mmio)
+fn uart_write_byte(b: u8) {
+    acquire(UartLock);
+    mmio_write<u8>(UART + 0x00, b);
+    release(UartLock);
+}
+
+// Read the Line Status Register and return its value to the caller.
+// The return value is delivered in %rax under SysV.
+@ctx(thread, boot) @eff(mmio) @caps(Mmio)
+fn uart_read_lsr() {
+    acquire(UartLock);
+    mmio_read<u8>(UART + 0x05, lsr);
+    release(UartLock);
+    return_slot(lsr);
+}
+
+// ── IRQ handler (irq context, no lock allowed) ────────────────────────────────
+
+// Handles a UART receive interrupt: reads the line status register to drain
+// the interrupt flag, then delegates acknowledgement to the C IRQ subsystem.
+// Must not hold a lock (IRQ context forbids blocking/yield).
+@ctx(irq) @eff(mmio) @caps(Mmio)
+fn uart_irq_handler() {
+    mmio_read<u8>(UART + 0x05, _status);
+    uart_irq_ack();
+}
