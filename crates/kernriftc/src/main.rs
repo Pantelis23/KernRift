@@ -352,12 +352,11 @@ fn main() -> ExitCode {
                 }
             }
         }
-        arg if args.len() > 2 && args[1].ends_with(".kr") => {
+        _ if args.len() > 2 && args[1].ends_with(".kr") => {
             eprintln!(
                 "error: unexpected arguments after source file. \
                  Use 'kernriftc check' or '--emit=krbo -o <out> <file.kr>' for explicit control."
             );
-            let _ = arg;
             ExitCode::from(EXIT_INVALID_INPUT)
         }
         arg if arg.starts_with("--") => {
