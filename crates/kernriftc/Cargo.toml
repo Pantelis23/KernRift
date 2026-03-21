@@ -4,6 +4,7 @@ version = "0.2.10"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+default-run = "kernriftc"
 
 [[bin]]
 name = "kernriftc"
