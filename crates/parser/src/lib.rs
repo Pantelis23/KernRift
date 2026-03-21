@@ -2454,6 +2454,7 @@ impl<'a> Parser<'a> {
             }
 
             let stmt_start = self.pos;
+            let errors_before = self.errors.len();
             match self.read_statement_text() {
                 Some(text) => {
                     if text.trim().is_empty() {
@@ -2470,7 +2471,9 @@ impl<'a> Parser<'a> {
                     }
                 }
                 None => {
-                    self.error_here("expected ';' terminating statement");
+                    if self.errors.len() == errors_before {
+                        self.error_here("expected ';' terminating statement");
+                    }
                     self.recover_to_next_item();
                     break;
                 }
@@ -2492,6 +2495,42 @@ impl<'a> Parser<'a> {
 
             if ch == '}' && depth == 0 {
                 return None;
+            }
+
+            if ch == '"' {
+                let open_pos = self.pos;
+                out.push('"');
+                self.pos += 1;
+                loop {
+                    match self.peek_char() {
+                        None | Some('\n') => {
+                            self.errors.push(self.format_diagnostic_at(
+                                open_pos,
+                                "unterminated string literal",
+                                Some("add a closing '\"' before the end of the line"),
+                            ));
+                            return None;
+                        }
+                        Some('"') => {
+                            out.push('"');
+                            self.pos += 1;
+                            break;
+                        }
+                        Some('\\') => {
+                            out.push('\\');
+                            self.pos += 1;
+                            if let Some(esc) = self.peek_char() {
+                                out.push(esc);
+                                self.pos += esc.len_utf8();
+                            }
+                        }
+                        Some(c) => {
+                            out.push(c);
+                            self.pos += c.len_utf8();
+                        }
+                    }
+                }
+                continue;
             }
 
             if ch == '(' {
