@@ -288,3 +288,79 @@ fn kr3_module_still_rejects_lock_order_inversion() {
         "expected LOCK_ORDER_INVERSION; got: {errs:?}"
     );
 }
+
+// ── PR-2: multiple stack locals per function ──────────────────────────────────
+
+#[test]
+fn multiple_stack_cells_compile_to_x86_64_elf_object() {
+    // Two independent named locals (saved_a at slot 0, saved_b at slot 1).
+    // Both must appear in the text section with correct slot offsets.
+    let src = r#"
+        @module_caps(Mmio);
+        mmio DEV = 0xFEB00000;
+        mmio_reg DEV.A = 0x00 : u32 ro;
+        mmio_reg DEV.B = 0x04 : u32 ro;
+        mmio_reg DEV.Out = 0x08 : u32 rw;
+        @ctx(thread, boot) @eff(mmio) @caps(Mmio)
+        fn snapshot() {
+            stack_cell<u32>(saved_a);
+            stack_cell<u32>(saved_b);
+            mmio_read<u32>(DEV + 0x00, tmp);
+            cell_store<u32>(saved_a, tmp);
+            mmio_read<u32>(DEV + 0x04, tmp);
+            cell_store<u32>(saved_b, tmp);
+        }
+    "#;
+    let module = compile_source(src).expect("must compile");
+    let exec = lower_current_krir_to_executable_krir(&module).expect("must lower");
+    let target = BackendTargetContract::x86_64_sysv();
+    let object =
+        lower_executable_krir_to_x86_64_object(&exec, &target).expect("must lower to x86_64 ELF");
+    assert!(!object.text_bytes.is_empty(), "must emit non-empty text section");
+}
+
+#[test]
+fn multiple_stack_cells_produce_correct_n_stack_cells_in_executable_krir() {
+    let src = r#"
+        @module_caps(Mmio);
+        mmio DEV = 0xFEB00000;
+        mmio_reg DEV.A = 0x00 : u32 ro;
+        mmio_reg DEV.B = 0x04 : u32 ro;
+        @ctx(thread, boot) @eff(mmio) @caps(Mmio)
+        fn two_cells() {
+            stack_cell<u32>(cell_x);
+            stack_cell<u32>(cell_y);
+            mmio_read<u32>(DEV + 0x00, v);
+            cell_store<u32>(cell_x, v);
+            mmio_read<u32>(DEV + 0x04, v);
+            cell_store<u32>(cell_y, v);
+        }
+    "#;
+    let module = compile_source(src).expect("must compile");
+    let exec = lower_current_krir_to_executable_krir(&module).expect("must lower");
+    let f = exec
+        .functions
+        .iter()
+        .find(|f| f.name == "two_cells")
+        .expect("two_cells must exist");
+    // slot 0 (cell_x) and slot 1 (cell_y) → two StackStoreImm ops with slot_idx 0 and 1
+    let store_slots: Vec<u8> = f.blocks[0]
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            ExecutableOp::StackStoreImm { slot_idx, .. } => Some(*slot_idx),
+            ExecutableOp::StackStoreValue { slot_idx, .. } => Some(*slot_idx),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        store_slots.contains(&0),
+        "expected StackStore at slot 0; got: {:?}",
+        store_slots
+    );
+    assert!(
+        store_slots.contains(&1),
+        "expected StackStore at slot 1; got: {:?}",
+        store_slots
+    );
+}

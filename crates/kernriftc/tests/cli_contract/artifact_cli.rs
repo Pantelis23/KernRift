@@ -970,10 +970,10 @@ fn entry() {
 }
 
 #[test]
-fn emit_elfexe_rejects_multiple_stack_cell_names_in_one_function() {
+fn emit_elfexe_accepts_multiple_stack_cell_names_in_one_function() {
     let root = repo_root();
     let fixture = write_temp_source_fixture(
-        "emit-elfexe-stack-cell-conflict",
+        "emit-elfexe-stack-cell-multi",
         r#"
 mmio UART0 = 0x1000;
 mmio_reg UART0.SR = 0x00 : u32 ro;
@@ -988,7 +988,8 @@ fn entry() {
 }
 "#,
     );
-    let output_path = unique_temp_output_path("emit-elfexe-stack-cell-conflict", "elf");
+    // PR-2: multiple named stack cells are now accepted.
+    let output_path = unique_temp_output_path("emit-elfexe-stack-cell-multi", "elf");
     fs::remove_file(&output_path).ok();
 
     let mut cmd: Command = cargo_bin_cmd!("kernriftc");
@@ -997,14 +998,8 @@ fn entry() {
         .arg("-o")
         .arg(output_path.as_os_str())
         .arg(fixture.as_os_str());
-    let assert = cmd.assert().failure().code(1);
-    let stderr = String::from_utf8(assert.get_output().stderr.clone()).expect("stderr utf8");
-    assert_eq!(
-        stderr.lines().collect::<Vec<_>>(),
-        vec![
-            "canonical-exec: function 'entry' contains unsupported stack_cell<u32>(saved_control): executable stack cell 'saved_control' conflicts with already-declared cell 'saved_status' in the same function"
-        ]
-    );
+
+    cmd.assert().success();
 
     fs::remove_file(&fixture).ok();
     fs::remove_file(&output_path).ok();
