@@ -84,10 +84,14 @@ pub fn analyze_module(module: &KrirModule) -> (AnalysisReport, Vec<CheckError>) 
     errs.extend(critical_block_boundary_check(module));
     errs.extend(cap_check(module));
     errs.extend(critical_region_balance_check(module));
+    errs.extend(sched_hook_check(module));
 
     let fn_map = fn_map(module);
     let (summaries, summary_errs) = build_interproc_summaries(module, &fn_map);
     errs.extend(summary_errs);
+
+    // Lock graph cycle detection runs after inter-procedural summaries are built.
+    errs.extend(lock_graph_cycle_check(&summaries));
 
     let mut report = if errs.is_empty() {
         build_report(module, &fn_map, &summaries)
@@ -940,6 +944,106 @@ fn build_report(
     }
 }
 
+/// Detect lock-order inversion cycles in the merged lock graph.
+///
+/// Treats `lock_edges` from all function summaries as a directed graph where
+/// edge A→B means "A was acquired while B was already held".  A cycle means a
+/// potential deadlock when two threads take the locks in opposite orders.
+fn lock_graph_cycle_check(summaries: &BTreeMap<String, FnSummary>) -> Vec<CheckError> {
+    // Merge all edges from all summaries into one graph.
+    let mut adj: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for summary in summaries.values() {
+        for edge in &summary.internal_edges {
+            adj.entry(edge.from.clone())
+                .or_default()
+                .insert(edge.to.clone());
+            // Ensure the 'to' node exists in the graph even if it has no outgoing edges.
+            adj.entry(edge.to.clone()).or_default();
+        }
+    }
+
+    // Tarjan-style DFS cycle detection on the lock graph.
+    let mut visited: BTreeSet<String> = BTreeSet::new();
+    let mut stack: Vec<String> = Vec::new();
+    let mut in_stack: BTreeSet<String> = BTreeSet::new();
+    let mut errs = Vec::new();
+
+    for start in adj.keys().cloned().collect::<Vec<_>>() {
+        if !visited.contains(&start) {
+            lock_graph_dfs(
+                &start,
+                &adj,
+                &mut visited,
+                &mut stack,
+                &mut in_stack,
+                &mut errs,
+            );
+        }
+    }
+
+    errs
+}
+
+fn lock_graph_dfs(
+    node: &str,
+    adj: &BTreeMap<String, BTreeSet<String>>,
+    visited: &mut BTreeSet<String>,
+    stack: &mut Vec<String>,
+    in_stack: &mut BTreeSet<String>,
+    errs: &mut Vec<CheckError>,
+) {
+    visited.insert(node.to_string());
+    stack.push(node.to_string());
+    in_stack.insert(node.to_string());
+
+    if let Some(neighbors) = adj.get(node) {
+        for neighbor in neighbors {
+            if !visited.contains(neighbor) {
+                lock_graph_dfs(neighbor, adj, visited, stack, in_stack, errs);
+            } else if in_stack.contains(neighbor) {
+                // Found a cycle — report the cycle path.
+                let pos = stack
+                    .iter()
+                    .position(|n| n == neighbor)
+                    .unwrap_or(stack.len().saturating_sub(1));
+                let mut cycle = stack[pos..].to_vec();
+                cycle.push(neighbor.to_string());
+                errs.push(CheckError {
+                    pass: PASS_LOCK,
+                    message: format!(
+                        "LOCK_ORDER_INVERSION: lock cycle detected: {}",
+                        cycle.join(" -> ")
+                    ),
+                });
+            }
+        }
+    }
+
+    stack.pop();
+    in_stack.remove(node);
+}
+
+/// Verify that `@hook(sched_in|sched_out)` functions are also `@noyield`.
+/// Scheduler callbacks must never reschedule.
+fn sched_hook_check(module: &KrirModule) -> Vec<CheckError> {
+    let mut errs = Vec::new();
+    for f in &module.functions {
+        if let Some(hook) = f.attrs.hook
+            && !f.attrs.noyield
+        {
+            errs.push(CheckError {
+                pass: "sched-hook",
+                message: format!(
+                    "HOOK_MISSING_NOYIELD: @hook({}) function '{}' must also be @noyield",
+                    hook.as_str(),
+                    f.name
+                ),
+            });
+        }
+    }
+    errs
+}
+
 fn canonicalize_report(report: &mut AnalysisReport) {
     report
         .lock_edges
@@ -1099,6 +1203,7 @@ mod tests {
             mmio_registers: Vec::new(),
             functions,
             call_edges: Vec::new(),
+            ..Default::default()
         }
     }
 

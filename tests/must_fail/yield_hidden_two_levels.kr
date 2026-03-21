@@ -1,3 +1,4 @@
+spinlock SchedLock;
 fn inner() { yieldpoint(); }
 
 fn mid() { inner(); }

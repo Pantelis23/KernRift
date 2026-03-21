@@ -1,0 +1,67 @@
+// KR2 sample module — spinlock + per-cpu + scheduler hooks demo.
+//
+// Demonstrates all KR2 language features:
+//   - `spinlock NAME;` lock class declaration
+//   - `acquire(LOCK)` / `release(LOCK)` with declared classes
+//   - `percpu NAME: T;` per-cpu variable declaration
+//   - `percpu_read<T>` / `percpu_write<T>`
+//   - `@hook(sched_in|sched_out)` with `@noyield`
+//   - Consistent lock ordering (no cycles)
+
+@module_caps(Mmio, MmioRaw);
+
+// Device BAR0
+mmio BAR0 = 0xFEB00000;
+mmio_reg BAR0.Status  = 0x00 : u32 ro;
+mmio_reg BAR0.Control = 0x04 : u32 rw;
+
+// Lock class declarations — ordered: DevLock must always be acquired before StatLock.
+spinlock DevLock;
+spinlock StatLock;
+
+// Per-cpu statistics counter.
+percpu cpu_active: u32;
+
+// Scheduler hook: called when a thread is scheduled in.
+// Must be @noyield — the scheduler must not reschedule itself.
+@hook(sched_in)
+@noyield
+@ctx(thread, boot)
+fn on_sched_in() {
+    percpu_write<u32>(cpu_active, 0x01);
+}
+
+// Scheduler hook: called when a thread is scheduled out.
+@hook(sched_out)
+@noyield
+@ctx(thread, boot)
+fn on_sched_out() {
+    percpu_write<u32>(cpu_active, 0x00);
+}
+
+// Read the per-cpu active flag.
+@ctx(thread, boot) @eff(yield) @caps()
+fn read_cpu_active() {
+    percpu_read<u32>(cpu_active, flag);
+    raw_mmio_write<u32>(0x3000, flag);
+}
+
+// Enable the device: acquire DevLock then StatLock (consistent order).
+@ctx(thread, boot)
+fn device_enable() {
+    acquire(DevLock);
+    acquire(StatLock);
+    mmio_write<u32>(BAR0 + 0x04, 0x01);
+    release(StatLock);
+    release(DevLock);
+}
+
+// Disable the device: acquire DevLock then StatLock (consistent order).
+@ctx(thread, boot)
+fn device_disable() {
+    acquire(DevLock);
+    acquire(StatLock);
+    mmio_write<u32>(BAR0 + 0x04, 0x00);
+    release(StatLock);
+    release(DevLock);
+}

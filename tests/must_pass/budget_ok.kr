@@ -1,3 +1,4 @@
+spinlock SchedLock;
 fn deep() { }
 
 @lock_budget(2)

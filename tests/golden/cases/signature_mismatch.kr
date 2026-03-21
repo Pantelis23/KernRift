@@ -1,3 +1,4 @@
+spinlock ConsoleLock;
 fn sig_mismatch_case() {
   acquire(ConsoleLock);
   release(ConsoleLock);

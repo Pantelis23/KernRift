@@ -59,6 +59,23 @@ impl Eff {
     }
 }
 
+/// Scheduler hook kind — which scheduler event this function is attached to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SchedHook {
+    SchedIn,
+    SchedOut,
+}
+
+impl SchedHook {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SchedIn => "sched_in",
+            Self::SchedOut => "sched_out",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 pub struct FunctionAttrs {
     pub noyield: bool,
@@ -66,6 +83,16 @@ pub struct FunctionAttrs {
     pub leaf: bool,
     pub hotpath: bool,
     pub lock_budget: Option<u64>,
+    /// Scheduler hook kind; `Some` means this function is a sched_in or sched_out callback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hook: Option<SchedHook>,
+}
+
+/// Per-cpu variable declaration: `percpu NAME: T;`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PercpuDecl {
+    pub name: String,
+    pub ty: MmioScalarType,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -154,6 +181,18 @@ pub enum KrirOp {
     SlicePtr {
         slice: String,
         slot: String,
+    },
+    /// `percpu_read<T>(NAME, slot)` — reads a per-cpu variable into `slot`.
+    PercpuRead {
+        ty: MmioScalarType,
+        name: String,
+        slot: String,
+    },
+    /// `percpu_write<T>(NAME, value)` — writes `value` into a per-cpu variable.
+    PercpuWrite {
+        ty: MmioScalarType,
+        name: String,
+        value: MmioValueExpr,
     },
 }
 
@@ -276,6 +315,12 @@ pub struct CallEdge {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 pub struct KrirModule {
     pub module_caps: Vec<String>,
+    /// Declared spinlock classes: `spinlock NAME;`
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lock_classes: Vec<String>,
+    /// Declared per-cpu variables: `percpu NAME: T;`
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub percpu_vars: Vec<PercpuDecl>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mmio_bases: Vec<MmioBaseDecl>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1596,6 +1641,20 @@ pub fn lower_current_krir_to_executable_krir(
                         ));
                     }
                 }
+                KrirOp::PercpuRead { ty, name, slot } => errors.push(format!(
+                    "canonical-exec: function '{}' contains unsupported percpu_read<{}>({}, {})",
+                    function.name,
+                    ty.as_str(),
+                    name,
+                    slot
+                )),
+                KrirOp::PercpuWrite { ty, name, value } => errors.push(format!(
+                    "canonical-exec: function '{}' contains unsupported percpu_write<{}>({}, {})",
+                    function.name,
+                    ty.as_str(),
+                    name,
+                    value.as_source()
+                )),
             }
         }
 
@@ -5341,6 +5400,7 @@ mod tests {
             mmio_registers: Vec::new(),
             functions: Vec::new(),
             call_edges: Vec::new(),
+            ..Default::default()
         };
         module.canonicalize();
         assert_eq!(
@@ -5383,6 +5443,7 @@ mod tests {
             ],
             functions: Vec::new(),
             call_edges: Vec::new(),
+            ..Default::default()
         };
         module.canonicalize();
         assert_eq!(

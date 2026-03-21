@@ -205,6 +205,18 @@ pub enum Stmt {
         slice: String,
         slot: String,
     },
+    /// `percpu_read<T>(NAME, slot)` — reads a per-cpu variable into `slot`.
+    PercpuRead {
+        ty: MmioScalarType,
+        name: String,
+        slot: String,
+    },
+    /// `percpu_write<T>(NAME, value)` — writes `value` into a per-cpu variable.
+    PercpuWrite {
+        ty: MmioScalarType,
+        name: String,
+        value: MmioValueExpr,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -302,6 +314,12 @@ impl StructDecl {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PercpuDecl {
+    pub name: String,
+    pub ty: MmioScalarType,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ModuleAst {
     pub module_caps: Vec<String>,
@@ -310,6 +328,10 @@ pub struct ModuleAst {
     pub constants: Vec<ConstDecl>,
     pub enums: Vec<EnumDecl>,
     pub structs: Vec<StructDecl>,
+    /// Lock class declarations: `spinlock NAME;`
+    pub spinlocks: Vec<String>,
+    /// Per-cpu variable declarations: `percpu NAME: T;`
+    pub percpu_vars: Vec<PercpuDecl>,
     pub items: Vec<FnAst>,
 }
 
@@ -414,6 +436,8 @@ impl<'a> Parser<'a> {
         let mut module = ModuleAst::default();
         let mut mmio_names = std::collections::BTreeSet::new();
         let mut mmio_register_names = std::collections::BTreeSet::new();
+        let mut spinlock_names = std::collections::BTreeSet::new();
+        let mut percpu_names = std::collections::BTreeSet::new();
 
         while self.skip_ws_comments() {
             if self.eof() {
@@ -491,6 +515,48 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
+            if self.consume_keyword("spinlock") {
+                self.skip_ws_comments();
+                match self.parse_ident() {
+                    Some(name) => {
+                        self.skip_ws_comments();
+                        if !self.consume_char(';') {
+                            self.error_here("expected ';' after spinlock declaration");
+                            self.recover_to_next_module_item();
+                        } else if !spinlock_names.insert(name.clone()) {
+                            self.errors
+                                .push(format!("duplicate spinlock declaration '{}'", name));
+                        } else {
+                            module.spinlocks.push(name);
+                        }
+                    }
+                    None => {
+                        self.error_here("expected lock class name after 'spinlock'");
+                        self.recover_to_next_module_item();
+                    }
+                }
+                continue;
+            }
+
+            if self.consume_keyword("percpu") {
+                self.skip_ws_comments();
+                match self.parse_percpu_decl() {
+                    Ok(decl) => {
+                        if !percpu_names.insert(decl.name.clone()) {
+                            self.errors
+                                .push(format!("duplicate percpu declaration '{}'", decl.name));
+                        } else {
+                            module.percpu_vars.push(decl);
+                        }
+                    }
+                    Err(msg) => {
+                        self.error_here(&msg);
+                        self.recover_to_next_module_item();
+                    }
+                }
+                continue;
+            }
+
             let mut attrs = Vec::new();
             let mut is_extern = false;
 
@@ -542,7 +608,7 @@ impl<'a> Parser<'a> {
 
             if !self.consume_keyword("fn") {
                 self.error_here(
-                    "expected 'fn', 'mmio', 'mmio_reg', 'const', 'enum', 'struct', or @module_caps(...) at item boundary",
+                    "expected 'fn', 'mmio', 'mmio_reg', 'const', 'enum', 'struct', 'spinlock', 'percpu', or @module_caps(...) at item boundary",
                 );
                 self.recover_to_next_module_item();
                 continue;
@@ -973,6 +1039,40 @@ impl<'a> Parser<'a> {
             ));
         }
         Ok(StructDecl { name, fields })
+    }
+
+    fn parse_percpu_decl(&mut self) -> Result<PercpuDecl, String> {
+        let Some(name) = self.parse_ident() else {
+            return Err("expected per-cpu variable name after 'percpu'".to_string());
+        };
+        self.skip_ws_comments();
+        if !self.consume_char(':') {
+            return Err(format!(
+                "invalid percpu declaration '{}': expected ':'",
+                name
+            ));
+        }
+        self.skip_ws_comments();
+        let Some(ty_raw) = self.parse_ident() else {
+            return Err(format!(
+                "invalid percpu declaration '{}': expected type",
+                name
+            ));
+        };
+        let ty = MmioScalarType::parse(&ty_raw).map_err(|_| {
+            format!(
+                "invalid percpu declaration '{}': unsupported type '{}'",
+                name, ty_raw
+            )
+        })?;
+        self.skip_ws_comments();
+        if !self.consume_char(';') {
+            return Err(format!(
+                "invalid percpu declaration '{}': expected ';'",
+                name
+            ));
+        }
+        Ok(PercpuDecl { name, ty })
     }
 
     fn parse_body(&mut self) -> Vec<Stmt> {
@@ -1604,6 +1704,34 @@ fn parse_typed_mmio_stmt(name: &str, args: &str) -> Result<Option<Stmt>, String>
         let slice = parse_mmio_capture_operand(parts[0].trim())?;
         let slot = parse_mmio_capture_operand(parts[1].trim())?;
         return Ok(Some(Stmt::SlicePtr { slice, slot }));
+    }
+
+    if let Some(ty) = parse_mmio_scalar_from_name(name, "percpu_read")? {
+        let parts = split_csv(args);
+        if parts.len() != 2 {
+            return Err("percpu_read<T>(NAME, slot) requires exactly two arguments".to_string());
+        }
+        let var_name = parse_mmio_capture_operand(parts[0].trim())?;
+        let slot = parse_mmio_capture_operand(parts[1].trim())?;
+        return Ok(Some(Stmt::PercpuRead {
+            ty,
+            name: var_name,
+            slot,
+        }));
+    }
+
+    if let Some(ty) = parse_mmio_scalar_from_name(name, "percpu_write")? {
+        let parts = split_csv(args);
+        if parts.len() != 2 {
+            return Err("percpu_write<T>(NAME, value) requires exactly two arguments".to_string());
+        }
+        let var_name = parse_mmio_capture_operand(parts[0].trim())?;
+        let value = parse_mmio_value_operand(parts[1].trim())?;
+        return Ok(Some(Stmt::PercpuWrite {
+            ty,
+            name: var_name,
+            value,
+        }));
     }
 
     Ok(None)

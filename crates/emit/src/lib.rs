@@ -1085,6 +1085,7 @@ mod tests {
                 },
             ],
             call_edges: Vec::new(),
+            ..Default::default()
         };
 
         let json = emit_caps_manifest_json(&module).expect("emit caps");
@@ -1192,6 +1193,7 @@ mod tests {
                     callee: "zeta".to_string(),
                 },
             ],
+            ..Default::default()
         };
 
         let json = emit_krir_json(&module).expect("emit krir");
@@ -1246,6 +1248,7 @@ mod tests {
                         leaf: false,
                         hotpath: true,
                         lock_budget: Some(2),
+                        ..Default::default()
                     },
                     params: vec![],
                     ops: Vec::new(),
@@ -1262,6 +1265,7 @@ mod tests {
                 },
             ],
             call_edges: Vec::new(),
+            ..Default::default()
         };
         let report = AnalysisReport {
             lock_edges: vec![LockEdge {
@@ -1426,6 +1430,7 @@ mod tests {
                 caller: "isr".to_string(),
                 callee: "helper".to_string(),
             }],
+            ..Default::default()
         };
         let report = AnalysisReport::default();
 
@@ -1515,6 +1520,7 @@ mod tests {
                 caller: "entry".to_string(),
                 callee: "helper".to_string(),
             }],
+            ..Default::default()
         };
         let report = AnalysisReport::default();
 
@@ -1611,6 +1617,7 @@ mod tests {
                     callee: "helper".to_string(),
                 },
             ],
+            ..Default::default()
         };
         let report = AnalysisReport::default();
 
@@ -1690,6 +1697,7 @@ mod tests {
                     callee: "helper".to_string(),
                 },
             ],
+            ..Default::default()
         };
         let report = AnalysisReport::default();
 
@@ -1751,6 +1759,7 @@ mod tests {
                 caller: "entry".to_string(),
                 callee: "kmalloc".to_string(),
             }],
+            ..Default::default()
         };
         let report = AnalysisReport::default();
 
@@ -1822,6 +1831,7 @@ mod tests {
                 },
             ],
             call_edges: vec![],
+            ..Default::default()
         };
         let report = AnalysisReport::default();
 
@@ -1894,6 +1904,7 @@ mod tests {
                     callee: "a".to_string(),
                 },
             ],
+            ..Default::default()
         };
 
         let transitive = transitive_effects_by_function(&module);
@@ -1919,6 +1930,7 @@ mod tests {
                 ops: vec![KrirOp::AllocPoint],
             }],
             call_edges: vec![],
+            ..Default::default()
         };
         let semantics = effect_semantics_by_function(&module);
         let provenance = semantics["f"]
@@ -1964,6 +1976,7 @@ mod tests {
                 caller: "entry".to_string(),
                 callee: "helper".to_string(),
             }],
+            ..Default::default()
         };
         let semantics = effect_semantics_by_function(&module);
         let provenance = semantics["entry"]
@@ -2012,6 +2025,7 @@ mod tests {
                 caller: "entry".to_string(),
                 callee: "kmalloc".to_string(),
             }],
+            ..Default::default()
         };
         let semantics = effect_semantics_by_function(&module);
         let provenance = semantics["entry"]
@@ -2078,6 +2092,7 @@ mod tests {
                     callee: "helper".to_string(),
                 },
             ],
+            ..Default::default()
         };
         let semantics = effect_semantics_by_function(&module);
         let helper = semantics["helper"]
@@ -2174,6 +2189,7 @@ mod tests {
                     callee: "self_fn".to_string(),
                 },
             ],
+            ..Default::default()
         };
         let semantics = effect_semantics_by_function(&module);
 
@@ -2213,6 +2229,7 @@ mod tests {
                 ops: vec![],
             }],
             call_edges: vec![],
+            ..Default::default()
         };
         let semantics = capability_semantics_by_function(&module);
         let provenance = semantics["f"]
@@ -2258,6 +2275,7 @@ mod tests {
                 caller: "entry".to_string(),
                 callee: "helper".to_string(),
             }],
+            ..Default::default()
         };
         let semantics = capability_semantics_by_function(&module);
         let provenance = semantics["entry"]
@@ -2306,6 +2324,7 @@ mod tests {
                 caller: "entry".to_string(),
                 callee: "map_io".to_string(),
             }],
+            ..Default::default()
         };
         let semantics = capability_semantics_by_function(&module);
         let provenance = semantics["entry"]
@@ -2372,6 +2391,7 @@ mod tests {
                     callee: "helper".to_string(),
                 },
             ],
+            ..Default::default()
         };
         let semantics = capability_semantics_by_function(&module);
 
@@ -2469,6 +2489,7 @@ mod tests {
                     callee: "self_fn".to_string(),
                 },
             ],
+            ..Default::default()
         };
         let semantics = capability_semantics_by_function(&module);
 
@@ -2529,6 +2550,7 @@ mod tests {
                 caller: "entry".to_string(),
                 callee: "helper".to_string(),
             }],
+            ..Default::default()
         };
         let report = AnalysisReport::default();
         let json = emit_contracts_json_with_schema(&module, &report, ContractsSchema::V2)

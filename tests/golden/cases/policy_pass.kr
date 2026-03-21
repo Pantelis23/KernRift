@@ -1,3 +1,4 @@
+spinlock ConsoleLock;
 @module_caps(PhysMap);
 
 @ctx(thread)

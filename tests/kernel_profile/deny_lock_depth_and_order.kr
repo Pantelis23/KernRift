@@ -1,3 +1,5 @@
+spinlock ConsoleLock;
+spinlock SchedLock;
 fn inner() {
   acquire(SchedLock);
   release(SchedLock);

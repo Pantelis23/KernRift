@@ -7,7 +7,7 @@ use krir::{
     KrirModule, KrirOp, KrirParamTy, MmioAddrExpr as KrirMmioAddrExpr,
     MmioBaseDecl as KrirMmioBaseDecl, MmioRegAccess as KrirMmioRegAccess,
     MmioRegisterDecl as KrirMmioRegisterDecl, MmioScalarType as KrirMmioScalarType,
-    MmioValueExpr as KrirMmioValueExpr,
+    MmioValueExpr as KrirMmioValueExpr, PercpuDecl as KrirPercpuDecl, SchedHook,
 };
 use parser::{
     FnAst, MmioAddrExpr as ParserMmioAddrExpr, MmioBaseDecl as ParserMmioBaseDecl,
@@ -1465,12 +1465,52 @@ pub fn lower_to_krir_with_surface(
         }
     }
 
+    // Collect and validate spinlock / per-cpu declarations.
+    let declared_lock_classes: BTreeSet<&str> = ast.spinlocks.iter().map(String::as_str).collect();
+    let declared_percpu: BTreeSet<&str> = ast.percpu_vars.iter().map(|d| d.name.as_str()).collect();
+
+    for function in &functions {
+        for op in &function.ops {
+            match op {
+                KrirOp::Acquire { lock_class } | KrirOp::Release { lock_class } => {
+                    if !declared_lock_classes.contains(lock_class.as_str()) {
+                        errors.push(format!(
+                            "function '{}' uses undeclared lock class '{}'; add 'spinlock {};' at module scope",
+                            function.name, lock_class, lock_class
+                        ));
+                    }
+                }
+                KrirOp::PercpuRead { name, .. } | KrirOp::PercpuWrite { name, .. } => {
+                    if !declared_percpu.contains(name.as_str()) {
+                        errors.push(format!(
+                            "function '{}' uses undeclared per-cpu variable '{}'; add 'percpu {}: T;' at module scope",
+                            function.name, name, name
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let lock_classes: Vec<String> = ast.spinlocks.clone();
+    let percpu_vars: Vec<KrirPercpuDecl> = ast
+        .percpu_vars
+        .iter()
+        .map(|d| KrirPercpuDecl {
+            name: d.name.clone(),
+            ty: lower_mmio_scalar_type(d.ty),
+        })
+        .collect();
+
     if !errors.is_empty() {
         return Err(errors);
     }
 
     let mut module = KrirModule {
         module_caps: ast.module_caps.clone(),
+        lock_classes,
+        percpu_vars,
         mmio_bases,
         mmio_registers,
         functions,
@@ -2079,6 +2119,20 @@ fn normalize_function_facts(
                     None,
                 )),
             },
+            "hook" => match attr.args.as_deref() {
+                Some("sched_in") => attrs.hook = Some(SchedHook::SchedIn),
+                Some("sched_out") => attrs.hook = Some(SchedHook::SchedOut),
+                other => errors.push(format_attr_diagnostic(
+                    item,
+                    attr,
+                    &format!(
+                        "@hook({}) is invalid for '{}'; expected sched_in or sched_out",
+                        other.unwrap_or(""),
+                        item.name
+                    ),
+                    None,
+                )),
+            },
             "module_caps" => {}
             other => {
                 if let Some(feature) = adaptive_surface_feature(other) {
@@ -2371,6 +2425,20 @@ fn lower_stmts_to_canonical_executable(
                 "canonical-exec: function '{}' contains unsupported slice_ptr({}, {})",
                 function_name, slice, slot
             )),
+            Stmt::PercpuRead { ty, name, slot } => errors.push(format!(
+                "canonical-exec: function '{}' contains unsupported percpu_read<{}>({}, {})",
+                function_name,
+                ty.as_str(),
+                name,
+                slot
+            )),
+            Stmt::PercpuWrite { ty, name, value } => errors.push(format!(
+                "canonical-exec: function '{}' contains unsupported percpu_write<{}>({}, {})",
+                function_name,
+                ty.as_str(),
+                name,
+                value.as_source()
+            )),
         }
     }
 }
@@ -2504,6 +2572,16 @@ fn lower_stmt(
         Stmt::SlicePtr { slice, slot } => ops.push(KrirOp::SlicePtr {
             slice: slice.clone(),
             slot: slot.clone(),
+        }),
+        Stmt::PercpuRead { ty, name, slot } => ops.push(KrirOp::PercpuRead {
+            ty: lower_mmio_scalar_type(*ty),
+            name: name.clone(),
+            slot: slot.clone(),
+        }),
+        Stmt::PercpuWrite { ty, name, value } => ops.push(KrirOp::PercpuWrite {
+            ty: lower_mmio_scalar_type(*ty),
+            name: name.clone(),
+            value: lower_mmio_value_expr(value, const_map),
         }),
     }
 }

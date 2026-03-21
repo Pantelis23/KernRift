@@ -1,3 +1,5 @@
+spinlock ConsoleLock;
+spinlock SchedLock;
 fn nested_release_mismatch() {
   acquire(ConsoleLock);
   acquire(SchedLock);

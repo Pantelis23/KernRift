@@ -1,3 +1,5 @@
+spinlock ConsoleLock;
+spinlock SchedLock;
 @module_caps(PhysMap);
 
 @ctx(irq)
