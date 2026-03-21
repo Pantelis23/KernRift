@@ -3060,11 +3060,11 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
         }
         let uses_frame = function.uses_stack_cell || function.n_params > 0;
         if uses_frame {
-            let sc_bytes = 8u8 * function.uses_stack_cell as u8;
-            let frame_size = sc_bytes + 8u8 * function.n_params as u8;
+            let sc_bytes = 8u32 * function.uses_stack_cell as u32;
+            let frame_size = sc_bytes + 8u32 * function.n_params as u32;
             out.push_str(&format!("    sub ${}, %rsp\n", frame_size));
             for i in 0..function.n_params {
-                let offset = sc_bytes + 8u8 * i as u8;
+                let offset = sc_bytes + 8u32 * i as u32;
                 out.push_str(&format!(
                     "    movq {}, {}(%rsp)\n",
                     asm_param_register(i as u8),
@@ -3324,8 +3324,8 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                 X86_64AsmInstruction::Ret => {
                     let uses_frame = function.uses_stack_cell || function.n_params > 0;
                     if uses_frame {
-                        let sc_bytes = 8u8 * function.uses_stack_cell as u8;
-                        let frame_size = sc_bytes + 8u8 * function.n_params as u8;
+                        let sc_bytes = 8u32 * function.uses_stack_cell as u32;
+                        let frame_size = sc_bytes + 8u32 * function.n_params as u32;
                         out.push_str(&format!("    add ${}, %rsp\n", frame_size));
                     }
                     if function.uses_saved_value_slot {
@@ -3529,7 +3529,7 @@ fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
 
 fn executable_terminator_encoded_len(function: &ExecutableFunction) -> u64 {
     let epilogue_bytes = (if executable_function_uses_frame(function) {
-        4
+        rsp_adj_encoded_len(executable_function_frame_size(function))
     } else {
         0
     }) + if executable_function_uses_saved_value_slot(function) {
@@ -3611,6 +3611,37 @@ fn encode_stack_cell_load_bytes(out: &mut Vec<u8>, ty: MmioScalarType) {
 
 // Emit `MOV QWORD PTR [rsp+offset], %reg` where reg is the i-th SysV integer param register.
 // Encoding: REX(W+R?), 0x89, ModRM(mod=01, reg=N, rm=4), SIB(0x24), disp8
+/// Byte count of `sub rsp, N` / `add rsp, N` for a given frame size.
+fn rsp_adj_encoded_len(amount: u32) -> u64 {
+    if amount <= 127 { 4 } else { 7 }
+}
+
+/// Emit `sub rsp, amount`; uses imm8 (4 bytes) when amount ≤ 127, imm32 (7 bytes) otherwise.
+fn emit_sub_rsp(out: &mut Vec<u8>, amount: u32) {
+    if amount <= 127 {
+        out.extend_from_slice(&[0x48, 0x83, 0xEC, amount as u8]);
+    } else {
+        let b = amount.to_le_bytes();
+        out.extend_from_slice(&[0x48, 0x81, 0xEC, b[0], b[1], b[2], b[3]]);
+    }
+}
+
+/// Emit `add rsp, amount`; uses imm8 (4 bytes) when amount ≤ 127, imm32 (7 bytes) otherwise.
+fn emit_add_rsp(out: &mut Vec<u8>, amount: u32) {
+    if amount <= 127 {
+        out.extend_from_slice(&[0x48, 0x83, 0xC4, amount as u8]);
+    } else {
+        let b = amount.to_le_bytes();
+        out.extend_from_slice(&[0x48, 0x81, 0xC4, b[0], b[1], b[2], b[3]]);
+    }
+}
+
+/// Total frame size in bytes: 8 bytes per stack cell + 8 bytes per param.
+fn executable_function_frame_size(function: &ExecutableFunction) -> u32 {
+    8u32 * executable_function_uses_stack_cell(function) as u32
+        + 8u32 * function.signature.params.len() as u32
+}
+
 fn emit_param_spill(out: &mut Vec<u8>, param_idx: usize, offset: u8) {
     let (rex, modrm): (u8, u8) = match param_idx {
         0 => (0x48, 0x7C), // rdi  (reg=7)
@@ -4054,8 +4085,8 @@ pub fn lower_executable_krir_to_compiler_owned_object(
         } else {
             0
         }) + if uses_frame {
-            // SUB RSP, frame_size (4 bytes) + one 5-byte MOV per param spill
-            4 + 5 * n_params
+            // SUB RSP, frame_size + one 5-byte MOV per param spill
+            rsp_adj_encoded_len(executable_function_frame_size(function)) + 5 * n_params
         } else {
             0
         } + block.ops.iter().map(executable_op_encoded_len).sum::<u64>()
@@ -4089,13 +4120,13 @@ pub fn lower_executable_krir_to_compiler_owned_object(
         if uses_frame {
             // Frame layout: [stack_cell: 8 bytes if uses_stack_cell][param_0..param_n-1: 8 bytes each]
             // Stack cell (if any) is at 0(%rsp); param i is at (8*uses_stack_cell + 8*i)(%rsp)
-            let sc_bytes = 8u8 * uses_stack_cell as u8;
-            let frame_size = sc_bytes + 8u8 * n_params as u8;
-            code_bytes.extend_from_slice(&[0x48, 0x83, 0xEC, frame_size]);
-            local_offset += 4;
+            let sc_bytes = 8u32 * uses_stack_cell as u32;
+            let frame_size = sc_bytes + 8u32 * n_params as u32;
+            emit_sub_rsp(&mut code_bytes, frame_size);
+            local_offset += rsp_adj_encoded_len(frame_size);
             // Spill SysV integer param registers to their stack slots
             for i in 0..n_params {
-                let offset = sc_bytes + 8u8 * i as u8;
+                let offset = (sc_bytes + 8u32 * i as u32) as u8;
                 emit_param_spill(&mut code_bytes, i, offset);
                 local_offset += 5;
             }
@@ -4316,9 +4347,9 @@ pub fn lower_executable_krir_to_compiler_owned_object(
             push_mov_saved_value_to_accumulator_register(&mut code_bytes, ty);
         }
         if uses_frame {
-            let sc_bytes = 8u8 * uses_stack_cell as u8;
-            let frame_size = sc_bytes + 8u8 * n_params as u8;
-            code_bytes.extend_from_slice(&[0x48, 0x83, 0xC4, frame_size]);
+            let frame_size =
+                8u32 * uses_stack_cell as u32 + 8u32 * n_params as u32;
+            emit_add_rsp(&mut code_bytes, frame_size);
         }
         if uses_saved_value_slot {
             code_bytes.push(0x5B);
@@ -8429,5 +8460,42 @@ mod tests {
             object.validate(),
             Err("x86_64 ELF relocation patch offset 1 must be unique".to_string())
         );
+    }
+
+    #[test]
+    fn frame_encoding_uses_imm8_for_small_frames() {
+        use crate::{emit_add_rsp, emit_sub_rsp, rsp_adj_encoded_len};
+        // frame_size = 8 (stack cell) ≤ 127 → 4-byte SUB RSP / ADD RSP
+        let mut buf = Vec::new();
+        emit_sub_rsp(&mut buf, 8);
+        assert_eq!(buf, &[0x48, 0x83, 0xEC, 0x08], "imm8 SUB RSP");
+        let mut buf = Vec::new();
+        emit_add_rsp(&mut buf, 8);
+        assert_eq!(buf, &[0x48, 0x83, 0xC4, 0x08], "imm8 ADD RSP");
+        assert_eq!(rsp_adj_encoded_len(8), 4);
+    }
+
+    #[test]
+    fn frame_encoding_uses_imm32_for_large_frames() {
+        use crate::{emit_add_rsp, emit_sub_rsp, rsp_adj_encoded_len};
+        // frame_size = 128 > 127 → 7-byte SUB RSP / ADD RSP
+        let mut buf = Vec::new();
+        emit_sub_rsp(&mut buf, 128);
+        assert_eq!(buf, &[0x48, 0x81, 0xEC, 0x80, 0x00, 0x00, 0x00], "imm32 SUB RSP");
+        let mut buf = Vec::new();
+        emit_add_rsp(&mut buf, 128);
+        assert_eq!(buf, &[0x48, 0x81, 0xC4, 0x80, 0x00, 0x00, 0x00], "imm32 ADD RSP");
+        assert_eq!(rsp_adj_encoded_len(128), 7);
+    }
+
+    #[test]
+    fn frame_encoding_imm32_boundary_at_127() {
+        use crate::{emit_sub_rsp, rsp_adj_encoded_len};
+        // 127 = max imm8 value
+        let mut buf = Vec::new();
+        emit_sub_rsp(&mut buf, 127);
+        assert_eq!(buf, &[0x48, 0x83, 0xEC, 0x7F], "127 fits in imm8");
+        assert_eq!(rsp_adj_encoded_len(127), 4);
+        assert_eq!(rsp_adj_encoded_len(128), 7);
     }
 }
