@@ -293,6 +293,18 @@ pub enum KrirOp {
         rhs: String,
         out: String,
     },
+    /// Opens a loop scope. Pairs with `LoopEnd`.
+    LoopBegin,
+    /// Jumps back to the matching `LoopBegin` head.
+    LoopEnd,
+    /// Exits the innermost loop unconditionally.
+    LoopBreak,
+    /// Jumps to the condition check of the innermost loop.
+    LoopContinue,
+    /// If `slot == 0`, exit the innermost loop.
+    BranchIfZeroLoopBreak { slot: String },
+    /// If `slot != 0`, exit the innermost loop.
+    BranchIfNonZeroLoopBreak { slot: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1962,6 +1974,18 @@ pub fn lower_current_krir_to_executable_krir(
                     rhs,
                     out
                 )),
+                KrirOp::LoopBegin | KrirOp::LoopEnd | KrirOp::LoopBreak | KrirOp::LoopContinue => {
+                    errors.push(format!(
+                        "canonical-exec: function '{}' contains loop op (requires backend Task 11)",
+                        function.name
+                    ));
+                }
+                KrirOp::BranchIfZeroLoopBreak { slot } | KrirOp::BranchIfNonZeroLoopBreak { slot } => {
+                    errors.push(format!(
+                        "canonical-exec: function '{}' contains loop-break branch on '{}' (requires backend Task 11)",
+                        function.name, slot
+                    ));
+                }
             }
         }
 

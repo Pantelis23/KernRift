@@ -1200,3 +1200,49 @@ fn dummy() {}
     assert!(module.mmio_registers.iter().any(|r| r.name == "Data"),
         "expected Data in mmio_registers");
 }
+
+#[test]
+fn while_loop_emits_loop_begin_end_and_branch() {
+    use krir::KrirOp;
+    let src = r#"
+@ctx(thread)
+fn count(uint32 n) {
+    uint32 i = 0
+    while i < n {
+        i = i + 1
+    }
+}
+"#;
+    let module = compile_source(src).unwrap();
+    let f = module.functions.iter().find(|f| f.name == "count").unwrap();
+    assert!(f.ops.iter().any(|op| matches!(op, KrirOp::LoopBegin)),
+        "expected LoopBegin, got: {:?}", f.ops);
+    assert!(f.ops.iter().any(|op| matches!(op, KrirOp::LoopEnd)),
+        "expected LoopEnd, got: {:?}", f.ops);
+    assert!(f.ops.iter().any(|op| matches!(op, KrirOp::BranchIfZeroLoopBreak { .. })),
+        "expected BranchIfZeroLoopBreak, got: {:?}", f.ops);
+}
+
+#[test]
+fn for_loop_emits_loop_ops_and_compare() {
+    use krir::KrirOp;
+    let src = r#"
+@ctx(thread)
+fn sum(uint32 n) {
+    uint32 total = 0
+    for i in 0..n {
+        total = total + 1
+    }
+}
+"#;
+    let module = compile_source(src).unwrap();
+    let f = module.functions.iter().find(|f| f.name == "sum").unwrap();
+    assert!(f.ops.iter().any(|op| matches!(op, KrirOp::LoopBegin)),
+        "expected LoopBegin, got: {:?}", f.ops);
+    assert!(f.ops.iter().any(|op| matches!(op, KrirOp::LoopEnd)),
+        "expected LoopEnd, got: {:?}", f.ops);
+    assert!(f.ops.iter().any(|op| matches!(op, KrirOp::CompareIntoSlot { .. })),
+        "expected CompareIntoSlot in for loop, got: {:?}", f.ops);
+    assert!(f.ops.iter().any(|op| matches!(op, KrirOp::BranchIfNonZeroLoopBreak { .. })),
+        "expected BranchIfNonZeroLoopBreak, got: {:?}", f.ops);
+}

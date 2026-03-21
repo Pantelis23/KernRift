@@ -1,0 +1,7 @@
+@ctx(thread)
+fn count(uint32 n) {
+    uint32 i = 0
+    while i < n {
+        i = i + 1
+    }
+}

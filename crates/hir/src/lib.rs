@@ -3098,10 +3098,69 @@ fn lower_stmt(
                 continuation: String::new(),
             });
         }
-        Stmt::While { .. } | Stmt::For { .. }
-        | Stmt::Return(_) | Stmt::Break | Stmt::Continue => {
+        Stmt::While { cond, body } => {
+            ops.push(KrirOp::LoopBegin);
+            match lower_expr(cond, ops, slot_counter, device_regs, eff_used) {
+                Ok(cond_slot) => ops.push(KrirOp::BranchIfZeroLoopBreak { slot: cond_slot }),
+                Err(e) => { errors.push(e); return; }
+            }
+            for s in body {
+                lower_stmt(s, ops, eff_used, const_map, surface_profile, errors, slot_counter, device_regs, fn_counter, pending_fns);
+            }
+            ops.push(KrirOp::LoopEnd);
+        }
+        Stmt::For { var, start, end, inclusive, body } => {
+            // Initialize loop variable.
+            ops.push(KrirOp::StackCell { ty: KrirMmioScalarType::U32, cell: var.clone() });
+            match lower_expr(start, ops, slot_counter, device_regs, eff_used) {
+                Ok(start_slot) => ops.push(KrirOp::StackStore {
+                    ty: KrirMmioScalarType::U32,
+                    cell: var.clone(),
+                    value: KrirMmioValueExpr::Ident { name: start_slot },
+                }),
+                Err(e) => { errors.push(e); return; }
+            }
+            ops.push(KrirOp::LoopBegin);
+            // Compute end bound and break if var >= end (exclusive) or var > end (inclusive).
+            let end_slot = match lower_expr(end, ops, slot_counter, device_regs, eff_used) {
+                Ok(s) => s,
+                Err(e) => { errors.push(e); return; }
+            };
+            let cmp_slot = fresh_slot(slot_counter);
+            ops.push(KrirOp::StackCell { ty: KrirMmioScalarType::U8, cell: cmp_slot.clone() });
+            let cmp_op = if *inclusive { KrirCmpOp::Gt } else { KrirCmpOp::Ge };
+            ops.push(KrirOp::CompareIntoSlot {
+                cmp_op,
+                lhs: var.clone(),
+                rhs: end_slot,
+                out: cmp_slot.clone(),
+            });
+            ops.push(KrirOp::BranchIfNonZeroLoopBreak { slot: cmp_slot });
+            // Loop body.
+            for s in body {
+                lower_stmt(s, ops, eff_used, const_map, surface_profile, errors, slot_counter, device_regs, fn_counter, pending_fns);
+            }
+            // Increment: var += 1.
+            let one_slot = fresh_slot(slot_counter);
+            ops.push(KrirOp::StackCell { ty: KrirMmioScalarType::U32, cell: one_slot.clone() });
+            ops.push(KrirOp::StackStore {
+                ty: KrirMmioScalarType::U32,
+                cell: one_slot.clone(),
+                value: KrirMmioValueExpr::IntLiteral { value: "1".to_string() },
+            });
+            ops.push(KrirOp::SlotArith {
+                ty: KrirMmioScalarType::U32,
+                dst: var.clone(),
+                src: one_slot,
+                arith_op: KrirArithOp::Add,
+            });
+            ops.push(KrirOp::LoopEnd);
+        }
+        Stmt::Break => ops.push(KrirOp::LoopBreak),
+        Stmt::Continue => ops.push(KrirOp::LoopContinue),
+        Stmt::Return(_) => {
             errors.push(format!(
-                "surface syntax statement not yet lowered (Task 10-12): {:?}",
+                "surface syntax statement not yet lowered (Task 13): {:?}",
                 stmt
             ));
         }

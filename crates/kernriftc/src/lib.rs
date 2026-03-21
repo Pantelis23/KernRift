@@ -937,6 +937,12 @@ fn telemetry_op_discriminant(op: &KrirOp) -> String {
         KrirOp::PercpuRead { .. } => "percpu_read",
         KrirOp::PercpuWrite { .. } => "percpu_write",
         KrirOp::CompareIntoSlot { .. } => "compare_into_slot",
+        KrirOp::LoopBegin => "loop_begin",
+        KrirOp::LoopEnd => "loop_end",
+        KrirOp::LoopBreak => "loop_break",
+        KrirOp::LoopContinue => "loop_continue",
+        KrirOp::BranchIfZeroLoopBreak { .. } => "branch_if_zero_loop_break",
+        KrirOp::BranchIfNonZeroLoopBreak { .. } => "branch_if_nonzero_loop_break",
     }
     .to_string()
 }
