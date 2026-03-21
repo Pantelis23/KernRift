@@ -7,7 +7,12 @@ fn main() {
         std::process::exit(2);
     }
     let file = &args[1];
-    let err = std::process::Command::new(file).args(&args[2..]).exec();
+    let path = if file.contains('/') {
+        file.clone()
+    } else {
+        format!("./{}", file)
+    };
+    let err = std::process::Command::new(&path).args(&args[2..]).exec();
     eprintln!("kernrift: failed to execute '{}': {}", file, err);
     std::process::exit(1);
 }
