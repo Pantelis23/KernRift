@@ -23,10 +23,16 @@ bash <(curl -sSf https://raw.githubusercontent.com/Pantelis23/KernRift/main/scri
 bash <(curl -sSf https://raw.githubusercontent.com/Pantelis23/KernRift/main/scripts/install-macos.sh)
 ```
 
-**Windows** (PowerShell, run as your user — no admin needed)
+**Windows** <a name="windows"></a>
+
+Download-and-execute in a single PowerShell block (antivirus can scan the file before it runs):
+
 ```powershell
-powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/Pantelis23/KernRift/main/scripts/install-windows.ps1 | iex"
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Pantelis23/KernRift/main/scripts/install-windows.ps1" -OutFile "$env:TEMP\install-kernrift.ps1"
+powershell -ExecutionPolicy Bypass -File "$env:TEMP\install-kernrift.ps1"
 ```
+
+> **Why two steps?** Piping directly from the web (`irm | iex`) bypasses antivirus scanning. Downloading to a file first lets your AV inspect it before execution.
 
 ### From source (manual)
 
