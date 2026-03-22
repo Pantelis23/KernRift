@@ -764,7 +764,8 @@ fn fix_canonical_stdout_rewrites_accepted_aliases_under_experimental_surface_exa
 fn fix_canonical_stdout_from_stdin_noops_cleanly_for_canonical_source() {
     let root = repo_root();
     let input = fs::read_to_string(root.join("tests").join("must_pass").join("basic.kr"))
-        .expect("read canonical fixture");
+        .expect("read canonical fixture")
+        .replace("\r\n", "\n");
 
     let mut cmd: Command = cargo_bin_cmd!("kernriftc");
     cmd.current_dir(&root)
@@ -788,7 +789,9 @@ fn fix_canonical_stdout_noops_cleanly_for_canonical_source() {
     let root = repo_root();
     let fixture = root.join("tests").join("must_pass").join("basic.kr");
     let temp_fixture = copy_fixture_to_temp("fix-canonical-stdout-noop", &fixture);
-    let original = fs::read_to_string(&temp_fixture).expect("read original fixture");
+    let original = fs::read_to_string(&temp_fixture)
+        .expect("read original fixture")
+        .replace("\r\n", "\n");
 
     let mut cmd: Command = cargo_bin_cmd!("kernriftc");
     cmd.current_dir(&root)
@@ -805,7 +808,9 @@ fn fix_canonical_stdout_noops_cleanly_for_canonical_source() {
     );
     assert_eq!(stdout, original);
     assert_eq!(
-        fs::read_to_string(&temp_fixture).expect("read unchanged fixture"),
+        fs::read_to_string(&temp_fixture)
+            .expect("read unchanged fixture")
+            .replace("\r\n", "\n"),
         original
     );
 }

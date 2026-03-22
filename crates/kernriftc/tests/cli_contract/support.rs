@@ -78,11 +78,13 @@ pub(super) fn write_temp_source_fixture(label: &str, src: &str) -> PathBuf {
 }
 
 pub(super) fn living_compiler_fixture(name: &str) -> PathBuf {
-    repo_root().join("tests").join("living_compiler").join(name)
+    normalize_to_forward_slashes(
+        repo_root().join("tests").join("living_compiler").join(name),
+    )
 }
 
 pub(super) fn must_pass_fixture(name: &str) -> PathBuf {
-    repo_root().join("tests").join("must_pass").join(name)
+    normalize_to_forward_slashes(repo_root().join("tests").join("must_pass").join(name))
 }
 
 pub(super) fn fixture_text(path: &Path) -> String {

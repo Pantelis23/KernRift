@@ -248,6 +248,7 @@ pub fn canonical_fix_file_with_surface(
     surface_profile: SurfaceProfile,
 ) -> Result<CanonicalFixResult, Vec<String>> {
     let src = std::fs::read_to_string(path)
+        .map(|s| s.replace("\r\n", "\n"))
         .map_err(|e| vec![format!("failed to read '{}': {}", path.display(), e)])?;
     let result = canonical_fix_source_text_with_surface(&src, surface_profile)?;
 
