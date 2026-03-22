@@ -1298,6 +1298,18 @@ pub fn lower_to_krir_with_surface(
     ast: &ModuleAst,
     surface_profile: SurfaceProfile,
 ) -> Result<KrirModule, Vec<String>> {
+    // If the source file declares a #lang directive, it overrides the caller-supplied profile.
+    let surface_profile = match ast.lang_profile.as_deref() {
+        Some("stable") => SurfaceProfile::Stable,
+        Some("experimental") => SurfaceProfile::Experimental,
+        Some(other) => {
+            return Err(vec![format!(
+                "unknown profile '{}' in #lang directive; expected 'stable' or 'experimental'",
+                other
+            )]);
+        }
+        None => surface_profile,
+    };
     let mut errors = Vec::new();
     let mut functions = Vec::new();
     let mut names = BTreeSet::new();

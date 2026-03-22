@@ -618,6 +618,9 @@ pub struct ModuleAst {
     /// Per-cpu variable declarations: `percpu NAME: T;`
     pub percpu_vars: Vec<PercpuDecl>,
     pub items: Vec<FnAst>,
+    /// Optional per-file profile declaration: `#lang stable` or `#lang experimental`.
+    /// `None` means no directive present; the caller's default profile applies.
+    pub lang_profile: Option<String>,
 }
 
 pub fn parse_module(src: &str) -> Result<ModuleAst, Vec<String>> {
@@ -814,6 +817,8 @@ pub enum TokenKind {
     ShrEq,
     // Attributes
     AtSign, // `@` before attribute names
+    // Directive prefix
+    Hash, // `#` for #lang directives
     // End of file
     Eof,
 }
@@ -1212,6 +1217,7 @@ impl<'a> Lexer<'a> {
                     },
                 }
             }
+            Some('#') => TokenKind::Hash,
             Some(c) => return Err(format!("unexpected character '{}'", c)),
         };
         Ok(Token { kind, source: note })
@@ -1379,6 +1385,37 @@ impl TokParser {
         let mut module = ModuleAst::default();
         let mut errors: Vec<String> = Vec::new();
         let mut pending_attrs: Vec<RawAttr> = Vec::new();
+
+        // Check for optional `#lang PROFILE` directive at the very start of the file.
+        if self.at(&TokenKind::Hash) {
+            let hash_src = self.peek().source.clone();
+            self.advance(); // consume `#`
+            match self.peek().kind.clone() {
+                TokenKind::Ident(ref kw) if kw == "lang" => {
+                    self.advance(); // consume `lang`
+                    match self.peek().kind.clone() {
+                        TokenKind::Ident(profile_word) => {
+                            self.advance(); // consume the profile word
+                            module.lang_profile = Some(profile_word);
+                        }
+                        _ => {
+                            errors.push(format_source_diagnostic(
+                                &hash_src,
+                                "#lang directive requires a profile name ('stable' or 'experimental')",
+                                None,
+                            ));
+                        }
+                    }
+                }
+                _ => {
+                    errors.push(format_source_diagnostic(
+                        &hash_src,
+                        "unexpected '#' — did you mean '#lang stable' or '#lang experimental'?",
+                        None,
+                    ));
+                }
+            }
+        }
 
         while !self.at(&TokenKind::Eof) {
             // Skip stray semicolons (backward compat)

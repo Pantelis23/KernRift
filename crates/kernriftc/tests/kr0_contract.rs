@@ -1166,3 +1166,32 @@ fn entry() {
     assert_eq!(bytes[4], 1, "version must be 1");
     assert_eq!(bytes[5], 0x01, "arch must be x86-64 (0x01)");
 }
+
+#[test]
+fn lang_directive_stable_is_parsed() {
+    let src = "#lang stable\n@ctx(thread)\nfn entry() {\n}\n";
+    let result = kernriftc::compile_source(src);
+    assert!(result.is_ok(), "#lang stable should compile: {:?}", result);
+}
+
+#[test]
+fn lang_directive_experimental_is_parsed() {
+    let src = "#lang experimental\n@ctx(thread)\nfn entry() {\n}\n";
+    let result = kernriftc::compile_source(src);
+    assert!(result.is_ok(), "#lang experimental should compile: {:?}", result);
+}
+
+#[test]
+fn lang_directive_unknown_is_error() {
+    let src = "#lang nonsense\n@ctx(thread)\nfn entry() {\n}\n";
+    let result = kernriftc::compile_source(src);
+    assert!(result.is_err(), "#lang unknown should fail");
+}
+
+#[test]
+fn lang_directive_overrides_default_stable_profile() {
+    // #lang experimental must not break stable code
+    let src = "#lang experimental\n@ctx(thread)\nfn entry() {\n}\n";
+    let result = kernriftc::compile_source(src);
+    assert!(result.is_ok(), "#lang experimental must not break stable code: {:?}", result);
+}
