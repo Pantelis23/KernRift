@@ -68,3 +68,4 @@ include!("cli_contract/migrate_preview_surface.rs");
 include!("cli_contract/frontend_contracts.rs");
 include!("cli_contract/policy_verify.rs");
 include!("cli_contract/default_compile.rs");
+include!("cli_contract/canonical_migrate.rs");

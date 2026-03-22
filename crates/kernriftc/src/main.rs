@@ -99,6 +99,121 @@ struct MigratePreviewArgs {
 }
 
 #[derive(Debug)]
+struct MigrateArgs {
+    input_path: String,
+    surface: SurfaceProfile,
+    dry_run: bool,
+}
+
+fn parse_migrate_args(args: &[String]) -> Result<MigrateArgs, String> {
+    let mut surface = SurfaceProfile::Stable;
+    let mut dry_run = false;
+    let mut input_path = None::<String>;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--surface" => {
+                i += 1;
+                let v = args
+                    .get(i)
+                    .ok_or("invalid migrate: --surface requires a value")?;
+                surface = SurfaceProfile::parse(v)
+                    .map_err(|e| format!("invalid migrate: {e}"))?;
+            }
+            "--dry-run" => dry_run = true,
+            arg if arg.starts_with("--") => {
+                return Err(format!("invalid migrate: unexpected flag '{arg}'"));
+            }
+            path => {
+                if input_path.is_some() {
+                    return Err(format!("invalid migrate: unexpected argument '{path}'"));
+                }
+                input_path = Some(path.to_string());
+            }
+        }
+        i += 1;
+    }
+
+    let input_path = input_path.ok_or("invalid migrate: missing input file")?;
+    Ok(MigrateArgs {
+        input_path,
+        surface,
+        dry_run,
+    })
+}
+
+fn run_migrate(args: &MigrateArgs) -> ExitCode {
+    let path = Path::new(&args.input_path);
+
+    if args.dry_run {
+        let src = match fs::read_to_string(path)
+            .map(|s| s.replace("\r\n", "\n"))
+            .map_err(|e| format!("failed to read '{}': {e}", args.input_path))
+        {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("{e}");
+                return ExitCode::from(EXIT_INVALID_INPUT);
+            }
+        };
+        let result = match kernriftc::canonical_fix_source_text_with_surface(&src, args.surface) {
+            Ok(r) => r,
+            Err(errs) => {
+                for e in errs {
+                    eprintln!("{e}");
+                }
+                return ExitCode::from(EXIT_INVALID_INPUT);
+            }
+        };
+        if result.rewrites.is_empty() {
+            println!("No migration needed for {} (dry-run).", args.input_path);
+        } else {
+            println!(
+                "Would migrate {} (dry-run, not written):",
+                args.input_path
+            );
+            for rw in &result.rewrites {
+                println!(
+                    "  fn {}: {} \u{2192} {}  [{}]",
+                    rw.function_name,
+                    rw.surface_form,
+                    rw.canonical_replacement,
+                    rw.rewrite_intent
+                );
+            }
+        }
+    } else {
+        let result = match kernriftc::canonical_fix_file_with_surface(path, args.surface) {
+            Ok(r) => r,
+            Err(errs) => {
+                for e in errs {
+                    eprintln!("{e}");
+                }
+                return ExitCode::from(EXIT_INVALID_INPUT);
+            }
+        };
+        if result.rewrites.is_empty() {
+            println!("No migration needed for {}.", args.input_path);
+        } else {
+            println!("Migrating {}:", args.input_path);
+            for rw in &result.rewrites {
+                println!(
+                    "  fn {}: {} \u{2192} {}  [{}]",
+                    rw.function_name,
+                    rw.surface_form,
+                    rw.canonical_replacement,
+                    rw.rewrite_intent
+                );
+            }
+            println!("Wrote {} rewrite(s).", result.rewrites.len());
+        }
+    }
+
+    ExitCode::SUCCESS
+}
+
+#[derive(Debug)]
 struct FixArgs {
     surface: SurfaceProfile,
     canonical: bool,
@@ -302,6 +417,13 @@ fn main() -> ExitCode {
             Err(err) => {
                 eprintln!("{}", err);
                 print_usage();
+                ExitCode::from(EXIT_INVALID_INPUT)
+            }
+        },
+        "migrate" => match parse_migrate_args(&args[2..]) {
+            Ok(parsed) => run_migrate(&parsed),
+            Err(err) => {
+                eprintln!("{}", err);
                 ExitCode::from(EXIT_INVALID_INPUT)
             }
         },
@@ -1784,6 +1906,9 @@ fn print_usage() {
     eprintln!("  kernriftc proposals --promote <feature-id> --dry-run");
     eprintln!("  kernriftc proposals --promote <feature-id> --diff");
     eprintln!("  kernriftc proposals --promote <feature-id> --dry-run --diff");
+    eprintln!("  kernriftc migrate <file.kr>");
+    eprintln!("  kernriftc migrate <file.kr> --dry-run");
+    eprintln!("  kernriftc migrate <file.kr> --surface experimental");
     eprintln!("  kernriftc migrate-preview <file.kr>");
     eprintln!("  kernriftc migrate-preview --surface stable <file.kr>");
     eprintln!("  kernriftc migrate-preview --surface experimental <file.kr>");
