@@ -518,6 +518,7 @@ fn emit_native_executable(_: &krir::ExecutableKrirModule) -> Result<Vec<u8>, Str
     )
 }
 
+#[cfg(target_os = "linux")]
 fn link_x86_64_linux_executable(object_bytes: &[u8]) -> Result<Vec<u8>, String> {
     let linker = find_host_tool(&["ld.lld", "ld"])
         .ok_or_else(|| "final executable emit requires a host linker (ld.lld or ld)".to_string())?;
@@ -680,6 +681,7 @@ fn emit_x86_64_static_library(
     Ok(bytes)
 }
 
+#[cfg(target_os = "linux")]
 fn hosted_startup_stub_asm() -> &'static str {
     // KernRift programs write output to a "UART" mapped at KERN_UART_BASE (0x10000000).
     // The startup stub:
