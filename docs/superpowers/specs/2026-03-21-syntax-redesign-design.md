@@ -470,7 +470,7 @@ fn on_sched_in() {
 print("Hello, World!\n")
 ```
 
-The `elfexe` startup stub maps the UART page and flushes the buffer to stdout on exit.
+The `krboexe` startup stub maps the UART page and flushes the buffer to stdout on exit.
 
 **String local variables:** A `string` local variable may only hold a string literal in V1. Its `.len` is a compile-time constant known to the compiler:
 ```c

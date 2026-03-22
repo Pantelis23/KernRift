@@ -85,7 +85,7 @@ pub(crate) fn parse_backend_emit_args(
         && matches!(
             kind,
             BackendArtifactKind::Asm
-                | BackendArtifactKind::ElfExecutable
+                | BackendArtifactKind::KrboExecutable
                 | BackendArtifactKind::StaticLib
         )
     {

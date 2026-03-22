@@ -1155,10 +1155,10 @@ fn entry() {
     let bytes = kernriftc::emit_backend_artifact_file_with_surface_and_target(
         &tmp_path,
         kernriftc::SurfaceProfile::Stable,
-        kernriftc::BackendArtifactKind::ElfExecutable,
+        kernriftc::BackendArtifactKind::KrboExecutable,
         kernriftc::CompilerBackendTargetId::X86_64Sysv,
     )
-    .expect("emit ElfExecutable artifact");
+    .expect("emit KrboExecutable artifact");
 
     fs::remove_file(&tmp_path).ok();
 

@@ -52,7 +52,7 @@ pub struct CanonicalFixSourceResult {
 pub enum BackendArtifactKind {
     Krbo,
     ElfObject,
-    ElfExecutable,
+    KrboExecutable,
     Asm,
     StaticLib,
 }
@@ -62,7 +62,7 @@ impl BackendArtifactKind {
         match self {
             Self::Krbo => "krbo",
             Self::ElfObject => "elfobj",
-            Self::ElfExecutable => "elfexe",
+            Self::KrboExecutable => "krboexe",
             Self::Asm => "asm",
             Self::StaticLib => "staticlib",
         }
@@ -72,11 +72,11 @@ impl BackendArtifactKind {
         match value {
             "krbo" => Ok(Self::Krbo),
             "elfobj" => Ok(Self::ElfObject),
-            "elfexe" => Ok(Self::ElfExecutable),
+            "krboexe" => Ok(Self::KrboExecutable),
             "asm" => Ok(Self::Asm),
             "staticlib" => Ok(Self::StaticLib),
             _ => Err(format!(
-                "unsupported emit target '{}'; expected 'krbo', 'elfobj', 'elfexe', 'asm', or 'staticlib'",
+                "unsupported emit target '{}'; expected 'krbo', 'elfobj', 'krboexe', 'asm', or 'staticlib'",
                 value
             )),
         }
@@ -131,7 +131,7 @@ pub fn emit_backend_artifact_file_with_surface_and_target(
                 .map_err(|err| vec![err])?;
             Ok(emit_x86_64_object_bytes(&object))
         }
-        BackendArtifactKind::ElfExecutable => {
+        BackendArtifactKind::KrboExecutable => {
             emit_x86_64_executable_bytes(&executable, &target).map_err(|err| vec![err])
         }
         BackendArtifactKind::Asm => {

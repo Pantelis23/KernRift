@@ -10,8 +10,8 @@ fn usage_includes_artifact_json_consumer_commands() {
     assert!(stderr.contains("kernriftc inspect-report --report <verify-report.json> --format json"));
     assert!(stderr.contains("kernriftc inspect-artifact <artifact-path> --format json"));
     assert!(stderr.contains("kernriftc verify-artifact-meta --format json <artifact> <meta.json>"));
-    assert!(stderr.contains("kernriftc --emit=elfexe -o <output.elf> <file.kr>"));
-    assert!(stderr.contains("kernriftc --surface stable --emit=elfexe -o <output.elf> <file.kr>"));
+    assert!(stderr.contains("kernriftc --emit=krboexe -o <output.krbo> <file.kr>"));
+    assert!(stderr.contains("kernriftc --surface stable --emit=krboexe -o <output.krbo> <file.kr>"));
     assert!(stderr.contains(
         "kernriftc policy --format json --policy <policy.toml> --contracts <contracts.json>"
     ));
@@ -125,17 +125,17 @@ fn emit_elfobj_writes_valid_relocatable_object() {
 }
 
 #[test]
-fn emit_elfexe_writes_valid_executable() {
+fn emit_krboexe_writes_valid_executable() {
     let root = repo_root();
     let fixture = root
         .join("examples")
         .join("uart_console_executable.kr");
-    let output_path = unique_temp_output_path("emit-elfexe", "elf");
+    let output_path = unique_temp_output_path("emit-krboexe", "elf");
     fs::remove_file(&output_path).ok();
 
     let mut cmd: Command = cargo_bin_cmd!("kernriftc");
     cmd.current_dir(&root)
-        .arg("--emit=elfexe")
+        .arg("--emit=krboexe")
         .arg("-o")
         .arg(output_path.as_os_str())
         .arg(fixture.as_os_str());
@@ -352,18 +352,18 @@ fn emit_elfobj_supports_uart_console_probe_proof_program_and_metadata_verifies()
 }
 
 #[test]
-fn emit_elfexe_supports_uart_console_executable_proof_program_and_inspection_verifies() {
+fn emit_krboexe_supports_uart_console_executable_proof_program_and_inspection_verifies() {
     let root = repo_root();
     let fixture = root
         .join("examples")
         .join("uart_console_executable.kr");
-    let artifact_path = unique_temp_output_path("emit-elfexe-uart-console", "krbo");
+    let artifact_path = unique_temp_output_path("emit-krboexe-uart-console", "krbo");
     fs::remove_file(&artifact_path).ok();
 
     let mut emit_cmd: Command = cargo_bin_cmd!("kernriftc");
     emit_cmd
         .current_dir(&root)
-        .arg("--emit=elfexe")
+        .arg("--emit=krboexe")
         .arg("-o")
         .arg(artifact_path.as_os_str())
         .arg(fixture.as_os_str());
@@ -379,16 +379,16 @@ fn emit_elfexe_supports_uart_console_executable_proof_program_and_inspection_ver
 }
 
 #[test]
-fn emit_elfexe_supports_uart_console_value_flow_proof_program_and_inspection_verifies() {
+fn emit_krboexe_supports_uart_console_value_flow_proof_program_and_inspection_verifies() {
     let root = repo_root();
     let fixture = root.join("examples").join("uart_console_value_flow.kr");
-    let artifact_path = unique_temp_output_path("emit-elfexe-uart-console-value-flow", "krbo");
+    let artifact_path = unique_temp_output_path("emit-krboexe-uart-console-value-flow", "krbo");
     fs::remove_file(&artifact_path).ok();
 
     let mut emit_cmd: Command = cargo_bin_cmd!("kernriftc");
     emit_cmd
         .current_dir(&root)
-        .arg("--emit=elfexe")
+        .arg("--emit=krboexe")
         .arg("-o")
         .arg(artifact_path.as_os_str())
         .arg(fixture.as_os_str());
@@ -404,19 +404,19 @@ fn emit_elfexe_supports_uart_console_value_flow_proof_program_and_inspection_ver
 }
 
 #[test]
-fn emit_elfexe_supports_uart_console_explicit_slot_proof_program_and_inspection_verifies() {
+fn emit_krboexe_supports_uart_console_explicit_slot_proof_program_and_inspection_verifies() {
     let root = repo_root();
     let fixture = root
         .join("examples")
         .join("uart_console_explicit_slot.kr");
     let artifact_path =
-        unique_temp_output_path("emit-elfexe-uart-console-explicit-slot", "krbo");
+        unique_temp_output_path("emit-krboexe-uart-console-explicit-slot", "krbo");
     fs::remove_file(&artifact_path).ok();
 
     let mut emit_cmd: Command = cargo_bin_cmd!("kernriftc");
     emit_cmd
         .current_dir(&root)
-        .arg("--emit=elfexe")
+        .arg("--emit=krboexe")
         .arg("-o")
         .arg(artifact_path.as_os_str())
         .arg(fixture.as_os_str());
@@ -432,16 +432,16 @@ fn emit_elfexe_supports_uart_console_explicit_slot_proof_program_and_inspection_
 }
 
 #[test]
-fn emit_elfexe_supports_uart_console_branch_zero_proof_program_and_inspection_verifies() {
+fn emit_krboexe_supports_uart_console_branch_zero_proof_program_and_inspection_verifies() {
     let root = repo_root();
     let fixture = root.join("examples").join("uart_console_branch_zero.kr");
-    let artifact_path = unique_temp_output_path("emit-elfexe-uart-console-branch-zero", "krbo");
+    let artifact_path = unique_temp_output_path("emit-krboexe-uart-console-branch-zero", "krbo");
     fs::remove_file(&artifact_path).ok();
 
     let mut emit_cmd: Command = cargo_bin_cmd!("kernriftc");
     emit_cmd
         .current_dir(&root)
-        .arg("--emit=elfexe")
+        .arg("--emit=krboexe")
         .arg("-o")
         .arg(artifact_path.as_os_str())
         .arg(fixture.as_os_str());
@@ -457,16 +457,16 @@ fn emit_elfexe_supports_uart_console_branch_zero_proof_program_and_inspection_ve
 }
 
 #[test]
-fn emit_elfexe_supports_uart_console_branch_eq_proof_program_and_inspection_verifies() {
+fn emit_krboexe_supports_uart_console_branch_eq_proof_program_and_inspection_verifies() {
     let root = repo_root();
     let fixture = root.join("examples").join("uart_console_branch_eq.kr");
-    let artifact_path = unique_temp_output_path("emit-elfexe-uart-console-branch-eq", "krbo");
+    let artifact_path = unique_temp_output_path("emit-krboexe-uart-console-branch-eq", "krbo");
     fs::remove_file(&artifact_path).ok();
 
     let mut emit_cmd: Command = cargo_bin_cmd!("kernriftc");
     emit_cmd
         .current_dir(&root)
-        .arg("--emit=elfexe")
+        .arg("--emit=krboexe")
         .arg("-o")
         .arg(artifact_path.as_os_str())
         .arg(fixture.as_os_str());
@@ -482,16 +482,16 @@ fn emit_elfexe_supports_uart_console_branch_eq_proof_program_and_inspection_veri
 }
 
 #[test]
-fn emit_elfexe_supports_uart_console_branch_mask_proof_program_and_inspection_verifies() {
+fn emit_krboexe_supports_uart_console_branch_mask_proof_program_and_inspection_verifies() {
     let root = repo_root();
     let fixture = root.join("examples").join("uart_console_branch_mask.kr");
-    let artifact_path = unique_temp_output_path("emit-elfexe-uart-console-branch-mask", "krbo");
+    let artifact_path = unique_temp_output_path("emit-krboexe-uart-console-branch-mask", "krbo");
     fs::remove_file(&artifact_path).ok();
 
     let mut emit_cmd: Command = cargo_bin_cmd!("kernriftc");
     emit_cmd
         .current_dir(&root)
-        .arg("--emit=elfexe")
+        .arg("--emit=krboexe")
         .arg("-o")
         .arg(artifact_path.as_os_str())
         .arg(fixture.as_os_str());
@@ -507,15 +507,15 @@ fn emit_elfexe_supports_uart_console_branch_mask_proof_program_and_inspection_ve
 }
 
 #[test]
-fn emit_elfexe_supports_uart_console_call_return_proof_program_and_inspection_verifies() {
+fn emit_krboexe_supports_uart_console_call_return_proof_program_and_inspection_verifies() {
     let root = repo_root();
     let fixture = root.join("examples").join("uart_console_call_return.kr");
-    let artifact_path = unique_temp_output_path("emit-elfexe-uart-console-call-return", "krbo");
+    let artifact_path = unique_temp_output_path("emit-krboexe-uart-console-call-return", "krbo");
     fs::remove_file(&artifact_path).ok();
 
     let mut cmd: Command = cargo_bin_cmd!("kernriftc");
     cmd.current_dir(&root)
-        .arg("--emit=elfexe")
+        .arg("--emit=krboexe")
         .arg("-o")
         .arg(artifact_path.as_os_str())
         .arg(fixture.as_os_str());
@@ -531,15 +531,15 @@ fn emit_elfexe_supports_uart_console_call_return_proof_program_and_inspection_ve
 }
 
 #[test]
-fn emit_elfexe_supports_uart_console_stack_cell_proof_program_and_inspection_verifies() {
+fn emit_krboexe_supports_uart_console_stack_cell_proof_program_and_inspection_verifies() {
     let root = repo_root();
     let fixture = root.join("examples").join("uart_console_stack_cell.kr");
-    let artifact_path = unique_temp_output_path("emit-elfexe-uart-console-stack-cell", "krbo");
+    let artifact_path = unique_temp_output_path("emit-krboexe-uart-console-stack-cell", "krbo");
     fs::remove_file(&artifact_path).ok();
 
     let mut cmd: Command = cargo_bin_cmd!("kernriftc");
     cmd.current_dir(&root)
-        .arg("--emit=elfexe")
+        .arg("--emit=krboexe")
         .arg("-o")
         .arg(artifact_path.as_os_str())
         .arg(fixture.as_os_str());
@@ -590,15 +590,15 @@ fn inspect_artifact_json_reports_uart_console_probe_elf_object_shape() {
 }
 
 #[test]
-fn emit_elfexe_rejects_mismatched_mmio_value_flow_width_in_current_subset() {
+fn emit_krboexe_rejects_mismatched_mmio_value_flow_width_in_current_subset() {
     let root = repo_root();
     let fixture = root.join("tests").join("must_pass").join("mmio_typed.kr");
-    let output_path = unique_temp_output_path("emit-elfexe-mmio-value-width-mismatch", "elf");
+    let output_path = unique_temp_output_path("emit-krboexe-mmio-value-width-mismatch", "elf");
     fs::remove_file(&output_path).ok();
 
     let mut cmd: Command = cargo_bin_cmd!("kernriftc");
     cmd.current_dir(&root)
-        .arg("--emit=elfexe")
+        .arg("--emit=krboexe")
         .arg("-o")
         .arg(output_path.as_os_str())
         .arg(fixture.as_os_str());
@@ -615,10 +615,10 @@ fn emit_elfexe_rejects_mismatched_mmio_value_flow_width_in_current_subset() {
 }
 
 #[test]
-fn emit_elfexe_rejects_multiple_explicit_slot_names_in_one_function() {
+fn emit_krboexe_rejects_multiple_explicit_slot_names_in_one_function() {
     let root = repo_root();
     let fixture = write_temp_source_fixture(
-        "emit-elfexe-explicit-slot-conflict",
+        "emit-krboexe-explicit-slot-conflict",
         r#"
 mmio UART0 = 0x1000;
 mmio_reg UART0.SR = 0x00 : u32 ro;
@@ -632,12 +632,12 @@ fn entry() {
 }
 "#,
     );
-    let output_path = unique_temp_output_path("emit-elfexe-explicit-slot-conflict", "elf");
+    let output_path = unique_temp_output_path("emit-krboexe-explicit-slot-conflict", "elf");
     fs::remove_file(&output_path).ok();
 
     let mut cmd: Command = cargo_bin_cmd!("kernriftc");
     cmd.current_dir(&root)
-        .arg("--emit=elfexe")
+        .arg("--emit=krboexe")
         .arg("-o")
         .arg(output_path.as_os_str())
         .arg(fixture.as_os_str());
@@ -656,10 +656,10 @@ fn entry() {
 }
 
 #[test]
-fn emit_elfexe_rejects_branch_if_zero_slot_mismatch_in_current_subset() {
+fn emit_krboexe_rejects_branch_if_zero_slot_mismatch_in_current_subset() {
     let root = repo_root();
     let fixture = write_temp_source_fixture(
-        "emit-elfexe-branch-if-zero-slot-mismatch",
+        "emit-krboexe-branch-if-zero-slot-mismatch",
         r#"
 mmio UART0 = 0x1000;
 mmio_reg UART0.SR = 0x00 : u32 ro;
@@ -682,12 +682,12 @@ fn entry() {
 }
 "#,
     );
-    let output_path = unique_temp_output_path("emit-elfexe-branch-if-zero-slot-mismatch", "elf");
+    let output_path = unique_temp_output_path("emit-krboexe-branch-if-zero-slot-mismatch", "elf");
     fs::remove_file(&output_path).ok();
 
     let mut cmd: Command = cargo_bin_cmd!("kernriftc");
     cmd.current_dir(&root)
-        .arg("--emit=elfexe")
+        .arg("--emit=krboexe")
         .arg("-o")
         .arg(output_path.as_os_str())
         .arg(fixture.as_os_str());
@@ -705,10 +705,10 @@ fn entry() {
 }
 
 #[test]
-fn emit_elfexe_rejects_branch_if_eq_literal_width_mismatch_in_current_subset() {
+fn emit_krboexe_rejects_branch_if_eq_literal_width_mismatch_in_current_subset() {
     let root = repo_root();
     let fixture = write_temp_source_fixture(
-        "emit-elfexe-branch-if-eq-literal-width-mismatch",
+        "emit-krboexe-branch-if-eq-literal-width-mismatch",
         r#"
 mmio UART0 = 0x1000;
 mmio_reg UART0.SR = 0x00 : u32 ro;
@@ -732,12 +732,12 @@ fn entry() {
 "#,
     );
     let output_path =
-        unique_temp_output_path("emit-elfexe-branch-if-eq-literal-width-mismatch", "elf");
+        unique_temp_output_path("emit-krboexe-branch-if-eq-literal-width-mismatch", "elf");
     fs::remove_file(&output_path).ok();
 
     let mut cmd: Command = cargo_bin_cmd!("kernriftc");
     cmd.current_dir(&root)
-        .arg("--emit=elfexe")
+        .arg("--emit=krboexe")
         .arg("-o")
         .arg(output_path.as_os_str())
         .arg(fixture.as_os_str());
@@ -755,10 +755,10 @@ fn entry() {
 }
 
 #[test]
-fn emit_elfexe_rejects_branch_if_mask_nonzero_literal_width_mismatch_in_current_subset() {
+fn emit_krboexe_rejects_branch_if_mask_nonzero_literal_width_mismatch_in_current_subset() {
     let root = repo_root();
     let fixture = write_temp_source_fixture(
-        "emit-elfexe-branch-if-mask-nonzero-literal-width-mismatch",
+        "emit-krboexe-branch-if-mask-nonzero-literal-width-mismatch",
         r#"
 mmio UART0 = 0x1000;
 mmio_reg UART0.SR = 0x00 : u32 ro;
@@ -782,14 +782,14 @@ fn entry() {
 "#,
     );
     let output_path = unique_temp_output_path(
-        "emit-elfexe-branch-if-mask-nonzero-literal-width-mismatch",
+        "emit-krboexe-branch-if-mask-nonzero-literal-width-mismatch",
         "elf",
     );
     fs::remove_file(&output_path).ok();
 
     let mut cmd: Command = cargo_bin_cmd!("kernriftc");
     cmd.current_dir(&root)
-        .arg("--emit=elfexe")
+        .arg("--emit=krboexe")
         .arg("-o")
         .arg(output_path.as_os_str())
         .arg(fixture.as_os_str());
@@ -807,10 +807,10 @@ fn entry() {
 }
 
 #[test]
-fn emit_elfexe_accepts_multiple_stack_cell_names_in_one_function() {
+fn emit_krboexe_accepts_multiple_stack_cell_names_in_one_function() {
     let root = repo_root();
     let fixture = write_temp_source_fixture(
-        "emit-elfexe-stack-cell-multi",
+        "emit-krboexe-stack-cell-multi",
         r#"
 mmio UART0 = 0x1000;
 mmio_reg UART0.SR = 0x00 : u32 ro;
@@ -826,12 +826,12 @@ fn entry() {
 "#,
     );
     // PR-2: multiple named stack cells are now accepted.
-    let output_path = unique_temp_output_path("emit-elfexe-stack-cell-multi", "elf");
+    let output_path = unique_temp_output_path("emit-krboexe-stack-cell-multi", "elf");
     fs::remove_file(&output_path).ok();
 
     let mut cmd: Command = cargo_bin_cmd!("kernriftc");
     cmd.current_dir(&root)
-        .arg("--emit=elfexe")
+        .arg("--emit=krboexe")
         .arg("-o")
         .arg(output_path.as_os_str())
         .arg(fixture.as_os_str());
@@ -843,10 +843,10 @@ fn entry() {
 }
 
 #[test]
-fn emit_elfexe_rejects_call_capture_from_unit_return_function_in_current_subset() {
+fn emit_krboexe_rejects_call_capture_from_unit_return_function_in_current_subset() {
     let root = repo_root();
     let fixture = write_temp_source_fixture(
-        "emit-elfexe-call-capture-unit-return",
+        "emit-krboexe-call-capture-unit-return",
         r#"
 mmio UART0 = 0x1000;
 mmio_reg UART0.DR = 0x00 : u32 rw;
@@ -863,12 +863,12 @@ fn entry() {
 }
 "#,
     );
-    let output_path = unique_temp_output_path("emit-elfexe-call-capture-unit-return", "elf");
+    let output_path = unique_temp_output_path("emit-krboexe-call-capture-unit-return", "elf");
     fs::remove_file(&output_path).ok();
 
     let mut cmd: Command = cargo_bin_cmd!("kernriftc");
     cmd.current_dir(&root)
-        .arg("--emit=elfexe")
+        .arg("--emit=krboexe")
         .arg("-o")
         .arg(output_path.as_os_str())
         .arg(fixture.as_os_str());
@@ -887,15 +887,15 @@ fn entry() {
 }
 
 #[test]
-fn emit_elfexe_rejects_extern_declarations_in_current_linker_lane() {
+fn emit_krboexe_rejects_extern_declarations_in_current_linker_lane() {
     let root = repo_root();
     let fixture = root.join("examples").join("uart_console_probe.kr");
-    let output_path = unique_temp_output_path("emit-elfexe-extern-boundary", "elf");
+    let output_path = unique_temp_output_path("emit-krboexe-extern-boundary", "elf");
     fs::remove_file(&output_path).ok();
 
     let mut cmd: Command = cargo_bin_cmd!("kernriftc");
     cmd.current_dir(&root)
-        .arg("--emit=elfexe")
+        .arg("--emit=krboexe")
         .arg("-o")
         .arg(output_path.as_os_str())
         .arg(fixture.as_os_str());

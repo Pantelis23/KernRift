@@ -343,7 +343,7 @@ fn main() -> ExitCode {
                 .unwrap_or("output");
             let output = format!("{}.krbo", stem);
             let synthetic: Vec<String> = vec!["-o".to_string(), output.clone(), arg.to_string()];
-            match parse_backend_emit_args("elfexe", &synthetic, SurfaceProfile::Stable) {
+            match parse_backend_emit_args("krboexe", &synthetic, SurfaceProfile::Stable) {
                 Ok(parsed) => {
                     let result = run_backend_emit(&parsed);
                     #[cfg(unix)]
@@ -1780,11 +1780,11 @@ fn print_usage() {
     eprintln!(
         "  kernriftc --surface stable --emit=elfobj -o <output.o> --meta-out <output.json> <file.kr>"
     );
-    eprintln!("  kernriftc --surface stable --emit=elfexe -o <output.elf> <file.kr>");
+    eprintln!("  kernriftc --surface stable --emit=krboexe -o <output.krbo> <file.kr>");
     eprintln!("  kernriftc --surface stable --emit=asm -o <output.s> <file.kr>");
     eprintln!("  kernriftc --surface stable --emit=krbo -o <output.krbo> <file.kr>");
     eprintln!("  kernriftc --surface stable --emit=elfobj -o <output.o> <file.kr>");
-    eprintln!("  kernriftc --emit=elfexe -o <output.elf> <file.kr>");
+    eprintln!("  kernriftc --emit=krboexe -o <output.krbo> <file.kr>");
     eprintln!("  kernriftc --emit=asm -o <output.s> <file.kr>");
     eprintln!("  kernriftc --emit=staticlib -o <output.a> <file.kr>");
     eprintln!("  kernriftc --emit=krbo -o <output.krbo> --meta-out <output.json> <file.kr>");

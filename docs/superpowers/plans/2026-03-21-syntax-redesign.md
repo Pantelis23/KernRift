@@ -1993,7 +1993,7 @@ git commit -m "docs: rewrite LANGUAGE.md for new KernRift surface syntax"
 ## Completion Checklist
 
 - [ ] All `cargo test` pass
-- [ ] `kernriftc --emit=elfexe -o hello hello.kr && ./hello` prints "Hello, World!\n" using new syntax
+- [ ] `kernriftc --emit=krboexe -o hello hello.kr && ./hello` prints "Hello, World!\n" using new syntax
 - [ ] Device block syntax compiles to valid ELF object
 - [ ] While loop with variable modification compiles and runs correctly
 - [ ] Float arithmetic compiles to SSE2 instructions

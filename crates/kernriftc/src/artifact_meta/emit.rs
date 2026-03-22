@@ -32,8 +32,8 @@ fn build_backend_artifact_metadata(
     let (krbo, elfobj) = match kind {
         BackendArtifactKind::Krbo => (Some(parse_krbo_artifact_metadata(bytes)?), None),
         BackendArtifactKind::ElfObject => (None, Some(parse_elf_object_artifact_metadata(bytes)?)),
-        BackendArtifactKind::ElfExecutable => {
-            return Err("invalid emit mode: --meta-out is unsupported for 'elfexe'".to_string());
+        BackendArtifactKind::KrboExecutable => {
+            return Err("invalid emit mode: --meta-out is unsupported for 'krboexe'".to_string());
         }
         BackendArtifactKind::Asm => {
             return Err("invalid emit mode: --meta-out is unsupported for 'asm'".to_string());
