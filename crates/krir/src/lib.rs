@@ -6243,8 +6243,16 @@ pub fn lower_executable_krir_to_compiler_owned_object(
 
     let mut function_offsets = BTreeMap::new();
     let mut function_sizes = BTreeMap::new();
+    let mut padding_before: BTreeMap<String, u64> = BTreeMap::new();
     let mut cursor = 0u64;
     for function in &canonical.functions {
+        let pad = if function.facts.attrs.hotpath && cursor % 16 != 0 {
+            16 - (cursor % 16)
+        } else {
+            0
+        };
+        padding_before.insert(function.name.clone(), pad);
+        cursor += pad;
         let block = &function.blocks[0];
         let n_params = function.signature.params.len() as u64;
         let uses_frame = executable_function_uses_frame(function);
@@ -6269,6 +6277,10 @@ pub fn lower_executable_krir_to_compiler_owned_object(
     let mut fixups = Vec::new();
     let mut unresolved_targets = BTreeSet::new();
     for function in &canonical.functions {
+        let pad = *padding_before.get(&function.name).unwrap_or(&0);
+        for _ in 0..pad {
+            code_bytes.push(0x90); // NOP
+        }
         let block = &function.blocks[0];
         let function_offset = *function_offsets
             .get(&function.name)

@@ -1588,3 +1588,88 @@ fn simple_loop() {
         asm_text
     );
 }
+
+#[test]
+fn hotpath_function_is_16_byte_aligned_in_object() {
+    use krir::{
+        BackendTargetContract, ExecutableBlock, ExecutableFacts,
+        ExecutableFunction, ExecutableKrirModule, ExecutableTerminator, ExecutableValue,
+        ExecutableValueType, FunctionAttrs,
+        lower_executable_krir_to_compiler_owned_object,
+    };
+
+    // Name chosen so it sorts before "hot_fn" alphabetically (canonicalize sorts by name).
+    // After canonicalization: "aaa_non_hot" < "hot_fn", so aaa_non_hot emits first.
+    // Its size is 1 byte (just RET), making hot_fn start at offset 1 — not 16-aligned.
+    let non_hot = ExecutableFunction {
+        name: "aaa_non_hot".to_string(),
+        is_extern: false,
+        signature: krir::ExecutableSignature {
+            params: vec![],
+            result: ExecutableValueType::Unit,
+        },
+        facts: ExecutableFacts {
+            ctx_ok: vec![],
+            eff_used: vec![],
+            caps_req: vec![],
+            attrs: FunctionAttrs::default(),
+        },
+        entry_block: "entry".to_string(),
+        blocks: vec![ExecutableBlock {
+            label: "entry".to_string(),
+            ops: vec![],
+            terminator: ExecutableTerminator::Return {
+                value: ExecutableValue::Unit,
+            },
+        }],
+    };
+
+    let mut hot_attrs = FunctionAttrs::default();
+    hot_attrs.hotpath = true;
+    let hot = ExecutableFunction {
+        name: "hot_fn".to_string(),
+        is_extern: false,
+        signature: krir::ExecutableSignature {
+            params: vec![],
+            result: ExecutableValueType::Unit,
+        },
+        facts: ExecutableFacts {
+            ctx_ok: vec![],
+            eff_used: vec![],
+            caps_req: vec![],
+            attrs: hot_attrs,
+        },
+        entry_block: "entry".to_string(),
+        blocks: vec![ExecutableBlock {
+            label: "entry".to_string(),
+            ops: vec![],
+            terminator: ExecutableTerminator::Return {
+                value: ExecutableValue::Unit,
+            },
+        }],
+    };
+
+    let module = ExecutableKrirModule {
+        module_caps: vec![],
+        functions: vec![non_hot, hot],
+        extern_declarations: vec![],
+        call_edges: vec![],
+    };
+
+    let target = BackendTargetContract::x86_64_sysv();
+    let obj = lower_executable_krir_to_compiler_owned_object(&module, &target)
+        .expect("must lower to object");
+
+    let hot_symbol = obj
+        .symbols
+        .iter()
+        .find(|s| s.name == "hot_fn")
+        .expect("hot_fn symbol must exist");
+
+    assert_eq!(
+        hot_symbol.offset % 16,
+        0,
+        "@hotpath function must start at a 16-byte aligned offset, got offset {}",
+        hot_symbol.offset
+    );
+}
