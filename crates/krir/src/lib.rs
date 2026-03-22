@@ -6453,6 +6453,27 @@ pub struct X86_64MachORelocation {
     pub target_symbol: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct X86_64CoffRelocatableObject {
+    pub text_bytes: Vec<u8>,
+    pub function_symbols: Vec<X86_64CoffFunctionSymbol>,
+    pub undefined_function_symbols: Vec<String>,
+    pub relocations: Vec<X86_64CoffRelocation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct X86_64CoffFunctionSymbol {
+    pub name: String,
+    pub offset: u32,
+    pub size: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct X86_64CoffRelocation {
+    pub section_offset: u32,
+    pub target_symbol: String,
+}
+
 pub fn validate_compiler_owned_object_for_x86_64_elf_export(
     object: &CompilerOwnedObject,
     target: &BackendTargetContract,
@@ -6728,6 +6749,118 @@ pub fn lower_executable_krir_to_x86_64_macho_object(
     export_compiler_owned_object_to_x86_64_macho(&object, target)
 }
 
+pub fn validate_compiler_owned_object_for_x86_64_coff_export(
+    object: &CompilerOwnedObject,
+    target: &BackendTargetContract,
+) -> Result<(), String> {
+    target.validate()?;
+    if target.target_id != BackendTargetId::X86_64Win64 {
+        return Err("x86_64 COFF export requires x86_64-win64 target contract".to_string());
+    }
+    object.validate()?;
+    if object.header.target_id != target.target_id {
+        return Err("x86_64 COFF export: object target_id must match target contract".to_string());
+    }
+    if object.code.name != target.sections.text {
+        return Err(
+            "x86_64 COFF export: object code section must match target text section".to_string(),
+        );
+    }
+    Ok(())
+}
+
+pub fn export_compiler_owned_object_to_x86_64_coff(
+    object: &CompilerOwnedObject,
+    target: &BackendTargetContract,
+) -> Result<X86_64CoffRelocatableObject, String> {
+    validate_compiler_owned_object_for_x86_64_coff_export(object, target)?;
+
+    let symbol_offsets = object
+        .symbols
+        .iter()
+        .filter(|s| s.definition == CompilerOwnedObjectSymbolDefinition::DefinedText)
+        .map(|s| (s.name.as_str(), s.offset))
+        .collect::<BTreeMap<_, _>>();
+    let symbol_defs = object
+        .symbols
+        .iter()
+        .map(|s| (s.name.as_str(), s.definition))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut text_bytes = object.code.bytes.clone();
+    let mut relocations = Vec::new();
+
+    for fixup in &object.fixups {
+        let Some(target_def) = symbol_defs.get(fixup.target_symbol.as_str()) else {
+            return Err(format!(
+                "x86_64 COFF export: missing target symbol '{}' for fixup",
+                fixup.target_symbol
+            ));
+        };
+        match (fixup.kind, target_def) {
+            (
+                CompilerOwnedFixupKind::X86_64CallRel32,
+                CompilerOwnedObjectSymbolDefinition::DefinedText,
+            ) => {
+                let target_offset = *symbol_offsets.get(fixup.target_symbol.as_str()).unwrap();
+                let next_ip = fixup.patch_offset + u64::from(fixup.width_bytes);
+                let displacement = (target_offset as i64) - (next_ip as i64);
+                let rel32 = i32::try_from(displacement).map_err(|_| {
+                    format!(
+                        "x86_64 COFF export: call displacement to '{}' does not fit rel32",
+                        fixup.target_symbol
+                    )
+                })?;
+                let patch = usize::try_from(fixup.patch_offset).expect("patch offset fits usize");
+                text_bytes[patch..patch + 4].copy_from_slice(&rel32.to_le_bytes());
+            }
+            (
+                CompilerOwnedFixupKind::X86_64CallRel32,
+                CompilerOwnedObjectSymbolDefinition::UndefinedExternal,
+            ) => {
+                relocations.push(X86_64CoffRelocation {
+                    section_offset: u32::try_from(fixup.patch_offset)
+                        .expect("patch offset fits u32"),
+                    target_symbol: fixup.target_symbol.clone(),
+                });
+            }
+        }
+    }
+
+    let function_symbols = object
+        .symbols
+        .iter()
+        .filter(|s| s.definition == CompilerOwnedObjectSymbolDefinition::DefinedText)
+        .map(|s| X86_64CoffFunctionSymbol {
+            name: s.name.clone(),
+            offset: u32::try_from(s.offset).expect("symbol offset fits u32"),
+            size: u32::try_from(s.size).expect("symbol size fits u32"),
+        })
+        .collect::<Vec<_>>();
+    let undefined_function_symbols = object
+        .symbols
+        .iter()
+        .filter(|s| s.definition == CompilerOwnedObjectSymbolDefinition::UndefinedExternal)
+        .map(|s| s.name.clone())
+        .collect::<Vec<_>>();
+
+    Ok(X86_64CoffRelocatableObject {
+        text_bytes,
+        function_symbols,
+        undefined_function_symbols,
+        relocations,
+    })
+}
+
+pub fn lower_executable_krir_to_x86_64_coff_object(
+    module: &ExecutableKrirModule,
+    target: &BackendTargetContract,
+) -> Result<X86_64CoffRelocatableObject, String> {
+    validate_x86_64_object_linear_subset(module, target)?;
+    let object = lower_executable_krir_to_compiler_owned_object(module, target)?;
+    export_compiler_owned_object_to_x86_64_coff(&object, target)
+}
+
 pub fn emit_x86_64_macho_object_bytes(object: &X86_64MachORelocatableObject) -> Vec<u8> {
     // Build string table: leading null + "_name\0" for every symbol
     let mut strtab = vec![0u8];
@@ -6872,6 +7005,145 @@ pub fn emit_x86_64_macho_object_bytes(object: &X86_64MachORelocatableObject) -> 
 
     // String table
     out.extend_from_slice(&strtab);
+
+    out
+}
+
+fn coff_encode_name(
+    name: &str,
+    strtab: &mut Vec<u8>,
+    offsets: &mut BTreeMap<String, u32>,
+) -> [u8; 8] {
+    if name.len() <= 8 {
+        let mut buf = [0u8; 8];
+        buf[..name.len()].copy_from_slice(name.as_bytes());
+        buf
+    } else {
+        if !offsets.contains_key(name) {
+            // offset is past the 4-byte size prefix
+            let str_offset = 4 + strtab.len() as u32;
+            offsets.insert(name.to_string(), str_offset);
+            strtab.extend_from_slice(name.as_bytes());
+            strtab.push(0);
+        }
+        let off = *offsets.get(name).unwrap();
+        let mut buf = [0u8; 8];
+        buf[4..8].copy_from_slice(&off.to_le_bytes());
+        buf
+    }
+}
+
+fn push_coff_sym(
+    out: &mut Vec<u8>,
+    name_buf: [u8; 8],
+    value: u32,
+    section: i16,
+    ty: u16,
+    class: u8,
+) {
+    out.extend_from_slice(&name_buf);
+    push_u32_le(out, value);
+    out.extend_from_slice(&section.to_le_bytes());
+    push_u16_le(out, ty);
+    out.push(class);
+    out.push(0); // NumberOfAuxSymbols
+}
+
+pub fn emit_x86_64_coff_bytes(object: &X86_64CoffRelocatableObject) -> Vec<u8> {
+    // String table (for symbol names > 8 chars)
+    let mut strtab_strings: Vec<u8> = Vec::new();
+    let mut name_strtab_offsets: BTreeMap<String, u32> = BTreeMap::new();
+
+    // Symbol table:
+    // Index 0: .text section symbol
+    // Index 1..N: defined function symbols
+    // Index N+1..: undefined function symbols
+    let num_syms = 1 + object.function_symbols.len() + object.undefined_function_symbols.len();
+
+    let mut sym_index: BTreeMap<String, u32> = BTreeMap::new();
+    for (i, sym) in object.function_symbols.iter().enumerate() {
+        sym_index.insert(sym.name.clone(), (1 + i) as u32);
+    }
+    for (i, sym) in object.undefined_function_symbols.iter().enumerate() {
+        sym_index.insert(sym.clone(), (1 + object.function_symbols.len() + i) as u32);
+    }
+
+    // IMAGE_RELOCATION entries (10 bytes each)
+    let mut relocs: Vec<u8> = Vec::new();
+    for reloc in &object.relocations {
+        push_u32_le(&mut relocs, reloc.section_offset);
+        let idx = *sym_index
+            .get(&reloc.target_symbol)
+            .expect("reloc target in sym_index");
+        push_u32_le(&mut relocs, idx);
+        push_u16_le(&mut relocs, 0x0004); // IMAGE_REL_AMD64_REL32
+    }
+    let nrelocs = object.relocations.len() as u16;
+
+    // File layout offsets
+    let text_raw_offset: u32 = 20 + 40; // COFF header + section header = 60
+    let text_len = object.text_bytes.len() as u32;
+    let text_padded = (text_len + 3) & !3u32;
+    let reloc_ptr: u32 = text_raw_offset + text_padded;
+    let sym_table_ptr: u32 = reloc_ptr + relocs.len() as u32;
+
+    let mut out: Vec<u8> = Vec::new();
+
+    // IMAGE_FILE_HEADER (20 bytes)
+    push_u16_le(&mut out, 0x8664); // Machine = AMD64
+    push_u16_le(&mut out, 1); // NumberOfSections
+    push_u32_le(&mut out, 0); // TimeDateStamp
+    push_u32_le(&mut out, sym_table_ptr); // PointerToSymbolTable
+    push_u32_le(&mut out, num_syms as u32); // NumberOfSymbols
+    push_u16_le(&mut out, 0); // SizeOfOptionalHeader
+    push_u16_le(&mut out, 0); // Characteristics
+
+    // IMAGE_SECTION_HEADER for .text (40 bytes)
+    out.extend_from_slice(b".text\0\0\0"); // Name (8 bytes)
+    push_u32_le(&mut out, 0); // VirtualSize
+    push_u32_le(&mut out, 0); // VirtualAddress
+    push_u32_le(&mut out, text_padded); // SizeOfRawData
+    push_u32_le(&mut out, text_raw_offset); // PointerToRawData
+    push_u32_le(&mut out, if nrelocs == 0 { 0 } else { reloc_ptr }); // PointerToRelocations
+    push_u32_le(&mut out, 0); // PointerToLinenumbers
+    push_u16_le(&mut out, nrelocs); // NumberOfRelocations
+    push_u16_le(&mut out, 0); // NumberOfLinenumbers
+    push_u32_le(&mut out, 0x60500020); // Characteristics
+
+    // Text bytes (padded to 4)
+    out.extend_from_slice(&object.text_bytes);
+    while out.len() < (text_raw_offset + text_padded) as usize {
+        out.push(0);
+    }
+
+    // Relocation entries
+    out.extend_from_slice(&relocs);
+
+    // Symbol table
+    // Section symbol (.text)
+    let section_name_buf = {
+        let mut b = [0u8; 8];
+        b[..5].copy_from_slice(b".text");
+        b
+    };
+    push_coff_sym(&mut out, section_name_buf, 0, 1, 0, 0x03); // StorageClass STATIC
+
+    // Defined function symbols
+    for sym in &object.function_symbols {
+        let name_buf = coff_encode_name(&sym.name, &mut strtab_strings, &mut name_strtab_offsets);
+        push_coff_sym(&mut out, name_buf, sym.offset, 1, 0x0020, 0x02); // EXTERNAL, function
+    }
+
+    // Undefined function symbols
+    for sym in &object.undefined_function_symbols {
+        let name_buf = coff_encode_name(sym, &mut strtab_strings, &mut name_strtab_offsets);
+        push_coff_sym(&mut out, name_buf, 0, 0, 0x0020, 0x02); // IMAGE_SYM_UNDEFINED, EXTERNAL
+    }
+
+    // String table: 4-byte total size (including itself) + strings
+    let strtab_total_size = (4 + strtab_strings.len()) as u32;
+    push_u32_le(&mut out, strtab_total_size);
+    out.extend_from_slice(&strtab_strings);
 
     out
 }
@@ -7254,8 +7526,9 @@ mod tests {
         ExecutableBlock, ExecutableExternDecl, ExecutableFacts, ExecutableFunction,
         ExecutableKrirModule, ExecutableOp, ExecutableSignature, ExecutableTerminator,
         ExecutableValue, ExecutableValueType, FunctionAttrs, FutureScalarReturnConvention,
-        MmioScalarType, TargetEndian, X86_64IntegerRegister, X86_64MachOFunctionSymbol,
-        X86_64MachORelocatableObject, emit_compiler_owned_object_bytes, emit_x86_64_asm_text,
+        MmioScalarType, TargetEndian, X86_64CoffFunctionSymbol, X86_64CoffRelocatableObject,
+        X86_64IntegerRegister, X86_64MachOFunctionSymbol, X86_64MachORelocatableObject,
+        emit_compiler_owned_object_bytes, emit_x86_64_asm_text, emit_x86_64_coff_bytes,
         emit_x86_64_macho_object_bytes, emit_x86_64_object_bytes,
         export_compiler_owned_object_to_x86_64_asm, export_compiler_owned_object_to_x86_64_elf,
         lower_executable_krir_to_compiler_owned_object, lower_executable_krir_to_x86_64_asm,
@@ -10642,6 +10915,27 @@ mod tests {
         assert_eq!(buf, &[0x48, 0x83, 0xEC, 0x7F], "127 fits in imm8");
         assert_eq!(rsp_adj_encoded_len(127), 4);
         assert_eq!(rsp_adj_encoded_len(128), 7);
+    }
+
+    #[test]
+    fn coff_object_bytes_start_with_amd64_machine() {
+        let object = X86_64CoffRelocatableObject {
+            text_bytes: vec![0xC3],
+            function_symbols: vec![X86_64CoffFunctionSymbol {
+                name: "entry".to_string(),
+                offset: 0,
+                size: 1,
+            }],
+            undefined_function_symbols: vec![],
+            relocations: vec![],
+        };
+        let bytes = emit_x86_64_coff_bytes(&object);
+        // Machine field = 0x8664 (AMD64) in little-endian
+        assert_eq!(
+            &bytes[0..2],
+            &[0x64, 0x86],
+            "must start with AMD64 machine type"
+        );
     }
 
     #[test]
