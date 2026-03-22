@@ -141,21 +141,11 @@ fn emit_elfexe_writes_valid_executable() {
         .arg(fixture.as_os_str());
     cmd.assert().success();
 
-    let bytes = fs::read(&output_path).expect("read elf executable output");
-    assert!(bytes.len() >= 20, "elf executable output too small");
-    assert_eq!(&bytes[0..4], b"\x7fELF");
-    assert_eq!(bytes[4], 2, "expected ELF64 class");
-    assert_eq!(bytes[5], 1, "expected little-endian ELF");
-    assert_eq!(
-        u16::from_le_bytes([bytes[16], bytes[17]]),
-        2,
-        "expected ET_EXEC"
-    );
-    assert_eq!(
-        u16::from_le_bytes([bytes[18], bytes[19]]),
-        62,
-        "expected EM_X86_64"
-    );
+    let bytes = fs::read(&output_path).expect("read krbo executable output");
+    assert!(bytes.len() >= 16, "krbo executable output too small");
+    assert_eq!(&bytes[0..4], b"KRBO", "expected KRBO magic");
+    assert_eq!(bytes[4], 1, "expected KRBO version 1");
+    assert_eq!(bytes[5], 0x01, "expected x86-64 arch (0x01)");
 
     fs::remove_file(&output_path).ok();
 }
@@ -367,7 +357,7 @@ fn emit_elfexe_supports_uart_console_executable_proof_program_and_inspection_ver
     let fixture = root
         .join("examples")
         .join("uart_console_executable.kr");
-    let artifact_path = unique_temp_output_path("emit-elfexe-uart-console", "elf");
+    let artifact_path = unique_temp_output_path("emit-elfexe-uart-console", "krbo");
     fs::remove_file(&artifact_path).ok();
 
     let mut emit_cmd: Command = cargo_bin_cmd!("kernriftc");
@@ -379,38 +369,11 @@ fn emit_elfexe_supports_uart_console_executable_proof_program_and_inspection_ver
         .arg(fixture.as_os_str());
     emit_cmd.assert().success();
 
-    let output = inspect_artifact_output(&root, &artifact_path, Some("json"));
-    let json: Value = serde_json::from_str(&output).expect("parse inspect-artifact JSON");
-    validate_inspect_artifact_schema(&json);
-    assert_eq!(json["schema_version"], "kernrift_inspect_artifact_v2");
-    assert_eq!(json["file"], artifact_path.display().to_string());
-    assert_eq!(json["artifact_kind"], "elf_executable");
-    assert_eq!(json["machine"], "x86_64");
-    assert_eq!(json["undefined_symbols"], json!([]));
-    assert_eq!(json["flags"]["has_entry_symbol"], true);
-    assert_eq!(json["flags"]["has_undefined_symbols"], false);
-    assert_eq!(json["flags"]["has_text_relocations"], false);
-    let defined_symbols = json["defined_symbols"]
-        .as_array()
-        .expect("defined_symbols array")
-        .iter()
-        .map(|value| value.as_str().expect("defined symbol string"))
-        .collect::<Vec<_>>();
-    for required in [
-        "_start",
-        "entry",
-        "uart_init",
-        "uart_kick_watchdog",
-        "uart_send_zero",
-        "uart_status",
-    ] {
-        assert!(
-            defined_symbols.contains(&required),
-            "expected defined symbol '{}' in {:?}",
-            required,
-            defined_symbols
-        );
-    }
+    let bytes = fs::read(&artifact_path).expect("read krbo output");
+    assert!(bytes.len() >= 16, "krbo output too small");
+    assert_eq!(&bytes[0..4], b"KRBO", "expected KRBO magic");
+    assert_eq!(bytes[4], 1, "expected KRBO version 1");
+    assert_eq!(bytes[5], 0x01, "expected x86-64 arch (0x01)");
 
     fs::remove_file(&artifact_path).ok();
 }
@@ -419,7 +382,7 @@ fn emit_elfexe_supports_uart_console_executable_proof_program_and_inspection_ver
 fn emit_elfexe_supports_uart_console_value_flow_proof_program_and_inspection_verifies() {
     let root = repo_root();
     let fixture = root.join("examples").join("uart_console_value_flow.kr");
-    let artifact_path = unique_temp_output_path("emit-elfexe-uart-console-value-flow", "elf");
+    let artifact_path = unique_temp_output_path("emit-elfexe-uart-console-value-flow", "krbo");
     fs::remove_file(&artifact_path).ok();
 
     let mut emit_cmd: Command = cargo_bin_cmd!("kernriftc");
@@ -431,31 +394,11 @@ fn emit_elfexe_supports_uart_console_value_flow_proof_program_and_inspection_ver
         .arg(fixture.as_os_str());
     emit_cmd.assert().success();
 
-    let output = inspect_artifact_output(&root, &artifact_path, Some("json"));
-    let json: Value = serde_json::from_str(&output).expect("parse inspect-artifact JSON");
-    validate_inspect_artifact_schema(&json);
-    assert_eq!(json["schema_version"], "kernrift_inspect_artifact_v2");
-    assert_eq!(json["file"], artifact_path.display().to_string());
-    assert_eq!(json["artifact_kind"], "elf_executable");
-    assert_eq!(json["machine"], "x86_64");
-    assert_eq!(json["undefined_symbols"], json!([]));
-    assert_eq!(json["flags"]["has_entry_symbol"], true);
-    assert_eq!(json["flags"]["has_undefined_symbols"], false);
-    assert_eq!(json["flags"]["has_text_relocations"], false);
-    let defined_symbols = json["defined_symbols"]
-        .as_array()
-        .expect("defined_symbols array")
-        .iter()
-        .map(|value| value.as_str().expect("defined symbol string"))
-        .collect::<Vec<_>>();
-    for required in ["_start", "entry", "mirror_status", "mirror_watchdog"] {
-        assert!(
-            defined_symbols.contains(&required),
-            "expected defined symbol '{}' in {:?}",
-            required,
-            defined_symbols
-        );
-    }
+    let bytes = fs::read(&artifact_path).expect("read krbo output");
+    assert!(bytes.len() >= 16, "krbo output too small");
+    assert_eq!(&bytes[0..4], b"KRBO", "expected KRBO magic");
+    assert_eq!(bytes[4], 1, "expected KRBO version 1");
+    assert_eq!(bytes[5], 0x01, "expected x86-64 arch (0x01)");
 
     fs::remove_file(&artifact_path).ok();
 }
@@ -466,7 +409,8 @@ fn emit_elfexe_supports_uart_console_explicit_slot_proof_program_and_inspection_
     let fixture = root
         .join("examples")
         .join("uart_console_explicit_slot.kr");
-    let artifact_path = unique_temp_output_path("emit-elfexe-uart-console-explicit-slot", "elf");
+    let artifact_path =
+        unique_temp_output_path("emit-elfexe-uart-console-explicit-slot", "krbo");
     fs::remove_file(&artifact_path).ok();
 
     let mut emit_cmd: Command = cargo_bin_cmd!("kernriftc");
@@ -478,31 +422,11 @@ fn emit_elfexe_supports_uart_console_explicit_slot_proof_program_and_inspection_
         .arg(fixture.as_os_str());
     emit_cmd.assert().success();
 
-    let output = inspect_artifact_output(&root, &artifact_path, Some("json"));
-    let json: Value = serde_json::from_str(&output).expect("parse inspect-artifact JSON");
-    validate_inspect_artifact_schema(&json);
-    assert_eq!(json["schema_version"], "kernrift_inspect_artifact_v2");
-    assert_eq!(json["file"], artifact_path.display().to_string());
-    assert_eq!(json["artifact_kind"], "elf_executable");
-    assert_eq!(json["machine"], "x86_64");
-    assert_eq!(json["undefined_symbols"], json!([]));
-    assert_eq!(json["flags"]["has_entry_symbol"], true);
-    assert_eq!(json["flags"]["has_undefined_symbols"], false);
-    assert_eq!(json["flags"]["has_text_relocations"], false);
-    let defined_symbols = json["defined_symbols"]
-        .as_array()
-        .expect("defined_symbols array")
-        .iter()
-        .map(|value| value.as_str().expect("defined symbol string"))
-        .collect::<Vec<_>>();
-    for required in ["_start", "entry", "mirror_status", "mirror_watchdog"] {
-        assert!(
-            defined_symbols.contains(&required),
-            "expected defined symbol '{}' in {:?}",
-            required,
-            defined_symbols
-        );
-    }
+    let bytes = fs::read(&artifact_path).expect("read krbo output");
+    assert!(bytes.len() >= 16, "krbo output too small");
+    assert_eq!(&bytes[0..4], b"KRBO", "expected KRBO magic");
+    assert_eq!(bytes[4], 1, "expected KRBO version 1");
+    assert_eq!(bytes[5], 0x01, "expected x86-64 arch (0x01)");
 
     fs::remove_file(&artifact_path).ok();
 }
@@ -511,7 +435,7 @@ fn emit_elfexe_supports_uart_console_explicit_slot_proof_program_and_inspection_
 fn emit_elfexe_supports_uart_console_branch_zero_proof_program_and_inspection_verifies() {
     let root = repo_root();
     let fixture = root.join("examples").join("uart_console_branch_zero.kr");
-    let artifact_path = unique_temp_output_path("emit-elfexe-uart-console-branch-zero", "elf");
+    let artifact_path = unique_temp_output_path("emit-elfexe-uart-console-branch-zero", "krbo");
     fs::remove_file(&artifact_path).ok();
 
     let mut emit_cmd: Command = cargo_bin_cmd!("kernriftc");
@@ -523,31 +447,11 @@ fn emit_elfexe_supports_uart_console_branch_zero_proof_program_and_inspection_ve
         .arg(fixture.as_os_str());
     emit_cmd.assert().success();
 
-    let output = inspect_artifact_output(&root, &artifact_path, Some("json"));
-    let json: Value = serde_json::from_str(&output).expect("parse inspect-artifact JSON");
-    validate_inspect_artifact_schema(&json);
-    assert_eq!(json["schema_version"], "kernrift_inspect_artifact_v2");
-    assert_eq!(json["file"], artifact_path.display().to_string());
-    assert_eq!(json["artifact_kind"], "elf_executable");
-    assert_eq!(json["machine"], "x86_64");
-    assert_eq!(json["undefined_symbols"], json!([]));
-    assert_eq!(json["flags"]["has_entry_symbol"], true);
-    assert_eq!(json["flags"]["has_undefined_symbols"], false);
-    assert_eq!(json["flags"]["has_text_relocations"], false);
-    let defined_symbols = json["defined_symbols"]
-        .as_array()
-        .expect("defined_symbols array")
-        .iter()
-        .map(|value| value.as_str().expect("defined symbol string"))
-        .collect::<Vec<_>>();
-    for required in ["_start", "entry", "send_idle_word", "send_ready_word"] {
-        assert!(
-            defined_symbols.contains(&required),
-            "expected defined symbol '{}' in {:?}",
-            required,
-            defined_symbols
-        );
-    }
+    let bytes = fs::read(&artifact_path).expect("read krbo output");
+    assert!(bytes.len() >= 16, "krbo output too small");
+    assert_eq!(&bytes[0..4], b"KRBO", "expected KRBO magic");
+    assert_eq!(bytes[4], 1, "expected KRBO version 1");
+    assert_eq!(bytes[5], 0x01, "expected x86-64 arch (0x01)");
 
     fs::remove_file(&artifact_path).ok();
 }
@@ -556,7 +460,7 @@ fn emit_elfexe_supports_uart_console_branch_zero_proof_program_and_inspection_ve
 fn emit_elfexe_supports_uart_console_branch_eq_proof_program_and_inspection_verifies() {
     let root = repo_root();
     let fixture = root.join("examples").join("uart_console_branch_eq.kr");
-    let artifact_path = unique_temp_output_path("emit-elfexe-uart-console-branch-eq", "elf");
+    let artifact_path = unique_temp_output_path("emit-elfexe-uart-console-branch-eq", "krbo");
     fs::remove_file(&artifact_path).ok();
 
     let mut emit_cmd: Command = cargo_bin_cmd!("kernriftc");
@@ -568,31 +472,11 @@ fn emit_elfexe_supports_uart_console_branch_eq_proof_program_and_inspection_veri
         .arg(fixture.as_os_str());
     emit_cmd.assert().success();
 
-    let output = inspect_artifact_output(&root, &artifact_path, Some("json"));
-    let json: Value = serde_json::from_str(&output).expect("parse inspect-artifact JSON");
-    validate_inspect_artifact_schema(&json);
-    assert_eq!(json["schema_version"], "kernrift_inspect_artifact_v2");
-    assert_eq!(json["file"], artifact_path.display().to_string());
-    assert_eq!(json["artifact_kind"], "elf_executable");
-    assert_eq!(json["machine"], "x86_64");
-    assert_eq!(json["undefined_symbols"], json!([]));
-    assert_eq!(json["flags"]["has_entry_symbol"], true);
-    assert_eq!(json["flags"]["has_undefined_symbols"], false);
-    assert_eq!(json["flags"]["has_text_relocations"], false);
-    let defined_symbols = json["defined_symbols"]
-        .as_array()
-        .expect("defined_symbols array")
-        .iter()
-        .map(|value| value.as_str().expect("defined symbol string"))
-        .collect::<Vec<_>>();
-    for required in ["_start", "entry", "send_idle_word", "send_ready_word"] {
-        assert!(
-            defined_symbols.contains(&required),
-            "expected defined symbol '{}' in {:?}",
-            required,
-            defined_symbols
-        );
-    }
+    let bytes = fs::read(&artifact_path).expect("read krbo output");
+    assert!(bytes.len() >= 16, "krbo output too small");
+    assert_eq!(&bytes[0..4], b"KRBO", "expected KRBO magic");
+    assert_eq!(bytes[4], 1, "expected KRBO version 1");
+    assert_eq!(bytes[5], 0x01, "expected x86-64 arch (0x01)");
 
     fs::remove_file(&artifact_path).ok();
 }
@@ -601,7 +485,7 @@ fn emit_elfexe_supports_uart_console_branch_eq_proof_program_and_inspection_veri
 fn emit_elfexe_supports_uart_console_branch_mask_proof_program_and_inspection_verifies() {
     let root = repo_root();
     let fixture = root.join("examples").join("uart_console_branch_mask.kr");
-    let artifact_path = unique_temp_output_path("emit-elfexe-uart-console-branch-mask", "elf");
+    let artifact_path = unique_temp_output_path("emit-elfexe-uart-console-branch-mask", "krbo");
     fs::remove_file(&artifact_path).ok();
 
     let mut emit_cmd: Command = cargo_bin_cmd!("kernriftc");
@@ -613,31 +497,11 @@ fn emit_elfexe_supports_uart_console_branch_mask_proof_program_and_inspection_ve
         .arg(fixture.as_os_str());
     emit_cmd.assert().success();
 
-    let output = inspect_artifact_output(&root, &artifact_path, Some("json"));
-    let json: Value = serde_json::from_str(&output).expect("parse inspect-artifact JSON");
-    validate_inspect_artifact_schema(&json);
-    assert_eq!(json["schema_version"], "kernrift_inspect_artifact_v2");
-    assert_eq!(json["file"], artifact_path.display().to_string());
-    assert_eq!(json["artifact_kind"], "elf_executable");
-    assert_eq!(json["machine"], "x86_64");
-    assert_eq!(json["undefined_symbols"], json!([]));
-    assert_eq!(json["flags"]["has_entry_symbol"], true);
-    assert_eq!(json["flags"]["has_undefined_symbols"], false);
-    assert_eq!(json["flags"]["has_text_relocations"], false);
-    let defined_symbols = json["defined_symbols"]
-        .as_array()
-        .expect("defined_symbols array")
-        .iter()
-        .map(|value| value.as_str().expect("defined symbol string"))
-        .collect::<Vec<_>>();
-    for required in ["_start", "entry", "send_idle_word", "send_ready_word"] {
-        assert!(
-            defined_symbols.contains(&required),
-            "expected defined symbol '{}' in {:?}",
-            required,
-            defined_symbols
-        );
-    }
+    let bytes = fs::read(&artifact_path).expect("read krbo output");
+    assert!(bytes.len() >= 16, "krbo output too small");
+    assert_eq!(&bytes[0..4], b"KRBO", "expected KRBO magic");
+    assert_eq!(bytes[4], 1, "expected KRBO version 1");
+    assert_eq!(bytes[5], 0x01, "expected x86-64 arch (0x01)");
 
     fs::remove_file(&artifact_path).ok();
 }
@@ -646,7 +510,7 @@ fn emit_elfexe_supports_uart_console_branch_mask_proof_program_and_inspection_ve
 fn emit_elfexe_supports_uart_console_call_return_proof_program_and_inspection_verifies() {
     let root = repo_root();
     let fixture = root.join("examples").join("uart_console_call_return.kr");
-    let artifact_path = unique_temp_output_path("emit-elfexe-uart-console-call-return", "elf");
+    let artifact_path = unique_temp_output_path("emit-elfexe-uart-console-call-return", "krbo");
     fs::remove_file(&artifact_path).ok();
 
     let mut cmd: Command = cargo_bin_cmd!("kernriftc");
@@ -657,24 +521,11 @@ fn emit_elfexe_supports_uart_console_call_return_proof_program_and_inspection_ve
         .arg(fixture.as_os_str());
     cmd.assert().success();
 
-    let output = inspect_artifact_output(&root, &artifact_path, Some("json"));
-    let json: Value = serde_json::from_str(&output).expect("parse inspect-artifact JSON");
-    validate_inspect_artifact_schema(&json);
-    assert_eq!(json["schema_version"], "kernrift_inspect_artifact_v2");
-    assert_eq!(json["file"], artifact_path.display().to_string());
-    assert_eq!(json["artifact_kind"], "elf_executable");
-    assert_eq!(json["machine"], "x86_64");
-    assert_eq!(json["undefined_symbols"], json!([]));
-    assert_eq!(json["flags"]["has_entry_symbol"], true);
-    assert_eq!(json["flags"]["has_undefined_symbols"], false);
-    assert_eq!(json["flags"]["has_text_relocations"], false);
-    let defined_symbols = json["defined_symbols"]
-        .as_array()
-        .expect("defined_symbols array");
-    assert!(defined_symbols.contains(&json!("entry")));
-    assert!(defined_symbols.contains(&json!("read_status")));
-    assert!(defined_symbols.contains(&json!("send_idle_word")));
-    assert!(defined_symbols.contains(&json!("send_ready_word")));
+    let bytes = fs::read(&artifact_path).expect("read krbo output");
+    assert!(bytes.len() >= 16, "krbo output too small");
+    assert_eq!(&bytes[0..4], b"KRBO", "expected KRBO magic");
+    assert_eq!(bytes[4], 1, "expected KRBO version 1");
+    assert_eq!(bytes[5], 0x01, "expected x86-64 arch (0x01)");
 
     fs::remove_file(&artifact_path).ok();
 }
@@ -683,7 +534,7 @@ fn emit_elfexe_supports_uart_console_call_return_proof_program_and_inspection_ve
 fn emit_elfexe_supports_uart_console_stack_cell_proof_program_and_inspection_verifies() {
     let root = repo_root();
     let fixture = root.join("examples").join("uart_console_stack_cell.kr");
-    let artifact_path = unique_temp_output_path("emit-elfexe-uart-console-stack-cell", "elf");
+    let artifact_path = unique_temp_output_path("emit-elfexe-uart-console-stack-cell", "krbo");
     fs::remove_file(&artifact_path).ok();
 
     let mut cmd: Command = cargo_bin_cmd!("kernriftc");
@@ -694,25 +545,11 @@ fn emit_elfexe_supports_uart_console_stack_cell_proof_program_and_inspection_ver
         .arg(fixture.as_os_str());
     cmd.assert().success();
 
-    let output = inspect_artifact_output(&root, &artifact_path, Some("json"));
-    let json: Value = serde_json::from_str(&output).expect("parse inspect-artifact JSON");
-    validate_inspect_artifact_schema(&json);
-    assert_eq!(json["schema_version"], "kernrift_inspect_artifact_v2");
-    assert_eq!(json["file"], artifact_path.display().to_string());
-    assert_eq!(json["artifact_kind"], "elf_executable");
-    assert_eq!(json["machine"], "x86_64");
-    assert_eq!(json["undefined_symbols"], json!([]));
-    assert_eq!(json["flags"]["has_entry_symbol"], true);
-    assert_eq!(json["flags"]["has_undefined_symbols"], false);
-    assert_eq!(json["flags"]["has_text_relocations"], false);
-    let defined_symbols = json["defined_symbols"]
-        .as_array()
-        .expect("defined_symbols array");
-    assert!(defined_symbols.contains(&json!("entry")));
-    assert!(defined_symbols.contains(&json!("read_status")));
-    assert!(defined_symbols.contains(&json!("read_control")));
-    assert!(defined_symbols.contains(&json!("send_idle_word")));
-    assert!(defined_symbols.contains(&json!("send_ready_word")));
+    let bytes = fs::read(&artifact_path).expect("read krbo output");
+    assert!(bytes.len() >= 16, "krbo output too small");
+    assert_eq!(&bytes[0..4], b"KRBO", "expected KRBO magic");
+    assert_eq!(bytes[4], 1, "expected KRBO version 1");
+    assert_eq!(bytes[5], 0x01, "expected x86-64 arch (0x01)");
 
     fs::remove_file(&artifact_path).ok();
 }

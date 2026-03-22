@@ -1135,3 +1135,34 @@ fn init_driver(uint32 flags) -> uint32 {
     let result = kernriftc::compile_source(src);
     assert!(result.is_ok(), "@export fn should compile: {:?}", result);
 }
+
+#[test]
+fn compiled_output_is_krbo_format() {
+    let src = r#"
+@ctx(thread)
+fn entry() {
+}
+"#;
+    let tmp_path = {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        std::env::temp_dir().join(format!("kernriftc-krbo-test-{}.kr", ts))
+    };
+    fs::write(&tmp_path, src).expect("write temp source");
+
+    let bytes = kernriftc::emit_backend_artifact_file_with_surface_and_target(
+        &tmp_path,
+        kernriftc::SurfaceProfile::Stable,
+        kernriftc::BackendArtifactKind::ElfExecutable,
+        kernriftc::CompilerBackendTargetId::X86_64Sysv,
+    )
+    .expect("emit ElfExecutable artifact");
+
+    fs::remove_file(&tmp_path).ok();
+
+    assert_eq!(&bytes[0..4], b"KRBO", "compiled output must start with KRBO magic");
+    assert_eq!(bytes[4], 1, "version must be 1");
+    assert_eq!(bytes[5], 0x01, "arch must be x86-64 (0x01)");
+}
