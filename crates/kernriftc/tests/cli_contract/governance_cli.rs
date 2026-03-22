@@ -236,6 +236,62 @@ fn features_surface_unexpected_arg_is_rejected_deterministically() {
 }
 
 #[test]
+fn features_json_output_is_valid_json() {
+    let root = repo_root();
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("features")
+        .arg("--surface")
+        .arg("stable")
+        .arg("--json");
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let parsed: Value = serde_json::from_str(&stdout).expect("features --json must emit valid JSON");
+    let arr = parsed.as_array().expect("features --json must emit a JSON array");
+    assert_eq!(arr.len(), 6, "stable surface must have 6 features");
+    for entry in arr {
+        let obj = entry.as_object().expect("each feature must be a JSON object");
+        assert!(obj.contains_key("id"), "feature object must have 'id'");
+        assert!(obj.contains_key("status"), "feature object must have 'status'");
+        assert!(obj.contains_key("surface_form"), "feature object must have 'surface_form'");
+        assert!(obj.contains_key("lowering_target"), "feature object must have 'lowering_target'");
+        assert!(obj.contains_key("surface_profile_gate"), "feature object must have 'surface_profile_gate'");
+        assert!(obj.contains_key("migration_safe"), "feature object must have 'migration_safe'");
+        assert!(obj.contains_key("canonical_replacement"), "feature object must have 'canonical_replacement'");
+        assert!(obj.contains_key("proposal_id"), "feature object must have 'proposal_id'");
+    }
+    let ids: Vec<&str> = arr
+        .iter()
+        .map(|e| e["id"].as_str().expect("id must be a string"))
+        .collect();
+    assert!(
+        ids.contains(&"legacy_alloc_effect_shorthand"),
+        "stable features must include legacy_alloc_effect_shorthand"
+    );
+    assert!(
+        ids.contains(&"thread_entry_alias"),
+        "stable features must include thread_entry_alias"
+    );
+}
+
+#[test]
+fn features_json_output_does_not_affect_text_output() {
+    let root = repo_root();
+    let run_text = || {
+        let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+        cmd.current_dir(&root)
+            .arg("features")
+            .arg("--surface")
+            .arg("stable");
+        let assert = cmd.assert().success();
+        String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8")
+    };
+    let text = run_text();
+    assert_eq!(text.lines().nth(0), Some("surface: stable"));
+    assert_eq!(text.lines().nth(1), Some("features: 6"));
+}
+
+#[test]
 fn proposals_output_is_exact() {
     let root = repo_root();
     let mut cmd: Command = cargo_bin_cmd!("kernriftc");

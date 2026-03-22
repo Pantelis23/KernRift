@@ -86,6 +86,7 @@ struct InspectArtifactArgs {
 
 struct FeaturesArgs {
     surface: SurfaceProfile,
+    json: bool,
 }
 
 #[derive(Debug)]
@@ -281,7 +282,7 @@ fn main() -> ExitCode {
             }
         },
         "features" => match parse_features_args(&args[2..]) {
-            Ok(parsed) => run_features(parsed.surface),
+            Ok(parsed) => run_features(&parsed),
             Err(err) => {
                 eprintln!("{}", err);
                 print_usage();
@@ -470,6 +471,7 @@ fn parse_inspect_artifact_args(args: &[String]) -> Result<InspectArtifactArgs, S
 
 fn parse_features_args(args: &[String]) -> Result<FeaturesArgs, String> {
     let mut surface = None::<SurfaceProfile>;
+    let mut json = false;
     let mut idx = 0usize;
     while idx < args.len() {
         match args[idx].as_str() {
@@ -486,6 +488,9 @@ fn parse_features_args(args: &[String]) -> Result<FeaturesArgs, String> {
                         .map_err(|err| format!("invalid features mode: {}", err))?,
                 );
             }
+            "--json" => {
+                json = true;
+            }
             other => {
                 return Err(format!(
                     "invalid features mode: unexpected argument '{}'",
@@ -500,7 +505,7 @@ fn parse_features_args(args: &[String]) -> Result<FeaturesArgs, String> {
         return Err("invalid features mode: missing --surface".to_string());
     };
 
-    Ok(FeaturesArgs { surface })
+    Ok(FeaturesArgs { surface, json })
 }
 
 fn parse_migrate_preview_args(args: &[String]) -> Result<MigratePreviewArgs, String> {
@@ -795,20 +800,43 @@ fn run_inspect_artifact(args: &InspectArtifactArgs) -> ExitCode {
     }
 }
 
-fn run_features(surface: SurfaceProfile) -> ExitCode {
-    let features = frontend_migration_features_for_profile(surface);
-    println!("surface: {}", surface.as_str());
-    println!("features: {}", features.len());
-    for feature in features {
-        println!("feature: {}", feature.id);
-        println!("status: {}", feature.status.as_str());
-        println!("classification: {}", feature.classification.as_str());
-        println!("surface_form: @{}", feature.surface_form);
-        println!("lowering_target: {}", feature.lowering_target);
-        println!("proposal_id: {}", feature.proposal_id);
-        println!("migration_safe: {}", feature.migration_safe);
-        println!("canonical_replacement: {}", feature.canonical_replacement);
-        println!("rewrite_intent: {}", feature.rewrite_intent);
+fn run_features(args: &FeaturesArgs) -> ExitCode {
+    let features = frontend_migration_features_for_profile(args.surface);
+    if args.json {
+        let mut out = String::from("[\n");
+        for (i, feature) in features.iter().enumerate() {
+            let surface_profile_gate = feature.status.as_str();
+            out.push_str("  {\n");
+            out.push_str(&format!("    \"id\": {},\n", serde_json::to_string(feature.id).unwrap()));
+            out.push_str(&format!("    \"status\": {},\n", serde_json::to_string(feature.status.as_str()).unwrap()));
+            out.push_str(&format!("    \"surface_form\": {},\n", serde_json::to_string(&format!("@{}", feature.surface_form)).unwrap()));
+            out.push_str(&format!("    \"lowering_target\": {},\n", serde_json::to_string(feature.lowering_target).unwrap()));
+            out.push_str(&format!("    \"surface_profile_gate\": {},\n", serde_json::to_string(surface_profile_gate).unwrap()));
+            out.push_str(&format!("    \"migration_safe\": {},\n", feature.migration_safe));
+            out.push_str(&format!("    \"canonical_replacement\": {},\n", serde_json::to_string(feature.canonical_replacement).unwrap()));
+            out.push_str(&format!("    \"proposal_id\": {}\n", serde_json::to_string(feature.proposal_id).unwrap()));
+            if i + 1 < features.len() {
+                out.push_str("  },\n");
+            } else {
+                out.push_str("  }\n");
+            }
+        }
+        out.push_str("]\n");
+        print!("{}", out);
+    } else {
+        println!("surface: {}", args.surface.as_str());
+        println!("features: {}", features.len());
+        for feature in features {
+            println!("feature: {}", feature.id);
+            println!("status: {}", feature.status.as_str());
+            println!("classification: {}", feature.classification.as_str());
+            println!("surface_form: @{}", feature.surface_form);
+            println!("lowering_target: {}", feature.lowering_target);
+            println!("proposal_id: {}", feature.proposal_id);
+            println!("migration_safe: {}", feature.migration_safe);
+            println!("canonical_replacement: {}", feature.canonical_replacement);
+            println!("rewrite_intent: {}", feature.rewrite_intent);
+        }
     }
     ExitCode::SUCCESS
 }
