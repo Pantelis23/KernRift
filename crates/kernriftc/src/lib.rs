@@ -455,16 +455,8 @@ fn sync_parent_directory_best_effort(_path: &Path) -> Result<(), Vec<String>> {
 
 fn emit_x86_64_executable_bytes(
     executable: &krir::ExecutableKrirModule,
-    target: &BackendTargetContract,
+    _target: &BackendTargetContract,
 ) -> Result<Vec<u8>, String> {
-    if !cfg!(target_os = "linux") {
-        return Err("compiling to a runnable .krbo requires a Linux host — \
-             the output format is a Linux ELF executable.\n\
-             On Windows: use WSL (wsl --install) and run kernriftc from inside it.\n\
-             Analysis commands (kernriftc check, kernriftc policy, etc.) work on all platforms."
-            .to_string());
-    }
-
     if !executable.extern_declarations.is_empty() {
         let unresolved = executable
             .extern_declarations
@@ -488,9 +480,42 @@ fn emit_x86_64_executable_bytes(
         );
     }
 
-    let object = lower_executable_krir_to_x86_64_object(executable, target)?;
+    emit_native_executable(executable)
+}
+
+#[cfg(target_os = "linux")]
+fn emit_native_executable(executable: &krir::ExecutableKrirModule) -> Result<Vec<u8>, String> {
+    let target = BackendTargetContract::x86_64_sysv();
+    let object = lower_executable_krir_to_x86_64_object(executable, &target)?;
     let object_bytes = emit_x86_64_object_bytes(&object);
     link_x86_64_linux_executable(&object_bytes)
+}
+
+#[cfg(target_os = "macos")]
+fn emit_native_executable(executable: &krir::ExecutableKrirModule) -> Result<Vec<u8>, String> {
+    use krir::{emit_x86_64_macho_object_bytes, lower_executable_krir_to_x86_64_macho_object};
+    let target = BackendTargetContract::x86_64_macho();
+    let object = lower_executable_krir_to_x86_64_macho_object(executable, &target)?;
+    let object_bytes = emit_x86_64_macho_object_bytes(&object);
+    link_x86_64_macos_executable(&object_bytes)
+}
+
+#[cfg(target_os = "windows")]
+fn emit_native_executable(executable: &krir::ExecutableKrirModule) -> Result<Vec<u8>, String> {
+    use krir::{emit_x86_64_coff_bytes, lower_executable_krir_to_x86_64_coff_object};
+    let target = BackendTargetContract::x86_64_win64();
+    let object = lower_executable_krir_to_x86_64_coff_object(executable, &target)?;
+    let coff_bytes = emit_x86_64_coff_bytes(&object);
+    link_x86_64_windows_executable(&coff_bytes)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+fn emit_native_executable(_: &krir::ExecutableKrirModule) -> Result<Vec<u8>, String> {
+    Err(
+        "compiling to a native executable requires Linux, macOS, or Windows.\n\
+         Analysis commands (kernriftc check, kernriftc policy, etc.) work on all platforms."
+            .to_string(),
+    )
 }
 
 fn link_x86_64_linux_executable(object_bytes: &[u8]) -> Result<Vec<u8>, String> {
@@ -1071,6 +1096,22 @@ mod tests {
         );
 
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn emit_native_executable_linux_requires_entry() {
+        use krir::lower_current_krir_to_executable_krir;
+        // A module without an 'entry' function
+        let src = "@ctx(thread) fn not_entry() {}";
+        let krir = crate::compile_source(src).unwrap();
+        let exec = lower_current_krir_to_executable_krir(&krir).unwrap();
+        let result = crate::emit_x86_64_executable_bytes(
+            &exec,
+            &super::BackendTargetContract::x86_64_sysv(),
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("entry"));
     }
 }
 
