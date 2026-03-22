@@ -286,6 +286,18 @@ pub enum KrirOp {
         addr: MmioAddrExpr,
         value: MmioValueExpr,
     },
+    /// Load a scalar value from an address stored in a named slot. Only valid inside an unsafe block.
+    RawPtrLoad {
+        ty: MmioScalarType,
+        addr_slot: String,
+        out_slot: String,
+    },
+    /// Store a scalar value to an address stored in a named slot. Only valid inside an unsafe block.
+    RawPtrStore {
+        ty: MmioScalarType,
+        addr_slot: String,
+        value: MmioValueExpr,
+    },
     /// `slice_len(slice, slot)` — extract the `len` (u64) component of a `[T]` param.
     SliceLen {
         slice: String,
@@ -700,6 +712,18 @@ pub enum ExecutableOp {
         rhs_idx: u8,
         out_idx: u8,
     },
+    /// Load a scalar from the address held in addr_slot_idx and store into out_slot_idx.
+    RawPtrLoad {
+        ty: MmioScalarType,
+        addr_slot_idx: u8,
+        out_slot_idx: u8,
+    },
+    /// Store a scalar value to the address held in addr_slot_idx.
+    RawPtrStore {
+        ty: MmioScalarType,
+        addr_slot_idx: u8,
+        value: MmioValueExpr,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -953,7 +977,9 @@ impl ExecutableKrirModule {
                         | ExecutableOp::LoopContinue
                         | ExecutableOp::BranchIfZeroLoopBreak { .. }
                         | ExecutableOp::BranchIfNonZeroLoopBreak { .. }
-                        | ExecutableOp::CompareIntoSlot { .. } => {}
+                        | ExecutableOp::CompareIntoSlot { .. }
+                        | ExecutableOp::RawPtrLoad { .. }
+                        | ExecutableOp::RawPtrStore { .. } => {}
                     }
                 }
             }
@@ -2185,6 +2211,50 @@ pub fn lower_current_krir_to_executable_krir(
                         exec_ops.push(ExecutableOp::BranchIfNonZeroLoopBreak { slot_idx: idx });
                     }
                 }
+                KrirOp::RawPtrLoad { ty, addr_slot, out_slot } => {
+                    let addr_idx = match cell_slot_map.get(addr_slot.as_str()) {
+                        Some(&(idx, _)) => idx,
+                        None => {
+                            errors.push(format!(
+                                "canonical-exec: function '{}' raw_ptr_load: addr_slot '{}' not a declared stack cell",
+                                function.name, addr_slot
+                            ));
+                            continue;
+                        }
+                    };
+                    let out_idx = match cell_slot_map.get(out_slot.as_str()) {
+                        Some(&(idx, _)) => idx,
+                        None => {
+                            errors.push(format!(
+                                "canonical-exec: function '{}' raw_ptr_load: out_slot '{}' not a declared stack cell",
+                                function.name, out_slot
+                            ));
+                            continue;
+                        }
+                    };
+                    exec_ops.push(ExecutableOp::RawPtrLoad {
+                        ty: *ty,
+                        addr_slot_idx: addr_idx,
+                        out_slot_idx: out_idx,
+                    });
+                }
+                KrirOp::RawPtrStore { ty, addr_slot, value } => {
+                    let addr_idx = match cell_slot_map.get(addr_slot.as_str()) {
+                        Some(&(idx, _)) => idx,
+                        None => {
+                            errors.push(format!(
+                                "canonical-exec: function '{}' raw_ptr_store: addr_slot '{}' not a declared stack cell",
+                                function.name, addr_slot
+                            ));
+                            continue;
+                        }
+                    };
+                    exec_ops.push(ExecutableOp::RawPtrStore {
+                        ty: *ty,
+                        addr_slot_idx: addr_idx,
+                        value: value.clone(),
+                    });
+                }
                 KrirOp::FloatArith { .. } => {
                     errors.push(format!(
                         "float arithmetic requires SSE2 backend (Task 14): function '{}'",
@@ -3266,6 +3336,23 @@ pub enum X86_64AsmInstruction {
         rhs_idx: u8,
         out_idx: u8,
     },
+    /// Load scalar from address held in addr_slot_idx into out_slot_idx.
+    RawPtrLoad {
+        ty: MmioScalarType,
+        addr_slot_idx: u8,
+        out_slot_idx: u8,
+    },
+    /// Store scalar value to address held in addr_slot_idx.
+    RawPtrStoreImm {
+        ty: MmioScalarType,
+        addr_slot_idx: u8,
+        value: u64,
+    },
+    /// Store saved value register to address held in addr_slot_idx.
+    RawPtrStoreSavedValue {
+        ty: MmioScalarType,
+        addr_slot_idx: u8,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -3915,6 +4002,45 @@ pub fn lower_executable_krir_to_x86_64_asm(
                             out_idx: *out_idx,
                         });
                     }
+                    ExecutableOp::RawPtrLoad {
+                        ty,
+                        addr_slot_idx,
+                        out_slot_idx,
+                    } => {
+                        instrs.push(X86_64AsmInstruction::RawPtrLoad {
+                            ty: *ty,
+                            addr_slot_idx: *addr_slot_idx,
+                            out_slot_idx: *out_slot_idx,
+                        });
+                    }
+                    ExecutableOp::RawPtrStore {
+                        ty,
+                        addr_slot_idx,
+                        value,
+                    } => match value {
+                        MmioValueExpr::IntLiteral { value: raw } => {
+                            let v = parse_integer_literal_u64(raw).expect(
+                                "raw_ptr_store: integer literal already validated during lowering",
+                            );
+                            instrs.push(X86_64AsmInstruction::RawPtrStoreImm {
+                                ty: *ty,
+                                addr_slot_idx: *addr_slot_idx,
+                                value: v,
+                            });
+                        }
+                        MmioValueExpr::Ident { .. } => {
+                            instrs.push(X86_64AsmInstruction::RawPtrStoreSavedValue {
+                                ty: *ty,
+                                addr_slot_idx: *addr_slot_idx,
+                            });
+                        }
+                        MmioValueExpr::FloatLiteral { .. } => {
+                            unreachable!(
+                                "float RawPtrStore not supported (Task 14): function '{}'",
+                                function.name
+                            );
+                        }
+                    },
                 }
             }
 
@@ -3958,6 +4084,9 @@ pub fn lower_executable_krir_to_x86_64_asm(
 fn executable_function_uses_saved_value_slot(function: &ExecutableFunction) -> bool {
     function.blocks.iter().any(|block| {
         block.ops.iter().any(|op| {
+            if let ExecutableOp::RawPtrStore { value: MmioValueExpr::Ident { .. }, .. } = op {
+                return true;
+            }
             matches!(
                 op,
                 ExecutableOp::CallCapture { .. }
@@ -4005,6 +4134,12 @@ fn executable_function_n_stack_cells(function: &ExecutableFunction) -> u8 {
                     out_idx,
                     ..
                 } => Some((*lhs_idx).max(*rhs_idx).max(*out_idx)),
+                ExecutableOp::RawPtrLoad {
+                    addr_slot_idx,
+                    out_slot_idx,
+                    ..
+                } => Some((*addr_slot_idx).max(*out_slot_idx)),
+                ExecutableOp::RawPtrStore { addr_slot_idx, .. } => Some(*addr_slot_idx),
                 _ => None,
             };
             if let Some(s) = slot {
@@ -4533,6 +4668,74 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                         out.push_str(&format!("    movl %eax, {}(%rsp)\n", out_offset));
                     }
                 }
+                X86_64AsmInstruction::RawPtrLoad {
+                    ty,
+                    addr_slot_idx,
+                    out_slot_idx,
+                } => {
+                    // 1. Load u64 address from addr_slot into %rax.
+                    let addr_offset = 8u32 * u32::from(*addr_slot_idx);
+                    if addr_offset == 0 {
+                        out.push_str("    movq (%rsp), %rax\n");
+                    } else {
+                        out.push_str(&format!("    movq {}(%rsp), %rax\n", addr_offset));
+                    }
+                    // 2. Indirect load [%rax] into accumulator register.
+                    out.push_str("    ");
+                    out.push_str(mmio_load_mnemonic(*ty));
+                    out.push_str(" (%rax), ");
+                    out.push_str(mmio_accumulator_register(*ty));
+                    out.push('\n');
+                    // 3. Store accumulator into out_slot.
+                    let out_offset = 8u32 * u32::from(*out_slot_idx);
+                    out.push_str("    ");
+                    out.push_str(mmio_store_mnemonic(*ty));
+                    out.push(' ');
+                    out.push_str(mmio_accumulator_register(*ty));
+                    if out_offset == 0 {
+                        out.push_str(", (%rsp)\n");
+                    } else {
+                        out.push_str(&format!(", {}(%rsp)\n", out_offset));
+                    }
+                }
+                X86_64AsmInstruction::RawPtrStoreImm {
+                    ty,
+                    addr_slot_idx,
+                    value,
+                } => {
+                    // 1. Load u64 address from addr_slot into %rax.
+                    let addr_offset = 8u32 * u32::from(*addr_slot_idx);
+                    if addr_offset == 0 {
+                        out.push_str("    movq (%rsp), %rax\n");
+                    } else {
+                        out.push_str(&format!("    movq {}(%rsp), %rax\n", addr_offset));
+                    }
+                    // 2. Load immediate into value register (%cl/%cx/%ecx/%rcx).
+                    out.push_str("    ");
+                    out.push_str(&mmio_immediate_mnemonic(*ty, *value));
+                    out.push('\n');
+                    // 3. Store value register to [%rax].
+                    out.push_str("    ");
+                    out.push_str(mmio_store_mnemonic(*ty));
+                    out.push(' ');
+                    out.push_str(mmio_value_register(*ty));
+                    out.push_str(", (%rax)\n");
+                }
+                X86_64AsmInstruction::RawPtrStoreSavedValue { ty, addr_slot_idx } => {
+                    // 1. Load u64 address from addr_slot into %rax.
+                    let addr_offset = 8u32 * u32::from(*addr_slot_idx);
+                    if addr_offset == 0 {
+                        out.push_str("    movq (%rsp), %rax\n");
+                    } else {
+                        out.push_str(&format!("    movq {}(%rsp), %rax\n", addr_offset));
+                    }
+                    // 2. Store saved value register (%bl/%bx/%ebx/%rbx) to [%rax].
+                    out.push_str("    ");
+                    out.push_str(mmio_store_mnemonic(*ty));
+                    out.push(' ');
+                    out.push_str(mmio_saved_value_register(*ty));
+                    out.push_str(", (%rax)\n");
+                }
             }
         }
     }
@@ -4773,6 +4976,34 @@ fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
         ExecutableOp::BranchIfNonZeroLoopBreak { .. } => 12,
         // movq [rsp+disp8], rax (5) + cmpq [rsp+disp8], rax (5) + setCC al (3) + movzx eax,al (3) + movl eax,[rsp+disp8] (5) = 21
         ExecutableOp::CompareIntoSlot { .. } => 21,
+        // RawPtrLoad: load addr (u64) from addr_slot into %rax, then indirect load [%rax] into %al/etc,
+        // then store result into out_slot.
+        ExecutableOp::RawPtrLoad {
+            ty,
+            addr_slot_idx,
+            out_slot_idx,
+        } => {
+            stack_cell_access_bytes(MmioScalarType::U64, *addr_slot_idx)
+                + mmio_load_bytes(*ty)
+                + stack_cell_access_bytes(*ty, *out_slot_idx)
+        }
+        // RawPtrStore: load addr (u64) from addr_slot into %rax, then store value to [%rax].
+        ExecutableOp::RawPtrStore {
+            ty,
+            addr_slot_idx,
+            value,
+        } => {
+            let value_bytes = match value {
+                MmioValueExpr::IntLiteral { .. } => {
+                    mmio_value_load_immediate_bytes(*ty) + mmio_store_bytes(*ty)
+                }
+                MmioValueExpr::Ident { .. } => mmio_saved_value_store_bytes(*ty),
+                MmioValueExpr::FloatLiteral { .. } => {
+                    unreachable!("float RawPtrStore encoding requires SSE2 backend (Task 14)")
+                }
+            };
+            stack_cell_access_bytes(MmioScalarType::U64, *addr_slot_idx) + value_bytes
+        }
     }
 }
 
@@ -5307,6 +5538,106 @@ fn encode_mmio_write_saved_value_param_addr_bytes(
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x18]),
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+        }
+    }
+}
+
+/// Store `%al/%ax/%eax/%rax` (accumulator, reg=0) to a stack cell slot.
+fn encode_stack_cell_store_accumulator_slot_bytes(
+    out: &mut Vec<u8>,
+    ty: MmioScalarType,
+    slot_idx: u8,
+) {
+    let offset = 8u8 * slot_idx;
+    if offset == 0 {
+        match ty {
+            MmioScalarType::U8 => out.extend_from_slice(&[0x88, 0x04, 0x24]),
+            MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x04, 0x24]),
+            MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x04, 0x24]),
+            MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x04, 0x24]),
+            MmioScalarType::F32 | MmioScalarType::F64 => {
+                unreachable!("float RawPtrLoad encoding requires SSE2 backend (Task 14)")
+            }
+        }
+    } else {
+        match ty {
+            MmioScalarType::U8 => out.extend_from_slice(&[0x88, 0x44, 0x24, offset]),
+            MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x44, 0x24, offset]),
+            MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x44, 0x24, offset]),
+            MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x44, 0x24, offset]),
+            MmioScalarType::F32 | MmioScalarType::F64 => {
+                unreachable!("float RawPtrLoad encoding requires SSE2 backend (Task 14)")
+            }
+        }
+    }
+}
+
+/// Encode `RawPtrLoad`: load addr (u64) from addr_slot into %rax,
+/// then do an indirect load [%rax] into %al/%ax/%eax/%rax,
+/// then store the result into out_slot.
+fn encode_raw_ptr_load_bytes(
+    out: &mut Vec<u8>,
+    ty: MmioScalarType,
+    addr_slot_idx: u8,
+    out_slot_idx: u8,
+) {
+    // 1. Load the u64 address from the addr_slot into %rax.
+    encode_stack_cell_load_slot_bytes_into_rax(out, MmioScalarType::U64, addr_slot_idx);
+    // 2. Indirect load from [%rax] into %al/%ax/%eax/%rax.
+    match ty {
+        MmioScalarType::U8 => out.extend_from_slice(&[0x8A, 0x00]),
+        MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x8B, 0x00]),
+        MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x00]),
+        MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x00]),
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!("float RawPtrLoad encoding requires SSE2 backend (Task 14)")
+        }
+    }
+    // 3. Store result (%al/%ax/%eax/%rax) into out_slot on the stack.
+    encode_stack_cell_store_accumulator_slot_bytes(out, ty, out_slot_idx);
+}
+
+/// Encode `RawPtrStore` with an immediate value: load addr (u64) from addr_slot into %rax,
+/// load immediate into %cl/%cx/%ecx/%rcx, then store to [%rax].
+fn encode_raw_ptr_store_imm_bytes(
+    out: &mut Vec<u8>,
+    ty: MmioScalarType,
+    addr_slot_idx: u8,
+    value: u64,
+) {
+    // 1. Load the u64 address from the addr_slot into %rax.
+    encode_stack_cell_load_slot_bytes_into_rax(out, MmioScalarType::U64, addr_slot_idx);
+    // 2. Load the immediate value into the value register (%cl/%cx/%ecx/%rcx).
+    push_mov_imm_to_value_register(out, ty, value);
+    // 3. Store %cl/%cx/%ecx/%rcx to [%rax].
+    match ty {
+        MmioScalarType::U8 => out.extend_from_slice(&[0x88, 0x08]),
+        MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x08]),
+        MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x08]),
+        MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x08]),
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!("float RawPtrStore encoding requires SSE2 backend (Task 14)")
+        }
+    }
+}
+
+/// Encode `RawPtrStore` with a saved value (from %rbx): load addr (u64) from addr_slot
+/// into %rax, then store %bl/%bx/%ebx/%rbx to [%rax].
+fn encode_raw_ptr_store_saved_value_bytes(
+    out: &mut Vec<u8>,
+    ty: MmioScalarType,
+    addr_slot_idx: u8,
+) {
+    // 1. Load the u64 address from the addr_slot into %rax.
+    encode_stack_cell_load_slot_bytes_into_rax(out, MmioScalarType::U64, addr_slot_idx);
+    // 2. Store %bl/%bx/%ebx/%rbx to [%rax].
+    match ty {
+        MmioScalarType::U8 => out.extend_from_slice(&[0x88, 0x18]),
+        MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x18]),
+        MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x18]),
+        MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x18]),
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!("float RawPtrStore encoding requires SSE2 backend (Task 14)")
         }
     }
 }
@@ -6121,6 +6452,58 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     });
                     local_offset += executable_op_encoded_len(op);
                 }
+                ExecutableOp::RawPtrLoad {
+                    ty,
+                    addr_slot_idx,
+                    out_slot_idx,
+                } => {
+                    encode_raw_ptr_load_bytes(
+                        &mut code_bytes,
+                        *ty,
+                        *addr_slot_idx,
+                        *out_slot_idx,
+                    );
+                    local_offset += executable_op_encoded_len(op);
+                }
+                ExecutableOp::RawPtrStore {
+                    ty,
+                    addr_slot_idx,
+                    value,
+                } => match value {
+                    MmioValueExpr::IntLiteral { value: raw } => {
+                        match parse_integer_literal_u64(raw) {
+                            Ok(v) => {
+                                encode_raw_ptr_store_imm_bytes(
+                                    &mut code_bytes,
+                                    *ty,
+                                    *addr_slot_idx,
+                                    v,
+                                );
+                            }
+                            Err(e) => {
+                                return Err(format!(
+                                    "compiler-owned object emission: raw_ptr_store integer literal '{}' in function '{}': {}",
+                                    raw, function.name, e
+                                ));
+                            }
+                        }
+                        local_offset += executable_op_encoded_len(op);
+                    }
+                    MmioValueExpr::Ident { .. } => {
+                        encode_raw_ptr_store_saved_value_bytes(
+                            &mut code_bytes,
+                            *ty,
+                            *addr_slot_idx,
+                        );
+                        local_offset += executable_op_encoded_len(op);
+                    }
+                    MmioValueExpr::FloatLiteral { .. } => {
+                        return Err(format!(
+                            "compiler-owned object emission: float RawPtrStore not supported in function '{}'",
+                            function.name
+                        ));
+                    }
+                },
                 ExecutableOp::LoopBegin
                 | ExecutableOp::LoopEnd
                 | ExecutableOp::LoopBreak
@@ -10980,5 +11363,22 @@ mod tests {
         };
         assert!(matches!(f.ops[0], KrirOp::UnsafeEnter), "first op must be UnsafeEnter");
         assert!(matches!(f.ops[1], KrirOp::UnsafeExit), "second op must be UnsafeExit");
+    }
+
+    #[test]
+    fn raw_ptr_load_op_exists() {
+        use super::{KrirOp, MmioScalarType, MmioValueExpr};
+        let op = KrirOp::RawPtrLoad {
+            ty: MmioScalarType::U32,
+            addr_slot: "p".to_string(),
+            out_slot: "v".to_string(),
+        };
+        let op2 = KrirOp::RawPtrStore {
+            ty: MmioScalarType::U32,
+            addr_slot: "p".to_string(),
+            value: MmioValueExpr::IntLiteral { value: "42".to_string() },
+        };
+        match op { KrirOp::RawPtrLoad { .. } => {} _ => panic!("wrong variant") }
+        match op2 { KrirOp::RawPtrStore { .. } => {} _ => panic!("wrong variant") }
     }
 }

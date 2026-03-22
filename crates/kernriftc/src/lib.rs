@@ -1248,6 +1248,8 @@ fn telemetry_op_discriminant(op: &KrirOp) -> String {
         KrirOp::MmioWrite { .. } => "mmio_write",
         KrirOp::RawMmioRead { .. } => "raw_mmio_read",
         KrirOp::RawMmioWrite { .. } => "raw_mmio_write",
+        KrirOp::RawPtrLoad { .. } => "raw_ptr_load",
+        KrirOp::RawPtrStore { .. } => "raw_ptr_store",
         KrirOp::SliceLen { .. } => "slice_len",
         KrirOp::SlicePtr { .. } => "slice_ptr",
         KrirOp::PercpuRead { .. } => "percpu_read",
