@@ -707,6 +707,249 @@ fn hosted_startup_stub_asm() -> &'static str {
     )
 }
 
+#[cfg(target_os = "macos")]
+fn hosted_startup_stub_asm_macos() -> &'static str {
+    // macOS BSD syscalls: mmap=0x20000C5, write=0x2000004, exit=0x2000001
+    // MAP_PRIVATE|MAP_FIXED|MAP_ANON = 0x02|0x10|0x1000 = 0x1012
+    concat!(
+        ".text\n",
+        ".globl _start\n",
+        "_start:\n",
+        "    mov $0x20000C5, %rax\n",
+        "    mov $0x10000000, %rdi\n",
+        "    mov $0x1000, %rsi\n",
+        "    mov $3, %rdx\n",
+        "    mov $0x1012, %r10\n",
+        "    mov $-1, %r8\n",
+        "    xor %r9d, %r9d\n",
+        "    syscall\n",
+        "    call _entry\n",
+        "    mov $0x10000000, %rdi\n",
+        "    xor %rdx, %rdx\n",
+        ".Lscan:\n",
+        "    cmpb $0, (%rdi,%rdx)\n",
+        "    je .Lwrite\n",
+        "    inc %rdx\n",
+        "    cmp $0x1000, %rdx\n",
+        "    jl .Lscan\n",
+        ".Lwrite:\n",
+        "    test %rdx, %rdx\n",
+        "    jz .Lexit\n",
+        "    mov $0x2000004, %rax\n",
+        "    mov $1, %rdi\n",
+        "    mov $0x10000000, %rsi\n",
+        "    syscall\n",
+        ".Lexit:\n",
+        "    mov $0x2000001, %rax\n",
+        "    xor %edi, %edi\n",
+        "    syscall\n",
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn link_x86_64_macos_executable(object_bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let cc = find_host_tool(&["cc", "clang"]).ok_or_else(|| {
+        "final executable emit requires a host compiler (cc or clang)".to_string()
+    })?;
+
+    let temp_dir = unique_temp_dir("machoexe");
+    fs::create_dir_all(&temp_dir).map_err(|err| {
+        format!(
+            "failed to create temporary link directory '{}': {}",
+            temp_dir.display(),
+            err
+        )
+    })?;
+    let cleanup = TempArtifactDir {
+        path: temp_dir.clone(),
+    };
+
+    let input_object = temp_dir.join("input.o");
+    let startup_source = temp_dir.join("startup.s");
+    let startup_object = temp_dir.join("startup.o");
+    let output_path = temp_dir.join("output");
+
+    fs::write(&input_object, object_bytes).map_err(|err| {
+        format!(
+            "failed to write temporary object '{}': {}",
+            input_object.display(),
+            err
+        )
+    })?;
+    fs::write(&startup_source, hosted_startup_stub_asm_macos()).map_err(|err| {
+        format!(
+            "failed to write startup stub '{}': {}",
+            startup_source.display(),
+            err
+        )
+    })?;
+
+    let asm_out = Command::new(&cc)
+        .arg("-c")
+        .arg(&startup_source)
+        .arg("-o")
+        .arg(&startup_object)
+        .output()
+        .map_err(|err| format!("failed to run assembler '{}': {}", cc, err))?;
+    if !asm_out.status.success() {
+        return Err(format!(
+            "failed to assemble startup stub with '{}'\nstdout:\n{}\nstderr:\n{}",
+            cc,
+            String::from_utf8_lossy(&asm_out.stdout),
+            String::from_utf8_lossy(&asm_out.stderr)
+        ));
+    }
+
+    let link_out = Command::new(&cc)
+        .arg("-nostdlib")
+        .arg("-Wl,-e,_start")
+        .arg("-o")
+        .arg(&output_path)
+        .arg(&startup_object)
+        .arg(&input_object)
+        .output()
+        .map_err(|err| format!("failed to run linker '{}': {}", cc, err))?;
+    if !link_out.status.success() {
+        return Err(format!(
+            "failed to link with '{}'\nstdout:\n{}\nstderr:\n{}",
+            cc,
+            String::from_utf8_lossy(&link_out.stdout),
+            String::from_utf8_lossy(&link_out.stderr)
+        ));
+    }
+
+    let bytes = fs::read(&output_path).map_err(|err| {
+        format!(
+            "failed to read linked executable '{}': {}",
+            output_path.display(),
+            err
+        )
+    })?;
+    drop(cleanup);
+    Ok(bytes)
+}
+
+#[cfg(target_os = "windows")]
+fn hosted_startup_stub_c_windows() -> &'static str {
+    concat!(
+        "#define WIN32_LEAN_AND_MEAN\n",
+        "#include <windows.h>\n",
+        "extern void entry(void);\n",
+        "void kernrift_start(void) {\n",
+        "    VirtualAlloc((LPVOID)0x10000000, 0x1000,\n",
+        "                 MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);\n",
+        "    entry();\n",
+        "    const char *buf = (const char *)0x10000000;\n",
+        "    DWORD len = 0;\n",
+        "    while (len < 0x1000 && buf[len] != '\\0') { len++; }\n",
+        "    if (len > 0) {\n",
+        "        HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);\n",
+        "        DWORD written;\n",
+        "        WriteFile(h, buf, len, &written, NULL);\n",
+        "    }\n",
+        "    ExitProcess(0);\n",
+        "}\n",
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn link_x86_64_windows_executable(object_bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let cc = find_host_tool(&["clang", "cl"]).ok_or_else(|| {
+        "final executable emit requires a host C compiler (clang.exe or cl.exe)".to_string()
+    })?;
+    let linker = find_host_tool(&["lld-link", "link"]).ok_or_else(|| {
+        "final executable emit requires a host linker (lld-link.exe or link.exe).\n\
+             Run from a Visual Studio Developer Command Prompt or set LIBPATH to the Windows SDK Lib directory."
+            .to_string()
+    })?;
+
+    let temp_dir = unique_temp_dir("winexe");
+    fs::create_dir_all(&temp_dir).map_err(|err| {
+        format!(
+            "failed to create temporary link directory '{}': {}",
+            temp_dir.display(),
+            err
+        )
+    })?;
+    let cleanup = TempArtifactDir {
+        path: temp_dir.clone(),
+    };
+
+    let input_object = temp_dir.join("input.obj");
+    let startup_source = temp_dir.join("startup.c");
+    let startup_object = temp_dir.join("startup.obj");
+    let output_path = temp_dir.join("output.exe");
+
+    fs::write(&input_object, object_bytes).map_err(|err| {
+        format!(
+            "failed to write temporary object '{}': {}",
+            input_object.display(),
+            err
+        )
+    })?;
+    fs::write(&startup_source, hosted_startup_stub_c_windows()).map_err(|err| {
+        format!(
+            "failed to write startup stub '{}': {}",
+            startup_source.display(),
+            err
+        )
+    })?;
+
+    let cc_args: Vec<std::ffi::OsString> = if cc == "cl" {
+        vec![
+            "/c".into(),
+            startup_source.as_os_str().into(),
+            format!("/Fo{}", startup_object.display()).into(),
+        ]
+    } else {
+        vec![
+            "-c".into(),
+            startup_source.as_os_str().into(),
+            "-o".into(),
+            startup_object.as_os_str().into(),
+        ]
+    };
+    let cc_out = Command::new(&cc)
+        .args(&cc_args)
+        .output()
+        .map_err(|err| format!("failed to run compiler '{}': {}", cc, err))?;
+    if !cc_out.status.success() {
+        return Err(format!(
+            "failed to compile startup stub with '{}'\nstdout:\n{}\nstderr:\n{}",
+            cc,
+            String::from_utf8_lossy(&cc_out.stdout),
+            String::from_utf8_lossy(&cc_out.stderr)
+        ));
+    }
+
+    let link_out = Command::new(&linker)
+        .arg("/entry:kernrift_start")
+        .arg("/subsystem:console")
+        .arg(format!("/out:{}", output_path.display()))
+        .arg(&startup_object)
+        .arg(&input_object)
+        .output()
+        .map_err(|err| format!("failed to run linker '{}': {}", linker, err))?;
+    if !link_out.status.success() {
+        return Err(format!(
+            "failed to link with '{}'\nstdout:\n{}\nstderr:\n{}",
+            linker,
+            String::from_utf8_lossy(&link_out.stdout),
+            String::from_utf8_lossy(&link_out.stderr)
+        ));
+    }
+
+    let bytes = fs::read(&output_path).map_err(|err| {
+        format!(
+            "failed to read linked executable '{}': {}",
+            output_path.display(),
+            err
+        )
+    })?;
+    drop(cleanup);
+    Ok(bytes)
+}
+
 fn find_host_tool(candidates: &[&str]) -> Option<String> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path).find_map(|dir| {
@@ -768,6 +1011,26 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("kernrift-{}-{}", label, ts));
         fs::create_dir_all(&dir).expect("create temp dir");
         dir
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_startup_stub_is_non_empty_asm() {
+        let stub = super::hosted_startup_stub_asm_macos();
+        assert!(stub.contains("_start"), "must define _start");
+        assert!(stub.contains("0x20000C5"), "must use macOS mmap syscall");
+        assert!(stub.contains("_entry"), "must call _entry");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_startup_stub_mentions_virtualalloc() {
+        let stub = super::hosted_startup_stub_c_windows();
+        assert!(stub.contains("VirtualAlloc"), "stub must call VirtualAlloc");
+        assert!(
+            stub.contains("kernrift_start"),
+            "stub must define kernrift_start"
+        );
     }
 
     #[test]
