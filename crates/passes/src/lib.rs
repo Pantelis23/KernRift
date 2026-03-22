@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use krir::{Ctx, Eff, ExecutableKrirModule, ExecutableOp, Function, KrirModule, KrirOp};
 
@@ -1053,7 +1053,51 @@ fn sched_hook_check(module: &KrirModule) -> Vec<CheckError> {
 /// - **Dead extern strip**: removes extern declarations that are never called.
 pub fn optimize_executable_krir(module: &mut ExecutableKrirModule) {
     fold_trivial_branches(module);
+    strip_unreachable_functions(module);
     strip_dead_extern_decls(module);
+}
+
+fn strip_unreachable_functions(module: &mut ExecutableKrirModule) {
+    let mut reachable: BTreeSet<String> = BTreeSet::new();
+    let mut queue: VecDeque<String> = VecDeque::new();
+
+    for function in &module.functions {
+        let is_root = function.facts.attrs.is_export
+            || function.facts.ctx_ok.contains(&Ctx::Boot);
+        if is_root {
+            if reachable.insert(function.name.clone()) {
+                queue.push_back(function.name.clone());
+            }
+        }
+    }
+
+    // Library-mode: no roots → keep everything
+    if reachable.is_empty() {
+        return;
+    }
+
+    // Build call adjacency from call_edges
+    let mut adj: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for edge in &module.call_edges {
+        adj.entry(edge.caller.as_str()).or_default().push(edge.callee.as_str());
+    }
+
+    // BFS over reachable set
+    while let Some(name) = queue.pop_front() {
+        if let Some(callees) = adj.get(name.as_str()) {
+            for &callee in callees {
+                if reachable.insert(callee.to_string()) {
+                    queue.push_back(callee.to_string());
+                }
+            }
+        }
+    }
+
+    // Strip unreachable user-defined functions
+    module.functions.retain(|f| reachable.contains(&f.name));
+
+    // Strip call edges whose caller is no longer present
+    module.call_edges.retain(|e| reachable.contains(&e.caller));
 }
 
 fn fold_trivial_branches(module: &mut ExecutableKrirModule) {

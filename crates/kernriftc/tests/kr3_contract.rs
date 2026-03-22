@@ -1688,3 +1688,77 @@ fn hotpath_function_is_16_byte_aligned_in_object() {
         &obj.code.bytes[nop_range]
     );
 }
+
+// ── Dead function elimination ─────────────────────────────────────────────────
+
+#[test]
+fn dead_function_elimination_strips_unreachable_functions() {
+    use passes::optimize_executable_krir;
+
+    let src = r#"
+@export @ctx(thread)
+fn exported_root() {}
+
+@ctx(thread)
+fn dead_unreachable() {}
+"#;
+
+    let module = kernriftc::compile_source(src).expect("must compile");
+    let mut exec = lower_current_krir_to_executable_krir(&module).expect("must lower");
+    optimize_executable_krir(&mut exec);
+
+    let fn_names: Vec<&str> = exec.functions.iter().map(|f| f.name.as_str()).collect();
+    assert!(
+        fn_names.contains(&"exported_root"),
+        "exported_root must survive DCE: {fn_names:?}"
+    );
+    assert!(
+        !fn_names.contains(&"dead_unreachable"),
+        "dead_unreachable must be stripped by DCE: {fn_names:?}"
+    );
+}
+
+#[test]
+fn dead_function_elimination_preserves_transitively_reachable() {
+    use passes::optimize_executable_krir;
+
+    let src = r#"
+@ctx(thread)
+fn helper() {}
+
+@export @ctx(thread)
+fn root() { helper(); }
+"#;
+
+    let module = kernriftc::compile_source(src).expect("must compile");
+    let mut exec = lower_current_krir_to_executable_krir(&module).expect("must lower");
+    optimize_executable_krir(&mut exec);
+
+    let fn_names: Vec<&str> = exec.functions.iter().map(|f| f.name.as_str()).collect();
+    assert!(fn_names.contains(&"root"), "root must survive: {fn_names:?}");
+    assert!(fn_names.contains(&"helper"), "helper reachable from root must survive: {fn_names:?}");
+}
+
+#[test]
+fn dead_function_elimination_skips_when_no_roots() {
+    use passes::optimize_executable_krir;
+
+    let src = r#"
+@ctx(thread)
+fn a() {}
+
+@ctx(thread)
+fn b() {}
+"#;
+
+    let module = kernriftc::compile_source(src).expect("must compile");
+    let mut exec = lower_current_krir_to_executable_krir(&module).expect("must lower");
+    let original_count = exec.functions.len();
+    optimize_executable_krir(&mut exec);
+
+    assert_eq!(
+        exec.functions.len(),
+        original_count,
+        "no-root module: DCE must not eliminate anything"
+    );
+}
