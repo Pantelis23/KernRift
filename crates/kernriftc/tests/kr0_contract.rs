@@ -1061,3 +1061,34 @@ fn slice_params_compile_to_correct_abi_in_x86_64_elf_object() {
         "slice_len must load from [rsp+8] (len slot, ABI idx 1)"
     );
 }
+
+#[test]
+fn ptr_deref_in_unsafe_compiles() {
+    let src = r#"
+@ctx(thread)
+fn entry() {
+    unsafe {
+        uint64 ptr = 0x1000
+        uint32 val = 0
+        *(ptr as uint32) -> val
+        *(ptr as uint32) = 42
+    }
+}
+"#;
+    let result = kernriftc::compile_source(src);
+    assert!(result.is_ok(), "ptr deref in unsafe should compile: {:?}", result);
+}
+
+#[test]
+fn ptr_deref_outside_unsafe_is_error() {
+    let src = r#"
+@ctx(thread)
+fn entry() {
+    uint64 ptr = 0x1000
+    uint32 val = 0
+    *(ptr as uint32) -> val
+}
+"#;
+    let result = kernriftc::compile_source(src);
+    assert!(result.is_err(), "ptr deref outside unsafe must be rejected");
+}

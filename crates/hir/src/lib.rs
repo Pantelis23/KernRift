@@ -2609,7 +2609,9 @@ fn lower_stmts_to_canonical_executable(
             | Stmt::Break
             | Stmt::Continue
             | Stmt::Print(_)
-            | Stmt::ExprStmt(_) => {
+            | Stmt::ExprStmt(_)
+            | Stmt::PtrLoad { .. }
+            | Stmt::PtrStore { .. } => {
                 errors.push(format!(
                     "surface syntax statement not yet lowered (Task 7-12): {:?}",
                     stmt
@@ -3322,6 +3324,23 @@ fn lower_stmt(
                 arith_op: KrirArithOp::Add,
             });
             ops.push(KrirOp::LoopEnd);
+        }
+        Stmt::PtrLoad { ty, addr_var, out_var } => {
+            ops.push(KrirOp::RawPtrLoad {
+                ty: lower_mmio_scalar_type(*ty),
+                addr_slot: addr_var.clone(),
+                out_slot: out_var.clone(),
+            });
+        }
+        Stmt::PtrStore { ty, addr_var, value } => {
+            match lower_expr(value, ops, slot_counter, device_regs, eff_used) {
+                Ok(src) => ops.push(KrirOp::RawPtrStore {
+                    ty: lower_mmio_scalar_type(*ty),
+                    addr_slot: addr_var.clone(),
+                    value: KrirMmioValueExpr::Ident { name: src },
+                }),
+                Err(e) => errors.push(e),
+            }
         }
         Stmt::Break => ops.push(KrirOp::LoopBreak),
         Stmt::Continue => ops.push(KrirOp::LoopContinue),

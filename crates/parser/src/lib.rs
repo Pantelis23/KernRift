@@ -402,6 +402,18 @@ pub enum Stmt {
         name: String,
         value: MmioValueExpr,
     },
+    /// Load through raw pointer: `*(addr_var as TYPE) -> out_var`
+    PtrLoad {
+        ty: MmioScalarType,
+        addr_var: String,
+        out_var: String,
+    },
+    /// Store through raw pointer: `*(addr_var as TYPE) = value`
+    PtrStore {
+        ty: MmioScalarType,
+        addr_var: String,
+        value: Box<Expr>,
+    },
 
     // ---- NEW SURFACE SYNTAX STATEMENTS ----
     /// `TypeKind name = expr` or `TypeKind name`
@@ -1303,6 +1315,17 @@ impl TokParser {
             if lbp < min_bp {
                 break;
             }
+            // If we see `*` followed by `( ident as`, this is a PtrLoad/PtrStore
+            // statement, not a multiplication. Stop consuming infix operators.
+            if matches!(self.peek().kind, TokenKind::Star) {
+                if matches!(self.peek_at(1).kind, TokenKind::LParen) {
+                    if matches!(self.peek_at(2).kind, TokenKind::Ident(_)) {
+                        if matches!(&self.peek_at(3).kind, TokenKind::Ident(kw) if kw == "as") {
+                            break;
+                        }
+                    }
+                }
+            }
             self.advance();
             let rhs = self.parse_expr(rbp)?;
             lhs = Expr::BinOp {
@@ -1897,6 +1920,38 @@ impl TokParser {
                         "unexpected token {:?} after identifier '{}' ({}:{})",
                         other, name, note.line, note.column
                     )),
+                }
+            }
+            // *(addr_var as TYPE) -> out_var   — PtrLoad
+            // *(addr_var as TYPE) = expr       — PtrStore
+            TokenKind::Star => {
+                self.advance();
+                self.expect_kind(&TokenKind::LParen)?;
+                let addr_var = match self.advance().kind.clone() {
+                    TokenKind::Ident(n) => n,
+                    other => return Err(format!("expected identifier after *(, got {:?}", other)),
+                };
+                // expect `as`
+                match self.advance().kind.clone() {
+                    TokenKind::Ident(kw) if kw == "as" => {}
+                    other => return Err(format!("expected 'as' in ptr deref cast, got {:?}", other)),
+                }
+                let ty = match self.advance().kind.clone() {
+                    TokenKind::TypeKw(t) => t,
+                    other => return Err(format!("expected type in ptr deref cast, got {:?}", other)),
+                };
+                self.expect_kind(&TokenKind::RParen)?;
+                // discriminate on -> vs =
+                if self.eat(&TokenKind::Arrow) {
+                    let out_var = match self.advance().kind.clone() {
+                        TokenKind::Ident(n) => n,
+                        other => return Err(format!("expected output slot after ->, got {:?}", other)),
+                    };
+                    Ok(Stmt::PtrLoad { ty, addr_var, out_var })
+                } else {
+                    self.expect_kind(&TokenKind::Eq)?;
+                    let value = self.parse_expr(0)?;
+                    Ok(Stmt::PtrStore { ty, addr_var, value: Box::new(value) })
                 }
             }
             other => Err(format!(
