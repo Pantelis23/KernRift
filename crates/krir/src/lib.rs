@@ -8041,6 +8041,84 @@ pub fn emit_compiler_owned_object_bytes(object: &CompilerOwnedObject) -> Vec<u8>
     bytes
 }
 
+// ---------------------------------------------------------------------------
+// KRBO container format
+// ---------------------------------------------------------------------------
+
+pub const KRBO_MAGIC: [u8; 4] = *b"KRBO";
+pub const KRBO_VERSION: u8 = 1;
+pub const KRBO_ARCH_X86_64: u8 = 0x01;
+
+/// Parsed representation of a `.krbo` file header.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KrboHeader {
+    pub version: u8,
+    pub arch: u8,
+    pub entry_offset: u32,
+    pub code_length: u32,
+}
+
+/// Emit a `.krbo` binary blob from raw code bytes and an entry offset.
+///
+/// Layout: 16-byte header followed by `code.len()` bytes of machine code.
+pub fn emit_krbo_bytes_raw(code: &[u8], entry_offset: u32) -> Vec<u8> {
+    let code_length = code.len() as u32;
+    let mut out = Vec::with_capacity(16 + code.len());
+    out.extend_from_slice(&KRBO_MAGIC);
+    out.push(KRBO_VERSION);
+    out.push(KRBO_ARCH_X86_64);
+    out.extend_from_slice(&[0u8, 0u8]); // reserved
+    out.extend_from_slice(&entry_offset.to_le_bytes());
+    out.extend_from_slice(&code_length.to_le_bytes());
+    out.extend_from_slice(code);
+    out
+}
+
+/// Emit a `.krbo` binary blob from an `X86_64ElfRelocatableObject`.
+pub fn emit_krbo_bytes(object: &X86_64ElfRelocatableObject, entry_offset: u32) -> Vec<u8> {
+    emit_krbo_bytes_raw(&object.text_bytes, entry_offset)
+}
+
+/// Parse and validate a `.krbo` header from raw bytes.
+///
+/// Returns `Ok(KrboHeader)` when the header is valid, or `Err(message)` for
+/// any structural or semantic violation.
+pub fn parse_krbo_header(bytes: &[u8]) -> Result<KrboHeader, String> {
+    if bytes.len() < 16 {
+        return Err("not a .krbo file: too short".to_string());
+    }
+    if bytes[0..4] != KRBO_MAGIC {
+        return Err("not a .krbo file".to_string());
+    }
+    let version = bytes[4];
+    if version != KRBO_VERSION {
+        return Err(format!(
+            "unsupported .krbo version {} (expected {})",
+            version, KRBO_VERSION
+        ));
+    }
+    let arch = bytes[5];
+    if arch != KRBO_ARCH_X86_64 {
+        let arch_name = match arch {
+            0x02 => "aarch64",
+            _ => "unknown",
+        };
+        return Err(format!(
+            "this .krbo targets {} but this host is x86-64",
+            arch_name
+        ));
+    }
+    let entry_offset = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+    let code_length  = u32::from_le_bytes(bytes[12..16].try_into().unwrap());
+    if code_length == 0 {
+        return Err("malformed .krbo: empty code section".to_string());
+    }
+    if entry_offset >= code_length {
+        return Err("malformed .krbo: entry_offset out of range".to_string());
+    }
+    Ok(KrboHeader { version, arch, entry_offset, code_length })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -11518,5 +11596,61 @@ mod tests {
         };
         match op { KrirOp::RawPtrLoad { .. } => {} _ => panic!("wrong variant") }
         match op2 { KrirOp::RawPtrStore { .. } => {} _ => panic!("wrong variant") }
+    }
+
+    #[test]
+    fn krbo_emit_and_parse_round_trip() {
+        let code_bytes = vec![0x90u8, 0x90, 0xC3, 0x00]; // nop nop ret pad
+        let header_bytes = super::emit_krbo_bytes_raw(&code_bytes, 0);
+        assert_eq!(&header_bytes[0..4], b"KRBO", "magic wrong");
+        assert_eq!(header_bytes[4], 1, "version wrong");
+        assert_eq!(header_bytes[5], 0x01, "arch wrong");
+        assert_eq!(header_bytes[6], 0, "reserved[0] wrong");
+        assert_eq!(header_bytes[7], 0, "reserved[1] wrong");
+        let entry_off = u32::from_le_bytes(header_bytes[8..12].try_into().unwrap());
+        let code_len  = u32::from_le_bytes(header_bytes[12..16].try_into().unwrap());
+        assert_eq!(entry_off, 0);
+        assert_eq!(code_len, 4);
+        assert_eq!(&header_bytes[16..], &code_bytes[..]);
+        let hdr = super::parse_krbo_header(&header_bytes).unwrap();
+        assert_eq!(hdr.entry_offset, 0);
+        assert_eq!(hdr.code_length, 4);
+    }
+
+    #[test]
+    fn krbo_parse_rejects_bad_magic() {
+        let mut bad = vec![0u8; 20];
+        bad[0..4].copy_from_slice(b"NOPE");
+        bad[4] = 1; bad[5] = 0x01;
+        bad[12..16].copy_from_slice(&4u32.to_le_bytes());
+        assert!(super::parse_krbo_header(&bad).is_err());
+    }
+
+    #[test]
+    fn krbo_parse_rejects_bad_version() {
+        let mut bytes = vec![0u8; 20];
+        bytes[0..4].copy_from_slice(b"KRBO");
+        bytes[4] = 99; bytes[5] = 0x01;
+        bytes[12..16].copy_from_slice(&4u32.to_le_bytes());
+        assert!(super::parse_krbo_header(&bytes).is_err());
+    }
+
+    #[test]
+    fn krbo_parse_rejects_empty_code() {
+        let mut bytes = vec![0u8; 16];
+        bytes[0..4].copy_from_slice(b"KRBO");
+        bytes[4] = 1; bytes[5] = 0x01;
+        // code_length stays 0
+        assert!(super::parse_krbo_header(&bytes).is_err());
+    }
+
+    #[test]
+    fn krbo_parse_rejects_entry_out_of_range() {
+        let mut bytes = vec![0u8; 20];
+        bytes[0..4].copy_from_slice(b"KRBO");
+        bytes[4] = 1; bytes[5] = 0x01;
+        bytes[8..12].copy_from_slice(&100u32.to_le_bytes()); // entry_offset=100
+        bytes[12..16].copy_from_slice(&4u32.to_le_bytes());   // code_length=4 → out of range
+        assert!(super::parse_krbo_header(&bytes).is_err());
     }
 }
