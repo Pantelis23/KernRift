@@ -1,0 +1,8 @@
+@module_caps(MmioRaw);
+
+@ctx(thread, boot)
+fn entry() {
+    raw_mmio_write<u8>(0x10000000, 72);
+    raw_mmio_write<u8>(0x10000001, 105);
+    raw_mmio_write<u8>(0x10000002, 10);
+}
