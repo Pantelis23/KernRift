@@ -2185,8 +2185,6 @@ pub fn lower_current_krir_to_executable_krir(
                         exec_ops.push(ExecutableOp::BranchIfNonZeroLoopBreak { slot_idx: idx });
                     }
                 }
-                KrirOp::UnsafeEnter => {}
-                KrirOp::UnsafeExit => {}
                 KrirOp::FloatArith { .. } => {
                     errors.push(format!(
                         "float arithmetic requires SSE2 backend (Task 14): function '{}'",
@@ -10966,7 +10964,7 @@ mod tests {
 
     #[test]
     fn krir_unsafe_markers_round_trip() {
-        use super::{Ctx, Eff, Function, FunctionAttrs, KrirOp};
+        use super::{Ctx, Function, FunctionAttrs, KrirOp};
         let f = Function {
             name: "test".to_string(),
             is_extern: false,
@@ -10980,6 +10978,7 @@ mod tests {
                 KrirOp::UnsafeExit,
             ],
         };
-        assert_eq!(f.ops.len(), 2);
+        assert!(matches!(f.ops[0], KrirOp::UnsafeEnter), "first op must be UnsafeEnter");
+        assert!(matches!(f.ops[1], KrirOp::UnsafeExit), "second op must be UnsafeExit");
     }
 }
