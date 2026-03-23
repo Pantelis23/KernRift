@@ -1,0 +1,20 @@
+lock ConsoleLock
+lock SchedLock
+lock IrqLock
+
+fn innermost() {
+    acquire(IrqLock);
+    release(IrqLock);
+}
+
+fn middle() {
+    acquire(SchedLock);
+    innermost();
+    release(SchedLock);
+}
+
+fn outer() {
+    acquire(ConsoleLock);
+    middle();
+    release(ConsoleLock);
+}

@@ -1,0 +1,12 @@
+@module_caps(Mmio)
+
+device UART0 at 0x1000 {
+    SR at 0x00 : uint32 ro
+    DR at 0x04 : uint8  rw
+}
+
+@ctx(irq)
+fn isr() {
+    uint32 status = UART0.SR
+    UART0.DR = 0x00
+}
