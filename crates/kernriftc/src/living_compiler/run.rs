@@ -5,7 +5,7 @@ use kernriftc::{collect_telemetry, compile_file_with_surface, detect_patterns};
 use passes::analyze_module;
 
 use super::args::{LivingCompilerArgs, LivingCompilerFormat};
-use super::diff::{compute_diff, git_show_head, DiffStatus};
+use super::diff::{DiffStatus, compute_diff, git_show_head};
 use super::fix::{apply_fixes, find_fix_sites, unified_diff};
 
 pub(crate) fn run_living_compiler(args: &LivingCompilerArgs) -> ExitCode {
@@ -58,7 +58,11 @@ fn filter_by_min_fitness(
     args: &LivingCompilerArgs,
 ) -> Vec<kernriftc::PatternMatch> {
     if args.ci || args.min_fitness_explicit {
-        suggestions.iter().filter(|m| m.fitness >= args.ci_min_fitness).cloned().collect()
+        suggestions
+            .iter()
+            .filter(|m| m.fitness >= args.ci_min_fitness)
+            .cloned()
+            .collect()
     } else {
         suggestions.to_vec()
     }
@@ -93,8 +97,7 @@ fn run_diff_mode(args: &LivingCompilerArgs) -> ExitCode {
         }
     };
 
-    let before_suggestions = compile_and_detect_str(&before_src, args.surface)
-        .unwrap_or_default();
+    let before_suggestions = compile_and_detect_str(&before_src, args.surface).unwrap_or_default();
     let after_suggestions = match compile_and_detect(Path::new(after_path), args.surface) {
         Ok(s) => s,
         Err(errs) => {
@@ -112,11 +115,18 @@ fn run_diff_mode(args: &LivingCompilerArgs) -> ExitCode {
             DiffStatus::Worsened { fitness_before } => format!("worsened (was {})", fitness_before),
         };
         println!();
-        println!("[{}] {}  fitness: {}", status_str, entry.suggestion.id, entry.suggestion.fitness);
+        println!(
+            "[{}] {}  fitness: {}",
+            status_str, entry.suggestion.id, entry.suggestion.fitness
+        );
         println!("    {}", entry.suggestion.signal);
     }
 
-    if args.ci && entries.iter().any(|e| e.suggestion.fitness >= args.ci_min_fitness) {
+    if args.ci
+        && entries
+            .iter()
+            .any(|e| e.suggestion.fitness >= args.ci_min_fitness)
+    {
         ExitCode::from(1)
     } else {
         ExitCode::SUCCESS
@@ -158,7 +168,11 @@ fn run_fix_mode(args: &LivingCompilerArgs) -> ExitCode {
         return ci_exit_code(&suggestions, args);
     }
 
-    // --write: apply atomically
+    // --write: apply atomically (args.parse guarantees write=true at this point)
+    assert!(
+        args.write,
+        "run_fix_mode reached write path without --write flag"
+    );
     let patched = apply_fixes(&source, &sites);
     let tmp_path = format!("{}.lc-fix.tmp", args.input_path);
     if let Err(e) = std::fs::write(&tmp_path, &patched) {
@@ -174,7 +188,8 @@ fn run_fix_mode(args: &LivingCompilerArgs) -> ExitCode {
     println!("fixed: {} ({} site(s))", args.input_path, sites.len());
 
     if args.ci {
-        let fixed_suggestions = match compile_and_detect(Path::new(&args.input_path), args.surface) {
+        let fixed_suggestions = match compile_and_detect(Path::new(&args.input_path), args.surface)
+        {
             Ok(s) => s,
             Err(_) => return ExitCode::from(2),
         };

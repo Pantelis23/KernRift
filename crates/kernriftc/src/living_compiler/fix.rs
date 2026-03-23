@@ -156,8 +156,7 @@ pub(crate) fn find_fix_sites(source: &str) -> Vec<FixSite> {
         let line_has_fn = trimmed.starts_with("fn ") || trimmed.contains(" fn ");
         if line_has_fn && opens > 0 && !in_fn_body {
             in_fn_body = true;
-            fn_body_depth = depth - opens; // body depth = depth after all opens on this line, minus the body open
-            // More precisely: the body was opened by the last `{` on this line.
+            // The body was opened by the last `{` on this line.
             // depth already includes all opens/closes on this line.
             // The body's interior is at depth fn_body_depth + 1.
             fn_body_depth = depth - 1;
@@ -167,7 +166,9 @@ pub(crate) fn find_fix_sites(source: &str) -> Vec<FixSite> {
         if in_fn_body && depth <= fn_body_depth {
             // We've exited the function body.
             if let Some(offset) = last_call_offset.take() {
-                sites.push(FixSite { insert_before: offset });
+                sites.push(FixSite {
+                    insert_before: offset,
+                });
             }
             in_fn_body = false;
             fn_body_depth = 0;
@@ -193,10 +194,10 @@ pub(crate) fn find_fix_sites(source: &str) -> Vec<FixSite> {
 
     // Handle a function whose body was never closed (malformed source).
     // Emit whatever last call we found.
-    if in_fn_body {
-        if let Some(offset) = last_call_offset.take() {
-            sites.push(FixSite { insert_before: offset });
-        }
+    if in_fn_body && let Some(offset) = last_call_offset.take() {
+        sites.push(FixSite {
+            insert_before: offset,
+        });
     }
 
     sites
@@ -217,10 +218,7 @@ mod tests {
     #[test]
     fn apply_fixes_reverse_order() {
         let source = "fn f() { a() } fn g() { b() }";
-        let sites = vec![
-            FixSite { insert_before: 9 },
-            FixSite { insert_before: 24 },
-        ];
+        let sites = vec![FixSite { insert_before: 9 }, FixSite { insert_before: 24 }];
         let result = apply_fixes(source, &sites);
         assert!(result.contains("tail a()"));
         assert!(result.contains("tail b()"));
