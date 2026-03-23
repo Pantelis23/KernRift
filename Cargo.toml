@@ -5,6 +5,7 @@ members = [
   "crates/krir",
   "crates/passes",
   "crates/emit",
+  "crates/kernrift",
   "crates/kernriftc",
 ]
 resolver = "2"

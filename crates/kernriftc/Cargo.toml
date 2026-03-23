@@ -4,15 +4,10 @@ version = "0.2.10"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-default-run = "kernriftc"
 
 [[bin]]
 name = "kernriftc"
 path = "src/main.rs"
-
-[[bin]]
-name = "kernrift"
-path = "src/runner.rs"
 
 [dependencies]
 base64 = "0.22"
@@ -27,12 +22,6 @@ sha2 = "0.10"
 serde.workspace = true
 serde_json.workspace = true
 toml = "0.8"
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_System_Memory", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Console"] }
 
 [dev-dependencies]
 assert_cmd = "2"

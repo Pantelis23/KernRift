@@ -1,0 +1,19 @@
+[package]
+name = "kernrift"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "kernrift"
+path = "src/main.rs"
+
+[dependencies]
+krir = { path = "../krir" }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Memory", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Console"] }
