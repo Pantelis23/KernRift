@@ -8719,7 +8719,8 @@ pub fn emit_compiler_owned_object_bytes(object: &CompilerOwnedObject) -> Vec<u8>
 
 pub const KRBO_MAGIC: [u8; 4] = *b"KRBO";
 pub const KRBO_VERSION: u8 = 1;
-pub const KRBO_ARCH_X86_64: u8 = 0x01;
+pub const KRBO_ARCH_X86_64:  u8 = 0x01;
+pub const KRBO_ARCH_AARCH64: u8 = 0x02;
 
 pub const KRBO_FAT_MAGIC: [u8; 8] = *b"KRBOFAT\0";
 pub const KRBO_FAT_VERSION: u32 = 1;
@@ -8737,20 +8738,25 @@ pub struct KrboHeader {
     pub code_length: u32,
 }
 
-/// Emit a `.krbo` binary blob from raw code bytes and an entry offset.
+/// Emit a `.krbo` binary blob from raw code bytes, an entry offset, and an arch byte.
 ///
 /// Layout: 16-byte header followed by `code.len()` bytes of machine code.
-pub fn emit_krbo_bytes_raw(code: &[u8], entry_offset: u32) -> Vec<u8> {
+fn emit_krbo_bytes_raw_arch(code: &[u8], entry_offset: u32, arch: u8) -> Vec<u8> {
     let code_length = code.len() as u32;
     let mut out = Vec::with_capacity(16 + code.len());
     out.extend_from_slice(&KRBO_MAGIC);
     out.push(KRBO_VERSION);
-    out.push(KRBO_ARCH_X86_64);
+    out.push(arch);
     out.extend_from_slice(&[0u8, 0u8]); // reserved
     out.extend_from_slice(&entry_offset.to_le_bytes());
     out.extend_from_slice(&code_length.to_le_bytes());
     out.extend_from_slice(code);
     out
+}
+
+/// Emit an x86-64 `.krbo` binary blob from raw code bytes and an entry offset.
+pub fn emit_krbo_bytes_raw(code: &[u8], entry_offset: u32) -> Vec<u8> {
+    emit_krbo_bytes_raw_arch(code, entry_offset, KRBO_ARCH_X86_64)
 }
 
 /// Emit a `.krbo` binary blob from an `X86_64ElfRelocatableObject`.
@@ -8784,14 +8790,20 @@ pub fn parse_krbo_header(bytes: &[u8]) -> Result<KrboHeader, String> {
         ));
     }
     let arch = bytes[5];
-    if arch != KRBO_ARCH_X86_64 {
+    #[cfg(target_arch = "aarch64")]
+    let host_arch = KRBO_ARCH_AARCH64;
+    #[cfg(not(target_arch = "aarch64"))]
+    let host_arch = KRBO_ARCH_X86_64;
+    if arch != host_arch {
         let arch_name = match arch {
-            0x02 => "aarch64",
+            KRBO_ARCH_X86_64  => "x86-64",
+            KRBO_ARCH_AARCH64 => "aarch64",
             _ => "unknown",
         };
+        let host_name = if host_arch == KRBO_ARCH_X86_64 { "x86-64" } else { "aarch64" };
         return Err(format!(
-            "this .krbo targets {} but this host is x86-64",
-            arch_name
+            "this .krbo targets {} but this host is {}",
+            arch_name, host_name
         ));
     }
     let entry_offset = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
@@ -8872,6 +8884,13 @@ pub fn parse_krbofat_slice(fat: &[u8], arch_id: u32, filename: Option<&str>) -> 
     }
     if fat[0..8] != KRBO_FAT_MAGIC {
         return Err(format!("{}: not a KRBOFAT: wrong magic", fname));
+    }
+    let fat_version = u32::from_le_bytes(fat[8..12].try_into().unwrap());
+    if fat_version != KRBO_FAT_VERSION {
+        return Err(format!(
+            "{}: unsupported KRBOFAT version {} (expected {})",
+            fname, fat_version, KRBO_FAT_VERSION
+        ));
     }
     let arch_count = u32::from_le_bytes(fat[12..16].try_into().unwrap()) as usize;
 
@@ -9195,6 +9214,37 @@ fn lower_executable_krir_to_aarch64_object_inner(
     let _ = ext_symbols; // returned via all_relocs
 
     Ok((text_bytes, symbol_table, all_relocs))
+}
+
+/// Emit an AArch64 `.krbo` executable blob.
+///
+/// The slice is version=1, arch=`KRBO_ARCH_AARCH64` (0x02): a 16-byte KRBO
+/// header followed by raw AArch64 machine code.  The `entry` function's byte
+/// offset within the code is stored in the header.
+pub fn emit_aarch64_executable_bytes(
+    module: &ExecutableKrirModule,
+    target: &BackendTargetContract,
+) -> Result<Vec<u8>, String> {
+    if !module.extern_declarations.is_empty() {
+        let unresolved = module
+            .extern_declarations
+            .iter()
+            .map(|d| d.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "final executable emit currently requires no extern declarations; unresolved externs: {}",
+            unresolved
+        ));
+    }
+    let (text_bytes, sym_table, _relocs) =
+        lower_executable_krir_to_aarch64_object_inner(module, target)?;
+    let entry_sym = sym_table
+        .iter()
+        .find(|(name, _, _)| name == "entry")
+        .ok_or_else(|| "no 'entry' function found in module".to_string())?;
+    let entry_offset = entry_sym.1;
+    Ok(emit_krbo_bytes_raw_arch(&text_bytes, entry_offset, KRBO_ARCH_AARCH64))
 }
 
 // ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@ pub fn run_krbo_file(path: &str) -> Result<(), String> {
     let bytes = fs::read(path).map_err(|e| format!("cannot read '{}': {}", path, e))?;
 
     // Fat-first: fat magic starts with "KRBO" so check 8 bytes BEFORE 4-byte KRBO check.
-    let working_bytes: Vec<u8>;
+    let fat_extracted: Vec<u8>;
     let krbo_bytes: &[u8] = if bytes.len() >= 8 && bytes[0..8] == krir::KRBO_FAT_MAGIC {
         // Fat binary — extract slice for this host architecture.
         #[cfg(target_arch = "x86_64")]
@@ -14,11 +14,10 @@ pub fn run_krbo_file(path: &str) -> Result<(), String> {
         #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
         compile_error!("kernrift: unsupported host architecture");
 
-        working_bytes = krir::parse_krbofat_slice(&bytes, host_arch, Some(path))?;
-        &working_bytes
+        fat_extracted = krir::parse_krbofat_slice(&bytes, host_arch, Some(path))?;
+        &fat_extracted
     } else {
         // Not a fat binary — use bytes directly (single-arch path, unchanged).
-        working_bytes = vec![]; // not used in this branch
         &bytes
     };
 

@@ -590,7 +590,7 @@ fn main() -> ExitCode {
                 "-o".to_string(), output.clone(),
                 source.clone(),
             ];
-            match parse_backend_emit_args("krbo", &synthetic, SurfaceProfile::Stable) {
+            match parse_backend_emit_args("krbofat", &synthetic, SurfaceProfile::Stable) {
                 Ok(parsed) => run_backend_emit(&parsed),
                 Err(err) => {
                     eprintln!("{}", err);
