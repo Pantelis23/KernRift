@@ -2,13 +2,33 @@ use std::fs;
 
 pub fn run_krbo_file(path: &str) -> Result<(), String> {
     let bytes = fs::read(path).map_err(|e| format!("cannot read '{}': {}", path, e))?;
-    let header = krir::parse_krbo_header(&bytes)?;
+
+    // Fat-first: fat magic starts with "KRBO" so check 8 bytes BEFORE 4-byte KRBO check.
+    let working_bytes: Vec<u8>;
+    let krbo_bytes: &[u8] = if bytes.len() >= 8 && bytes[0..8] == krir::KRBO_FAT_MAGIC {
+        // Fat binary — extract slice for this host architecture.
+        #[cfg(target_arch = "x86_64")]
+        let host_arch = krir::KRBO_FAT_ARCH_X86_64;
+        #[cfg(target_arch = "aarch64")]
+        let host_arch = krir::KRBO_FAT_ARCH_AARCH64;
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        compile_error!("kernrift: unsupported host architecture");
+
+        working_bytes = krir::parse_krbofat_slice(&bytes, host_arch, Some(path))?;
+        &working_bytes
+    } else {
+        // Not a fat binary — use bytes directly (single-arch path, unchanged).
+        working_bytes = vec![]; // not used in this branch
+        &bytes
+    };
+
+    let header = krir::parse_krbo_header(krbo_bytes)?;
     let code_start = 16usize;
     let code_end = code_start + header.code_length as usize;
-    if code_end > bytes.len() {
+    if code_end > krbo_bytes.len() {
         return Err("malformed .krbo: file truncated".to_string());
     }
-    let code = &bytes[code_start..code_end];
+    let code = &krbo_bytes[code_start..code_end];
 
     let uart_ptr = map_uart_buffer()?;
     let code_ptr = map_executable(code)?;
@@ -163,5 +183,23 @@ fn main() {
     if let Err(e) = run_krbo_file(path) {
         eprintln!("kernrift: {}", e);
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn fat_file_detection_integration() {
+        // Build a minimal x86_64 krbo slice and wrap it in a fat binary
+        // Use krir::emit_krbofat_bytes and krir::parse_krbofat_slice to round-trip
+        let x86_slice = b"KRBO\x01\x01\x00\x00\x04\x00\x00\x00\x04\x00\x00\x00\xc3___".to_vec();
+        let fat = krir::emit_krbofat_bytes(&[
+            (krir::KRBO_FAT_ARCH_X86_64, x86_slice.clone()),
+        ]).expect("emit failed");
+
+        // Extract and verify round-trip
+        let extracted = krir::parse_krbofat_slice(&fat, krir::KRBO_FAT_ARCH_X86_64, Some("test.krbo"))
+            .expect("slice not found");
+        assert_eq!(extracted, x86_slice, "round-trip bytes must match");
     }
 }
