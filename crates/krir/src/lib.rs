@@ -8721,6 +8721,13 @@ pub const KRBO_MAGIC: [u8; 4] = *b"KRBO";
 pub const KRBO_VERSION: u8 = 1;
 pub const KRBO_ARCH_X86_64: u8 = 0x01;
 
+pub const KRBO_FAT_MAGIC: [u8; 8] = *b"KRBOFAT\0";
+pub const KRBO_FAT_VERSION: u32 = 1;
+pub const KRBO_FAT_ARCH_X86_64:  u32 = 0x01;
+pub const KRBO_FAT_ARCH_AARCH64: u32 = 0x02;
+pub const KRBO_FAT_COMPRESSION_NONE: u32 = 0;
+pub const KRBO_FAT_COMPRESSION_LZ4:  u32 = 1;
+
 /// Parsed representation of a `.krbo` file header.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KrboHeader {
@@ -8756,6 +8763,13 @@ pub fn emit_krbo_bytes(object: &X86_64ElfRelocatableObject, entry_offset: u32) -
 /// Returns `Ok(KrboHeader)` when the header is valid, or `Err(message)` for
 /// any structural or semantic violation.
 pub fn parse_krbo_header(bytes: &[u8]) -> Result<KrboHeader, String> {
+    // Fat-first: fat magic starts with "KRBO", so must check 8 bytes before 4.
+    if bytes.len() >= 8 && bytes[0..8] == KRBO_FAT_MAGIC {
+        return Err(
+            "this is a KRBOFAT fat binary; use parse_krbofat_slice to extract a single-arch slice"
+                .to_string()
+        );
+    }
     if bytes.len() < 16 {
         return Err("not a .krbo file: too short".to_string());
     }
@@ -8794,6 +8808,108 @@ pub fn parse_krbo_header(bytes: &[u8]) -> Result<KrboHeader, String> {
         entry_offset,
         code_length,
     })
+}
+
+/// Emit a KRBOFAT fat binary from (arch_id, raw_krbo_bytes) slices.
+/// Each slice is LZ4-compressed.
+pub fn emit_krbofat_bytes(slices: &[(u32, Vec<u8>)]) -> Result<Vec<u8>, String> {
+    use lz4_flex::frame::FrameEncoder;
+    use std::io::Write as IoWrite;
+
+    let arch_count = slices.len() as u32;
+    // Header: 8 (magic) + 4 (version) + 4 (arch_count) = 16 bytes
+    // Entries: arch_count * 32 bytes each
+    let header_region = 16 + arch_count as usize * 32;
+    // Pad to next 16-byte boundary
+    let padding = (16 - (header_region % 16)) % 16;
+    let data_start = header_region + padding;
+
+    // Compress all slices
+    let mut compressed: Vec<Vec<u8>> = Vec::with_capacity(slices.len());
+    for (_, raw) in slices {
+        let mut enc = FrameEncoder::new(Vec::new());
+        enc.write_all(raw).map_err(|e| format!("lz4 compress: {e}"))?;
+        compressed.push(enc.finish().map_err(|e| format!("lz4 finish: {e}"))?);
+    }
+
+    // Calculate offsets
+    let mut offsets: Vec<u64> = Vec::with_capacity(slices.len());
+    let mut cursor = data_start as u64;
+    for c in &compressed {
+        offsets.push(cursor);
+        cursor += c.len() as u64;
+    }
+
+    let mut out = Vec::with_capacity(cursor as usize);
+    out.extend_from_slice(&KRBO_FAT_MAGIC);
+    out.extend_from_slice(&KRBO_FAT_VERSION.to_le_bytes());
+    out.extend_from_slice(&arch_count.to_le_bytes());
+
+    for (i, (arch_id, raw)) in slices.iter().enumerate() {
+        out.extend_from_slice(&arch_id.to_le_bytes());
+        out.extend_from_slice(&KRBO_FAT_COMPRESSION_LZ4.to_le_bytes());
+        out.extend_from_slice(&offsets[i].to_le_bytes());
+        out.extend_from_slice(&(compressed[i].len() as u64).to_le_bytes());
+        out.extend_from_slice(&(raw.len() as u64).to_le_bytes());
+    }
+
+    out.extend(std::iter::repeat(0u8).take(padding));
+    for c in &compressed { out.extend_from_slice(c); }
+
+    Ok(out)
+}
+
+/// Extract and decompress one arch's krbo slice from a KRBOFAT fat binary.
+/// `filename` is used only in error messages.
+pub fn parse_krbofat_slice(fat: &[u8], arch_id: u32, filename: Option<&str>) -> Result<Vec<u8>, String> {
+    use lz4_flex::frame::FrameDecoder;
+    use std::io::Read as IoRead;
+
+    let fname = filename.unwrap_or("<file>");
+
+    if fat.len() < 16 {
+        return Err(format!("{}: not a KRBOFAT: too short", fname));
+    }
+    if fat[0..8] != KRBO_FAT_MAGIC {
+        return Err(format!("{}: not a KRBOFAT: wrong magic", fname));
+    }
+    let arch_count = u32::from_le_bytes(fat[12..16].try_into().unwrap()) as usize;
+
+    for i in 0..arch_count {
+        let e = 16 + i * 32;
+        if fat.len() < e + 32 {
+            return Err(format!("{}: KRBOFAT: truncated entries", fname));
+        }
+        let entry_arch = u32::from_le_bytes(fat[e..e+4].try_into().unwrap());
+        let compression = u32::from_le_bytes(fat[e+4..e+8].try_into().unwrap());
+        let offset      = u64::from_le_bytes(fat[e+8..e+16].try_into().unwrap()) as usize;
+        let comp_size   = u64::from_le_bytes(fat[e+16..e+24].try_into().unwrap()) as usize;
+        let uncomp_size = u64::from_le_bytes(fat[e+24..e+32].try_into().unwrap()) as usize;
+
+        if entry_arch != arch_id { continue; }
+
+        let slice = fat.get(offset..offset + comp_size)
+            .ok_or_else(|| format!("{}: KRBOFAT: slice data out of bounds", fname))?;
+
+        return match compression {
+            KRBO_FAT_COMPRESSION_NONE => Ok(slice.to_vec()),
+            KRBO_FAT_COMPRESSION_LZ4  => {
+                let mut dec = FrameDecoder::new(slice);
+                let mut buf = Vec::with_capacity(uncomp_size);
+                dec.read_to_end(&mut buf)
+                    .map_err(|e| format!("{}: lz4 decompress: {e}", fname))?;
+                Ok(buf)
+            }
+            other => Err(format!("{}: KRBOFAT: unknown compression {}", fname, other)),
+        };
+    }
+
+    let arch_name = match arch_id {
+        KRBO_FAT_ARCH_X86_64  => "x86_64",
+        KRBO_FAT_ARCH_AARCH64 => "arm64",
+        _                     => "unknown",
+    };
+    Err(format!("{}: does not contain a slice for {}", fname, arch_name))
 }
 
 // ---------------------------------------------------------------------------
@@ -13343,5 +13459,56 @@ mod tests {
             0xAA64,
             "expected IMAGE_FILE_MACHINE_ARM64 (0xAA64) at offset 0"
         );
+    }
+
+    #[test]
+    fn krbofat_roundtrip() {
+        use super::{
+            emit_krbofat_bytes, parse_krbofat_slice,
+            KRBO_FAT_MAGIC, KRBO_FAT_ARCH_X86_64, KRBO_FAT_ARCH_AARCH64,
+        };
+        let x86_slice = b"KRBO\x01\x01\x00\x00\x00\x00\x00\x00_x86_fake_code_padding_".to_vec();
+        let arm_slice = b"KRBO\x01\x02\x00\x00\x00\x00\x00\x00_arm_fake_code_padding_".to_vec();
+        let fat = emit_krbofat_bytes(&[
+            (KRBO_FAT_ARCH_X86_64,  x86_slice.clone()),
+            (KRBO_FAT_ARCH_AARCH64, arm_slice.clone()),
+        ]).expect("emit failed");
+
+        assert_eq!(&fat[0..8], &KRBO_FAT_MAGIC);
+
+        let x86_back = parse_krbofat_slice(&fat, KRBO_FAT_ARCH_X86_64, None)
+            .expect("x86 slice missing");
+        assert_eq!(x86_back, x86_slice);
+
+        let arm_back = parse_krbofat_slice(&fat, KRBO_FAT_ARCH_AARCH64, None)
+            .expect("arm64 slice missing");
+        assert_eq!(arm_back, arm_slice);
+    }
+
+    #[test]
+    fn krbofat_fat_first_detection() {
+        use super::{emit_krbofat_bytes, parse_krbo_header, KRBO_FAT_ARCH_X86_64};
+        let x86_slice = b"KRBO\x01\x01\x00\x00\x04\x00\x00\x00\x04\x00\x00\x00\xc3___".to_vec();
+        let fat = emit_krbofat_bytes(&[(KRBO_FAT_ARCH_X86_64, x86_slice)])
+            .expect("emit failed");
+        // A fat binary must NOT parse as single-arch
+        let result = parse_krbo_header(&fat);
+        assert!(result.is_err(), "fat binary must not parse as single-arch krbo");
+        let err = result.unwrap_err();
+        assert!(err.contains("fat") || err.contains("KRBOFAT"),
+                "error should mention fat format: {}", err);
+    }
+
+    #[test]
+    fn krbofat_missing_arch_error() {
+        use super::{emit_krbofat_bytes, parse_krbofat_slice, KRBO_FAT_ARCH_AARCH64, KRBO_FAT_ARCH_X86_64};
+        let arm_slice = b"KRBO\x01\x02\x00\x00\x04\x00\x00\x00_arm_fake".to_vec();
+        let fat = emit_krbofat_bytes(&[(KRBO_FAT_ARCH_AARCH64, arm_slice)])
+            .expect("emit failed");
+        let result = parse_krbofat_slice(&fat, KRBO_FAT_ARCH_X86_64, Some("test.krbo"));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("x86_64"), "error should name the missing arch: {}", err);
+        assert!(err.contains("test.krbo"), "error should include filename: {}", err);
     }
 }
