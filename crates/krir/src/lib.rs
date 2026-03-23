@@ -3504,6 +3504,159 @@ pub enum X86_64AsmInstruction {
     InlineAsm(KernelIntrinsic),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AArch64AsmModule {
+    pub section: &'static str,
+    pub functions: Vec<AArch64AsmFunction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AArch64AsmFunction {
+    pub symbol: String,
+    pub uses_saved_value_slot: bool,
+    pub n_stack_cells: u8,
+    pub n_params: usize,
+    pub instructions: Vec<AArch64AsmInstruction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum AArch64AsmInstruction {
+    Call {
+        symbol: String,
+    },
+    CallWithArgs {
+        symbol: String,
+        args: Vec<ExecutableCallArg>,
+    },
+    TailCall {
+        symbol: String,
+        args: Vec<ExecutableCallArg>,
+    },
+    CallCapture {
+        ty: MmioScalarType,
+        symbol: String,
+    },
+    BranchIfZero {
+        ty: MmioScalarType,
+        then_symbol: String,
+        else_symbol: String,
+    },
+    BranchIfEqImm {
+        ty: MmioScalarType,
+        compare_value: u64,
+        then_symbol: String,
+        else_symbol: String,
+    },
+    BranchIfMaskNonZeroImm {
+        ty: MmioScalarType,
+        mask_value: u64,
+        then_symbol: String,
+        else_symbol: String,
+    },
+    MmioRead {
+        ty: MmioScalarType,
+        addr: u64,
+        capture_value: bool,
+    },
+    MmioWriteImm {
+        ty: MmioScalarType,
+        addr: u64,
+        value: u64,
+    },
+    MmioWriteValue {
+        ty: MmioScalarType,
+        addr: u64,
+    },
+    StackStoreImm {
+        ty: MmioScalarType,
+        value: u64,
+        slot_idx: u8,
+    },
+    StackStoreValue {
+        ty: MmioScalarType,
+        slot_idx: u8,
+    },
+    StackLoad {
+        ty: MmioScalarType,
+        slot_idx: u8,
+    },
+    SlotArithImm {
+        ty: MmioScalarType,
+        slot_idx: u8,
+        arith_op: ArithOp,
+        imm: u64,
+    },
+    SlotArithSlot {
+        ty: MmioScalarType,
+        dst_slot_idx: u8,
+        src_slot_idx: u8,
+        arith_op: ArithOp,
+    },
+    ParamLoad {
+        param_idx: u8,
+        ty: MmioScalarType,
+    },
+    MmioReadParamAddr {
+        param_idx: u8,
+        ty: MmioScalarType,
+        capture_value: bool,
+    },
+    MmioWriteImmParamAddr {
+        param_idx: u8,
+        ty: MmioScalarType,
+        value: u64,
+    },
+    MmioWriteValueParamAddr {
+        param_idx: u8,
+        ty: MmioScalarType,
+    },
+    ReturnSavedValue {
+        ty: MmioScalarType,
+    },
+    Ret,
+    /// Emits `name:` in ASM text; zero bytes in object.
+    Label(String),
+    /// Emits `b name` — unconditional branch.
+    JmpLabel(String),
+    /// Emits conditional branch if zero.
+    JmpIfZeroLabel(String),
+    /// Emits conditional branch if non-zero.
+    JmpIfNonZeroLabel(String),
+    /// Load U8 bool slot into a scratch register for comparison.
+    LoadSlotU8ToEax {
+        slot_idx: u8,
+    },
+    /// Test scratch register against itself — sets flags.
+    TestEaxEax,
+    /// Compare lhs_idx op rhs_idx and store 0 or 1 in out_idx.
+    CompareSlots {
+        cmp_op: CmpOp,
+        lhs_idx: u8,
+        rhs_idx: u8,
+        out_idx: u8,
+    },
+    /// Load scalar from address held in addr_slot_idx into out_slot_idx.
+    RawPtrLoad {
+        ty: MmioScalarType,
+        addr_slot_idx: u8,
+        out_slot_idx: u8,
+    },
+    /// Store scalar value to address held in addr_slot_idx.
+    RawPtrStoreImm {
+        ty: MmioScalarType,
+        addr_slot_idx: u8,
+        value: u64,
+    },
+    /// Store saved value register to address held in addr_slot_idx.
+    RawPtrStoreSavedValue {
+        ty: MmioScalarType,
+        addr_slot_idx: u8,
+    },
+    /// Emit a named kernel intrinsic instruction bytes directly.
+    InlineAsm(KernelIntrinsic),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CompilerOwnedObjectKind {
@@ -4228,6 +4381,342 @@ pub fn lower_executable_krir_to_x86_64_asm(
         .collect();
 
     Ok(X86_64AsmModule {
+        section: target.sections.text,
+        functions,
+    })
+}
+
+pub fn lower_executable_krir_to_aarch64_asm(
+    module: &ExecutableKrirModule,
+    target: &BackendTargetContract,
+) -> Result<AArch64AsmModule, String> {
+    validate_executable_krir_linear_structure(module, target, "lower_executable_krir_to_aarch64_asm")?;
+
+    let mut canonical = module.clone();
+    canonical.canonicalize();
+
+    struct LoopFrame {
+        head_label: String,
+        end_label: String,
+    }
+
+    let functions = canonical
+        .functions
+        .iter()
+        .map(|function| {
+            let mut instrs: Vec<AArch64AsmInstruction> = Vec::new();
+            let mut loop_stack: Vec<LoopFrame> = Vec::new();
+            let mut loop_counter = 0usize;
+
+            for op in &function.blocks[0].ops {
+                match op {
+                    ExecutableOp::Call { callee } => {
+                        instrs.push(AArch64AsmInstruction::Call {
+                            symbol: callee.clone(),
+                        });
+                    }
+                    ExecutableOp::CallCapture { callee, ty } => {
+                        instrs.push(AArch64AsmInstruction::CallCapture {
+                            ty: *ty,
+                            symbol: callee.clone(),
+                        });
+                    }
+                    ExecutableOp::BranchIfZero {
+                        ty,
+                        then_callee,
+                        else_callee,
+                    } => {
+                        instrs.push(AArch64AsmInstruction::BranchIfZero {
+                            ty: *ty,
+                            then_symbol: then_callee.clone(),
+                            else_symbol: else_callee.clone(),
+                        });
+                    }
+                    ExecutableOp::BranchIfEqImm {
+                        ty,
+                        compare_value,
+                        then_callee,
+                        else_callee,
+                    } => {
+                        instrs.push(AArch64AsmInstruction::BranchIfEqImm {
+                            ty: *ty,
+                            compare_value: *compare_value,
+                            then_symbol: then_callee.clone(),
+                            else_symbol: else_callee.clone(),
+                        });
+                    }
+                    ExecutableOp::BranchIfMaskNonZeroImm {
+                        ty,
+                        mask_value,
+                        then_callee,
+                        else_callee,
+                    } => {
+                        instrs.push(AArch64AsmInstruction::BranchIfMaskNonZeroImm {
+                            ty: *ty,
+                            mask_value: *mask_value,
+                            then_symbol: then_callee.clone(),
+                            else_symbol: else_callee.clone(),
+                        });
+                    }
+                    ExecutableOp::MmioRead {
+                        ty,
+                        addr,
+                        capture_value,
+                    } => {
+                        instrs.push(AArch64AsmInstruction::MmioRead {
+                            ty: *ty,
+                            addr: *addr,
+                            capture_value: *capture_value,
+                        });
+                    }
+                    ExecutableOp::MmioWriteImm { ty, addr, value } => {
+                        instrs.push(AArch64AsmInstruction::MmioWriteImm {
+                            ty: *ty,
+                            addr: *addr,
+                            value: *value,
+                        });
+                    }
+                    ExecutableOp::MmioWriteValue { ty, addr } => {
+                        instrs.push(AArch64AsmInstruction::MmioWriteValue {
+                            ty: *ty,
+                            addr: *addr,
+                        });
+                    }
+                    ExecutableOp::StackStoreImm {
+                        ty,
+                        value,
+                        slot_idx,
+                    } => {
+                        instrs.push(AArch64AsmInstruction::StackStoreImm {
+                            ty: *ty,
+                            value: *value,
+                            slot_idx: *slot_idx,
+                        });
+                    }
+                    ExecutableOp::StackStoreValue { ty, slot_idx } => {
+                        instrs.push(AArch64AsmInstruction::StackStoreValue {
+                            ty: *ty,
+                            slot_idx: *slot_idx,
+                        });
+                    }
+                    ExecutableOp::StackLoad { ty, slot_idx } => {
+                        instrs.push(AArch64AsmInstruction::StackLoad {
+                            ty: *ty,
+                            slot_idx: *slot_idx,
+                        });
+                    }
+                    ExecutableOp::SlotArithImm {
+                        ty,
+                        slot_idx,
+                        arith_op,
+                        imm,
+                    } => {
+                        instrs.push(AArch64AsmInstruction::SlotArithImm {
+                            ty: *ty,
+                            slot_idx: *slot_idx,
+                            arith_op: *arith_op,
+                            imm: *imm,
+                        });
+                    }
+                    ExecutableOp::SlotArithSlot {
+                        ty,
+                        dst_slot_idx,
+                        src_slot_idx,
+                        arith_op,
+                    } => {
+                        instrs.push(AArch64AsmInstruction::SlotArithSlot {
+                            ty: *ty,
+                            dst_slot_idx: *dst_slot_idx,
+                            src_slot_idx: *src_slot_idx,
+                            arith_op: *arith_op,
+                        });
+                    }
+                    ExecutableOp::ParamLoad { param_idx, ty } => {
+                        instrs.push(AArch64AsmInstruction::ParamLoad {
+                            param_idx: *param_idx,
+                            ty: *ty,
+                        });
+                    }
+                    ExecutableOp::MmioReadParamAddr {
+                        param_idx,
+                        ty,
+                        capture_value,
+                    } => {
+                        instrs.push(AArch64AsmInstruction::MmioReadParamAddr {
+                            param_idx: *param_idx,
+                            ty: *ty,
+                            capture_value: *capture_value,
+                        });
+                    }
+                    ExecutableOp::MmioWriteImmParamAddr {
+                        param_idx,
+                        ty,
+                        value,
+                    } => {
+                        instrs.push(AArch64AsmInstruction::MmioWriteImmParamAddr {
+                            param_idx: *param_idx,
+                            ty: *ty,
+                            value: *value,
+                        });
+                    }
+                    ExecutableOp::MmioWriteValueParamAddr { param_idx, ty } => {
+                        instrs.push(AArch64AsmInstruction::MmioWriteValueParamAddr {
+                            param_idx: *param_idx,
+                            ty: *ty,
+                        });
+                    }
+                    ExecutableOp::CallWithArgs { callee, args } => {
+                        instrs.push(AArch64AsmInstruction::CallWithArgs {
+                            symbol: callee.clone(),
+                            args: args.clone(),
+                        });
+                    }
+                    ExecutableOp::LoopBegin => {
+                        let head = format!("{}__loop_{}_head", function.name, loop_counter);
+                        let end = format!("{}__loop_{}_end", function.name, loop_counter);
+                        loop_counter += 1;
+                        instrs.push(AArch64AsmInstruction::Label(head.clone()));
+                        loop_stack.push(LoopFrame {
+                            head_label: head,
+                            end_label: end,
+                        });
+                    }
+                    ExecutableOp::LoopEnd => {
+                        let frame = loop_stack.last().expect("LoopEnd without LoopBegin");
+                        instrs.push(AArch64AsmInstruction::JmpLabel(frame.head_label.clone()));
+                        let frame = loop_stack.pop().unwrap();
+                        instrs.push(AArch64AsmInstruction::Label(frame.end_label));
+                    }
+                    ExecutableOp::LoopBreak => {
+                        let end = loop_stack
+                            .last()
+                            .expect("LoopBreak outside loop")
+                            .end_label
+                            .clone();
+                        instrs.push(AArch64AsmInstruction::JmpLabel(end));
+                    }
+                    ExecutableOp::LoopContinue => {
+                        let head = loop_stack
+                            .last()
+                            .expect("LoopContinue outside loop")
+                            .head_label
+                            .clone();
+                        instrs.push(AArch64AsmInstruction::JmpLabel(head));
+                    }
+                    ExecutableOp::BranchIfZeroLoopBreak { slot_idx } => {
+                        let end = loop_stack
+                            .last()
+                            .expect("BranchIfZeroLoopBreak outside loop")
+                            .end_label
+                            .clone();
+                        instrs.push(AArch64AsmInstruction::LoadSlotU8ToEax {
+                            slot_idx: *slot_idx,
+                        });
+                        instrs.push(AArch64AsmInstruction::TestEaxEax);
+                        instrs.push(AArch64AsmInstruction::JmpIfZeroLabel(end));
+                    }
+                    ExecutableOp::BranchIfNonZeroLoopBreak { slot_idx } => {
+                        let end = loop_stack
+                            .last()
+                            .expect("BranchIfNonZeroLoopBreak outside loop")
+                            .end_label
+                            .clone();
+                        instrs.push(AArch64AsmInstruction::LoadSlotU8ToEax {
+                            slot_idx: *slot_idx,
+                        });
+                        instrs.push(AArch64AsmInstruction::TestEaxEax);
+                        instrs.push(AArch64AsmInstruction::JmpIfNonZeroLabel(end));
+                    }
+                    ExecutableOp::CompareIntoSlot {
+                        cmp_op,
+                        lhs_idx,
+                        rhs_idx,
+                        out_idx,
+                    } => {
+                        instrs.push(AArch64AsmInstruction::CompareSlots {
+                            cmp_op: *cmp_op,
+                            lhs_idx: *lhs_idx,
+                            rhs_idx: *rhs_idx,
+                            out_idx: *out_idx,
+                        });
+                    }
+                    ExecutableOp::RawPtrLoad {
+                        ty,
+                        addr_slot_idx,
+                        out_slot_idx,
+                    } => {
+                        instrs.push(AArch64AsmInstruction::RawPtrLoad {
+                            ty: *ty,
+                            addr_slot_idx: *addr_slot_idx,
+                            out_slot_idx: *out_slot_idx,
+                        });
+                    }
+                    ExecutableOp::RawPtrStore {
+                        ty,
+                        addr_slot_idx,
+                        value,
+                    } => match value {
+                        MmioValueExpr::IntLiteral { value: raw } => {
+                            let v = parse_integer_literal_u64(raw).expect(
+                                "raw_ptr_store: integer literal already validated during lowering",
+                            );
+                            instrs.push(AArch64AsmInstruction::RawPtrStoreImm {
+                                ty: *ty,
+                                addr_slot_idx: *addr_slot_idx,
+                                value: v,
+                            });
+                        }
+                        MmioValueExpr::Ident { .. } => {
+                            instrs.push(AArch64AsmInstruction::RawPtrStoreSavedValue {
+                                ty: *ty,
+                                addr_slot_idx: *addr_slot_idx,
+                            });
+                        }
+                        MmioValueExpr::FloatLiteral { .. } => {
+                            unreachable!(
+                                "float RawPtrStore not supported (Task 14): function '{}'",
+                                function.name
+                            );
+                        }
+                    },
+                    ExecutableOp::InlineAsm(intr) => {
+                        instrs.push(AArch64AsmInstruction::InlineAsm(intr.clone()));
+                    }
+                }
+            }
+
+            // Terminator
+            match function.blocks[0].terminator.clone() {
+                ExecutableTerminator::Return {
+                    value: ExecutableValue::SavedValue { ty },
+                } => {
+                    instrs.push(AArch64AsmInstruction::ReturnSavedValue { ty });
+                    instrs.push(AArch64AsmInstruction::Ret);
+                }
+                ExecutableTerminator::Return {
+                    value: ExecutableValue::Unit,
+                } => {
+                    instrs.push(AArch64AsmInstruction::Ret);
+                }
+                ExecutableTerminator::TailCall { callee, args } => {
+                    instrs.push(AArch64AsmInstruction::TailCall {
+                        symbol: callee,
+                        args,
+                    });
+                }
+            }
+
+            AArch64AsmFunction {
+                symbol: format!("{}{}", target.symbols.function_prefix, function.name),
+                uses_saved_value_slot: executable_function_uses_saved_value_slot(function),
+                n_stack_cells: executable_function_n_stack_cells(function),
+                n_params: function.signature.params.len(),
+                instructions: instrs,
+            }
+        })
+        .collect();
+
+    Ok(AArch64AsmModule {
         section: target.sections.text,
         functions,
     })
@@ -8201,7 +8690,7 @@ pub fn parse_krbo_header(bytes: &[u8]) -> Result<KrboHeader, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AArch64IntegerRegister, BackendTargetContract, BackendTargetId, CallEdge,
+        AArch64IntegerRegister, AArch64AsmModule, BackendTargetContract, BackendTargetId, CallEdge,
         CompilerOwnedCodeSection, CompilerOwnedFixupKind, CompilerOwnedObject,
         CompilerOwnedObjectFixup, CompilerOwnedObjectHeader, CompilerOwnedObjectKind,
         CompilerOwnedObjectSymbol, CompilerOwnedObjectSymbolDefinition,
@@ -8214,8 +8703,8 @@ mod tests {
         emit_compiler_owned_object_bytes, emit_x86_64_asm_text, emit_x86_64_coff_bytes,
         emit_x86_64_macho_object_bytes, emit_x86_64_object_bytes,
         export_compiler_owned_object_to_x86_64_asm, export_compiler_owned_object_to_x86_64_elf,
-        lower_executable_krir_to_compiler_owned_object, lower_executable_krir_to_x86_64_asm,
-        lower_executable_krir_to_x86_64_object,
+        lower_executable_krir_to_aarch64_asm, lower_executable_krir_to_compiler_owned_object,
+        lower_executable_krir_to_x86_64_asm, lower_executable_krir_to_x86_64_object,
         validate_compiler_owned_object_for_x86_64_asm_export,
         validate_compiler_owned_object_linear_subset, validate_x86_64_object_linear_subset,
     };
@@ -11784,5 +12273,43 @@ mod tests {
     fn future_return_x0_registers() {
         let regs = FutureScalarReturnConvention::IntegerX0.registers();
         assert_eq!(regs, vec![IntegerRegister::AArch64(AArch64IntegerRegister::X0)]);
+    }
+
+    #[test]
+    fn aarch64_asm_lowering_smoke() {
+        let module = ExecutableKrirModule {
+            module_caps: vec![],
+            functions: vec![ExecutableFunction {
+                name: "entry".to_string(),
+                is_extern: false,
+                signature: ExecutableSignature {
+                    params: vec![],
+                    result: ExecutableValueType::Unit,
+                },
+                facts: ExecutableFacts {
+                    ctx_ok: vec![],
+                    eff_used: vec![],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                },
+                entry_block: "b0".to_string(),
+                blocks: vec![ExecutableBlock {
+                    label: "b0".to_string(),
+                    ops: vec![ExecutableOp::Call { callee: "print".to_string() }],
+                    terminator: ExecutableTerminator::Return {
+                        value: ExecutableValue::Unit,
+                    },
+                }],
+            }],
+            extern_declarations: vec![ExecutableExternDecl { name: "print".to_string() }],
+            call_edges: vec![],
+        };
+        let target = BackendTargetContract::aarch64_sysv();
+        let result = lower_executable_krir_to_aarch64_asm(&module, &target);
+        assert!(result.is_ok(), "lowering failed: {:?}", result.err());
+        let asm_module = result.unwrap();
+        assert_eq!(asm_module.functions.len(), 1);
+        assert_eq!(asm_module.functions[0].symbol, "entry");
+        assert!(!asm_module.functions[0].instructions.is_empty());
     }
 }
