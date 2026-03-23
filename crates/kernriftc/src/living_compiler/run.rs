@@ -2,6 +2,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use kernriftc::{collect_telemetry, compile_file_with_surface, detect_patterns};
+use passes::analyze_module;
 
 use super::args::{LivingCompilerArgs, LivingCompilerFormat};
 
@@ -10,11 +11,14 @@ pub(crate) fn run_living_compiler(args: &LivingCompilerArgs) -> ExitCode {
         Ok(m) => m,
         Err(errs) => {
             crate::print_errors(&errs);
-            return ExitCode::from(1);
+            return ExitCode::from(2);
         }
     };
 
-    let report = collect_telemetry(&module, args.surface);
+    let (analysis, _) = analyze_module(&module);
+
+    let mut report = collect_telemetry(&module, args.surface);
+    report.max_lock_depth = analysis.max_lock_depth;
     let suggestions = detect_patterns(&report);
 
     match args.format {
