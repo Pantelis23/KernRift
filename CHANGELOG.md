@@ -9,6 +9,13 @@ All notable changes to `kernriftc` are documented in this file.
 - `elfexe` emit target: `kernriftc --emit=elfexe` links an ELF ET_EXEC binary using `ld.lld`/`ld`.
 - Dead function elimination pass: strips functions unreachable from `@export`/`@ctx(boot)`.
 - Link-time lock graph merge: `kernriftc link` detects cross-module lock-order cycles.
+- `kernriftc lc` alias: short form for `kernriftc living-compiler` (alias kept).
+- Three new living-compiler patterns: `irq_raw_mmio`, `high_lock_depth`, `mmio_without_lock`.
+- `lc --ci`: exit 1 if any suggestion fitness ≥ 50 (override with `--min-fitness N`).
+- `lc --diff <file>`: show only new/worsened suggestions vs git HEAD.
+- `lc --diff <before> <after>`: two-file local diff, no git dependency.
+- `lc --fix --dry-run`: preview tail-call fixes as a unified diff.
+- `lc --fix --write`: apply tail-call fixes in place, atomically.
 
 ### Improved
 - **Syntax error messages** — all TokParser diagnostics now show human-readable token names

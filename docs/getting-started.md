@@ -225,8 +225,13 @@ error[E0002]: context mismatch: `entry` requires {thread, boot}, called from {ir
 | `kernriftc policy --policy <p> --contracts <c>` | JSON to **stdout** | Policy evaluation |
 | `kernriftc inspect-artifact <path>` | JSON/text to **stdout** | Artifact inspection |
 | `kernriftc fix ...` | Source edits | Apply canonical fixes |
-| `kernriftc living-compiler <file.kr>` | text to **stdout** | Suggest optimisation opportunities |
-| `kernriftc living-compiler --format json <file.kr>` | JSON to **stdout** | Same, machine-readable |
+| `kernriftc lc <file.kr>` | text to **stdout** | Living compiler suggestions |
+| `kernriftc lc --format json <file.kr>` | JSON to **stdout** | Same, machine-readable |
+| `kernriftc lc --ci <file.kr>` | text to **stdout** | Exit 1 if fitness ≥ 50 |
+| `kernriftc lc --diff <file.kr>` | text to **stdout** | New/worsened suggestions vs HEAD |
+| `kernriftc lc --fix --dry-run <file.kr>` | unified diff to **stdout** | Preview tail-call fixes |
+| `kernriftc lc --fix --write <file.kr>` | confirmation to **stdout** | Apply tail-call fixes |
+| `kernriftc living-compiler <file.kr>` | text to **stdout** | Alias for `lc` |
 
 ---
 
