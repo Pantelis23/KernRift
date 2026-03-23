@@ -2804,6 +2804,9 @@ pub enum BackendTargetId {
     X86_64Sysv,
     X86_64Win64,
     X86_64MachO,
+    Aarch64Sysv,
+    Aarch64MachO,
+    Aarch64Win,
 }
 
 impl BackendTargetId {
@@ -2812,6 +2815,9 @@ impl BackendTargetId {
             Self::X86_64Sysv => "x86_64-sysv",
             Self::X86_64Win64 => "x86_64-win64",
             Self::X86_64MachO => "x86_64-macho",
+            Self::Aarch64Sysv => "aarch64-sysv",
+            Self::Aarch64MachO => "aarch64-macho",
+            Self::Aarch64Win => "aarch64-win",
         }
     }
 
@@ -2820,8 +2826,11 @@ impl BackendTargetId {
             "x86_64-sysv" | "x86_64-linux" => Ok(Self::X86_64Sysv),
             "x86_64-win64" | "x86_64-windows" => Ok(Self::X86_64Win64),
             "x86_64-macho" | "x86_64-darwin" | "x86_64-macos" => Ok(Self::X86_64MachO),
+            "aarch64-sysv" | "aarch64-linux" => Ok(Self::Aarch64Sysv),
+            "aarch64-macho" | "aarch64-darwin" | "aarch64-macos" => Ok(Self::Aarch64MachO),
+            "aarch64-win" | "aarch64-windows" => Ok(Self::Aarch64Win),
             _ => Err(format!(
-                "unknown target '{}'; supported: x86_64-sysv, x86_64-win64, x86_64-macho",
+                "unknown target '{}'; supported: x86_64-sysv, x86_64-win64, x86_64-macho, aarch64-sysv, aarch64-macho, aarch64-win",
                 s
             )),
         }
@@ -2833,6 +2842,9 @@ impl BackendTargetId {
             Self::X86_64Sysv => BackendTargetContract::x86_64_sysv(),
             Self::X86_64Win64 => BackendTargetContract::x86_64_win64(),
             Self::X86_64MachO => BackendTargetContract::x86_64_macho(),
+            Self::Aarch64Sysv => BackendTargetContract::aarch64_sysv(),
+            Self::Aarch64MachO => BackendTargetContract::aarch64_macho(),
+            Self::Aarch64Win => BackendTargetContract::aarch64_win(),
         }
     }
 }
@@ -2841,6 +2853,7 @@ impl BackendTargetId {
 #[serde(rename_all = "snake_case")]
 pub enum TargetArch {
     X86_64,
+    AArch64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -2848,6 +2861,8 @@ pub enum TargetArch {
 pub enum TargetAbi {
     Sysv,
     Win64,
+    Aapcs64,
+    Aapcs64Win,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -2877,6 +2892,29 @@ pub enum X86_64IntegerRegister {
     R15,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AArch64IntegerRegister {
+    X0, X1, X2, X3, X4, X5, X6, X7,
+    X8, X9, X10, X11, X12, X13, X14, X15,
+    // X16 (IP0) and X17 (IP1) omitted — linker scratch reserved
+    // X18 omitted — platform-reserved on all three AArch64 targets
+    X19, X20, X21, X22, X23, X24, X25, X26, X27, X28,
+    X29, // frame pointer
+    X30, // link register
+    Sp,
+    Xzr,
+}
+
+/// Unified register type spanning all supported architectures.
+/// Derives `Ord` because `validate()` uses `BTreeSet<IntegerRegister>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(untagged)]
+pub enum IntegerRegister {
+    X86_64(X86_64IntegerRegister),
+    AArch64(AArch64IntegerRegister),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CurrentExecutableReturnConvention {
@@ -2887,12 +2925,14 @@ pub enum CurrentExecutableReturnConvention {
 #[serde(rename_all = "snake_case")]
 pub enum FutureScalarReturnConvention {
     IntegerRax,
+    IntegerX0,
 }
 
 impl FutureScalarReturnConvention {
-    pub fn registers(self) -> &'static [X86_64IntegerRegister] {
+    pub fn registers(self) -> Vec<IntegerRegister> {
         match self {
-            Self::IntegerRax => &[X86_64IntegerRegister::Rax],
+            Self::IntegerRax => vec![IntegerRegister::X86_64(X86_64IntegerRegister::Rax)],
+            Self::IntegerX0  => vec![IntegerRegister::AArch64(AArch64IntegerRegister::X0)],
         }
     }
 }
@@ -2926,15 +2966,15 @@ pub struct BackendTargetContract {
     pub endian: TargetEndian,
     pub pointer_bits: u16,
     pub stack_alignment_bytes: u16,
-    pub integer_registers: Vec<X86_64IntegerRegister>,
-    pub stack_pointer: X86_64IntegerRegister,
-    pub frame_pointer: X86_64IntegerRegister,
+    pub integer_registers: Vec<IntegerRegister>,
+    pub stack_pointer: IntegerRegister,
+    pub frame_pointer: IntegerRegister,
     pub instruction_pointer: &'static str,
-    pub caller_saved: Vec<X86_64IntegerRegister>,
-    pub callee_saved: Vec<X86_64IntegerRegister>,
+    pub caller_saved: Vec<IntegerRegister>,
+    pub callee_saved: Vec<IntegerRegister>,
     pub current_executable_return: CurrentExecutableReturnConvention,
     pub future_scalar_return: FutureScalarReturnConvention,
-    pub future_argument_registers: Vec<X86_64IntegerRegister>,
+    pub future_argument_registers: Vec<IntegerRegister>,
     pub symbols: SymbolNamingConvention,
     pub sections: SectionNamingConvention,
     pub freestanding: FreestandingTargetAssumptions,
@@ -2942,6 +2982,8 @@ pub struct BackendTargetContract {
 
 impl BackendTargetContract {
     pub fn x86_64_sysv() -> Self {
+        use X86_64IntegerRegister::*;
+        let x = |r| IntegerRegister::X86_64(r);
         Self {
             target_id: BackendTargetId::X86_64Sysv,
             arch: TargetArch::X86_64,
@@ -2950,54 +2992,23 @@ impl BackendTargetContract {
             pointer_bits: 64,
             stack_alignment_bytes: 16,
             integer_registers: vec![
-                X86_64IntegerRegister::Rax,
-                X86_64IntegerRegister::Rbx,
-                X86_64IntegerRegister::Rcx,
-                X86_64IntegerRegister::Rdx,
-                X86_64IntegerRegister::Rsi,
-                X86_64IntegerRegister::Rdi,
-                X86_64IntegerRegister::Rbp,
-                X86_64IntegerRegister::Rsp,
-                X86_64IntegerRegister::R8,
-                X86_64IntegerRegister::R9,
-                X86_64IntegerRegister::R10,
-                X86_64IntegerRegister::R11,
-                X86_64IntegerRegister::R12,
-                X86_64IntegerRegister::R13,
-                X86_64IntegerRegister::R14,
-                X86_64IntegerRegister::R15,
+                x(Rax), x(Rbx), x(Rcx), x(Rdx), x(Rsi), x(Rdi), x(Rbp), x(Rsp),
+                x(R8), x(R9), x(R10), x(R11), x(R12), x(R13), x(R14), x(R15),
             ],
-            stack_pointer: X86_64IntegerRegister::Rsp,
-            frame_pointer: X86_64IntegerRegister::Rbp,
+            stack_pointer: x(Rsp),
+            frame_pointer: x(Rbp),
             instruction_pointer: "rip",
             caller_saved: vec![
-                X86_64IntegerRegister::Rax,
-                X86_64IntegerRegister::Rcx,
-                X86_64IntegerRegister::Rdx,
-                X86_64IntegerRegister::Rsi,
-                X86_64IntegerRegister::Rdi,
-                X86_64IntegerRegister::R8,
-                X86_64IntegerRegister::R9,
-                X86_64IntegerRegister::R10,
-                X86_64IntegerRegister::R11,
+                x(Rax), x(Rcx), x(Rdx), x(Rsi), x(Rdi),
+                x(R8), x(R9), x(R10), x(R11),
             ],
             callee_saved: vec![
-                X86_64IntegerRegister::Rbx,
-                X86_64IntegerRegister::Rbp,
-                X86_64IntegerRegister::R12,
-                X86_64IntegerRegister::R13,
-                X86_64IntegerRegister::R14,
-                X86_64IntegerRegister::R15,
+                x(Rbx), x(Rbp), x(R12), x(R13), x(R14), x(R15),
             ],
             current_executable_return: CurrentExecutableReturnConvention::UnitNoRegister,
             future_scalar_return: FutureScalarReturnConvention::IntegerRax,
             future_argument_registers: vec![
-                X86_64IntegerRegister::Rdi,
-                X86_64IntegerRegister::Rsi,
-                X86_64IntegerRegister::Rdx,
-                X86_64IntegerRegister::Rcx,
-                X86_64IntegerRegister::R8,
-                X86_64IntegerRegister::R9,
+                x(Rdi), x(Rsi), x(Rdx), x(Rcx), x(R8), x(R9),
             ],
             symbols: SymbolNamingConvention {
                 function_prefix: "",
@@ -3023,6 +3034,8 @@ impl BackendTargetContract {
     /// Callee-saved: rbx, rbp, rdi, rsi, r12–r15.
     /// Shadow space: 32 bytes allocated by the caller (not yet emitted by codegen).
     pub fn x86_64_win64() -> Self {
+        use X86_64IntegerRegister::*;
+        let x = |r| IntegerRegister::X86_64(r);
         Self {
             target_id: BackendTargetId::X86_64Win64,
             arch: TargetArch::X86_64,
@@ -3031,52 +3044,22 @@ impl BackendTargetContract {
             pointer_bits: 64,
             stack_alignment_bytes: 16,
             integer_registers: vec![
-                X86_64IntegerRegister::Rax,
-                X86_64IntegerRegister::Rbx,
-                X86_64IntegerRegister::Rcx,
-                X86_64IntegerRegister::Rdx,
-                X86_64IntegerRegister::Rsi,
-                X86_64IntegerRegister::Rdi,
-                X86_64IntegerRegister::Rbp,
-                X86_64IntegerRegister::Rsp,
-                X86_64IntegerRegister::R8,
-                X86_64IntegerRegister::R9,
-                X86_64IntegerRegister::R10,
-                X86_64IntegerRegister::R11,
-                X86_64IntegerRegister::R12,
-                X86_64IntegerRegister::R13,
-                X86_64IntegerRegister::R14,
-                X86_64IntegerRegister::R15,
+                x(Rax), x(Rbx), x(Rcx), x(Rdx), x(Rsi), x(Rdi), x(Rbp), x(Rsp),
+                x(R8), x(R9), x(R10), x(R11), x(R12), x(R13), x(R14), x(R15),
             ],
-            stack_pointer: X86_64IntegerRegister::Rsp,
-            frame_pointer: X86_64IntegerRegister::Rbp,
+            stack_pointer: x(Rsp),
+            frame_pointer: x(Rbp),
             instruction_pointer: "rip",
             caller_saved: vec![
-                X86_64IntegerRegister::Rax,
-                X86_64IntegerRegister::Rcx,
-                X86_64IntegerRegister::Rdx,
-                X86_64IntegerRegister::R8,
-                X86_64IntegerRegister::R9,
-                X86_64IntegerRegister::R10,
-                X86_64IntegerRegister::R11,
+                x(Rax), x(Rcx), x(Rdx), x(R8), x(R9), x(R10), x(R11),
             ],
             callee_saved: vec![
-                X86_64IntegerRegister::Rbx,
-                X86_64IntegerRegister::Rbp,
-                X86_64IntegerRegister::Rdi,
-                X86_64IntegerRegister::Rsi,
-                X86_64IntegerRegister::R12,
-                X86_64IntegerRegister::R13,
-                X86_64IntegerRegister::R14,
-                X86_64IntegerRegister::R15,
+                x(Rbx), x(Rbp), x(Rdi), x(Rsi), x(R12), x(R13), x(R14), x(R15),
             ],
             current_executable_return: CurrentExecutableReturnConvention::UnitNoRegister,
             future_scalar_return: FutureScalarReturnConvention::IntegerRax,
             future_argument_registers: vec![
-                X86_64IntegerRegister::Rcx,
-                X86_64IntegerRegister::Rdx,
-                X86_64IntegerRegister::R8,
-                X86_64IntegerRegister::R9,
+                x(Rcx), x(Rdx), x(R8), x(R9),
             ],
             symbols: SymbolNamingConvention {
                 function_prefix: "",
@@ -3102,6 +3085,8 @@ impl BackendTargetContract {
     ///   - Symbol prefix: `_` on all exported functions.
     ///   - Section names: `__TEXT,__text` etc.
     pub fn x86_64_macho() -> Self {
+        use X86_64IntegerRegister::*;
+        let x = |r| IntegerRegister::X86_64(r);
         Self {
             target_id: BackendTargetId::X86_64MachO,
             arch: TargetArch::X86_64,
@@ -3110,54 +3095,23 @@ impl BackendTargetContract {
             pointer_bits: 64,
             stack_alignment_bytes: 16,
             integer_registers: vec![
-                X86_64IntegerRegister::Rax,
-                X86_64IntegerRegister::Rbx,
-                X86_64IntegerRegister::Rcx,
-                X86_64IntegerRegister::Rdx,
-                X86_64IntegerRegister::Rsi,
-                X86_64IntegerRegister::Rdi,
-                X86_64IntegerRegister::Rbp,
-                X86_64IntegerRegister::Rsp,
-                X86_64IntegerRegister::R8,
-                X86_64IntegerRegister::R9,
-                X86_64IntegerRegister::R10,
-                X86_64IntegerRegister::R11,
-                X86_64IntegerRegister::R12,
-                X86_64IntegerRegister::R13,
-                X86_64IntegerRegister::R14,
-                X86_64IntegerRegister::R15,
+                x(Rax), x(Rbx), x(Rcx), x(Rdx), x(Rsi), x(Rdi), x(Rbp), x(Rsp),
+                x(R8), x(R9), x(R10), x(R11), x(R12), x(R13), x(R14), x(R15),
             ],
-            stack_pointer: X86_64IntegerRegister::Rsp,
-            frame_pointer: X86_64IntegerRegister::Rbp,
+            stack_pointer: x(Rsp),
+            frame_pointer: x(Rbp),
             instruction_pointer: "rip",
             caller_saved: vec![
-                X86_64IntegerRegister::Rax,
-                X86_64IntegerRegister::Rcx,
-                X86_64IntegerRegister::Rdx,
-                X86_64IntegerRegister::Rsi,
-                X86_64IntegerRegister::Rdi,
-                X86_64IntegerRegister::R8,
-                X86_64IntegerRegister::R9,
-                X86_64IntegerRegister::R10,
-                X86_64IntegerRegister::R11,
+                x(Rax), x(Rcx), x(Rdx), x(Rsi), x(Rdi),
+                x(R8), x(R9), x(R10), x(R11),
             ],
             callee_saved: vec![
-                X86_64IntegerRegister::Rbx,
-                X86_64IntegerRegister::Rbp,
-                X86_64IntegerRegister::R12,
-                X86_64IntegerRegister::R13,
-                X86_64IntegerRegister::R14,
-                X86_64IntegerRegister::R15,
+                x(Rbx), x(Rbp), x(R12), x(R13), x(R14), x(R15),
             ],
             current_executable_return: CurrentExecutableReturnConvention::UnitNoRegister,
             future_scalar_return: FutureScalarReturnConvention::IntegerRax,
             future_argument_registers: vec![
-                X86_64IntegerRegister::Rdi,
-                X86_64IntegerRegister::Rsi,
-                X86_64IntegerRegister::Rdx,
-                X86_64IntegerRegister::Rcx,
-                X86_64IntegerRegister::R8,
-                X86_64IntegerRegister::R9,
+                x(Rdi), x(Rsi), x(Rdx), x(Rcx), x(R8), x(R9),
             ],
             symbols: SymbolNamingConvention {
                 function_prefix: "_",
@@ -3177,6 +3131,88 @@ impl BackendTargetContract {
         }
     }
 
+    /// AArch64 Linux SysV ABI (AAPCS64).
+    pub fn aarch64_sysv() -> Self {
+        use AArch64IntegerRegister::*;
+        let a = |r| IntegerRegister::AArch64(r);
+        Self {
+            target_id: BackendTargetId::Aarch64Sysv,
+            arch: TargetArch::AArch64,
+            abi: TargetAbi::Aapcs64,
+            endian: TargetEndian::Little,
+            pointer_bits: 64,
+            stack_alignment_bytes: 16,
+            integer_registers: vec![
+                a(X0), a(X1), a(X2), a(X3), a(X4), a(X5), a(X6), a(X7),
+                a(X8), a(X9), a(X10), a(X11), a(X12), a(X13), a(X14), a(X15),
+                a(X19), a(X20), a(X21), a(X22), a(X23), a(X24),
+                a(X25), a(X26), a(X27), a(X28), a(X29), a(X30), a(Sp),
+            ],
+            stack_pointer: a(Sp),
+            frame_pointer: a(X29),
+            instruction_pointer: "pc",
+            caller_saved: vec![
+                a(X0), a(X1), a(X2), a(X3), a(X4), a(X5), a(X6), a(X7),
+                a(X8), a(X9), a(X10), a(X11), a(X12), a(X13), a(X14), a(X15),
+            ],
+            callee_saved: vec![
+                a(X19), a(X20), a(X21), a(X22), a(X23), a(X24),
+                a(X25), a(X26), a(X27), a(X28), a(X29), a(X30),
+            ],
+            current_executable_return: CurrentExecutableReturnConvention::UnitNoRegister,
+            future_scalar_return: FutureScalarReturnConvention::IntegerX0,
+            future_argument_registers: vec![
+                a(X0), a(X1), a(X2), a(X3), a(X4), a(X5), a(X6), a(X7),
+            ],
+            symbols: SymbolNamingConvention {
+                function_prefix: "",
+                preserve_source_names: true,
+            },
+            sections: SectionNamingConvention {
+                text: ".text",
+                rodata: ".rodata",
+                data: ".data",
+                bss: ".bss",
+            },
+            freestanding: FreestandingTargetAssumptions {
+                no_libc: true,
+                no_host_runtime: true,
+                toolchain_bridge_not_yet_exercised: true,
+            },
+        }
+    }
+
+    /// AArch64 macOS (Mach-O, AAPCS64 with underscore-prefixed symbols).
+    pub fn aarch64_macho() -> Self {
+        let mut c = Self::aarch64_sysv();
+        c.target_id = BackendTargetId::Aarch64MachO;
+        c.sections = SectionNamingConvention {
+            text: "__TEXT,__text",
+            rodata: "__DATA,__const",
+            data: "__DATA,__data",
+            bss: "__DATA,__bss",
+        };
+        c.symbols = SymbolNamingConvention {
+            function_prefix: "_",
+            preserve_source_names: true,
+        };
+        c
+    }
+
+    /// AArch64 Windows (AAPCS64 Windows variant).
+    pub fn aarch64_win() -> Self {
+        let mut c = Self::aarch64_sysv();
+        c.target_id = BackendTargetId::Aarch64Win;
+        c.abi = TargetAbi::Aapcs64Win;
+        c.sections = SectionNamingConvention {
+            text: ".text",
+            rodata: ".rdata",
+            data: ".data",
+            bss: ".bss",
+        };
+        c
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         let known_combo = matches!(
             (self.target_id, self.arch, self.abi),
@@ -3192,6 +3228,18 @@ impl BackendTargetContract {
                 BackendTargetId::X86_64MachO,
                 TargetArch::X86_64,
                 TargetAbi::Sysv
+            ) | (
+                BackendTargetId::Aarch64Sysv,
+                TargetArch::AArch64,
+                TargetAbi::Aapcs64
+            ) | (
+                BackendTargetId::Aarch64MachO,
+                TargetArch::AArch64,
+                TargetAbi::Aapcs64
+            ) | (
+                BackendTargetId::Aarch64Win,
+                TargetArch::AArch64,
+                TargetAbi::Aapcs64Win
             )
         );
         if !known_combo {
@@ -3199,9 +3247,6 @@ impl BackendTargetContract {
                 "unrecognized backend target combination: {}",
                 self.target_id.as_str()
             ));
-        }
-        if self.arch != TargetArch::X86_64 {
-            return Err("backend target contract arch must be x86_64".to_string());
         }
         if self.endian != TargetEndian::Little {
             return Err("backend target contract endian must be little".to_string());
@@ -3266,7 +3311,7 @@ impl BackendTargetContract {
         }
 
         for reg in self.future_scalar_return.registers() {
-            if !integer_set.contains(reg) {
+            if !integer_set.contains(&reg) {
                 return Err(
                     "backend target contract future_scalar_return must resolve to integer_registers"
                         .to_string(),
@@ -3668,8 +3713,8 @@ fn validate_executable_krir_linear_structure(
     lowering_name: &str,
 ) -> Result<(), String> {
     target.validate()?;
-    if target.arch != TargetArch::X86_64 {
-        return Err(format!("{lowering_name} requires x86_64 architecture"));
+    match target.arch {
+        TargetArch::X86_64 | TargetArch::AArch64 => {}
     }
 
     module.validate()?;
@@ -8041,6 +8086,9 @@ pub fn emit_compiler_owned_object_bytes(object: &CompilerOwnedObject) -> Vec<u8>
         BackendTargetId::X86_64Sysv => 1,
         BackendTargetId::X86_64Win64 => 2,
         BackendTargetId::X86_64MachO => 3,
+        BackendTargetId::Aarch64Sysv => 4,
+        BackendTargetId::Aarch64MachO => 5,
+        BackendTargetId::Aarch64Win => 6,
     };
     bytes[10] = match object.header.endian {
         TargetEndian::Little => 1,
@@ -8149,14 +8197,15 @@ pub fn parse_krbo_header(bytes: &[u8]) -> Result<KrboHeader, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        BackendTargetContract, BackendTargetId, CallEdge, CompilerOwnedCodeSection,
-        CompilerOwnedFixupKind, CompilerOwnedObject, CompilerOwnedObjectFixup,
-        CompilerOwnedObjectHeader, CompilerOwnedObjectKind, CompilerOwnedObjectSymbol,
-        CompilerOwnedObjectSymbolDefinition, CompilerOwnedObjectSymbolKind, Ctx, Eff,
-        ExecutableBlock, ExecutableExternDecl, ExecutableFacts, ExecutableFunction,
-        ExecutableKrirModule, ExecutableOp, ExecutableSignature, ExecutableTerminator,
-        ExecutableValue, ExecutableValueType, FunctionAttrs, FutureScalarReturnConvention,
-        MmioScalarType, TargetEndian, X86_64CoffFunctionSymbol, X86_64CoffRelocatableObject,
+        AArch64IntegerRegister, BackendTargetContract, BackendTargetId, CallEdge,
+        CompilerOwnedCodeSection, CompilerOwnedFixupKind, CompilerOwnedObject,
+        CompilerOwnedObjectFixup, CompilerOwnedObjectHeader, CompilerOwnedObjectKind,
+        CompilerOwnedObjectSymbol, CompilerOwnedObjectSymbolDefinition,
+        CompilerOwnedObjectSymbolKind, Ctx, Eff, ExecutableBlock, ExecutableExternDecl,
+        ExecutableFacts, ExecutableFunction, ExecutableKrirModule, ExecutableOp,
+        ExecutableSignature, ExecutableTerminator, ExecutableValue, ExecutableValueType,
+        FunctionAttrs, FutureScalarReturnConvention, IntegerRegister, MmioScalarType,
+        TargetEndian, X86_64CoffFunctionSymbol, X86_64CoffRelocatableObject,
         X86_64IntegerRegister, X86_64MachOFunctionSymbol, X86_64MachORelocatableObject,
         emit_compiler_owned_object_bytes, emit_x86_64_asm_text, emit_x86_64_coff_bytes,
         emit_x86_64_macho_object_bytes, emit_x86_64_object_bytes,
@@ -9106,24 +9155,24 @@ mod tests {
         assert_eq!(
             contract.future_argument_registers,
             vec![
-                X86_64IntegerRegister::Rdi,
-                X86_64IntegerRegister::Rsi,
-                X86_64IntegerRegister::Rdx,
-                X86_64IntegerRegister::Rcx,
-                X86_64IntegerRegister::R8,
-                X86_64IntegerRegister::R9,
+                IntegerRegister::X86_64(X86_64IntegerRegister::Rdi),
+                IntegerRegister::X86_64(X86_64IntegerRegister::Rsi),
+                IntegerRegister::X86_64(X86_64IntegerRegister::Rdx),
+                IntegerRegister::X86_64(X86_64IntegerRegister::Rcx),
+                IntegerRegister::X86_64(X86_64IntegerRegister::R8),
+                IntegerRegister::X86_64(X86_64IntegerRegister::R9),
             ]
         );
         assert_eq!(
             contract.future_scalar_return.registers(),
-            &[X86_64IntegerRegister::Rax]
+            vec![IntegerRegister::X86_64(X86_64IntegerRegister::Rax)]
         );
     }
 
     #[test]
     fn x86_64_sysv_target_contract_validation_rejects_overlapping_saved_sets() {
         let mut contract = BackendTargetContract::x86_64_sysv();
-        contract.callee_saved.push(X86_64IntegerRegister::Rax);
+        contract.callee_saved.push(IntegerRegister::X86_64(X86_64IntegerRegister::Rax));
 
         assert_eq!(
             contract.validate(),
@@ -9139,10 +9188,10 @@ mod tests {
         let mut contract = BackendTargetContract::x86_64_sysv();
         contract
             .integer_registers
-            .retain(|reg| *reg != X86_64IntegerRegister::Rax);
+            .retain(|reg| *reg != IntegerRegister::X86_64(X86_64IntegerRegister::Rax));
         contract
             .caller_saved
-            .retain(|reg| *reg != X86_64IntegerRegister::Rax);
+            .retain(|reg| *reg != IntegerRegister::X86_64(X86_64IntegerRegister::Rax));
         contract.future_scalar_return = FutureScalarReturnConvention::IntegerRax;
 
         assert_eq!(
@@ -11698,5 +11747,38 @@ mod tests {
         bytes[8..12].copy_from_slice(&100u32.to_le_bytes()); // entry_offset=100
         bytes[12..16].copy_from_slice(&4u32.to_le_bytes()); // code_length=4 → out of range
         assert!(super::parse_krbo_header(&bytes).is_err());
+    }
+
+    #[test]
+    fn aarch64_sysv_contract_validates() {
+        let contract = BackendTargetContract::aarch64_sysv();
+        assert_eq!(contract.validate(), Ok(()));
+    }
+
+    #[test]
+    fn aarch64_macho_contract_validates() {
+        let contract = BackendTargetContract::aarch64_macho();
+        assert_eq!(contract.validate(), Ok(()));
+    }
+
+    #[test]
+    fn aarch64_win_contract_validates() {
+        let contract = BackendTargetContract::aarch64_win();
+        assert_eq!(contract.validate(), Ok(()));
+    }
+
+    #[test]
+    fn integer_register_ord_for_btreeset() {
+        use std::collections::BTreeSet;
+        let mut set: BTreeSet<IntegerRegister> = BTreeSet::new();
+        set.insert(IntegerRegister::AArch64(AArch64IntegerRegister::X0));
+        set.insert(IntegerRegister::X86_64(X86_64IntegerRegister::Rax));
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn future_return_x0_registers() {
+        let regs = FutureScalarReturnConvention::IntegerX0.registers();
+        assert_eq!(regs, vec![IntegerRegister::AArch64(AArch64IntegerRegister::X0)]);
     }
 }
