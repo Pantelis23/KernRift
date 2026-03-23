@@ -3188,7 +3188,7 @@ impl BackendTargetContract {
         c.target_id = BackendTargetId::Aarch64MachO;
         c.sections = SectionNamingConvention {
             text: "__TEXT,__text",
-            rodata: "__DATA,__const",
+            rodata: "__TEXT,__const",
             data: "__DATA,__data",
             bss: "__DATA,__bss",
         };
@@ -3201,6 +3201,8 @@ impl BackendTargetContract {
 
     /// AArch64 Windows (AAPCS64 Windows variant).
     pub fn aarch64_win() -> Self {
+        use AArch64IntegerRegister::*;
+        let a = |r| IntegerRegister::AArch64(r);
         let mut c = Self::aarch64_sysv();
         c.target_id = BackendTargetId::Aarch64Win;
         c.abi = TargetAbi::Aapcs64Win;
@@ -3210,6 +3212,8 @@ impl BackendTargetContract {
             data: ".data",
             bss: ".bss",
         };
+        c.caller_saved.retain(|r| *r != a(X15));
+        c.callee_saved.push(a(X15));
         c
     }
 
