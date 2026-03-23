@@ -33,7 +33,11 @@ pub fn run_krbo_file(path: &str) -> Result<(), String> {
     let code_ptr = map_executable(code)?;
 
     unsafe {
+        #[cfg(target_arch = "x86_64")]
         let entry_fn: unsafe extern "sysv64" fn() =
+            std::mem::transmute(code_ptr.add(header.entry_offset as usize));
+        #[cfg(target_arch = "aarch64")]
+        let entry_fn: unsafe extern "C" fn() =
             std::mem::transmute(code_ptr.add(header.entry_offset as usize));
         entry_fn();
     }
