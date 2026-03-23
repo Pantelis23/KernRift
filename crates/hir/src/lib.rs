@@ -1303,13 +1303,13 @@ pub fn lower_to_krir_with_surface(
     surface_profile: SurfaceProfile,
 ) -> Result<KrirModule, Vec<String>> {
     // Reject source files that require a future language version.
-    if let Some(ver) = ast.lang_version {
-        if ver > CURRENT_LANG_VERSION {
-            return Err(vec![format!(
-                "#lang {}.{}: source requires language version {}.{}, but this compiler supports {}.{}",
-                ver.0, ver.1, ver.0, ver.1, CURRENT_LANG_VERSION.0, CURRENT_LANG_VERSION.1
-            )]);
-        }
+    if let Some(ver) = ast.lang_version
+        && ver > CURRENT_LANG_VERSION
+    {
+        return Err(vec![format!(
+            "#lang {}.{}: source requires language version {}.{}, but this compiler supports {}.{}",
+            ver.0, ver.1, ver.0, ver.1, CURRENT_LANG_VERSION.0, CURRENT_LANG_VERSION.1
+        )]);
     }
     // If the source file declares a #lang directive, it overrides the caller-supplied profile.
     let surface_profile = match ast.lang_profile.as_deref() {

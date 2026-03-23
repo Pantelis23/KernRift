@@ -344,8 +344,8 @@ fn main() -> ExitCode {
                 }
             };
             let next_arg = &args[3];
-            if next_arg.starts_with("--emit=") {
-                match parse_backend_emit_args(&next_arg["--emit=".len()..], &args[4..], surface) {
+            if let Some(emit_kind) = next_arg.strip_prefix("--emit=") {
+                match parse_backend_emit_args(emit_kind, &args[4..], surface) {
                     Ok(parsed) => run_backend_emit(&parsed),
                     Err(err) => {
                         eprintln!("{}", err);

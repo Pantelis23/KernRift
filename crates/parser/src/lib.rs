@@ -484,7 +484,7 @@ pub enum KernelIntrinsic {
 
 impl KernelIntrinsic {
     /// Parse a name (case-insensitive) into a `KernelIntrinsic`.
-    pub fn from_str(name: &str) -> Option<Self> {
+    pub fn parse_name(name: &str) -> Option<Self> {
         match name.to_ascii_lowercase().as_str() {
             "cli" => Some(Self::Cli),
             "sti" => Some(Self::Sti),
@@ -1364,14 +1364,12 @@ impl TokParser {
             }
             // If we see `*` followed by `( ident as`, this is a PtrLoad/PtrStore
             // statement, not a multiplication. Stop consuming infix operators.
-            if matches!(self.peek().kind, TokenKind::Star) {
-                if matches!(self.peek_at(1).kind, TokenKind::LParen) {
-                    if matches!(self.peek_at(2).kind, TokenKind::Ident(_)) {
-                        if matches!(&self.peek_at(3).kind, TokenKind::Ident(kw) if kw == "as") {
-                            break;
-                        }
-                    }
-                }
+            if matches!(self.peek().kind, TokenKind::Star)
+                && matches!(self.peek_at(1).kind, TokenKind::LParen)
+                && matches!(self.peek_at(2).kind, TokenKind::Ident(_))
+                && matches!(&self.peek_at(3).kind, TokenKind::Ident(kw) if kw == "as")
+            {
+                break;
             }
             self.advance();
             let rhs = self.parse_expr(rbp)?;
@@ -1854,29 +1852,27 @@ impl TokParser {
             // Also handles `raw_write` and `raw_read` which are tokenized as Ident
             TokenKind::Ident(name) => {
                 // Check for asm!(NAME) — kernel intrinsic instruction.
-                if name == "asm" {
-                    if matches!(self.peek_at(1).kind, TokenKind::Bang) {
-                        self.advance(); // consume `asm`
-                        self.advance(); // consume `!`
-                        self.expect_kind(&TokenKind::LParen)?;
-                        let intr_name = match self.advance().kind.clone() {
-                            TokenKind::Ident(n) => n,
-                            other => {
-                                return Err(format!(
-                                    "expected intrinsic name after asm!(, got {:?}",
-                                    other
-                                ));
-                            }
-                        };
-                        self.expect_kind(&TokenKind::RParen)?;
-                        match KernelIntrinsic::from_str(&intr_name) {
-                            Some(intr) => return Ok(Stmt::InlineAsm(intr)),
-                            None => {
-                                return Err(format!(
-                                    "unknown kernel intrinsic '{}'; supported: cli, sti, hlt, nop, mfence, sfence, lfence, wbinvd, pause, int3, cpuid",
-                                    intr_name
-                                ));
-                            }
+                if name == "asm" && matches!(self.peek_at(1).kind, TokenKind::Bang) {
+                    self.advance(); // consume `asm`
+                    self.advance(); // consume `!`
+                    self.expect_kind(&TokenKind::LParen)?;
+                    let intr_name = match self.advance().kind.clone() {
+                        TokenKind::Ident(n) => n,
+                        other => {
+                            return Err(format!(
+                                "expected intrinsic name after asm!(, got {:?}",
+                                other
+                            ));
+                        }
+                    };
+                    self.expect_kind(&TokenKind::RParen)?;
+                    match KernelIntrinsic::parse_name(&intr_name) {
+                        Some(intr) => return Ok(Stmt::InlineAsm(intr)),
+                        None => {
+                            return Err(format!(
+                                "unknown kernel intrinsic '{}'; supported: cli, sti, hlt, nop, mfence, sfence, lfence, wbinvd, pause, int3, cpuid",
+                                intr_name
+                            ));
                         }
                     }
                 }
@@ -3438,7 +3434,7 @@ fn parse_stmt(stmt: &str) -> Result<Option<Stmt>, String> {
             let rest = trimmed[4..].trim_start();
             if rest.starts_with('(') && rest.ends_with(')') {
                 let intr_name = rest[1..rest.len() - 1].trim();
-                return match KernelIntrinsic::from_str(intr_name) {
+                return match KernelIntrinsic::parse_name(intr_name) {
                     Some(intr) => Ok(Some(Stmt::InlineAsm(intr))),
                     None => Err(format!(
                         "unknown kernel intrinsic '{}'; supported: cli, sti, hlt, nop, mfence, sfence, lfence, wbinvd, pause, int3, cpuid",

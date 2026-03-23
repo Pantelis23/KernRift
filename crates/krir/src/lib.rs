@@ -6253,7 +6253,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
     let mut function_sizes = BTreeMap::new();
     let mut cursor = 0u64;
     for function in &canonical.functions {
-        let pad = if function.facts.attrs.hotpath && cursor % 16 != 0 {
+        let pad = if function.facts.attrs.hotpath && !cursor.is_multiple_of(16) {
             16 - (cursor % 16)
         } else {
             0
@@ -6291,9 +6291,8 @@ pub fn lower_executable_krir_to_compiler_owned_object(
             .get(&function.name)
             .expect("function size must exist");
         let pad = function_offset - emit_cursor;
-        for _ in 0..pad {
-            code_bytes.push(0x90); // NOP alignment padding for @hotpath
-        }
+        // NOP alignment padding for @hotpath
+        code_bytes.extend(std::iter::repeat_n(0x90_u8, pad as usize));
         emit_cursor = function_offset;
         let block = &function.blocks[0];
         let uses_saved_value_slot = executable_function_uses_saved_value_slot(function);

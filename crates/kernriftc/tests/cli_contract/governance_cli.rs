@@ -287,7 +287,7 @@ fn features_json_output_does_not_affect_text_output() {
         String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8")
     };
     let text = run_text();
-    assert_eq!(text.lines().nth(0), Some("surface: stable"));
+    assert_eq!(text.lines().next(), Some("surface: stable"));
     assert_eq!(text.lines().nth(1), Some("features: 6"));
 }
 

@@ -1623,8 +1623,10 @@ fn hotpath_function_is_16_byte_aligned_in_object() {
         }],
     };
 
-    let mut hot_attrs = FunctionAttrs::default();
-    hot_attrs.hotpath = true;
+    let hot_attrs = FunctionAttrs {
+        hotpath: true,
+        ..Default::default()
+    };
     let hot = ExecutableFunction {
         name: "hot_fn".to_string(),
         is_extern: false,
