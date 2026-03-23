@@ -21,12 +21,28 @@ pub(crate) fn run_living_compiler(args: &LivingCompilerArgs) -> ExitCode {
     report.max_lock_depth = analysis.max_lock_depth;
     let suggestions = detect_patterns(&report);
 
+    // Apply min-fitness display filter.
+    let display: Vec<_> = if args.ci || args.min_fitness_explicit {
+        suggestions
+            .iter()
+            .filter(|m| m.fitness >= args.ci_min_fitness)
+            .cloned()
+            .collect()
+    } else {
+        suggestions.clone()
+    };
+
     match args.format {
-        LivingCompilerFormat::Text => print_text(&suggestions),
-        LivingCompilerFormat::Json => print_json(&suggestions),
+        LivingCompilerFormat::Text => print_text(&display),
+        LivingCompilerFormat::Json => print_json(&display),
     }
 
-    ExitCode::SUCCESS
+    // CI exit code: 1 if any suggestion meets the threshold.
+    if args.ci && suggestions.iter().any(|m| m.fitness >= args.ci_min_fitness) {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 fn print_text(suggestions: &[kernriftc::PatternMatch]) {
