@@ -49,29 +49,55 @@ pub fn run_krbo_file(path: &str) -> Result<(), String> {
 #[cfg(unix)]
 fn map_uart_buffer() -> Result<*mut u8, String> {
     use libc::*;
+
+    // Try to map at the canonical UART address (0x10000000).  Some kernels
+    // (macOS CI ARM64) reject MAP_FIXED at this address; in that case fall
+    // back to a kernel-chosen mapping.  Programs with no MMIO operations
+    // (e.g. smoke_noop) never read this address, so the location is immaterial.
     #[cfg(target_os = "linux")]
-    let flags = MAP_PRIVATE | MAP_FIXED | MAP_ANONYMOUS;
+    let fixed_flags = MAP_PRIVATE | MAP_FIXED | MAP_ANONYMOUS;
     #[cfg(not(target_os = "linux"))]
-    let flags = MAP_PRIVATE | MAP_FIXED | MAP_ANON;
+    let fixed_flags = MAP_PRIVATE | MAP_FIXED | MAP_ANON;
 
     let ptr = unsafe {
         mmap(
             0x10000000usize as *mut _,
             0x1000,
             PROT_READ | PROT_WRITE,
-            flags,
+            fixed_flags,
             -1,
             0,
         )
     };
-    if ptr == MAP_FAILED {
+    if ptr != MAP_FAILED {
+        unsafe { std::ptr::write_bytes(ptr as *mut u8, 0, 0x1000) };
+        return Ok(ptr as *mut u8);
+    }
+
+    // MAP_FIXED failed — try a kernel-chosen address.
+    #[cfg(target_os = "linux")]
+    let anon_flags = MAP_PRIVATE | MAP_ANONYMOUS;
+    #[cfg(not(target_os = "linux"))]
+    let anon_flags = MAP_PRIVATE | MAP_ANON;
+
+    let ptr2 = unsafe {
+        mmap(
+            std::ptr::null_mut(),
+            0x1000,
+            PROT_READ | PROT_WRITE,
+            anon_flags,
+            -1,
+            0,
+        )
+    };
+    if ptr2 == MAP_FAILED {
         return Err(format!(
             "failed to map UART buffer at 0x10000000: {}",
             std::io::Error::last_os_error()
         ));
     }
-    unsafe { std::ptr::write_bytes(ptr as *mut u8, 0, 0x1000) };
-    Ok(ptr as *mut u8)
+    unsafe { std::ptr::write_bytes(ptr2 as *mut u8, 0, 0x1000) };
+    Ok(ptr2 as *mut u8)
 }
 
 #[cfg(unix)]
@@ -141,6 +167,8 @@ fn flush_uart(uart_ptr: *mut u8, buf_size: usize) {
 #[cfg(windows)]
 fn map_uart_buffer() -> Result<*mut u8, String> {
     use windows_sys::Win32::System::Memory::*;
+    // Try the canonical UART address first; fall back to any address if the
+    // kernel rejects it (CI environments sometimes restrict fixed addresses).
     let ptr = unsafe {
         VirtualAlloc(
             0x10000000usize as *mut _,
@@ -149,8 +177,20 @@ fn map_uart_buffer() -> Result<*mut u8, String> {
             PAGE_READWRITE,
         )
     };
+    let ptr = if ptr.is_null() {
+        unsafe {
+            VirtualAlloc(
+                std::ptr::null_mut(),
+                0x1000,
+                MEM_COMMIT | MEM_RESERVE,
+                PAGE_READWRITE,
+            )
+        }
+    } else {
+        ptr
+    };
     if ptr.is_null() {
-        return Err("failed to map UART buffer at 0x10000000".to_string());
+        return Err("failed to map UART buffer".to_string());
     }
     unsafe { std::ptr::write_bytes(ptr as *mut u8, 0, 0x1000) };
     Ok(ptr as *mut u8)
@@ -158,7 +198,6 @@ fn map_uart_buffer() -> Result<*mut u8, String> {
 
 #[cfg(windows)]
 fn map_executable(code: &[u8]) -> Result<*mut u8, String> {
-    use windows_sys::Win32::Foundation::GetCurrentProcess;
     use windows_sys::Win32::System::Diagnostics::Debug::FlushInstructionCache;
     use windows_sys::Win32::System::Memory::*;
     let ptr = unsafe {
@@ -174,7 +213,8 @@ fn map_executable(code: &[u8]) -> Result<*mut u8, String> {
     }
     unsafe { std::ptr::copy_nonoverlapping(code.as_ptr(), ptr as *mut u8, code.len()) };
     // Flush the I-cache so the CPU sees the newly written code — required on AArch64 Windows.
-    unsafe { FlushInstructionCache(GetCurrentProcess(), ptr, code.len()) };
+    // GetCurrentProcess() always returns pseudohandle -1 (HANDLE = isize in windows-sys).
+    unsafe { FlushInstructionCache(-1isize, ptr, code.len()) };
     Ok(ptr as *mut u8)
 }
 
