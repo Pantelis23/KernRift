@@ -19,18 +19,30 @@ jobs:
           - os: ubuntu-latest
             artifact_suffix: linux-x86_64
             exe_suffix: ""
+            build_target: ""
+            bin_dir: target/release
           - os: ubuntu-24.04-arm
             artifact_suffix: linux-aarch64
             exe_suffix: ""
+            build_target: ""
+            bin_dir: target/release
           - os: macos-latest
             artifact_suffix: macos-aarch64
             exe_suffix: ""
-          - os: macos-13
+            build_target: ""
+            bin_dir: target/release
+          # Cross-compiled from Apple Silicon; runs via Rosetta 2 on the same runner.
+          # Not tested on real Intel Mac hardware — see release notes.
+          - os: macos-latest
             artifact_suffix: macos-x86_64
             exe_suffix: ""
+            build_target: x86_64-apple-darwin
+            bin_dir: target/x86_64-apple-darwin/release
           - os: windows-latest
             artifact_suffix: windows-x86_64
             exe_suffix: .exe
+            build_target: ""
+            bin_dir: target/release
 
     steps:
       - uses: actions/checkout@v4
@@ -40,8 +52,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          targets: ${{ matrix.build_target }}
 
-      # Gate the release: fail early if repo is broken
+      # Gate the release: fail early if repo is broken (always native)
       - name: Gates (fmt/clippy/test)
         shell: bash
         run: |
@@ -54,14 +67,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --release --locked -p kernriftc -p kernrift
+          TARGET_FLAG=""
+          [ -n "${{ matrix.build_target }}" ] && TARGET_FLAG="--target ${{ matrix.build_target }}"
+          cargo build --release --locked -p kernriftc -p kernrift $TARGET_FLAG
 
       - name: Verify version matches tag
         shell: bash
         run: |
           set -euo pipefail
           expected="${GITHUB_REF_NAME#v}"
-          got="$(./target/release/kernriftc${{ matrix.exe_suffix }} --version | tr -d '\r')"
+          got="./${{ matrix.bin_dir }}/kernriftc${{ matrix.exe_suffix }}"
+          got="$($got --version | tr -d '\r')"
           echo "expected=$expected got=$got"
           echo "$got" | grep -F "$expected"
 
@@ -72,7 +88,7 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           for bin in kernriftc kernrift; do
-            cp "target/release/${bin}" "dist/${bin}-${{ matrix.artifact_suffix }}"
+            cp "${{ matrix.bin_dir }}/${bin}" "dist/${bin}-${{ matrix.artifact_suffix }}"
             sha256sum "dist/${bin}-${{ matrix.artifact_suffix }}" \
               > "dist/${bin}-${{ matrix.artifact_suffix }}.sha256"
           done
@@ -84,7 +100,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           foreach ($bin in @("kernriftc", "kernrift")) {
             $dst = "dist\$bin-${{ matrix.artifact_suffix }}.exe"
-            Copy-Item "target\release\$bin.exe" $dst
+            Copy-Item "${{ matrix.bin_dir }}\$bin.exe" $dst
             $h = (Get-FileHash -Algorithm SHA256 $dst).Hash.ToLower()
             Set-Content -NoNewline -Path "$dst.sha256" -Value "$h  $(Split-Path -Leaf $dst)`n"
           }
@@ -155,7 +171,7 @@ jobs:
           body: |
             See [CHANGELOG](https://github.com/Pantelis23/KernRift/blob/main/CHANGELOG.md) for full details.
 
-            > **macOS x86_64**: built and shipped by CI but not independently verified on Intel Mac hardware. Report any issues.
+            > **macOS x86_64**: cross-compiled from Apple Silicon and not independently verified on Intel Mac hardware. Report any issues.
 
             ### Verifying downloads
             Each binary ships with a `.sha256` checksum and a cosign keyless signature (`.sig` + `.cert`).

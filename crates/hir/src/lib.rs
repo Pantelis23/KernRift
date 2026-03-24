@@ -5085,19 +5085,19 @@ mod tests {
         let cases = [
             (
                 "irq_handler_alias",
-                include_str!("../../../docs/design/examples/irq_handler_alias.proposal.json"),
+                include_str!("irq_handler_alias.proposal.json"),
             ),
             (
                 "thread_entry_alias",
-                include_str!("../../../docs/design/examples/thread_entry_alias.proposal.json"),
+                include_str!("thread_entry_alias.proposal.json"),
             ),
             (
                 "may_block_alias",
-                include_str!("../../../docs/design/examples/may_block_alias.proposal.json"),
+                include_str!("may_block_alias.proposal.json"),
             ),
             (
                 "irq_legacy_alias",
-                include_str!("../../../docs/design/examples/irq_legacy_alias.proposal.json"),
+                include_str!("irq_legacy_alias.proposal.json"),
             ),
         ];
 
