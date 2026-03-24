@@ -475,6 +475,8 @@ pub(super) fn write_promotion_repo_fixture(feature_id: &str) -> PathBuf {
     git(&["-c", "init.templateDir=", "init", "-q", "-b", "main"]);
     git(&["config", "user.name", "KernRift Test"]);
     git(&["config", "user.email", "kernrift@example.test"]);
+    // Prevent GPG-signing failures on CI runners with commit.gpgsign=true globally.
+    git(&["config", "commit.gpgsign", "false"]);
     git(&["add", "."]);
     git(&["commit", "-m", "baseline"]);
     repo_dir
