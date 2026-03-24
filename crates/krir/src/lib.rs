@@ -12067,6 +12067,7 @@ mod tests {
         );
     }
 
+    #[cfg_attr(not(target_arch = "x86_64"), ignore)]
     #[test]
     fn x86_64_elf_internal_only_export_is_accepted_by_external_tools() {
         let module = ExecutableKrirModule {
@@ -12123,6 +12124,7 @@ mod tests {
         let _ = objdump_smoke_check(file.path());
     }
 
+    #[cfg_attr(not(target_arch = "x86_64"), ignore)]
     #[test]
     fn x86_64_elf_external_only_export_is_accepted_by_external_tools() {
         let module = ExecutableKrirModule {
@@ -12158,6 +12160,7 @@ mod tests {
         let _ = objdump_smoke_check(file.path());
     }
 
+    #[cfg_attr(not(target_arch = "x86_64"), ignore)]
     #[test]
     fn x86_64_elf_mixed_internal_external_export_is_accepted_by_external_tools() {
         let module = ExecutableKrirModule {
@@ -12216,6 +12219,7 @@ mod tests {
         let _ = objdump_smoke_check(file.path());
     }
 
+    #[cfg_attr(not(target_arch = "x86_64"), ignore)]
     #[test]
     fn x86_64_elf_internal_only_object_is_accepted_by_relocatable_link_smoke() {
         let Some(linker) = find_optional_linker() else {
@@ -12282,6 +12286,7 @@ mod tests {
         let _ = fs::remove_file(&output_path);
     }
 
+    #[cfg_attr(not(target_arch = "x86_64"), ignore)]
     #[test]
     fn x86_64_elf_unresolved_external_with_resolver_links_successfully() {
         let Some(linker) = find_optional_linker() else {
@@ -12364,6 +12369,7 @@ mod tests {
         let _ = fs::remove_file(&output_path);
     }
 
+    #[cfg_attr(not(target_arch = "x86_64"), ignore)]
     #[test]
     fn x86_64_elf_mixed_internal_external_object_links_successfully() {
         let Some(linker) = find_optional_linker() else {
@@ -12513,6 +12519,7 @@ mod tests {
         let _ = fs::remove_file(&output_path);
     }
 
+    #[cfg_attr(not(target_arch = "x86_64"), ignore)]
     #[test]
     fn x86_64_elf_internal_only_object_is_accepted_by_final_link_smoke() {
         let Some(linker) = find_optional_linker() else {
@@ -12576,6 +12583,7 @@ mod tests {
         let _ = fs::remove_file(&output_path);
     }
 
+    #[cfg_attr(not(target_arch = "x86_64"), ignore)]
     #[test]
     fn x86_64_elf_internal_only_object_executes_in_runtime_smoke() {
         let Some(linker) = find_optional_linker() else {
@@ -12651,6 +12659,7 @@ mod tests {
         let _ = fs::remove_file(&output_path);
     }
 
+    #[cfg_attr(not(target_arch = "x86_64"), ignore)]
     #[test]
     fn x86_64_elf_unresolved_external_with_resolver_is_accepted_by_final_link_smoke() {
         let Some(linker) = find_optional_linker() else {
@@ -12718,6 +12727,7 @@ mod tests {
         let _ = fs::remove_file(&output_path);
     }
 
+    #[cfg_attr(not(target_arch = "x86_64"), ignore)]
     #[test]
     fn x86_64_elf_unresolved_external_with_resolver_executes_in_runtime_smoke() {
         let Some(linker) = find_optional_linker() else {
@@ -12797,6 +12807,7 @@ mod tests {
         let _ = fs::remove_file(&output_path);
     }
 
+    #[cfg_attr(not(target_arch = "x86_64"), ignore)]
     #[test]
     fn x86_64_elf_mixed_internal_external_object_is_accepted_by_final_link_smoke() {
         let Some(linker) = find_optional_linker() else {
@@ -12871,6 +12882,7 @@ mod tests {
         let _ = fs::remove_file(&output_path);
     }
 
+    #[cfg_attr(not(target_arch = "x86_64"), ignore)]
     #[test]
     fn x86_64_elf_mixed_internal_external_object_executes_in_runtime_smoke() {
         let Some(linker) = find_optional_linker() else {
@@ -12957,6 +12969,7 @@ mod tests {
         let _ = fs::remove_file(&output_path);
     }
 
+    #[cfg_attr(not(target_arch = "x86_64"), ignore)]
     #[test]
     fn x86_64_elf_unresolved_external_without_resolver_fails_final_link_smoke() {
         let Some(linker) = find_optional_linker() else {
@@ -13241,11 +13254,21 @@ mod tests {
 
     #[test]
     fn krbo_emit_and_parse_round_trip() {
-        let code_bytes = vec![0x90u8, 0x90, 0xC3, 0x00]; // nop nop ret pad
-        let header_bytes = super::emit_krbo_bytes_raw(&code_bytes, 0);
+        // Use host-native arch and a trivial 4-byte instruction sequence.
+        #[cfg(target_arch = "aarch64")]
+        let (host_arch, code_bytes) = (
+            super::KRBO_ARCH_AARCH64,
+            vec![0xc0u8, 0x03, 0x5f, 0xd6], // ret
+        );
+        #[cfg(not(target_arch = "aarch64"))]
+        let (host_arch, code_bytes) = (
+            super::KRBO_ARCH_X86_64,
+            vec![0x90u8, 0x90, 0xC3, 0x00], // nop nop ret pad
+        );
+        let header_bytes = super::emit_krbo_bytes_raw_arch(&code_bytes, 0, host_arch);
         assert_eq!(&header_bytes[0..4], b"KRBO", "magic wrong");
         assert_eq!(header_bytes[4], 1, "version wrong");
-        assert_eq!(header_bytes[5], 0x01, "arch wrong");
+        assert_eq!(header_bytes[5], host_arch, "arch wrong");
         assert_eq!(header_bytes[6], 0, "reserved[0] wrong");
         assert_eq!(header_bytes[7], 0, "reserved[1] wrong");
         let entry_off = u32::from_le_bytes(header_bytes[8..12].try_into().unwrap());
