@@ -23,4 +23,5 @@ test-list.txt
 
 # internal AI workflow docs (plans/specs/design notes)
 /docs/superpowers/
-/docs/design/
+/docs/design/*.md
+/docs/design/examples/*.json.bak
