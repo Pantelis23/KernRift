@@ -117,7 +117,7 @@ jobs:
 
           # macOS – Apple Silicon only; macos-13 (Intel) was deprecated by
           # GitHub in late 2024 and is no longer available on free accounts.
-          # Intel macOS will be verified via a friend's machine.
+          # Intel macOS is unverified.
           - name: "macOS AArch64 (Apple Silicon)"
             os: macos-latest
             arch: aarch64
