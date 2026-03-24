@@ -35,11 +35,11 @@ fn entry() {
 }
 EOF
 
-# Compile
+# Compile — produces a fat binary (x86_64 + ARM64 slices)
 kernriftc hello.kr
-# → hello.krbo
+# → hello.krbo  (KRBOFAT fat binary, LZ4-compressed)
 
-# Run
+# Run — kernrift detects the host architecture and executes the right slice
 kernrift hello.krbo
 
 # Or just analyse (no binary output)

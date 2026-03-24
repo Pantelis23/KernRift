@@ -20,3 +20,7 @@ test-list.txt
 
 /dist
 .worktrees/
+
+# internal AI workflow docs (plans/specs/design notes)
+/docs/superpowers/
+/docs/design/

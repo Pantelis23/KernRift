@@ -104,3 +104,31 @@ cargo run -q -p kernriftc -- check examples/10_edge_comments_whitespace.kr
 ```
 
 Expected: exit `0`.
+
+---
+
+## `smoke_noop.kr` (cross-platform smoke test)
+
+Minimal entry point with **no MMIO operations**. Compiles to a fat binary on all supported
+platforms (x86_64 + ARM64) and exits 0 with no output.
+
+```bash
+kernriftc examples/smoke_noop.kr
+# → examples/smoke_noop.krbo  (KRBOFAT fat binary, both slices)
+
+kernrift examples/smoke_noop.krbo
+# → exits 0, no stdout
+```
+
+Use this to verify that your `kernrift` runner and the fat-binary pipeline work end-to-end on any host.
+
+## `hello.kr` (MMIO print example — repo root)
+
+Located at the repo root (`hello.kr`). Uses the `print()` intrinsic, which maps to a UART MMIO write.
+Runs on x86_64 Linux and Linux ARM64; macOS CI uses a fallback UART address so the binary still exits 0.
+
+```bash
+kernriftc hello.kr
+kernrift hello.krbo
+# Hello, World!
+```

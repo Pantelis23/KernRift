@@ -19,9 +19,15 @@ All notable changes to `kernriftc` are documented in this file.
 - New `kernriftc` CLI: `BackendArtifactKind::KrboFat` ("krbofat").
 - New spec docs in `docs/spec/`: `aarch64-asm-linear-subset-v0.1.md`, `aarch64-object-linear-subset-v0.1.md`, `backend-target-model-aarch64-sysv-v0.1.md`, `backend-target-model-aarch64-macho-v0.1.md`, `backend-target-model-aarch64-win-v0.1.md`, `krbofat-container-v0.1.md`.
 
+### Fixed
+- `kernrift` runner: `map_uart_buffer` falls back to a kernel-chosen address when `mmap(MAP_FIXED)` at `0x10000000` is rejected (macOS CI ARM64 and Windows CI return `ENOMEM`/`null` for fixed mappings); programs with no MMIO (e.g. `examples/smoke_noop.kr`) are unaffected.
+- `kernrift` runner (Unix): `map_executable` now maps `PROT_READ|PROT_WRITE` first, copies code, then `mprotect`s to `PROT_READ|PROT_EXEC`; avoids rejection of `PROT_WRITE|PROT_EXEC` on macOS CI (W^X enforcement).
+- `kernrift` runner (Windows): `map_executable` calls `FlushInstructionCache` after writing JIT code; fixes SIGILL (exit 132) on Windows ARM64 where the I-cache and D-cache are incoherent.
+- `krir` tests: 9 ELF-link tests now compile-gated with `#[cfg(all(unix, target_arch = "x86_64"))]`; `ld` on Windows emits PE (MZ magic), not ELF — those tests no longer run on Windows.
+
 ### Tested
-- `noop.kr` compiled on Pi 400 (aarch64 Linux), fat binary pulled and run on x86_64 — exit 0.
-- `noop.kr` compiled on x86_64, fat binary run on Pi 400 — exit 0.
+- `examples/smoke_noop.kr` compiled on Pi 400 (aarch64 Linux), fat binary pulled and run on x86_64 — exit 0.
+- `examples/smoke_noop.kr` compiled on x86_64, fat binary run on Pi 400 — exit 0.
 
 ## v0.3.1 - 2026-03-23
 

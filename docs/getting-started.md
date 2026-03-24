@@ -132,37 +132,78 @@ cargo install --path crates/kernriftc
 
 This builds and installs `kernrift` and `kernriftc` to `~/.cargo/bin/` (Linux/macOS) or `%USERPROFILE%\.cargo\bin\` (Windows).
 
-### Prebuilt binary — Linux / macOS
-
-Download from the [Releases page](https://github.com/Pantelis23/KernRift/releases) and verify:
+### Prebuilt binary — Linux x86_64
 
 ```sh
-# Download
+# Download both binaries
 curl -L -o kernriftc https://github.com/Pantelis23/KernRift/releases/latest/download/kernriftc-linux-x86_64
+curl -L -o kernrift  https://github.com/Pantelis23/KernRift/releases/latest/download/kernrift-linux-x86_64
 curl -L -o kernriftc.sha256 https://github.com/Pantelis23/KernRift/releases/latest/download/kernriftc-linux-x86_64.sha256
+curl -L -o kernrift.sha256  https://github.com/Pantelis23/KernRift/releases/latest/download/kernrift-linux-x86_64.sha256
 
 # Verify
 sha256sum --check kernriftc.sha256
+sha256sum --check kernrift.sha256
 
 # Install
-chmod +x kernriftc
-sudo mv kernriftc /usr/local/bin/
+chmod +x kernriftc kernrift
+sudo mv kernriftc kernrift /usr/local/bin/
+```
+
+### Prebuilt binary — Linux AArch64 (ARM64)
+
+Replace `x86_64` with `aarch64` in the filenames above:
+
+```sh
+curl -L -o kernriftc https://github.com/Pantelis23/KernRift/releases/latest/download/kernriftc-linux-aarch64
+curl -L -o kernrift  https://github.com/Pantelis23/KernRift/releases/latest/download/kernrift-linux-aarch64
+# ... verify and install as above
+```
+
+### Prebuilt binary — macOS
+
+```sh
+# Apple Silicon (M1/M2/M3)
+curl -L -o kernriftc https://github.com/Pantelis23/KernRift/releases/latest/download/kernriftc-macos-aarch64
+curl -L -o kernrift  https://github.com/Pantelis23/KernRift/releases/latest/download/kernrift-macos-aarch64
+
+# Intel Mac
+curl -L -o kernriftc https://github.com/Pantelis23/KernRift/releases/latest/download/kernriftc-macos-x86_64
+curl -L -o kernrift  https://github.com/Pantelis23/KernRift/releases/latest/download/kernrift-macos-x86_64
+
+# Verify (macOS ships shasum, not sha256sum)
+shasum -a 256 --check kernriftc.sha256
+shasum -a 256 --check kernrift.sha256
+
+# Install
+chmod +x kernriftc kernrift
+sudo mv kernriftc kernrift /usr/local/bin/
 ```
 
 ### Prebuilt binary — Windows
 
 ```powershell
-# Download
-Invoke-WebRequest -Uri "https://github.com/Pantelis23/KernRift/releases/latest/download/kernriftc-windows-x86_64.exe" -OutFile kernriftc.exe
-Invoke-WebRequest -Uri "https://github.com/Pantelis23/KernRift/releases/latest/download/kernriftc-windows-x86_64.sha256" -OutFile kernriftc.sha256
+# x86_64 (most PCs)
+$arch = "x86_64"
+
+# ARM64 — use this on Snapdragon / Copilot+ PCs
+# $arch = "arm64"
+
+Invoke-WebRequest -Uri "https://github.com/Pantelis23/KernRift/releases/latest/download/kernriftc-windows-$arch.exe" -OutFile kernriftc.exe
+Invoke-WebRequest -Uri "https://github.com/Pantelis23/KernRift/releases/latest/download/kernrift-windows-$arch.exe"  -OutFile kernrift.exe
+Invoke-WebRequest -Uri "https://github.com/Pantelis23/KernRift/releases/latest/download/kernriftc-windows-$arch.sha256" -OutFile kernriftc.sha256
+Invoke-WebRequest -Uri "https://github.com/Pantelis23/KernRift/releases/latest/download/kernrift-windows-$arch.sha256"  -OutFile kernrift.sha256
 
 # Verify
-$expected = (Get-Content kernriftc.sha256).Split(" ")[0]
-$actual   = (Get-FileHash kernriftc.exe -Algorithm SHA256).Hash.ToLower()
-if ($expected -ne $actual) { Write-Error "SHA256 mismatch!" } else { Write-Host "OK" }
+foreach ($pair in @(("kernriftc.exe","kernriftc.sha256"),("kernrift.exe","kernrift.sha256"))) {
+    $expected = (Get-Content $pair[1]).Split(" ")[0]
+    $actual   = (Get-FileHash $pair[0] -Algorithm SHA256).Hash.ToLower()
+    if ($expected -ne $actual) { Write-Error "SHA256 mismatch: $($pair[0])!" } else { Write-Host "$($pair[0]) OK" }
+}
 
 # Add to PATH — move to a directory already on your PATH, e.g.:
 Move-Item kernriftc.exe "$env:USERPROFILE\bin\kernriftc.exe"
+Move-Item kernrift.exe  "$env:USERPROFILE\bin\kernrift.exe"
 ```
 
 ---
