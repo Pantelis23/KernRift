@@ -579,15 +579,17 @@ fn main() -> ExitCode {
         // kernriftc --arch x86_64|arm64 <file.kr>
         "--arch" if args.len() == 4 && args[3].ends_with(".kr") => {
             let arch_str = &args[2];
-            let source   = &args[3];
+            let source = &args[3];
             let stem = std::path::Path::new(source.as_str())
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("output");
             let output = format!("{}.krbo", stem);
             let synthetic: Vec<String> = vec![
-                "--arch".to_string(), arch_str.clone(),
-                "-o".to_string(), output.clone(),
+                "--arch".to_string(),
+                arch_str.clone(),
+                "-o".to_string(),
+                output.clone(),
                 source.clone(),
             ];
             match parse_backend_emit_args("krbofat", &synthetic, SurfaceProfile::Stable) {

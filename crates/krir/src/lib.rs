@@ -2895,11 +2895,34 @@ pub enum X86_64IntegerRegister {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AArch64IntegerRegister {
-    X0, X1, X2, X3, X4, X5, X6, X7,
-    X8, X9, X10, X11, X12, X13, X14, X15,
+    X0,
+    X1,
+    X2,
+    X3,
+    X4,
+    X5,
+    X6,
+    X7,
+    X8,
+    X9,
+    X10,
+    X11,
+    X12,
+    X13,
+    X14,
+    X15,
     // X16 (IP0) and X17 (IP1) omitted — linker scratch reserved
     // X18 omitted — platform-reserved on all three AArch64 targets
-    X19, X20, X21, X22, X23, X24, X25, X26, X27, X28,
+    X19,
+    X20,
+    X21,
+    X22,
+    X23,
+    X24,
+    X25,
+    X26,
+    X27,
+    X28,
     X29, // frame pointer
     X30, // link register
     Sp,
@@ -2932,7 +2955,7 @@ impl FutureScalarReturnConvention {
     pub fn registers(self) -> Vec<IntegerRegister> {
         match self {
             Self::IntegerRax => vec![IntegerRegister::X86_64(X86_64IntegerRegister::Rax)],
-            Self::IntegerX0  => vec![IntegerRegister::AArch64(AArch64IntegerRegister::X0)],
+            Self::IntegerX0 => vec![IntegerRegister::AArch64(AArch64IntegerRegister::X0)],
         }
     }
 }
@@ -2992,24 +3015,41 @@ impl BackendTargetContract {
             pointer_bits: 64,
             stack_alignment_bytes: 16,
             integer_registers: vec![
-                x(Rax), x(Rbx), x(Rcx), x(Rdx), x(Rsi), x(Rdi), x(Rbp), x(Rsp),
-                x(R8), x(R9), x(R10), x(R11), x(R12), x(R13), x(R14), x(R15),
+                x(Rax),
+                x(Rbx),
+                x(Rcx),
+                x(Rdx),
+                x(Rsi),
+                x(Rdi),
+                x(Rbp),
+                x(Rsp),
+                x(R8),
+                x(R9),
+                x(R10),
+                x(R11),
+                x(R12),
+                x(R13),
+                x(R14),
+                x(R15),
             ],
             stack_pointer: x(Rsp),
             frame_pointer: x(Rbp),
             instruction_pointer: "rip",
             caller_saved: vec![
-                x(Rax), x(Rcx), x(Rdx), x(Rsi), x(Rdi),
-                x(R8), x(R9), x(R10), x(R11),
+                x(Rax),
+                x(Rcx),
+                x(Rdx),
+                x(Rsi),
+                x(Rdi),
+                x(R8),
+                x(R9),
+                x(R10),
+                x(R11),
             ],
-            callee_saved: vec![
-                x(Rbx), x(Rbp), x(R12), x(R13), x(R14), x(R15),
-            ],
+            callee_saved: vec![x(Rbx), x(Rbp), x(R12), x(R13), x(R14), x(R15)],
             current_executable_return: CurrentExecutableReturnConvention::UnitNoRegister,
             future_scalar_return: FutureScalarReturnConvention::IntegerRax,
-            future_argument_registers: vec![
-                x(Rdi), x(Rsi), x(Rdx), x(Rcx), x(R8), x(R9),
-            ],
+            future_argument_registers: vec![x(Rdi), x(Rsi), x(Rdx), x(Rcx), x(R8), x(R9)],
             symbols: SymbolNamingConvention {
                 function_prefix: "",
                 preserve_source_names: true,
@@ -3044,23 +3084,40 @@ impl BackendTargetContract {
             pointer_bits: 64,
             stack_alignment_bytes: 16,
             integer_registers: vec![
-                x(Rax), x(Rbx), x(Rcx), x(Rdx), x(Rsi), x(Rdi), x(Rbp), x(Rsp),
-                x(R8), x(R9), x(R10), x(R11), x(R12), x(R13), x(R14), x(R15),
+                x(Rax),
+                x(Rbx),
+                x(Rcx),
+                x(Rdx),
+                x(Rsi),
+                x(Rdi),
+                x(Rbp),
+                x(Rsp),
+                x(R8),
+                x(R9),
+                x(R10),
+                x(R11),
+                x(R12),
+                x(R13),
+                x(R14),
+                x(R15),
             ],
             stack_pointer: x(Rsp),
             frame_pointer: x(Rbp),
             instruction_pointer: "rip",
-            caller_saved: vec![
-                x(Rax), x(Rcx), x(Rdx), x(R8), x(R9), x(R10), x(R11),
-            ],
+            caller_saved: vec![x(Rax), x(Rcx), x(Rdx), x(R8), x(R9), x(R10), x(R11)],
             callee_saved: vec![
-                x(Rbx), x(Rbp), x(Rdi), x(Rsi), x(R12), x(R13), x(R14), x(R15),
+                x(Rbx),
+                x(Rbp),
+                x(Rdi),
+                x(Rsi),
+                x(R12),
+                x(R13),
+                x(R14),
+                x(R15),
             ],
             current_executable_return: CurrentExecutableReturnConvention::UnitNoRegister,
             future_scalar_return: FutureScalarReturnConvention::IntegerRax,
-            future_argument_registers: vec![
-                x(Rcx), x(Rdx), x(R8), x(R9),
-            ],
+            future_argument_registers: vec![x(Rcx), x(Rdx), x(R8), x(R9)],
             symbols: SymbolNamingConvention {
                 function_prefix: "",
                 preserve_source_names: true,
@@ -3095,24 +3152,41 @@ impl BackendTargetContract {
             pointer_bits: 64,
             stack_alignment_bytes: 16,
             integer_registers: vec![
-                x(Rax), x(Rbx), x(Rcx), x(Rdx), x(Rsi), x(Rdi), x(Rbp), x(Rsp),
-                x(R8), x(R9), x(R10), x(R11), x(R12), x(R13), x(R14), x(R15),
+                x(Rax),
+                x(Rbx),
+                x(Rcx),
+                x(Rdx),
+                x(Rsi),
+                x(Rdi),
+                x(Rbp),
+                x(Rsp),
+                x(R8),
+                x(R9),
+                x(R10),
+                x(R11),
+                x(R12),
+                x(R13),
+                x(R14),
+                x(R15),
             ],
             stack_pointer: x(Rsp),
             frame_pointer: x(Rbp),
             instruction_pointer: "rip",
             caller_saved: vec![
-                x(Rax), x(Rcx), x(Rdx), x(Rsi), x(Rdi),
-                x(R8), x(R9), x(R10), x(R11),
+                x(Rax),
+                x(Rcx),
+                x(Rdx),
+                x(Rsi),
+                x(Rdi),
+                x(R8),
+                x(R9),
+                x(R10),
+                x(R11),
             ],
-            callee_saved: vec![
-                x(Rbx), x(Rbp), x(R12), x(R13), x(R14), x(R15),
-            ],
+            callee_saved: vec![x(Rbx), x(Rbp), x(R12), x(R13), x(R14), x(R15)],
             current_executable_return: CurrentExecutableReturnConvention::UnitNoRegister,
             future_scalar_return: FutureScalarReturnConvention::IntegerRax,
-            future_argument_registers: vec![
-                x(Rdi), x(Rsi), x(Rdx), x(Rcx), x(R8), x(R9),
-            ],
+            future_argument_registers: vec![x(Rdi), x(Rsi), x(Rdx), x(Rcx), x(R8), x(R9)],
             symbols: SymbolNamingConvention {
                 function_prefix: "_",
                 preserve_source_names: true,
@@ -3143,27 +3217,74 @@ impl BackendTargetContract {
             pointer_bits: 64,
             stack_alignment_bytes: 16,
             integer_registers: vec![
-                a(X0), a(X1), a(X2), a(X3), a(X4), a(X5), a(X6), a(X7),
-                a(X8), a(X9), a(X10), a(X11), a(X12), a(X13), a(X14), a(X15),
-                a(X19), a(X20), a(X21), a(X22), a(X23), a(X24),
-                a(X25), a(X26), a(X27), a(X28), a(X29), a(X30), a(Sp),
+                a(X0),
+                a(X1),
+                a(X2),
+                a(X3),
+                a(X4),
+                a(X5),
+                a(X6),
+                a(X7),
+                a(X8),
+                a(X9),
+                a(X10),
+                a(X11),
+                a(X12),
+                a(X13),
+                a(X14),
+                a(X15),
+                a(X19),
+                a(X20),
+                a(X21),
+                a(X22),
+                a(X23),
+                a(X24),
+                a(X25),
+                a(X26),
+                a(X27),
+                a(X28),
+                a(X29),
+                a(X30),
+                a(Sp),
             ],
             stack_pointer: a(Sp),
             frame_pointer: a(X29),
             instruction_pointer: "pc",
             caller_saved: vec![
-                a(X0), a(X1), a(X2), a(X3), a(X4), a(X5), a(X6), a(X7),
-                a(X8), a(X9), a(X10), a(X11), a(X12), a(X13), a(X14), a(X15),
+                a(X0),
+                a(X1),
+                a(X2),
+                a(X3),
+                a(X4),
+                a(X5),
+                a(X6),
+                a(X7),
+                a(X8),
+                a(X9),
+                a(X10),
+                a(X11),
+                a(X12),
+                a(X13),
+                a(X14),
+                a(X15),
             ],
             callee_saved: vec![
-                a(X19), a(X20), a(X21), a(X22), a(X23), a(X24),
-                a(X25), a(X26), a(X27), a(X28), a(X29), a(X30),
+                a(X19),
+                a(X20),
+                a(X21),
+                a(X22),
+                a(X23),
+                a(X24),
+                a(X25),
+                a(X26),
+                a(X27),
+                a(X28),
+                a(X29),
+                a(X30),
             ],
             current_executable_return: CurrentExecutableReturnConvention::UnitNoRegister,
             future_scalar_return: FutureScalarReturnConvention::IntegerX0,
-            future_argument_registers: vec![
-                a(X0), a(X1), a(X2), a(X3), a(X4), a(X5), a(X6), a(X7),
-            ],
+            future_argument_registers: vec![a(X0), a(X1), a(X2), a(X3), a(X4), a(X5), a(X6), a(X7)],
             symbols: SymbolNamingConvention {
                 function_prefix: "",
                 preserve_source_names: true,
@@ -4390,7 +4511,11 @@ pub fn lower_executable_krir_to_aarch64_asm(
     module: &ExecutableKrirModule,
     target: &BackendTargetContract,
 ) -> Result<AArch64AsmModule, String> {
-    validate_executable_krir_linear_structure(module, target, "lower_executable_krir_to_aarch64_asm")?;
+    validate_executable_krir_linear_structure(
+        module,
+        target,
+        "lower_executable_krir_to_aarch64_asm",
+    )?;
 
     let mut canonical = module.clone();
     canonical.canonicalize();
@@ -5408,24 +5533,24 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
 /// Returns (mnemonic, load_reg) for an AArch64 MMIO load.
 fn aarch64_load_parts(ty: MmioScalarType) -> (&'static str, &'static str) {
     match ty {
-        MmioScalarType::U8  => ("ldrb", "w0"),
+        MmioScalarType::U8 => ("ldrb", "w0"),
         MmioScalarType::U16 => ("ldrh", "w0"),
-        MmioScalarType::U32 => ("ldr",  "w0"),
-        MmioScalarType::U64 => ("ldr",  "x0"),
-        MmioScalarType::F32 => ("ldr",  "w0"),
-        MmioScalarType::F64 => ("ldr",  "x0"),
+        MmioScalarType::U32 => ("ldr", "w0"),
+        MmioScalarType::U64 => ("ldr", "x0"),
+        MmioScalarType::F32 => ("ldr", "w0"),
+        MmioScalarType::F64 => ("ldr", "x0"),
     }
 }
 
 /// Returns (mnemonic, store_reg) for an AArch64 MMIO store.
 fn aarch64_store_parts(ty: MmioScalarType) -> (&'static str, &'static str) {
     match ty {
-        MmioScalarType::U8  => ("strb", "w2"),
+        MmioScalarType::U8 => ("strb", "w2"),
         MmioScalarType::U16 => ("strh", "w2"),
-        MmioScalarType::U32 => ("str",  "w2"),
-        MmioScalarType::U64 => ("str",  "x2"),
-        MmioScalarType::F32 => ("str",  "w2"),
-        MmioScalarType::F64 => ("str",  "x2"),
+        MmioScalarType::U32 => ("str", "w2"),
+        MmioScalarType::U64 => ("str", "x2"),
+        MmioScalarType::F32 => ("str", "w2"),
+        MmioScalarType::F64 => ("str", "x2"),
     }
 }
 
@@ -5454,16 +5579,30 @@ pub fn emit_aarch64_asm_text(module: &AArch64AsmModule) -> String {
                     out.push_str(&format!("    ldp x29, x30, [sp], #{}\n", frame_bytes));
                     out.push_str(&format!("    b {}\n", symbol));
                 }
-                AArch64AsmInstruction::BranchIfZero { then_symbol, else_symbol, .. } => {
+                AArch64AsmInstruction::BranchIfZero {
+                    then_symbol,
+                    else_symbol,
+                    ..
+                } => {
                     out.push_str(&format!("    cbz x0, {}\n", then_symbol));
                     out.push_str(&format!("    b {}\n", else_symbol));
                 }
-                AArch64AsmInstruction::BranchIfEqImm { compare_value, then_symbol, else_symbol, .. } => {
+                AArch64AsmInstruction::BranchIfEqImm {
+                    compare_value,
+                    then_symbol,
+                    else_symbol,
+                    ..
+                } => {
                     out.push_str(&format!("    cmp x0, #{}\n", compare_value));
                     out.push_str(&format!("    b.eq {}\n", then_symbol));
                     out.push_str(&format!("    b {}\n", else_symbol));
                 }
-                AArch64AsmInstruction::BranchIfMaskNonZeroImm { mask_value, then_symbol, else_symbol, .. } => {
+                AArch64AsmInstruction::BranchIfMaskNonZeroImm {
+                    mask_value,
+                    then_symbol,
+                    else_symbol,
+                    ..
+                } => {
                     out.push_str(&format!("    tst x0, #{}\n", mask_value));
                     out.push_str(&format!("    b.ne {}\n", then_symbol));
                     out.push_str(&format!("    b {}\n", else_symbol));
@@ -8719,15 +8858,15 @@ pub fn emit_compiler_owned_object_bytes(object: &CompilerOwnedObject) -> Vec<u8>
 
 pub const KRBO_MAGIC: [u8; 4] = *b"KRBO";
 pub const KRBO_VERSION: u8 = 1;
-pub const KRBO_ARCH_X86_64:  u8 = 0x01;
+pub const KRBO_ARCH_X86_64: u8 = 0x01;
 pub const KRBO_ARCH_AARCH64: u8 = 0x02;
 
 pub const KRBO_FAT_MAGIC: [u8; 8] = *b"KRBOFAT\0";
 pub const KRBO_FAT_VERSION: u32 = 1;
-pub const KRBO_FAT_ARCH_X86_64:  u32 = 0x01;
+pub const KRBO_FAT_ARCH_X86_64: u32 = 0x01;
 pub const KRBO_FAT_ARCH_AARCH64: u32 = 0x02;
 pub const KRBO_FAT_COMPRESSION_NONE: u32 = 0;
-pub const KRBO_FAT_COMPRESSION_LZ4:  u32 = 1;
+pub const KRBO_FAT_COMPRESSION_LZ4: u32 = 1;
 
 /// Parsed representation of a `.krbo` file header.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -8773,7 +8912,7 @@ pub fn parse_krbo_header(bytes: &[u8]) -> Result<KrboHeader, String> {
     if bytes.len() >= 8 && bytes[0..8] == KRBO_FAT_MAGIC {
         return Err(
             "this is a KRBOFAT fat binary; use parse_krbofat_slice to extract a single-arch slice"
-                .to_string()
+                .to_string(),
         );
     }
     if bytes.len() < 16 {
@@ -8796,11 +8935,15 @@ pub fn parse_krbo_header(bytes: &[u8]) -> Result<KrboHeader, String> {
     let host_arch = KRBO_ARCH_X86_64;
     if arch != host_arch {
         let arch_name = match arch {
-            KRBO_ARCH_X86_64  => "x86-64",
+            KRBO_ARCH_X86_64 => "x86-64",
             KRBO_ARCH_AARCH64 => "aarch64",
             _ => "unknown",
         };
-        let host_name = if host_arch == KRBO_ARCH_X86_64 { "x86-64" } else { "aarch64" };
+        let host_name = if host_arch == KRBO_ARCH_X86_64 {
+            "x86-64"
+        } else {
+            "aarch64"
+        };
         return Err(format!(
             "this .krbo targets {} but this host is {}",
             arch_name, host_name
@@ -8840,7 +8983,8 @@ pub fn emit_krbofat_bytes(slices: &[(u32, Vec<u8>)]) -> Result<Vec<u8>, String> 
     let mut compressed: Vec<Vec<u8>> = Vec::with_capacity(slices.len());
     for (_, raw) in slices {
         let mut enc = FrameEncoder::new(Vec::new());
-        enc.write_all(raw).map_err(|e| format!("lz4 compress: {e}"))?;
+        enc.write_all(raw)
+            .map_err(|e| format!("lz4 compress: {e}"))?;
         compressed.push(enc.finish().map_err(|e| format!("lz4 finish: {e}"))?);
     }
 
@@ -8866,14 +9010,20 @@ pub fn emit_krbofat_bytes(slices: &[(u32, Vec<u8>)]) -> Result<Vec<u8>, String> 
     }
 
     out.extend(std::iter::repeat_n(0u8, padding));
-    for c in &compressed { out.extend_from_slice(c); }
+    for c in &compressed {
+        out.extend_from_slice(c);
+    }
 
     Ok(out)
 }
 
 /// Extract and decompress one arch's krbo slice from a KRBOFAT fat binary.
 /// `filename` is used only in error messages.
-pub fn parse_krbofat_slice(fat: &[u8], arch_id: u32, filename: Option<&str>) -> Result<Vec<u8>, String> {
+pub fn parse_krbofat_slice(
+    fat: &[u8],
+    arch_id: u32,
+    filename: Option<&str>,
+) -> Result<Vec<u8>, String> {
     use lz4_flex::frame::FrameDecoder;
     use std::io::Read as IoRead;
 
@@ -8899,20 +9049,23 @@ pub fn parse_krbofat_slice(fat: &[u8], arch_id: u32, filename: Option<&str>) -> 
         if fat.len() < e + 32 {
             return Err(format!("{}: KRBOFAT: truncated entries", fname));
         }
-        let entry_arch = u32::from_le_bytes(fat[e..e+4].try_into().unwrap());
-        let compression = u32::from_le_bytes(fat[e+4..e+8].try_into().unwrap());
-        let offset      = u64::from_le_bytes(fat[e+8..e+16].try_into().unwrap()) as usize;
-        let comp_size   = u64::from_le_bytes(fat[e+16..e+24].try_into().unwrap()) as usize;
-        let uncomp_size = u64::from_le_bytes(fat[e+24..e+32].try_into().unwrap()) as usize;
+        let entry_arch = u32::from_le_bytes(fat[e..e + 4].try_into().unwrap());
+        let compression = u32::from_le_bytes(fat[e + 4..e + 8].try_into().unwrap());
+        let offset = u64::from_le_bytes(fat[e + 8..e + 16].try_into().unwrap()) as usize;
+        let comp_size = u64::from_le_bytes(fat[e + 16..e + 24].try_into().unwrap()) as usize;
+        let uncomp_size = u64::from_le_bytes(fat[e + 24..e + 32].try_into().unwrap()) as usize;
 
-        if entry_arch != arch_id { continue; }
+        if entry_arch != arch_id {
+            continue;
+        }
 
-        let slice = fat.get(offset..offset + comp_size)
+        let slice = fat
+            .get(offset..offset + comp_size)
             .ok_or_else(|| format!("{}: KRBOFAT: slice data out of bounds", fname))?;
 
         return match compression {
             KRBO_FAT_COMPRESSION_NONE => Ok(slice.to_vec()),
-            KRBO_FAT_COMPRESSION_LZ4  => {
+            KRBO_FAT_COMPRESSION_LZ4 => {
                 let mut dec = FrameDecoder::new(slice);
                 let mut buf = Vec::with_capacity(uncomp_size);
                 dec.read_to_end(&mut buf)
@@ -8924,11 +9077,14 @@ pub fn parse_krbofat_slice(fat: &[u8], arch_id: u32, filename: Option<&str>) -> 
     }
 
     let arch_name = match arch_id {
-        KRBO_FAT_ARCH_X86_64  => "x86_64",
+        KRBO_FAT_ARCH_X86_64 => "x86_64",
         KRBO_FAT_ARCH_AARCH64 => "arm64",
-        _                     => "unknown",
+        _ => "unknown",
     };
-    Err(format!("{}: does not contain a slice for {}", fname, arch_name))
+    Err(format!(
+        "{}: does not contain a slice for {}",
+        fname, arch_name
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -8977,8 +9133,7 @@ fn emit_aa64_imm64(out: &mut Vec<u8>, rd: u32, value: u64) {
         if part != 0 {
             // MOVK Xd, #part, LSL #(hw * 16)
             out.extend_from_slice(
-                &(0xF280_0000u32 | ((hw as u32) << 21) | ((part as u32) << 5) | rd)
-                    .to_le_bytes(),
+                &(0xF280_0000u32 | ((hw as u32) << 21) | ((part as u32) << 5) | rd).to_le_bytes(),
             );
         }
     }
@@ -9047,7 +9202,9 @@ fn encode_aarch64_function(
             ));
         }
         let imm7 = (imm as u32) & 0x7F;
-        out.extend_from_slice(&(0xA980_0000 | (imm7 << 15) | (30 << 10) | (31 << 5) | 29).to_le_bytes());
+        out.extend_from_slice(
+            &(0xA980_0000 | (imm7 << 15) | (30 << 10) | (31 << 5) | 29).to_le_bytes(),
+        );
     }
     // mov x29, sp  →  add x29, sp, #0  →  0x910003FD
     out.extend_from_slice(&0x910003FDu32.to_le_bytes());
@@ -9209,7 +9366,11 @@ fn encode_aarch64_function(
             }
 
             // ── MMIO read: x9 = addr, x0 = load ──────────────────────────────
-            AArch64AsmInstruction::MmioRead { ty, addr, capture_value } => {
+            AArch64AsmInstruction::MmioRead {
+                ty,
+                addr,
+                capture_value,
+            } => {
                 emit_aa64_imm64(out, 9, *addr);
                 emit_aa64_ldr_ty(out, 0, 9, *ty); // result in x0 (saved-value register)
                 let _ = capture_value;
@@ -9222,7 +9383,11 @@ fn encode_aarch64_function(
             }
 
             // ── Stack: store immediate value into slot ────────────────────────
-            AArch64AsmInstruction::StackStoreImm { ty, value, slot_idx } => {
+            AArch64AsmInstruction::StackStoreImm {
+                ty,
+                value,
+                slot_idx,
+            } => {
                 let _ = ty; // always stored as 64-bit in the 8-byte slot
                 emit_aa64_imm64(out, 9, *value);
                 slot_str!(9, *slot_idx);
@@ -9241,7 +9406,11 @@ fn encode_aarch64_function(
             }
 
             // ── BranchIfZero: if x0 == 0 → then_symbol, else → else_symbol ───
-            AArch64AsmInstruction::BranchIfZero { ty, then_symbol, else_symbol } => {
+            AArch64AsmInstruction::BranchIfZero {
+                ty,
+                then_symbol,
+                else_symbol,
+            } => {
                 let _ = ty;
                 let then_lbl = format!("__aa64_then_{}", synth_ctr);
                 let merge_lbl = format!("__aa64_merge_{}", synth_ctr);
@@ -9265,7 +9434,12 @@ fn encode_aarch64_function(
             }
 
             // ── BranchIfEqImm: if x0 == compare → then, else → else ──────────
-            AArch64AsmInstruction::BranchIfEqImm { ty, compare_value, then_symbol, else_symbol } => {
+            AArch64AsmInstruction::BranchIfEqImm {
+                ty,
+                compare_value,
+                then_symbol,
+                else_symbol,
+            } => {
                 let _ = ty;
                 let else_lbl = format!("__aa64_else_{}", synth_ctr);
                 let merge_lbl = format!("__aa64_merge_{}", synth_ctr);
@@ -9293,7 +9467,12 @@ fn encode_aarch64_function(
             }
 
             // ── BranchIfMaskNonZeroImm: if (x0 & mask) != 0 → then, else → else
-            AArch64AsmInstruction::BranchIfMaskNonZeroImm { ty, mask_value, then_symbol, else_symbol } => {
+            AArch64AsmInstruction::BranchIfMaskNonZeroImm {
+                ty,
+                mask_value,
+                then_symbol,
+                else_symbol,
+            } => {
                 let _ = ty;
                 let else_lbl = format!("__aa64_else_{}", synth_ctr);
                 let merge_lbl = format!("__aa64_merge_{}", synth_ctr);
@@ -9334,7 +9513,10 @@ fn encode_aarch64_function(
     // (not from PC+4 as on x86-64).  Formula: imm = (target - branch_pc) / 4.
     for (patch_off, label, kind) in &branch_patches {
         let target_off = *label_offsets.get(label.as_str()).ok_or_else(|| {
-            format!("aarch64: undefined label '{}' in function '{}'", label, func.symbol)
+            format!(
+                "aarch64: undefined label '{}' in function '{}'",
+                label, func.symbol
+            )
         })?;
         let patch_pc = *patch_off as i64;
         let target = target_off as i64;
@@ -9357,21 +9539,30 @@ fn encode_aarch64_function(
             BPKind::CbzX0 => {
                 let imm19 = (disp / 4) as i32;
                 if !(-(1 << 18)..(1 << 18)).contains(&imm19) {
-                    return Err(format!("aarch64: CBZ X0 to '{}' exceeds imm19 range", label));
+                    return Err(format!(
+                        "aarch64: CBZ X0 to '{}' exceeds imm19 range",
+                        label
+                    ));
                 }
                 0xB400_0000 | (((imm19 as u32) & 0x0007_FFFF) << 5)
             }
             BPKind::CbzX9 => {
                 let imm19 = (disp / 4) as i32;
                 if !(-(1 << 18)..(1 << 18)).contains(&imm19) {
-                    return Err(format!("aarch64: CBZ X9 to '{}' exceeds imm19 range", label));
+                    return Err(format!(
+                        "aarch64: CBZ X9 to '{}' exceeds imm19 range",
+                        label
+                    ));
                 }
                 0xB400_0000 | (((imm19 as u32) & 0x0007_FFFF) << 5) | 9
             }
             BPKind::CbnzX9 => {
                 let imm19 = (disp / 4) as i32;
                 if !(-(1 << 18)..(1 << 18)).contains(&imm19) {
-                    return Err(format!("aarch64: CBNZ X9 to '{}' exceeds imm19 range", label));
+                    return Err(format!(
+                        "aarch64: CBNZ X9 to '{}' exceeds imm19 range",
+                        label
+                    ));
                 }
                 0xB500_0000 | (((imm19 as u32) & 0x0007_FFFF) << 5) | 9
             }
@@ -9394,7 +9585,12 @@ fn encode_aarch64_function(
     }
 
     let size = out.len() as u32 - start_offset;
-    Ok(AArch64EncodedFunction { symbol: func.symbol.clone(), offset: start_offset, size, relocs })
+    Ok(AArch64EncodedFunction {
+        symbol: func.symbol.clone(),
+        offset: start_offset,
+        size,
+        relocs,
+    })
 }
 
 // (text_bytes, [(name, offset, size)], [(patch_offset, target_symbol)])
@@ -9458,8 +9654,7 @@ fn lower_executable_krir_to_aarch64_object_inner(
                     ));
                 }
                 let idx = r.patch_offset as usize;
-                let existing =
-                    u32::from_le_bytes(text_bytes[idx..idx + 4].try_into().unwrap());
+                let existing = u32::from_le_bytes(text_bytes[idx..idx + 4].try_into().unwrap());
                 // Preserve opcode bits [31:26] (BL=0x25, B=0x05, etc.) and
                 // overwrite only the imm26 field [25:0].
                 let word = (existing & 0xFC00_0000) | ((imm26 as u32) & 0x03FF_FFFF);
@@ -9507,7 +9702,11 @@ pub fn emit_aarch64_executable_bytes(
         .find(|(name, _, _)| name == "entry")
         .ok_or_else(|| "no 'entry' function found in module".to_string())?;
     let entry_offset = entry_sym.1;
-    Ok(emit_krbo_bytes_raw_arch(&text_bytes, entry_offset, KRBO_ARCH_AARCH64))
+    Ok(emit_krbo_bytes_raw_arch(
+        &text_bytes,
+        entry_offset,
+        KRBO_ARCH_AARCH64,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -9654,41 +9853,74 @@ pub fn emit_aarch64_elf_object_bytes(
 
     // sh[1]: .text
     push_shdr(
-        text_name_sh, 1, 0x6, 0,
-        text_offset, text_bytes.len() as u64,
-        0, 0, 16, 0,
+        text_name_sh,
+        1,
+        0x6,
+        0,
+        text_offset,
+        text_bytes.len() as u64,
+        0,
+        0,
+        16,
+        0,
     );
     let symtab_idx = if rela_text.is_empty() { 2u32 } else { 3u32 };
     let strtab_idx = symtab_idx + 1;
     // sh[2] (optional): .rela.text
     if let (Some(name), Some(offset)) = (rela_text_name_sh, rela_text_offset) {
         push_shdr(
-            name, 4, 0, 0,
-            offset, rela_text.len() as u64,
-            symtab_idx, 1, // link=.symtab, info=.text index
-            8, 24,
+            name,
+            4,
+            0,
+            0,
+            offset,
+            rela_text.len() as u64,
+            symtab_idx,
+            1, // link=.symtab, info=.text index
+            8,
+            24,
         );
     }
     // sh[symtab_idx]: .symtab
     let first_global = 2u32; // 0=null, 1=section; globals start at 2
     push_shdr(
-        symtab_name_sh, 2, 0, 0,
-        symtab_offset, symtab.len() as u64,
-        strtab_idx, first_global,
-        8, 24,
+        symtab_name_sh,
+        2,
+        0,
+        0,
+        symtab_offset,
+        symtab.len() as u64,
+        strtab_idx,
+        first_global,
+        8,
+        24,
     );
     // sh[strtab_idx]: .strtab
     push_shdr(
-        strtab_name_sh, 3, 0, 0,
-        strtab_offset, strtab.len() as u64,
-        0, 0, 1, 0,
+        strtab_name_sh,
+        3,
+        0,
+        0,
+        strtab_offset,
+        strtab.len() as u64,
+        0,
+        0,
+        1,
+        0,
     );
     // sh[last]: .shstrtab
     let shstrtab_idx = strtab_idx + 1;
     push_shdr(
-        shstrtab_name_sh, 3, 0, 0,
-        shstrtab_offset, shstrtab.len() as u64,
-        0, 0, 1, 0,
+        shstrtab_name_sh,
+        3,
+        0,
+        0,
+        shstrtab_offset,
+        shstrtab.len() as u64,
+        0,
+        0,
+        1,
+        0,
     );
     bytes.extend_from_slice(&shdrs);
 
@@ -9983,12 +10215,7 @@ pub fn emit_aarch64_coff_object_bytes(
     for (name, offset, _size) in &symbol_table {
         let name_buf = coff_encode_name(name, &mut strtab_strings, &mut name_strtab_offsets);
         push_coff_sym(
-            &mut out,
-            name_buf,
-            *offset,
-            1,
-            0x0020,
-            0x02, // EXTERNAL
+            &mut out, name_buf, *offset, 1, 0x0020, 0x02, // EXTERNAL
         );
     }
 
@@ -10009,22 +10236,22 @@ pub fn emit_aarch64_coff_object_bytes(
 #[cfg(test)]
 mod tests {
     use super::{
-        AArch64IntegerRegister, AArch64AsmFunction, AArch64AsmInstruction, AArch64AsmModule,
-        BackendTargetContract, BackendTargetId, CallEdge,
-        CompilerOwnedCodeSection, CompilerOwnedFixupKind, CompilerOwnedObject,
-        CompilerOwnedObjectFixup, CompilerOwnedObjectHeader, CompilerOwnedObjectKind,
-        CompilerOwnedObjectSymbol, CompilerOwnedObjectSymbolDefinition,
-        CompilerOwnedObjectSymbolKind, Ctx, Eff, ExecutableBlock, ExecutableExternDecl,
-        ExecutableFacts, ExecutableFunction, ExecutableKrirModule, ExecutableOp,
-        ExecutableSignature, ExecutableTerminator, ExecutableValue, ExecutableValueType,
-        FunctionAttrs, FutureScalarReturnConvention, IntegerRegister, MmioScalarType,
-        TargetEndian, X86_64CoffFunctionSymbol, X86_64CoffRelocatableObject,
-        X86_64IntegerRegister, X86_64MachOFunctionSymbol, X86_64MachORelocatableObject,
-        emit_aarch64_asm_text, emit_compiler_owned_object_bytes, emit_x86_64_asm_text,
-        emit_x86_64_coff_bytes, emit_x86_64_macho_object_bytes, emit_x86_64_object_bytes,
-        export_compiler_owned_object_to_x86_64_asm, export_compiler_owned_object_to_x86_64_elf,
-        lower_executable_krir_to_aarch64_asm, lower_executable_krir_to_compiler_owned_object,
-        lower_executable_krir_to_x86_64_asm, lower_executable_krir_to_x86_64_object,
+        AArch64AsmFunction, AArch64AsmInstruction, AArch64AsmModule, AArch64IntegerRegister,
+        BackendTargetContract, BackendTargetId, CallEdge, CompilerOwnedCodeSection,
+        CompilerOwnedFixupKind, CompilerOwnedObject, CompilerOwnedObjectFixup,
+        CompilerOwnedObjectHeader, CompilerOwnedObjectKind, CompilerOwnedObjectSymbol,
+        CompilerOwnedObjectSymbolDefinition, CompilerOwnedObjectSymbolKind, Ctx, Eff,
+        ExecutableBlock, ExecutableExternDecl, ExecutableFacts, ExecutableFunction,
+        ExecutableKrirModule, ExecutableOp, ExecutableSignature, ExecutableTerminator,
+        ExecutableValue, ExecutableValueType, FunctionAttrs, FutureScalarReturnConvention,
+        IntegerRegister, MmioScalarType, TargetEndian, X86_64CoffFunctionSymbol,
+        X86_64CoffRelocatableObject, X86_64IntegerRegister, X86_64MachOFunctionSymbol,
+        X86_64MachORelocatableObject, emit_aarch64_asm_text, emit_compiler_owned_object_bytes,
+        emit_x86_64_asm_text, emit_x86_64_coff_bytes, emit_x86_64_macho_object_bytes,
+        emit_x86_64_object_bytes, export_compiler_owned_object_to_x86_64_asm,
+        export_compiler_owned_object_to_x86_64_elf, lower_executable_krir_to_aarch64_asm,
+        lower_executable_krir_to_compiler_owned_object, lower_executable_krir_to_x86_64_asm,
+        lower_executable_krir_to_x86_64_object,
         validate_compiler_owned_object_for_x86_64_asm_export,
         validate_compiler_owned_object_linear_subset, validate_x86_64_object_linear_subset,
     };
@@ -10985,7 +11212,9 @@ mod tests {
     #[test]
     fn x86_64_sysv_target_contract_validation_rejects_overlapping_saved_sets() {
         let mut contract = BackendTargetContract::x86_64_sysv();
-        contract.callee_saved.push(IntegerRegister::X86_64(X86_64IntegerRegister::Rax));
+        contract
+            .callee_saved
+            .push(IntegerRegister::X86_64(X86_64IntegerRegister::Rax));
 
         assert_eq!(
             contract.validate(),
@@ -12482,7 +12711,7 @@ mod tests {
         let _ = objdump_smoke_check(file.path());
     }
 
-    #[cfg_attr(not(target_arch = "x86_64"), ignore)]
+    #[cfg(all(unix, target_arch = "x86_64"))]
     #[test]
     fn x86_64_elf_internal_only_object_is_accepted_by_relocatable_link_smoke() {
         let Some(linker) = find_optional_linker() else {
@@ -12549,7 +12778,7 @@ mod tests {
         let _ = fs::remove_file(&output_path);
     }
 
-    #[cfg_attr(not(target_arch = "x86_64"), ignore)]
+    #[cfg(all(unix, target_arch = "x86_64"))]
     #[test]
     fn x86_64_elf_unresolved_external_with_resolver_links_successfully() {
         let Some(linker) = find_optional_linker() else {
@@ -12632,7 +12861,7 @@ mod tests {
         let _ = fs::remove_file(&output_path);
     }
 
-    #[cfg_attr(not(target_arch = "x86_64"), ignore)]
+    #[cfg(all(unix, target_arch = "x86_64"))]
     #[test]
     fn x86_64_elf_mixed_internal_external_object_links_successfully() {
         let Some(linker) = find_optional_linker() else {
@@ -12782,7 +13011,7 @@ mod tests {
         let _ = fs::remove_file(&output_path);
     }
 
-    #[cfg_attr(not(target_arch = "x86_64"), ignore)]
+    #[cfg(all(unix, target_arch = "x86_64"))]
     #[test]
     fn x86_64_elf_internal_only_object_is_accepted_by_final_link_smoke() {
         let Some(linker) = find_optional_linker() else {
@@ -12846,7 +13075,7 @@ mod tests {
         let _ = fs::remove_file(&output_path);
     }
 
-    #[cfg_attr(not(target_arch = "x86_64"), ignore)]
+    #[cfg(all(unix, target_arch = "x86_64"))]
     #[test]
     fn x86_64_elf_internal_only_object_executes_in_runtime_smoke() {
         let Some(linker) = find_optional_linker() else {
@@ -12922,7 +13151,7 @@ mod tests {
         let _ = fs::remove_file(&output_path);
     }
 
-    #[cfg_attr(not(target_arch = "x86_64"), ignore)]
+    #[cfg(all(unix, target_arch = "x86_64"))]
     #[test]
     fn x86_64_elf_unresolved_external_with_resolver_is_accepted_by_final_link_smoke() {
         let Some(linker) = find_optional_linker() else {
@@ -12990,7 +13219,7 @@ mod tests {
         let _ = fs::remove_file(&output_path);
     }
 
-    #[cfg_attr(not(target_arch = "x86_64"), ignore)]
+    #[cfg(all(unix, target_arch = "x86_64"))]
     #[test]
     fn x86_64_elf_unresolved_external_with_resolver_executes_in_runtime_smoke() {
         let Some(linker) = find_optional_linker() else {
@@ -13070,7 +13299,7 @@ mod tests {
         let _ = fs::remove_file(&output_path);
     }
 
-    #[cfg_attr(not(target_arch = "x86_64"), ignore)]
+    #[cfg(all(unix, target_arch = "x86_64"))]
     #[test]
     fn x86_64_elf_mixed_internal_external_object_is_accepted_by_final_link_smoke() {
         let Some(linker) = find_optional_linker() else {
@@ -13145,7 +13374,7 @@ mod tests {
         let _ = fs::remove_file(&output_path);
     }
 
-    #[cfg_attr(not(target_arch = "x86_64"), ignore)]
+    #[cfg(all(unix, target_arch = "x86_64"))]
     #[test]
     fn x86_64_elf_mixed_internal_external_object_executes_in_runtime_smoke() {
         let Some(linker) = find_optional_linker() else {
@@ -13615,7 +13844,10 @@ mod tests {
     #[test]
     fn future_return_x0_registers() {
         let regs = FutureScalarReturnConvention::IntegerX0.registers();
-        assert_eq!(regs, vec![IntegerRegister::AArch64(AArch64IntegerRegister::X0)]);
+        assert_eq!(
+            regs,
+            vec![IntegerRegister::AArch64(AArch64IntegerRegister::X0)]
+        );
     }
 
     #[test]
@@ -13628,7 +13860,9 @@ mod tests {
                 n_stack_cells: 0,
                 n_params: 0,
                 instructions: vec![
-                    AArch64AsmInstruction::Call { symbol: "print".to_string() },
+                    AArch64AsmInstruction::Call {
+                        symbol: "print".to_string(),
+                    },
                     AArch64AsmInstruction::Ret,
                 ],
             }],
@@ -13694,13 +13928,17 @@ mod tests {
                 entry_block: "b0".to_string(),
                 blocks: vec![ExecutableBlock {
                     label: "b0".to_string(),
-                    ops: vec![ExecutableOp::Call { callee: "print".to_string() }],
+                    ops: vec![ExecutableOp::Call {
+                        callee: "print".to_string(),
+                    }],
                     terminator: ExecutableTerminator::Return {
                         value: ExecutableValue::Unit,
                     },
                 }],
             }],
-            extern_declarations: vec![ExecutableExternDecl { name: "print".to_string() }],
+            extern_declarations: vec![ExecutableExternDecl {
+                name: "print".to_string(),
+            }],
             call_edges: vec![],
         };
         let target = BackendTargetContract::aarch64_sysv();
@@ -13744,7 +13982,7 @@ mod tests {
 
     #[test]
     fn aarch64_elf_object_smoke() {
-        use super::{emit_aarch64_elf_object_bytes, BackendTargetContract};
+        use super::{BackendTargetContract, emit_aarch64_elf_object_bytes};
         let module = minimal_aarch64_module();
         let target = BackendTargetContract::aarch64_sysv();
         let result = emit_aarch64_elf_object_bytes(&module, &target);
@@ -13761,7 +13999,7 @@ mod tests {
 
     #[test]
     fn aarch64_macho_object_smoke() {
-        use super::{emit_aarch64_macho_object_bytes, BackendTargetContract};
+        use super::{BackendTargetContract, emit_aarch64_macho_object_bytes};
         let module = minimal_aarch64_module();
         let target = BackendTargetContract::aarch64_macho();
         let result = emit_aarch64_macho_object_bytes(&module, &target);
@@ -13783,7 +14021,7 @@ mod tests {
 
     #[test]
     fn aarch64_coff_object_smoke() {
-        use super::{emit_aarch64_coff_object_bytes, BackendTargetContract};
+        use super::{BackendTargetContract, emit_aarch64_coff_object_bytes};
         let module = minimal_aarch64_module();
         let target = BackendTargetContract::aarch64_win();
         let result = emit_aarch64_coff_object_bytes(&module, &target);
@@ -13800,51 +14038,66 @@ mod tests {
     #[test]
     fn krbofat_roundtrip() {
         use super::{
-            emit_krbofat_bytes, parse_krbofat_slice,
-            KRBO_FAT_MAGIC, KRBO_FAT_ARCH_X86_64, KRBO_FAT_ARCH_AARCH64,
+            KRBO_FAT_ARCH_AARCH64, KRBO_FAT_ARCH_X86_64, KRBO_FAT_MAGIC, emit_krbofat_bytes,
+            parse_krbofat_slice,
         };
         let x86_slice = b"KRBO\x01\x01\x00\x00\x00\x00\x00\x00_x86_fake_code_padding_".to_vec();
         let arm_slice = b"KRBO\x01\x02\x00\x00\x00\x00\x00\x00_arm_fake_code_padding_".to_vec();
         let fat = emit_krbofat_bytes(&[
-            (KRBO_FAT_ARCH_X86_64,  x86_slice.clone()),
+            (KRBO_FAT_ARCH_X86_64, x86_slice.clone()),
             (KRBO_FAT_ARCH_AARCH64, arm_slice.clone()),
-        ]).expect("emit failed");
+        ])
+        .expect("emit failed");
 
         assert_eq!(&fat[0..8], &KRBO_FAT_MAGIC);
 
-        let x86_back = parse_krbofat_slice(&fat, KRBO_FAT_ARCH_X86_64, None)
-            .expect("x86 slice missing");
+        let x86_back =
+            parse_krbofat_slice(&fat, KRBO_FAT_ARCH_X86_64, None).expect("x86 slice missing");
         assert_eq!(x86_back, x86_slice);
 
-        let arm_back = parse_krbofat_slice(&fat, KRBO_FAT_ARCH_AARCH64, None)
-            .expect("arm64 slice missing");
+        let arm_back =
+            parse_krbofat_slice(&fat, KRBO_FAT_ARCH_AARCH64, None).expect("arm64 slice missing");
         assert_eq!(arm_back, arm_slice);
     }
 
     #[test]
     fn krbofat_fat_first_detection() {
-        use super::{emit_krbofat_bytes, parse_krbo_header, KRBO_FAT_ARCH_X86_64};
+        use super::{KRBO_FAT_ARCH_X86_64, emit_krbofat_bytes, parse_krbo_header};
         let x86_slice = b"KRBO\x01\x01\x00\x00\x04\x00\x00\x00\x04\x00\x00\x00\xc3___".to_vec();
-        let fat = emit_krbofat_bytes(&[(KRBO_FAT_ARCH_X86_64, x86_slice)])
-            .expect("emit failed");
+        let fat = emit_krbofat_bytes(&[(KRBO_FAT_ARCH_X86_64, x86_slice)]).expect("emit failed");
         // A fat binary must NOT parse as single-arch
         let result = parse_krbo_header(&fat);
-        assert!(result.is_err(), "fat binary must not parse as single-arch krbo");
+        assert!(
+            result.is_err(),
+            "fat binary must not parse as single-arch krbo"
+        );
         let err = result.unwrap_err();
-        assert!(err.contains("fat") || err.contains("KRBOFAT"),
-                "error should mention fat format: {}", err);
+        assert!(
+            err.contains("fat") || err.contains("KRBOFAT"),
+            "error should mention fat format: {}",
+            err
+        );
     }
 
     #[test]
     fn krbofat_missing_arch_error() {
-        use super::{emit_krbofat_bytes, parse_krbofat_slice, KRBO_FAT_ARCH_AARCH64, KRBO_FAT_ARCH_X86_64};
+        use super::{
+            KRBO_FAT_ARCH_AARCH64, KRBO_FAT_ARCH_X86_64, emit_krbofat_bytes, parse_krbofat_slice,
+        };
         let arm_slice = b"KRBO\x01\x02\x00\x00\x04\x00\x00\x00_arm_fake".to_vec();
-        let fat = emit_krbofat_bytes(&[(KRBO_FAT_ARCH_AARCH64, arm_slice)])
-            .expect("emit failed");
+        let fat = emit_krbofat_bytes(&[(KRBO_FAT_ARCH_AARCH64, arm_slice)]).expect("emit failed");
         let result = parse_krbofat_slice(&fat, KRBO_FAT_ARCH_X86_64, Some("test.krbo"));
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.contains("x86_64"), "error should name the missing arch: {}", err);
-        assert!(err.contains("test.krbo"), "error should include filename: {}", err);
+        assert!(
+            err.contains("x86_64"),
+            "error should name the missing arch: {}",
+            err
+        );
+        assert!(
+            err.contains("test.krbo"),
+            "error should include filename: {}",
+            err
+        );
     }
 }

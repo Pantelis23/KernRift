@@ -158,6 +158,8 @@ fn map_uart_buffer() -> Result<*mut u8, String> {
 
 #[cfg(windows)]
 fn map_executable(code: &[u8]) -> Result<*mut u8, String> {
+    use windows_sys::Win32::Foundation::GetCurrentProcess;
+    use windows_sys::Win32::System::Diagnostics::Debug::FlushInstructionCache;
     use windows_sys::Win32::System::Memory::*;
     let ptr = unsafe {
         VirtualAlloc(
@@ -171,6 +173,8 @@ fn map_executable(code: &[u8]) -> Result<*mut u8, String> {
         return Err("failed to map executable memory".to_string());
     }
     unsafe { std::ptr::copy_nonoverlapping(code.as_ptr(), ptr as *mut u8, code.len()) };
+    // Flush the I-cache so the CPU sees the newly written code — required on AArch64 Windows.
+    unsafe { FlushInstructionCache(GetCurrentProcess(), ptr, code.len()) };
     Ok(ptr as *mut u8)
 }
 
@@ -219,13 +223,13 @@ mod tests {
         // Build a minimal x86_64 krbo slice and wrap it in a fat binary
         // Use krir::emit_krbofat_bytes and krir::parse_krbofat_slice to round-trip
         let x86_slice = b"KRBO\x01\x01\x00\x00\x04\x00\x00\x00\x04\x00\x00\x00\xc3___".to_vec();
-        let fat = krir::emit_krbofat_bytes(&[
-            (krir::KRBO_FAT_ARCH_X86_64, x86_slice.clone()),
-        ]).expect("emit failed");
+        let fat = krir::emit_krbofat_bytes(&[(krir::KRBO_FAT_ARCH_X86_64, x86_slice.clone())])
+            .expect("emit failed");
 
         // Extract and verify round-trip
-        let extracted = krir::parse_krbofat_slice(&fat, krir::KRBO_FAT_ARCH_X86_64, Some("test.krbo"))
-            .expect("slice not found");
+        let extracted =
+            krir::parse_krbofat_slice(&fat, krir::KRBO_FAT_ARCH_X86_64, Some("test.krbo"))
+                .expect("slice not found");
         assert_eq!(extracted, x86_slice, "round-trip bytes must match");
     }
 }

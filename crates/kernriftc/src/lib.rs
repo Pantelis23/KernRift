@@ -19,14 +19,13 @@ pub use hir::{
 };
 pub use krir::BackendTargetId as CompilerBackendTargetId;
 use krir::{
-    BackendTargetContract, BackendTargetId, KrirModule, KrirOp, TargetArch,
-    emit_compiler_owned_object_bytes, emit_krbo_bytes, emit_x86_64_asm_text,
-    emit_x86_64_object_bytes, emit_krbofat_bytes, emit_aarch64_asm_text,
-    emit_aarch64_elf_object_bytes, emit_aarch64_executable_bytes,
-    lower_current_krir_to_executable_krir, lower_executable_krir_to_compiler_owned_object,
-    lower_executable_krir_to_x86_64_asm, lower_executable_krir_to_x86_64_object,
-    lower_executable_krir_to_aarch64_asm,
-    KRBO_FAT_ARCH_X86_64, KRBO_FAT_ARCH_AARCH64,
+    BackendTargetContract, BackendTargetId, KRBO_FAT_ARCH_AARCH64, KRBO_FAT_ARCH_X86_64,
+    KrirModule, KrirOp, TargetArch, emit_aarch64_asm_text, emit_aarch64_elf_object_bytes,
+    emit_aarch64_executable_bytes, emit_compiler_owned_object_bytes, emit_krbo_bytes,
+    emit_krbofat_bytes, emit_x86_64_asm_text, emit_x86_64_object_bytes,
+    lower_current_krir_to_executable_krir, lower_executable_krir_to_aarch64_asm,
+    lower_executable_krir_to_compiler_owned_object, lower_executable_krir_to_x86_64_asm,
+    lower_executable_krir_to_x86_64_object,
 };
 use parser::parse_module;
 pub use passes::{AnalysisReport, NoYieldSpan};
@@ -138,8 +137,8 @@ pub fn emit_backend_artifact_file_with_surface_and_target(
         }
         BackendArtifactKind::KrboFat => {
             let x86_target = BackendTargetId::X86_64Sysv.default_contract();
-            let x86_bytes = emit_x86_64_executable_bytes(&executable, &x86_target)
-                .map_err(|e| vec![e])?;
+            let x86_bytes =
+                emit_x86_64_executable_bytes(&executable, &x86_target).map_err(|e| vec![e])?;
 
             // AArch64 encoding supports a subset of instructions (linear MVP).
             // If encoding fails, omit the arm64 slice rather than failing the build.

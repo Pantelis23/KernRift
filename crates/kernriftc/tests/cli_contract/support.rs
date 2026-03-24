@@ -471,7 +471,8 @@ pub(super) fn write_promotion_repo_fixture(feature_id: &str) -> PathBuf {
             .expect("run git");
         assert!(status.success(), "git {:?} failed", args);
     };
-    git(&["init", "-q", "-b", "main"]);
+    // -c init.templateDir= suppresses Homebrew-git template-copy failures on macOS.
+    git(&["-c", "init.templateDir=", "init", "-q", "-b", "main"]);
     git(&["config", "user.name", "KernRift Test"]);
     git(&["config", "user.email", "kernrift@example.test"]);
     git(&["add", "."]);

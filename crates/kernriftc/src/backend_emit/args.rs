@@ -71,9 +71,7 @@ pub(crate) fn parse_backend_emit_args(
             }
             "--arch" => {
                 let Some(value) = args.get(idx + 1) else {
-                    return Err(
-                        "invalid emit mode: --arch requires x86_64 or arm64".to_string(),
-                    );
+                    return Err("invalid emit mode: --arch requires x86_64 or arm64".to_string());
                 };
                 arch = Some(match value.as_str() {
                     "x86_64" => krir::TargetArch::X86_64,
