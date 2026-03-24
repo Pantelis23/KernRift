@@ -11,11 +11,26 @@ permissions:
 
 jobs:
   build-upload:
-    name: build + upload (${{ matrix.os }})
+    name: build + upload (${{ matrix.artifact_suffix }})
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            artifact_suffix: linux-x86_64
+            exe_suffix: ""
+          - os: ubuntu-24.04-arm
+            artifact_suffix: linux-aarch64
+            exe_suffix: ""
+          - os: macos-latest
+            artifact_suffix: macos-aarch64
+            exe_suffix: ""
+          - os: macos-13
+            artifact_suffix: macos-x86_64
+            exe_suffix: ""
+          - os: windows-latest
+            artifact_suffix: windows-x86_64
+            exe_suffix: .exe
 
     steps:
       - uses: actions/checkout@v4
@@ -39,73 +54,62 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --release --locked -p kernriftc
+          cargo build --release --locked -p kernriftc -p kernrift
 
-      - name: Verify version matches tag (linux)
-        if: matrix.os == 'ubuntu-latest'
+      - name: Verify version matches tag
         shell: bash
         run: |
           set -euo pipefail
           expected="${GITHUB_REF_NAME#v}"
-          got="$(./target/release/kernriftc --version | tr -d '\r')"
+          got="$(./target/release/kernriftc${{ matrix.exe_suffix }} --version | tr -d '\r')"
           echo "expected=$expected got=$got"
           echo "$got" | grep -F "$expected"
 
-      - name: Verify version matches tag (windows)
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          $expected = $env:GITHUB_REF_NAME.TrimStart('v')
-          $got = (target\release\kernriftc.exe --version).Trim()
-          Write-Host "expected=$expected got=$got"
-          if ($got -notmatch [regex]::Escape($expected)) { throw "version mismatch" }
-
-      - name: Package (linux)
-        if: matrix.os == 'ubuntu-latest'
+      - name: Package (unix)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
           mkdir -p dist
-          cp target/release/kernriftc dist/kernriftc
-          tar -czf "dist/kernriftc-${tag}-linux-amd64.tar.gz" -C dist kernriftc
-          (
-            cd dist
-            sha256sum "kernriftc-${tag}-linux-amd64.tar.gz" > "kernriftc-${tag}-linux-amd64.tar.gz.sha256"
-          )
+          for bin in kernriftc kernrift; do
+            cp "target/release/${bin}" "dist/${bin}-${{ matrix.artifact_suffix }}"
+            sha256sum "dist/${bin}-${{ matrix.artifact_suffix }}" \
+              > "dist/${bin}-${{ matrix.artifact_suffix }}.sha256"
+          done
 
       - name: Package (windows)
-        if: matrix.os == 'windows-latest'
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $tag = "${env:GITHUB_REF_NAME}"
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item target\release\kernriftc.exe dist\kernriftc.exe
-          $zip = "dist\kernriftc-$tag-windows-amd64.zip"
-          Compress-Archive -Force -Path dist\kernriftc.exe -DestinationPath $zip
-          $h = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
-          Set-Content -NoNewline -Path "$zip.sha256" -Value "$h  $(Split-Path -Leaf $zip)`n"
+          foreach ($bin in @("kernriftc", "kernrift")) {
+            $dst = "dist\$bin-${{ matrix.artifact_suffix }}.exe"
+            Copy-Item "target\release\$bin.exe" $dst
+            $h = (Get-FileHash -Algorithm SHA256 $dst).Hash.ToLower()
+            Set-Content -NoNewline -Path "$dst.sha256" -Value "$h  $(Split-Path -Leaf $dst)`n"
+          }
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
 
-      - name: Sign artifacts (linux, keyless)
-        if: matrix.os == 'ubuntu-latest'
+      - name: Sign artifacts (unix)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
-          for f in dist/*.tar.gz; do
+          for f in dist/*; do
+            case "$f" in *.sha256|*.sig|*.cert) continue ;; esac
             cosign sign-blob --yes \
               --output-signature "${f}.sig" \
               --output-certificate "${f}.cert" \
               "$f"
           done
 
-      - name: Sign artifacts (windows, keyless)
-        if: matrix.os == 'windows-latest'
+      - name: Sign artifacts (windows)
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $files = Get-ChildItem dist | Where-Object { $_.Name -match '\.zip$' }
+          $files = Get-ChildItem dist | Where-Object { $_.Name -notmatch '\.(sha256|sig|cert)$' }
           foreach ($f in $files) {
             $p = $f.FullName
             cosign sign-blob --yes `
@@ -114,12 +118,13 @@ jobs:
               "$p"
           }
 
-      - name: Verify signatures (linux, keyless)
-        if: matrix.os == 'ubuntu-latest'
+      - name: Verify signatures (unix)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
-          for f in dist/*.tar.gz; do
+          for f in dist/*; do
+            case "$f" in *.sha256|*.sig|*.cert) continue ;; esac
             cosign verify-blob \
               --certificate "${f}.cert" \
               --signature "${f}.sig" \
@@ -128,12 +133,12 @@ jobs:
               "$f"
           done
 
-      - name: Verify signatures (windows, keyless)
-        if: matrix.os == 'windows-latest'
+      - name: Verify signatures (windows)
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $re = "^https://github.com/Pantelis23/KernRift/\.github/workflows/release\.yml@refs/tags/$($env:GITHUB_REF_NAME)$"
-          $files = Get-ChildItem dist | Where-Object { $_.Name -match '\.zip$' }
+          $files = Get-ChildItem dist | Where-Object { $_.Name -notmatch '\.(sha256|sig|cert)$' }
           foreach ($f in $files) {
             $p = $f.FullName
             cosign verify-blob `
@@ -147,12 +152,19 @@ jobs:
       - name: Upload assets to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            dist/*.tar.gz
-            dist/*.tar.gz.sha256
-            dist/*.tar.gz.sig
-            dist/*.tar.gz.cert
-            dist/*.zip
-            dist/*.zip.sha256
-            dist/*.zip.sig
-            dist/*.zip.cert
+          body: |
+            See [CHANGELOG](https://github.com/Pantelis23/KernRift/blob/main/CHANGELOG.md) for full details.
+
+            > **macOS x86_64**: built and shipped by CI but not independently verified on Intel Mac hardware. Report any issues.
+
+            ### Verifying downloads
+            Each binary ships with a `.sha256` checksum and a cosign keyless signature (`.sig` + `.cert`).
+            ```sh
+            sha256sum --check kernriftc-linux-x86_64.sha256
+            cosign verify-blob --certificate kernriftc-linux-x86_64.cert \
+              --signature kernriftc-linux-x86_64.sig \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              --certificate-identity-regexp 'https://github.com/Pantelis23/KernRift/.github/workflows/release.yml' \
+              kernriftc-linux-x86_64
+            ```
+          files: dist/*

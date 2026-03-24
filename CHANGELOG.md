@@ -2,7 +2,7 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
-## [Unreleased]
+## v1.0.0 - 2026-03-24
 
 ### Added
 - AArch64 (ARM64) backend: `aarch64-sysv` (Linux), `aarch64-macho` (macOS), `aarch64-win` (Windows).
@@ -24,6 +24,9 @@ All notable changes to `kernriftc` are documented in this file.
 - `kernrift` runner (Unix): `map_executable` now maps `PROT_READ|PROT_WRITE` first, copies code, then `mprotect`s to `PROT_READ|PROT_EXEC`; avoids rejection of `PROT_WRITE|PROT_EXEC` on macOS CI (W^X enforcement).
 - `kernrift` runner (Windows): `map_executable` calls `FlushInstructionCache` after writing JIT code; fixes SIGILL (exit 132) on Windows ARM64 where the I-cache and D-cache are incoherent.
 - `krir` tests: 9 ELF-link tests now compile-gated with `#[cfg(all(unix, target_arch = "x86_64"))]`; `ld` on Windows emits PE (MZ magic), not ELF — those tests no longer run on Windows.
+
+### Platform notes
+- **macOS x86_64**: CI builds and ships the binary but execution on Intel Mac hardware has not been independently verified. Use with caution and report any issues.
 
 ### Tested
 - `examples/smoke_noop.kr` compiled on Pi 400 (aarch64 Linux), fat binary pulled and run on x86_64 — exit 0.
