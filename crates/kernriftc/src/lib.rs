@@ -60,6 +60,9 @@ pub enum BackendArtifactKind {
     KrboFat,
     Asm,
     StaticLib,
+    /// Host-native executable: links via `cc`/`gcc`, allows extern libc symbols.
+    /// Used for host-side build tooling written in KernRift (`build.kr` etc.).
+    HostExecutable,
 }
 
 impl BackendArtifactKind {
@@ -72,6 +75,7 @@ impl BackendArtifactKind {
             Self::KrboFat => "krbofat",
             Self::Asm => "asm",
             Self::StaticLib => "staticlib",
+            Self::HostExecutable => "hostexe",
         }
     }
 
@@ -84,8 +88,9 @@ impl BackendArtifactKind {
             "krbofat" => Ok(Self::KrboFat),
             "asm" => Ok(Self::Asm),
             "staticlib" => Ok(Self::StaticLib),
+            "hostexe" => Ok(Self::HostExecutable),
             _ => Err(format!(
-                "unsupported emit target '{}'; expected 'krbo', 'elfobj', 'elfexe', 'krboexe', 'krbofat', 'asm', or 'staticlib'",
+                "unsupported emit target '{}'; expected 'krbo', 'elfobj', 'elfexe', 'krboexe', 'krbofat', 'asm', 'staticlib', or 'hostexe'",
                 value
             )),
         }
@@ -180,6 +185,9 @@ pub fn emit_backend_artifact_file_with_surface_and_target(
         },
         BackendArtifactKind::StaticLib => {
             emit_x86_64_static_library(&executable, &target).map_err(|err| vec![err])
+        }
+        BackendArtifactKind::HostExecutable => {
+            emit_x86_64_host_executable_bytes(&executable, &target).map_err(|err| vec![err])
         }
     }
 }
@@ -604,6 +612,85 @@ fn emit_x86_64_elf_executable_bytes(
     Ok(bytes)
 }
 
+/// Link a host-native executable via `cc`/`gcc`, allowing extern libc symbols.
+/// Unlike `elfexe`, this does not reject extern declarations — the C compiler
+/// driver resolves them against libc and adds CRT startup code automatically.
+/// The KernRift module must expose a `main` function that acts as the C entry point.
+/// Link a host-native executable via `cc`/`gcc`, allowing extern libc symbols.
+/// Unlike `elfexe`, this does not reject extern declarations — the C compiler
+/// driver resolves them against libc and adds CRT startup code automatically.
+/// The KernRift module must expose a `main` function that acts as the C entry point.
+///
+/// Implementation: lower to x86_64 AT&T assembly text (which supports the full
+/// instruction set including `CompareIntoSlot` / `BranchIfZero` / loops), write
+/// it to a temp `.s` file, then use `cc -c` to assemble and `cc` to link.
+fn emit_x86_64_host_executable_bytes(
+    executable: &krir::ExecutableKrirModule,
+    target: &BackendTargetContract,
+) -> Result<Vec<u8>, String> {
+    let cc = find_host_tool(&["cc", "gcc", "clang"])
+        .ok_or_else(|| "hostexe emit requires a C compiler driver (cc, gcc, or clang)".to_string())?;
+
+    // Lower to ASM text (supports CompareIntoSlot / if-else / loops).
+    let asm_module = lower_executable_krir_to_x86_64_asm(executable, target)?;
+    let asm_text = emit_x86_64_asm_text(&asm_module);
+
+    let temp_dir = unique_temp_dir("hostexe");
+    fs::create_dir_all(&temp_dir).map_err(|err| {
+        format!("failed to create temp dir '{}': {}", temp_dir.display(), err)
+    })?;
+
+    let cleanup = TempArtifactDir { path: temp_dir.clone() };
+    let asm_path = temp_dir.join("input.s");
+    let object_path = temp_dir.join("input.o");
+    let output_path = temp_dir.join("output");
+
+    fs::write(&asm_path, asm_text.as_bytes()).map_err(|err| {
+        format!("failed to write temp ASM '{}': {}", asm_path.display(), err)
+    })?;
+
+    // Assemble: cc -c input.s -o input.o
+    let as_output = Command::new(&cc)
+        .arg("-c")
+        .arg(&asm_path)
+        .arg("-o")
+        .arg(&object_path)
+        .output()
+        .map_err(|err| format!("failed to assemble with '{}': {}", cc, err))?;
+
+    if !as_output.status.success() {
+        return Err(format!(
+            "hostexe assemble failed with '{}':\nstdout:\n{}\nstderr:\n{}",
+            cc,
+            String::from_utf8_lossy(&as_output.stdout),
+            String::from_utf8_lossy(&as_output.stderr)
+        ));
+    }
+
+    // Link: cc input.o -o output  (adds CRT _start, resolves libc)
+    let cc_output = Command::new(&cc)
+        .arg(&object_path)
+        .arg("-o")
+        .arg(&output_path)
+        .output()
+        .map_err(|err| format!("failed to link with '{}': {}", cc, err))?;
+
+    if !cc_output.status.success() {
+        return Err(format!(
+            "hostexe link failed with '{}':\nstdout:\n{}\nstderr:\n{}",
+            cc,
+            String::from_utf8_lossy(&cc_output.stdout),
+            String::from_utf8_lossy(&cc_output.stderr)
+        ));
+    }
+
+    let bytes = fs::read(&output_path).map_err(|err| {
+        format!("failed to read linked output '{}': {}", output_path.display(), err)
+    })?;
+    drop(cleanup);
+    Ok(bytes)
+}
+
 fn emit_x86_64_static_library(
     executable: &krir::ExecutableKrirModule,
     target: &BackendTargetContract,
@@ -934,6 +1021,7 @@ fn telemetry_op_discriminant(op: &KrirOp) -> String {
         KrirOp::BranchIfNonZeroLoopBreak { .. } => "branch_if_nonzero_loop_break",
         KrirOp::FloatArith { .. } => "float_arith",
         KrirOp::InlineAsm(_) => "inline_asm",
+        KrirOp::LoadStaticCstrAddr { .. } => "load_static_cstr_addr",
     }
     .to_string()
 }

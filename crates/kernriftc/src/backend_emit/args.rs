@@ -107,6 +107,7 @@ pub(crate) fn parse_backend_emit_args(
                 | BackendArtifactKind::KrboFat
                 | BackendArtifactKind::StaticLib
                 | BackendArtifactKind::ElfExecutable
+                | BackendArtifactKind::HostExecutable
         )
     {
         return Err(format!(

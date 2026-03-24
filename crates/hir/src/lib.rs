@@ -1233,6 +1233,7 @@ pub fn lower_canonical_executable_to_krir(
             })
             .collect(),
         call_edges,
+        static_strings: Vec::new(),
     };
     lowered.canonicalize();
     lowered
@@ -2826,6 +2827,20 @@ fn lower_expr(
             });
             Ok(l)
         }
+        // String literal used as an expression (e.g. function call argument).
+        // Allocates a fresh uint64 slot and loads the C-string address into it.
+        ParserExpr::StringLiteral(s) => {
+            let slot = fresh_slot(slot_counter);
+            ops.push(KrirOp::StackCell {
+                ty: KrirMmioScalarType::U64,
+                cell: slot.clone(),
+            });
+            ops.push(KrirOp::LoadStaticCstrAddr {
+                value: s.clone(),
+                cell: slot.clone(),
+            });
+            Ok(slot)
+        }
         _ => Err(format!(
             "expression type not yet supported in HIR lowering: {:?}",
             expr
@@ -3155,9 +3170,22 @@ fn lower_stmt(
                 cell: name.clone(),
             });
             if let Some(init_expr) = init {
+                // Special case: string literal as rvalue — LoadStaticCstrAddr (uint64 only).
+                if let ParserExpr::StringLiteral(s) = init_expr {
+                    if lower_mmio_scalar_type(ty.storage_type()) != KrirMmioScalarType::U64 {
+                        errors.push(format!(
+                            "string literal can only be assigned to uint64 (variable '{}')",
+                            name
+                        ));
+                    } else {
+                        ops.push(KrirOp::LoadStaticCstrAddr {
+                            value: s.clone(),
+                            cell: name.clone(),
+                        });
+                    }
                 // Special case: fn call as rvalue captures the return value
                 // directly into the named stack cell via CallCaptureWithArgs.
-                if let ParserExpr::Call { callee, args } = init_expr {
+                } else if let ParserExpr::Call { callee, args } = init_expr {
                     let mut krir_args = Vec::new();
                     let mut ok = true;
                     for arg in args {
@@ -3740,6 +3768,7 @@ fn parse_ctx_attr(attr: &RawAttr) -> Result<Vec<Ctx>, String> {
             "thread" => Ctx::Thread,
             "irq" => Ctx::Irq,
             "nmi" => Ctx::Nmi,
+            "host" => Ctx::Host,
             _ => return Err(format!("unknown context '{}'", token)),
         };
         out.push(ctx);
@@ -3764,6 +3793,10 @@ fn parse_eff_attr(attr: &RawAttr) -> Result<Vec<Eff>, String> {
             "mmio" => Eff::Mmio,
             "dma_map" => Eff::DmaMap,
             "yield" => Eff::Yield,
+            "env" => Eff::Env,
+            "fs" => Eff::Fs,
+            "process" => Eff::Process,
+            "stdout" => Eff::Stdout,
             _ => return Err(format!("unknown effect '{}'", token)),
         };
         out.push(eff);

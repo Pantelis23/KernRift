@@ -8,6 +8,8 @@ pub enum Ctx {
     Irq,
     Nmi,
     Thread,
+    /// Host build-tool context — runs on the development machine, not the target kernel.
+    Host,
 }
 
 impl Ctx {
@@ -17,6 +19,7 @@ impl Ctx {
             Self::Irq => "irq",
             Self::Nmi => "nmi",
             Self::Thread => "thread",
+            Self::Host => "host",
         }
     }
 }
@@ -31,6 +34,14 @@ pub enum Eff {
     Mmio,
     PreemptOff,
     Yield,
+    /// Read environment variables (host-only).
+    Env,
+    /// Filesystem access (host-only).
+    Fs,
+    /// Spawn child processes (host-only).
+    Process,
+    /// Write to stdout/stderr (host-only).
+    Stdout,
 }
 
 impl Eff {
@@ -43,6 +54,10 @@ impl Eff {
             Self::Mmio => "mmio",
             Self::PreemptOff => "preempt_off",
             Self::Yield => "yield",
+            Self::Env => "env",
+            Self::Fs => "fs",
+            Self::Process => "process",
+            Self::Stdout => "stdout",
         }
     }
 
@@ -55,6 +70,10 @@ impl Eff {
             Self::Mmio,
             Self::PreemptOff,
             Self::Yield,
+            Self::Env,
+            Self::Fs,
+            Self::Process,
+            Self::Stdout,
         ]
     }
 }
@@ -380,6 +399,12 @@ pub enum KrirOp {
     },
     /// Emit a named kernel intrinsic instruction. Only valid inside an unsafe block.
     InlineAsm(KernelIntrinsic),
+    /// Load the address of a C-string literal into a u64 stack cell.
+    /// `value` is the raw string content (without NUL terminator); the NUL is appended on emit.
+    LoadStaticCstrAddr {
+        value: String,
+        cell: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -762,6 +787,12 @@ pub enum ExecutableOp {
     },
     /// Emit a named kernel intrinsic instruction. Only valid inside an unsafe block.
     InlineAsm(KernelIntrinsic),
+    /// Load the address of a module-level C-string constant into a u64 stack slot.
+    /// `str_idx` indexes into `ExecutableKrirModule::static_strings`.
+    LoadStaticCstrAddr {
+        str_idx: u8,
+        slot_idx: u8,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -815,6 +846,10 @@ pub struct ExecutableKrirModule {
     pub functions: Vec<ExecutableFunction>,
     pub extern_declarations: Vec<ExecutableExternDecl>,
     pub call_edges: Vec<CallEdge>,
+    /// C-string literals referenced by `LoadStaticCstrAddr` ops.
+    /// Index N corresponds to `LoadStaticCstrAddr { str_idx: N, .. }`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub static_strings: Vec<String>,
 }
 
 impl ExecutableKrirModule {
@@ -1028,7 +1063,8 @@ impl ExecutableKrirModule {
                         | ExecutableOp::CompareIntoSlot { .. }
                         | ExecutableOp::RawPtrLoad { .. }
                         | ExecutableOp::RawPtrStore { .. }
-                        | ExecutableOp::InlineAsm(_) => {}
+                        | ExecutableOp::InlineAsm(_)
+                        | ExecutableOp::LoadStaticCstrAddr { .. } => {}
                     }
                 }
             }
@@ -1169,11 +1205,30 @@ pub fn lower_current_krir_to_executable_krir(
 ) -> Result<ExecutableKrirModule, Vec<String>> {
     let mmio_bases = build_mmio_base_map(module)?;
     let function_result_types = infer_executable_function_result_types(module)?;
+
+    // Pre-pass: collect unique C-string literals in module order for stable indexing.
+    let mut string_indices: BTreeMap<String, u8> = BTreeMap::new();
+    let mut static_strings: Vec<String> = Vec::new();
+    for function in &module.functions {
+        for op in &function.ops {
+            if let KrirOp::LoadStaticCstrAddr { value, .. } = op {
+                if !string_indices.contains_key(value.as_str()) {
+                    let idx = u8::try_from(static_strings.len()).unwrap_or_else(|_| {
+                        panic!("too many string literals (max 256)")
+                    });
+                    string_indices.insert(value.clone(), idx);
+                    static_strings.push(value.clone());
+                }
+            }
+        }
+    }
+
     let mut lowered = ExecutableKrirModule {
         module_caps: module.module_caps.clone(),
         functions: Vec::new(),
         extern_declarations: Vec::new(),
         call_edges: module.call_edges.clone(),
+        static_strings,
     };
     let mut errors = Vec::new();
 
@@ -1487,6 +1542,28 @@ pub fn lower_current_krir_to_executable_krir(
                     then_callee,
                     else_callee,
                 } => {
+                    // New-style path: slot is a CompareIntoSlot result (or any stack cell).
+                    // Load the cell into %rbx via StackLoad, then branch.
+                    if let Some(&(slot_idx, slot_ty)) = cell_slot_map.get(slot.as_str()) {
+                        let captured_slot_matches = executable_slot_name
+                            .as_deref()
+                            .map(|cs| cs == slot)
+                            .unwrap_or(false);
+                        if !captured_slot_matches {
+                            // Not the mmio-captured slot — load from stack cell into %rbx.
+                            exec_ops.push(ExecutableOp::StackLoad {
+                                ty: slot_ty,
+                                slot_idx,
+                            });
+                        }
+                        exec_ops.push(ExecutableOp::BranchIfZero {
+                            ty: slot_ty,
+                            then_callee: then_callee.clone(),
+                            else_callee: else_callee.clone(),
+                        });
+                        continue;
+                    }
+                    // Old-style path: slot must be the mmio/call captured slot.
                     let Some(captured_slot) = executable_slot_name.as_deref() else {
                         errors.push(format!(
                             "canonical-exec: function '{}' contains unsupported {}: branch test slot '{}' requires a prior mmio_read<...>(..., {}) or raw_mmio_read<...>(..., {}) in the same function",
@@ -2482,6 +2559,29 @@ pub fn lower_current_krir_to_executable_krir(
                 }
                 KrirOp::InlineAsm(intr) => {
                     exec_ops.push(ExecutableOp::InlineAsm(intr.clone()));
+                }
+                KrirOp::LoadStaticCstrAddr { value, cell } => {
+                    let str_idx = match string_indices.get(value.as_str()) {
+                        Some(&idx) => idx,
+                        None => {
+                            errors.push(format!(
+                                "canonical-exec: function '{}' LoadStaticCstrAddr: string '{}' not in index (internal error)",
+                                function.name, value
+                            ));
+                            continue;
+                        }
+                    };
+                    let slot_idx = match cell_slot_map.get(cell.as_str()) {
+                        Some(&(idx, _)) => idx,
+                        None => {
+                            errors.push(format!(
+                                "canonical-exec: function '{}' LoadStaticCstrAddr: cell '{}' not declared",
+                                function.name, cell
+                            ));
+                            continue;
+                        }
+                    };
+                    exec_ops.push(ExecutableOp::LoadStaticCstrAddr { str_idx, slot_idx });
                 }
             }
         }
@@ -3605,6 +3705,10 @@ impl BackendTargetContract {
 pub struct X86_64AsmModule {
     pub section: &'static str,
     pub functions: Vec<X86_64AsmFunction>,
+    /// C-string literals referenced by `LoadStaticCstrAddr` instructions.
+    /// Each entry is `(label, value)` where value has no NUL terminator (`.asciz` adds it).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub string_data: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -3759,6 +3863,12 @@ pub enum X86_64AsmInstruction {
     },
     /// Emit a named kernel intrinsic instruction bytes directly.
     InlineAsm(KernelIntrinsic),
+    /// `lea __str_N(%rip), %rbx` + store to slot.
+    /// The string label is emitted in `.section .rodata` after the `.text` section.
+    LoadStaticCstrAddr {
+        str_label: String,
+        slot_idx: u8,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -4311,6 +4421,7 @@ pub fn export_compiler_owned_object_to_x86_64_asm(
     Ok(X86_64AsmModule {
         section: target.sections.text,
         functions,
+        string_data: vec![],
     })
 }
 
@@ -4623,6 +4734,13 @@ pub fn lower_executable_krir_to_x86_64_asm(
                     ExecutableOp::InlineAsm(intr) => {
                         instrs.push(X86_64AsmInstruction::InlineAsm(intr.clone()));
                     }
+                    ExecutableOp::LoadStaticCstrAddr { str_idx, slot_idx } => {
+                        let label = format!("__str_{}", str_idx);
+                        instrs.push(X86_64AsmInstruction::LoadStaticCstrAddr {
+                            str_label: label,
+                            slot_idx: *slot_idx,
+                        });
+                    }
                 }
             }
 
@@ -4647,19 +4765,27 @@ pub fn lower_executable_krir_to_x86_64_asm(
                 }
             }
 
-            X86_64AsmFunction {
+            Ok(X86_64AsmFunction {
                 symbol: format!("{}{}", target.symbols.function_prefix, function.name),
                 uses_saved_value_slot: executable_function_uses_saved_value_slot(function),
                 n_stack_cells: executable_function_n_stack_cells(function),
                 n_params: function.signature.params.len(),
                 instructions: instrs,
-            }
+            })
         })
+        .collect::<Result<Vec<_>, String>>()?;
+
+    let string_data: Vec<(String, String)> = canonical
+        .static_strings
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (format!("__str_{}", i), s.clone()))
         .collect();
 
     Ok(X86_64AsmModule {
         section: target.sections.text,
         functions,
+        string_data,
     })
 }
 
@@ -4976,6 +5102,12 @@ pub fn lower_executable_krir_to_aarch64_asm(
                     ExecutableOp::InlineAsm(intr) => {
                         instrs.push(AArch64AsmInstruction::InlineAsm(intr.clone()));
                     }
+                    ExecutableOp::LoadStaticCstrAddr { .. } => {
+                        return Err(format!(
+                            "aarch64 ASM emit: LoadStaticCstrAddr requires object emit, not ASM (function '{}')",
+                            function.name
+                        ));
+                    }
                 }
             }
 
@@ -5000,15 +5132,15 @@ pub fn lower_executable_krir_to_aarch64_asm(
                 }
             }
 
-            AArch64AsmFunction {
+            Ok(AArch64AsmFunction {
                 symbol: format!("{}{}", target.symbols.function_prefix, function.name),
                 uses_saved_value_slot: executable_function_uses_saved_value_slot(function),
                 n_stack_cells: executable_function_n_stack_cells(function),
                 n_params: function.signature.params.len(),
                 instructions: instrs,
-            }
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>, String>>()?;
 
     Ok(AArch64AsmModule {
         section: target.sections.text,
@@ -5038,6 +5170,7 @@ fn executable_function_uses_saved_value_slot(function: &ExecutableFunction) -> b
                     | ExecutableOp::SlotArithImm { .. }
                     | ExecutableOp::ParamLoad { .. }
                     | ExecutableOp::MmioWriteValueParamAddr { .. }
+                    | ExecutableOp::LoadStaticCstrAddr { .. }
                     | ExecutableOp::MmioRead {
                         capture_value: true,
                         ..
@@ -5080,6 +5213,7 @@ fn executable_function_n_stack_cells(function: &ExecutableFunction) -> u8 {
                 } => Some((*addr_slot_idx).max(*out_slot_idx)),
                 ExecutableOp::RawPtrStore { addr_slot_idx, .. } => Some(*addr_slot_idx),
                 ExecutableOp::CallCaptureWithArgs { slot_idx, .. } => Some(*slot_idx),
+                ExecutableOp::LoadStaticCstrAddr { slot_idx, .. } => Some(*slot_idx),
                 _ => None,
             };
             if let Some(s) = slot {
@@ -5092,6 +5226,27 @@ fn executable_function_n_stack_cells(function: &ExecutableFunction) -> u8 {
 
 fn executable_function_uses_frame(function: &ExecutableFunction) -> bool {
     executable_function_n_stack_cells(function) > 0 || !function.signature.params.is_empty()
+}
+
+/// Round frame_size up for SysV AMD64 ABI 16-byte stack alignment.
+///
+/// Before any `call` instruction, RSP must be 16-byte aligned.  At function
+/// entry RSP % 16 == 8 (return address on stack).  After `push %rbx` (when
+/// `uses_saved_value_slot` is true), RSP % 16 == 0, so the subsequent `sub`
+/// must be a multiple of 16.  Without the push, the `sub` must be ≡ 8 mod 16.
+fn asm_aligned_frame_size(frame_size_raw: u32, uses_saved_value_slot: bool) -> u32 {
+    if uses_saved_value_slot {
+        (frame_size_raw + 15) & !15
+    } else {
+        let r = frame_size_raw % 16;
+        if r == 8 {
+            frame_size_raw
+        } else if r < 8 {
+            frame_size_raw + (8 - r)
+        } else {
+            frame_size_raw + (24 - r)
+        }
+    }
 }
 
 pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
@@ -5110,9 +5265,12 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
             out.push_str("    push %rbx\n");
         }
         let uses_frame = function.n_stack_cells > 0 || function.n_params > 0;
+        let sc_bytes = 8u32 * u32::from(function.n_stack_cells);
+        let frame_size = asm_aligned_frame_size(
+            sc_bytes + 8u32 * function.n_params as u32,
+            function.uses_saved_value_slot,
+        );
         if uses_frame {
-            let sc_bytes = 8u32 * u32::from(function.n_stack_cells);
-            let frame_size = sc_bytes + 8u32 * function.n_params as u32;
             out.push_str(&format!("    sub ${}, %rsp\n", frame_size));
             for i in 0..function.n_params {
                 let offset = sc_bytes + 8u32 * i as u32;
@@ -5545,10 +5703,7 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                             }
                         }
                     }
-                    let uses_frame = function.n_stack_cells > 0 || function.n_params > 0;
                     if uses_frame {
-                        let sc_bytes = 8u32 * u32::from(function.n_stack_cells);
-                        let frame_size = sc_bytes + 8u32 * function.n_params as u32;
                         out.push_str(&format!("    add ${}, %rsp\n", frame_size));
                     }
                     if function.uses_saved_value_slot {
@@ -5568,10 +5723,7 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                     out.push('\n');
                 }
                 X86_64AsmInstruction::Ret => {
-                    let uses_frame = function.n_stack_cells > 0 || function.n_params > 0;
                     if uses_frame {
-                        let sc_bytes = 8u32 * u32::from(function.n_stack_cells);
-                        let frame_size = sc_bytes + 8u32 * function.n_params as u32;
                         out.push_str(&format!("    add ${}, %rsp\n", frame_size));
                     }
                     if function.uses_saved_value_slot {
@@ -5717,6 +5869,17 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                     out.push_str(mmio_saved_value_register(*ty));
                     out.push_str(", (%rax)\n");
                 }
+                X86_64AsmInstruction::LoadStaticCstrAddr { str_label, slot_idx } => {
+                    // lea __str_N(%rip), %rbx
+                    out.push_str(&format!("    lea {}(%rip), %rbx\n", str_label));
+                    // movq %rbx, OFFSET(%rsp)
+                    let offset = 8u32 * u32::from(*slot_idx);
+                    if offset == 0 {
+                        out.push_str("    movq %rbx, (%rsp)\n");
+                    } else {
+                        out.push_str(&format!("    movq %rbx, {}(%rsp)\n", offset));
+                    }
+                }
                 X86_64AsmInstruction::InlineAsm(intr) => {
                     let mnemonic = match intr {
                         KernelIntrinsic::Cli => "cli",
@@ -5736,6 +5899,20 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                     out.push('\n');
                 }
             }
+        }
+    }
+    // Emit static string literals in .rodata section.
+    if !module.string_data.is_empty() {
+        out.push_str(".section .rodata\n");
+        for (label, value) in &module.string_data {
+            // Escape backslashes and double-quotes; keep other chars as-is.
+            let escaped = value
+                .replace('\\', "\\\\")
+                .replace('"', "\\\"")
+                .replace('\n', "\\n")
+                .replace('\t', "\\t")
+                .replace('\0', "\\0");
+            out.push_str(&format!("{}: .asciz \"{}\"\n", label, escaped));
         }
     }
     out
@@ -6146,6 +6323,11 @@ fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
             KernelIntrinsic::Wbinvd | KernelIntrinsic::Pause | KernelIntrinsic::Cpuid => 2,
             KernelIntrinsic::Mfence | KernelIntrinsic::Sfence | KernelIntrinsic::Lfence => 3,
         },
+        // lea [rip+disp32], %rbx  (7 bytes: REX.W + opcode + ModRM + rel32)
+        // followed by mov %rbx, slot(%rsp)
+        ExecutableOp::LoadStaticCstrAddr { slot_idx, .. } => {
+            7 + stack_cell_access_bytes(MmioScalarType::U64, *slot_idx)
+        }
     }
 }
 
@@ -7291,6 +7473,17 @@ pub fn lower_executable_krir_to_compiler_owned_object(
         cursor += size;
     }
 
+    // Second pass setup: compute where each string will land (after all function code).
+    let strings_base = cursor;
+    let mut string_offsets: Vec<u64> = Vec::with_capacity(canonical.static_strings.len());
+    {
+        let mut str_cursor = strings_base;
+        for s in &canonical.static_strings {
+            string_offsets.push(str_cursor);
+            str_cursor += s.len() as u64 + 1; // +1 for NUL terminator
+        }
+    }
+
     let mut code_bytes = Vec::with_capacity(cursor as usize);
     let mut symbols = Vec::with_capacity(canonical.functions.len());
     let mut fixups = Vec::new();
@@ -7681,6 +7874,31 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         ));
                     }
                 },
+                ExecutableOp::LoadStaticCstrAddr { str_idx, slot_idx } => {
+                    let idx = *str_idx as usize;
+                    if idx >= string_offsets.len() {
+                        return Err(format!(
+                            "compiler-owned object emission: function '{}' LoadStaticCstrAddr str_idx {} out of range",
+                            function.name, str_idx
+                        ));
+                    }
+                    let str_abs = string_offsets[idx];
+                    // lea is at (function_offset + local_offset); next IP is +7 (REX.W + opcode + ModRM + rel32)
+                    let lea_next_ip = function_offset + local_offset + 7;
+                    let disp = str_abs as i64 - lea_next_ip as i64;
+                    let disp32 = i32::try_from(disp).map_err(|_| {
+                        format!(
+                            "compiler-owned object emission: function '{}' string literal at index {} out of rel32 range",
+                            function.name, str_idx
+                        )
+                    })?;
+                    // lea [rip+disp32], %rbx  →  48 8D 1D [disp32 LE]
+                    code_bytes.extend_from_slice(&[0x48, 0x8D, 0x1D]);
+                    code_bytes.extend_from_slice(&disp32.to_le_bytes());
+                    // Store %rbx (saved-value register) into the stack slot.
+                    encode_stack_cell_store_saved_value_slot_bytes(&mut code_bytes, MmioScalarType::U64, *slot_idx);
+                    local_offset += executable_op_encoded_len(op);
+                }
                 ExecutableOp::InlineAsm(intr) => {
                     let bytes: &[u8] = match intr {
                         KernelIntrinsic::Cli => &[0xFA],
@@ -7797,6 +8015,12 @@ pub fn lower_executable_krir_to_compiler_owned_object(
             size: function_size,
         });
         emit_cursor += function_size;
+    }
+
+    // Append C-string data after all function code.
+    for s in &canonical.static_strings {
+        code_bytes.extend_from_slice(s.as_bytes());
+        code_bytes.push(0); // NUL terminator
     }
 
     for unresolved in unresolved_targets {
@@ -11219,6 +11443,7 @@ mod tests {
                     callee: "helper".to_string(),
                 },
             ],
+            static_strings: Vec::new(),
         };
         module.canonicalize();
         module.validate().expect("valid executable KRIR");
@@ -11283,6 +11508,7 @@ mod tests {
             }],
             extern_declarations: vec![],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         assert_eq!(
@@ -11319,6 +11545,7 @@ mod tests {
             }],
             extern_declarations: vec![],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         assert_eq!(module.validate(), Ok(()));
@@ -11349,6 +11576,7 @@ mod tests {
             }],
             extern_declarations: vec![],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         module.canonicalize();
@@ -11376,6 +11604,7 @@ mod tests {
             }],
             extern_declarations: vec![],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         module.canonicalize();
@@ -11529,6 +11758,7 @@ mod tests {
             }],
             extern_declarations: vec![],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
         module.canonicalize();
 
@@ -11576,6 +11806,7 @@ mod tests {
             ],
             extern_declarations: vec![],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         let asm =
@@ -11595,6 +11826,7 @@ mod tests {
             functions: vec![unit_return_function("zeta"), unit_return_function("alpha")],
             extern_declarations: vec![],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         let asm =
@@ -11635,6 +11867,7 @@ mod tests {
             }],
             extern_declarations: vec![],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         assert_eq!(
@@ -11664,6 +11897,7 @@ mod tests {
             }],
             extern_declarations: vec![executable_extern_decl("missing")],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         let target = BackendTargetContract::x86_64_sysv();
@@ -11720,6 +11954,7 @@ mod tests {
             ],
             extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         let target = BackendTargetContract::x86_64_sysv();
@@ -11754,6 +11989,7 @@ mod tests {
             }],
             extern_declarations: vec![],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         assert_eq!(
@@ -11787,6 +12023,7 @@ mod tests {
             ],
             extern_declarations: vec![],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         let target = BackendTargetContract::x86_64_sysv();
@@ -11877,6 +12114,7 @@ mod tests {
             functions: vec![unit_return_function("entry")],
             extern_declarations: vec![],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         let object = lower_executable_krir_to_compiler_owned_object(
@@ -11936,6 +12174,7 @@ mod tests {
             functions: vec![unit_return_function("zeta"), unit_return_function("alpha")],
             extern_declarations: vec![],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         let object = lower_executable_krir_to_compiler_owned_object(
@@ -11998,6 +12237,7 @@ mod tests {
             ],
             extern_declarations: vec![],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         let object = lower_executable_krir_to_compiler_owned_object(
@@ -12080,6 +12320,7 @@ mod tests {
             }],
             extern_declarations: vec![],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         assert_eq!(
@@ -12112,6 +12353,7 @@ mod tests {
             }],
             extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         let object = lower_executable_krir_to_compiler_owned_object(
@@ -12158,6 +12400,7 @@ mod tests {
             functions: vec![unit_return_function("entry")],
             extern_declarations: vec![],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         let object =
@@ -12298,6 +12541,7 @@ mod tests {
             ],
             extern_declarations: vec![],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         let object =
@@ -12376,6 +12620,7 @@ mod tests {
             functions: vec![unit_return_function("zeta"), unit_return_function("alpha")],
             extern_declarations: vec![],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         let object =
@@ -12417,6 +12662,7 @@ mod tests {
             ],
             extern_declarations: vec![],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         let target = BackendTargetContract::x86_64_sysv();
@@ -12460,6 +12706,7 @@ mod tests {
             }],
             extern_declarations: vec![],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         assert_eq!(
@@ -12488,6 +12735,7 @@ mod tests {
             }],
             extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         let object =
@@ -12608,6 +12856,7 @@ mod tests {
                 executable_extern_decl("ext_b"),
             ],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         let object =
@@ -12759,6 +13008,7 @@ mod tests {
             }],
             extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         let object =
@@ -12857,6 +13107,7 @@ mod tests {
             ],
             extern_declarations: vec![],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         let object =
@@ -12898,6 +13149,7 @@ mod tests {
             }],
             extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         let object =
@@ -12952,6 +13204,7 @@ mod tests {
                 executable_extern_decl("ext_b"),
             ],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         let object =
@@ -13013,6 +13266,7 @@ mod tests {
             ],
             extern_declarations: vec![],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         let object =
@@ -13065,12 +13319,14 @@ mod tests {
             }],
             extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
         let resolver = ExecutableKrirModule {
             module_caps: vec![],
             functions: vec![unit_return_function("ext")],
             extern_declarations: vec![],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         let unresolved_obj = lower_executable_krir_to_x86_64_object(
@@ -13159,12 +13415,14 @@ mod tests {
             ],
             extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
         let resolver = ExecutableKrirModule {
             module_caps: vec![],
             functions: vec![unit_return_function("ext")],
             extern_declarations: vec![],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         let mixed_obj =
@@ -13241,6 +13499,7 @@ mod tests {
             }],
             extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         let unresolved_obj = lower_executable_krir_to_x86_64_object(
@@ -13307,6 +13566,7 @@ mod tests {
             ],
             extern_declarations: vec![],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         let startup = compile_asm_source_to_object(
@@ -13371,6 +13631,7 @@ mod tests {
             ],
             extern_declarations: vec![],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         let startup = compile_asm_source_to_object(
@@ -13441,6 +13702,7 @@ mod tests {
             }],
             extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         let startup = compile_asm_source_to_object(
@@ -13509,6 +13771,7 @@ mod tests {
             }],
             extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         let startup = compile_asm_source_to_object(
@@ -13600,6 +13863,7 @@ mod tests {
             ],
             extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         let startup = compile_asm_source_to_object(
@@ -13675,6 +13939,7 @@ mod tests {
             ],
             extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         let startup = compile_asm_source_to_object(
@@ -13751,6 +14016,7 @@ mod tests {
             }],
             extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
 
         let startup = compile_asm_source_to_object(
@@ -14203,6 +14469,7 @@ mod tests {
                 name: "print".to_string(),
             }],
             call_edges: vec![],
+            static_strings: Vec::new(),
         };
         let target = BackendTargetContract::aarch64_sysv();
         let result = lower_executable_krir_to_aarch64_asm(&module, &target);
@@ -14240,6 +14507,7 @@ mod tests {
             }],
             extern_declarations: vec![],
             call_edges: vec![],
+            static_strings: Vec::new(),
         }
     }
 

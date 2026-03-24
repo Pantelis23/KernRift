@@ -46,7 +46,8 @@ export PATH="$HOME/.cargo/bin:$PATH"
 
 # ── 3. install KernRift ───────────────────────────────────────────────────────
 info "Installing kernriftc and kernrift from $REPO ..."
-cargo install --git "$REPO" --bin kernriftc --bin kernrift --locked
+cargo install --git "$REPO" --package kernriftc --locked
+cargo install --git "$REPO" --package kernrift --locked
 
 # ── 4. verify ─────────────────────────────────────────────────────────────────
 echo

@@ -1345,12 +1345,14 @@ const ALLOWED_BOOT_THREAD: [Eff; 7] = [
 ];
 const ALLOWED_IRQ: [Eff; 4] = [Eff::DmaMap, Eff::Ioport, Eff::Mmio, Eff::PreemptOff];
 const ALLOWED_NMI: [Eff; 2] = [Eff::Ioport, Eff::PreemptOff];
+const ALLOWED_HOST: [Eff; 4] = [Eff::Env, Eff::Fs, Eff::Process, Eff::Stdout];
 
 fn is_effect_allowed(ctx: Ctx, eff: Eff) -> bool {
     match ctx {
         Ctx::Boot | Ctx::Thread => ALLOWED_BOOT_THREAD.contains(&eff),
         Ctx::Irq => ALLOWED_IRQ.contains(&eff),
         Ctx::Nmi => ALLOWED_NMI.contains(&eff),
+        Ctx::Host => ALLOWED_HOST.contains(&eff),
     }
 }
 
