@@ -72,7 +72,7 @@ bash tools/validation/full_serial.sh
 
 ## Status
 
-KR0 (facts-only pipeline + artifact emission) is complete. KR1–KR3 (driver subset, kernel module, real OS integration) are in progress. See [KR0_KR3_PLAN.md](docs/KR0_KR3_PLAN.md) for the roadmap.
+KR0–KR3 (facts-only pipeline + artifact emission, driver subset, kernel module, real OS integration) are complete. See [KR0_KR3_PLAN.md](docs/KR0_KR3_PLAN.md) for the roadmap.
 
 ## License
 
