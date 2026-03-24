@@ -1446,6 +1446,19 @@ pub fn lower_to_krir_with_surface(
                         callee: callee.clone(),
                     });
                 }
+                KrirOp::CallCaptureWithArgs { callee, .. } => {
+                    if !names.contains(callee) {
+                        errors.push(format!(
+                            "undefined symbol '{}': add extern declaration with canonical facts (@ctx/@eff/@caps)",
+                            callee
+                        ));
+                        continue;
+                    }
+                    call_edges.push(CallEdge {
+                        caller: function.name.clone(),
+                        callee: callee.clone(),
+                    });
+                }
                 KrirOp::BranchIfZero {
                     then_callee,
                     else_callee,
@@ -3142,13 +3155,46 @@ fn lower_stmt(
                 cell: name.clone(),
             });
             if let Some(init_expr) = init {
-                match lower_expr(init_expr, ops, slot_counter, device_regs, eff_used) {
-                    Ok(src) => ops.push(KrirOp::StackStore {
-                        ty: lower_mmio_scalar_type(ty.storage_type()),
-                        cell: name.clone(),
-                        value: KrirMmioValueExpr::Ident { name: src },
-                    }),
-                    Err(e) => errors.push(e),
+                // Special case: fn call as rvalue captures the return value
+                // directly into the named stack cell via CallCaptureWithArgs.
+                if let ParserExpr::Call { callee, args } = init_expr {
+                    let mut krir_args = Vec::new();
+                    let mut ok = true;
+                    for arg in args {
+                        if let ParserExpr::Ident(arg_name) = arg {
+                            if let Some(literal) = const_map.get(arg_name.as_str()) {
+                                krir_args.push(KrirMmioValueExpr::IntLiteral {
+                                    value: literal.clone(),
+                                });
+                                continue;
+                            }
+                        }
+                        match lower_expr(arg, ops, slot_counter, device_regs, eff_used) {
+                            Ok(slot) => {
+                                krir_args.push(KrirMmioValueExpr::Ident { name: slot })
+                            }
+                            Err(e) => {
+                                errors.push(e);
+                                ok = false;
+                            }
+                        }
+                    }
+                    if ok {
+                        ops.push(KrirOp::CallCaptureWithArgs {
+                            callee: callee.clone(),
+                            args: krir_args,
+                            capture_slot: name.clone(),
+                        });
+                    }
+                } else {
+                    match lower_expr(init_expr, ops, slot_counter, device_regs, eff_used) {
+                        Ok(src) => ops.push(KrirOp::StackStore {
+                            ty: lower_mmio_scalar_type(ty.storage_type()),
+                            cell: name.clone(),
+                            value: KrirMmioValueExpr::Ident { name: src },
+                        }),
+                        Err(e) => errors.push(e),
+                    }
                 }
             }
         }

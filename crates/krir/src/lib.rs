@@ -223,6 +223,12 @@ pub enum KrirOp {
         callee: String,
         capture_slot: String,
     },
+    /// Call an extern function with arguments and capture its return value into a stack cell.
+    CallCaptureWithArgs {
+        callee: String,
+        args: Vec<MmioValueExpr>,
+        capture_slot: String,
+    },
     BranchIfZero {
         slot: String,
         then_callee: String,
@@ -637,6 +643,13 @@ pub enum ExecutableOp {
         callee: String,
         ty: MmioScalarType,
     },
+    /// Call an extern function with args; store the return value directly into a stack slot.
+    CallCaptureWithArgs {
+        callee: String,
+        args: Vec<ExecutableCallArg>,
+        ty: MmioScalarType,
+        slot_idx: u8,
+    },
     BranchIfZero {
         ty: MmioScalarType,
         then_callee: String,
@@ -933,6 +946,16 @@ impl ExecutableKrirModule {
                                     callee,
                                     ty.as_str(),
                                     result.as_str()
+                                ));
+                            }
+                        }
+                        ExecutableOp::CallCaptureWithArgs { callee, .. } => {
+                            if !function_names.contains(callee.as_str())
+                                && !extern_names.contains(callee.as_str())
+                            {
+                                return Err(format!(
+                                    "executable KRIR function '{}' calls undeclared target '{}'",
+                                    function.name, callee
                                 ));
                             }
                         }
@@ -1352,6 +1375,85 @@ pub fn lower_current_krir_to_executable_krir(
                         ty: return_ty,
                         source: ExecutableCapturedValueSource::SavedSlot,
                     });
+                }
+                KrirOp::CallCaptureWithArgs {
+                    callee,
+                    args,
+                    capture_slot,
+                } => {
+                    if args.len() > 6 {
+                        errors.push(format!(
+                            "canonical-exec: function '{}' calls '{}' with {} args; SysV ABI allows at most 6",
+                            function.name, callee, args.len()
+                        ));
+                        continue;
+                    }
+                    // Resolve the capture slot's index and type from cell_slot_map.
+                    let Some(&(slot_idx, ty)) = cell_slot_map.get(capture_slot.as_str()) else {
+                        errors.push(format!(
+                            "canonical-exec: function '{}' call_capture_with_args: capture slot '{}' not found in cell_slot_map",
+                            function.name, capture_slot
+                        ));
+                        continue;
+                    };
+                    // Resolve each argument.
+                    let mut exec_args = Vec::with_capacity(args.len());
+                    let mut arg_ok = true;
+                    for arg_val in args {
+                        let exec_arg = match arg_val {
+                            MmioValueExpr::IntLiteral { value } => {
+                                match parse_integer_literal_u64(value) {
+                                    Ok(v) => ExecutableCallArg::Imm { value: v },
+                                    Err(reason) => {
+                                        errors.push(format!(
+                                            "canonical-exec: function '{}' call_capture_with_args immediate '{}': {}",
+                                            function.name, value, reason
+                                        ));
+                                        arg_ok = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            MmioValueExpr::FloatLiteral { value } => {
+                                errors.push(format!(
+                                    "float literal '{}' not supported in call_capture_with_args",
+                                    value
+                                ));
+                                arg_ok = false;
+                                break;
+                            }
+                            MmioValueExpr::Ident { name } => {
+                                if let Some(&(s_idx, _)) = cell_slot_map.get(name.as_str()) {
+                                    ExecutableCallArg::Slot {
+                                        byte_offset: 8u32 * u32::from(s_idx),
+                                    }
+                                } else if let Some(&(param_idx, _)) = param_map.get(name.as_str()) {
+                                    ExecutableCallArg::Slot {
+                                        byte_offset: 8u32 * u32::from(next_slot_idx)
+                                            + 8u32 * u32::from(param_idx),
+                                    }
+                                } else if executable_slot_name.as_deref() == Some(name.as_str()) {
+                                    ExecutableCallArg::SavedValue
+                                } else {
+                                    errors.push(format!(
+                                        "canonical-exec: function '{}' call_capture_with_args arg '{}': not a declared stack cell, param, or captured slot",
+                                        function.name, name
+                                    ));
+                                    arg_ok = false;
+                                    break;
+                                }
+                            }
+                        };
+                        exec_args.push(exec_arg);
+                    }
+                    if arg_ok {
+                        exec_ops.push(ExecutableOp::CallCaptureWithArgs {
+                            callee: callee.clone(),
+                            args: exec_args,
+                            ty,
+                            slot_idx,
+                        });
+                    }
                 }
                 KrirOp::BranchIfZero {
                     slot,
@@ -3505,6 +3607,13 @@ pub enum X86_64AsmInstruction {
         ty: MmioScalarType,
         symbol: String,
     },
+    /// Call extern with args and store the return value to a stack slot.
+    CallCaptureWithArgs {
+        symbol: String,
+        args: Vec<ExecutableCallArg>,
+        ty: MmioScalarType,
+        slot_idx: u8,
+    },
     BranchIfZero {
         ty: MmioScalarType,
         then_symbol: String,
@@ -3657,6 +3766,13 @@ pub enum AArch64AsmInstruction {
     CallCapture {
         ty: MmioScalarType,
         symbol: String,
+    },
+    /// Call extern with args and store the return value to a stack slot.
+    CallCaptureWithArgs {
+        symbol: String,
+        args: Vec<ExecutableCallArg>,
+        ty: MmioScalarType,
+        slot_idx: u8,
     },
     BranchIfZero {
         ty: MmioScalarType,
@@ -4206,6 +4322,19 @@ pub fn lower_executable_krir_to_x86_64_asm(
                             symbol: callee.clone(),
                         });
                     }
+                    ExecutableOp::CallCaptureWithArgs {
+                        callee,
+                        args,
+                        ty,
+                        slot_idx,
+                    } => {
+                        instrs.push(X86_64AsmInstruction::CallCaptureWithArgs {
+                            symbol: callee.clone(),
+                            args: args.clone(),
+                            ty: *ty,
+                            slot_idx: *slot_idx,
+                        });
+                    }
                     ExecutableOp::BranchIfZero {
                         ty,
                         then_callee,
@@ -4544,6 +4673,19 @@ pub fn lower_executable_krir_to_aarch64_asm(
                         instrs.push(AArch64AsmInstruction::CallCapture {
                             ty: *ty,
                             symbol: callee.clone(),
+                        });
+                    }
+                    ExecutableOp::CallCaptureWithArgs {
+                        callee,
+                        args,
+                        ty,
+                        slot_idx,
+                    } => {
+                        instrs.push(AArch64AsmInstruction::CallCaptureWithArgs {
+                            symbol: callee.clone(),
+                            args: args.clone(),
+                            ty: *ty,
+                            slot_idx: *slot_idx,
                         });
                     }
                     ExecutableOp::BranchIfZero {
@@ -4910,6 +5052,7 @@ fn executable_function_n_stack_cells(function: &ExecutableFunction) -> u8 {
                     ..
                 } => Some((*addr_slot_idx).max(*out_slot_idx)),
                 ExecutableOp::RawPtrStore { addr_slot_idx, .. } => Some(*addr_slot_idx),
+                ExecutableOp::CallCaptureWithArgs { slot_idx, .. } => Some(*slot_idx),
                 _ => None,
             };
             if let Some(s) = slot {
@@ -4971,6 +5114,47 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                     out.push_str(", ");
                     out.push_str(mmio_saved_value_register(*ty));
                     out.push('\n');
+                }
+                X86_64AsmInstruction::CallCaptureWithArgs {
+                    symbol,
+                    args,
+                    ty,
+                    slot_idx,
+                } => {
+                    // Load args into SysV parameter registers.
+                    for (i, arg) in args.iter().enumerate() {
+                        let reg = asm_param_register(i as u8);
+                        match arg {
+                            ExecutableCallArg::Imm { value } => {
+                                out.push_str(&format!("    movq ${}, {}\n", value, reg));
+                            }
+                            ExecutableCallArg::Slot { byte_offset } => {
+                                if *byte_offset == 0 {
+                                    out.push_str(&format!("    movq (%rsp), {}\n", reg));
+                                } else {
+                                    out.push_str(&format!(
+                                        "    movq {}(%rsp), {}\n",
+                                        byte_offset, reg
+                                    ));
+                                }
+                            }
+                            ExecutableCallArg::SavedValue => {
+                                out.push_str(&format!("    movq %rbx, {}\n", reg));
+                            }
+                        }
+                    }
+                    out.push_str("    call ");
+                    out.push_str(symbol);
+                    out.push('\n');
+                    // Store the return value from the accumulator to the stack slot.
+                    let offset = 8u32 * u32::from(*slot_idx);
+                    let mnem = mmio_store_mnemonic(*ty);
+                    let acc = mmio_accumulator_register(*ty);
+                    if offset == 0 {
+                        out.push_str(&format!("    {} {}, (%rsp)\n", mnem, acc));
+                    } else {
+                        out.push_str(&format!("    {} {}, {}(%rsp)\n", mnem, acc, offset));
+                    }
                 }
                 X86_64AsmInstruction::BranchIfZero {
                     ty,
@@ -5626,6 +5810,12 @@ pub fn emit_aarch64_asm_text(module: &AArch64AsmModule) -> String {
                 AArch64AsmInstruction::CallCapture { symbol, .. } => {
                     out.push_str(&format!("    bl {}\n", symbol));
                 }
+                AArch64AsmInstruction::CallCaptureWithArgs { symbol, slot_idx, .. } => {
+                    out.push_str(&format!("    bl {}\n", symbol));
+                    // x0 holds the return value; store it to [x29 + #(16 + slot*8)].
+                    let slot_offset = 16 + (*slot_idx as u32) * 8;
+                    out.push_str(&format!("    str x0, [x29, #{}]\n", slot_offset));
+                }
                 AArch64AsmInstruction::MmioRead { addr, ty, .. } => {
                     let (mnem, reg) = aarch64_load_parts(*ty);
                     out.push_str(&format!("    ldr x1, =0x{:x}\n", addr));
@@ -5876,6 +6066,11 @@ fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
         ExecutableOp::MmioWriteValueParamAddr { ty, .. } => 5 + mmio_saved_value_store_bytes(*ty),
         ExecutableOp::CallWithArgs { args, .. } => {
             args.iter().map(call_arg_encoded_bytes).sum::<u64>() + 5
+        }
+        ExecutableOp::CallCaptureWithArgs { args, ty, slot_idx, .. } => {
+            args.iter().map(call_arg_encoded_bytes).sum::<u64>()
+                + 5  // call rel32
+                + stack_cell_access_bytes(*ty, *slot_idx)  // store acc -> slot
         }
         // Loop ops:
         ExecutableOp::LoopBegin => 0,    // label only, no bytes
@@ -7381,6 +7576,35 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         target_symbol: callee.clone(),
                         width_bytes: 4,
                     });
+                    local_offset += executable_op_encoded_len(op);
+                }
+                ExecutableOp::CallCaptureWithArgs { callee, args, ty, slot_idx } => {
+                    if !function_offsets.contains_key(callee) {
+                        if !extern_names.contains(callee.as_str()) {
+                            return Err(format!(
+                                "compiler-owned object emission requires declared extern target '{}' in function '{}'",
+                                callee, function.name
+                            ));
+                        }
+                        unresolved_targets.insert(callee.clone());
+                    }
+                    // Emit per-arg instructions.
+                    for (i, arg) in args.iter().enumerate() {
+                        encode_call_arg_bytes(&mut code_bytes, i as u8, arg);
+                    }
+                    let args_len: u64 = args.iter().map(call_arg_encoded_bytes).sum();
+                    // Emit call rel32.
+                    code_bytes.push(0xE8);
+                    code_bytes.extend_from_slice(&[0, 0, 0, 0]);
+                    fixups.push(CompilerOwnedObjectFixup {
+                        source_symbol: function.name.clone(),
+                        patch_offset: function_offset + local_offset + args_len + 1,
+                        kind: CompilerOwnedFixupKind::X86_64CallRel32,
+                        target_symbol: callee.clone(),
+                        width_bytes: 4,
+                    });
+                    // Store accumulator to capture slot.
+                    encode_stack_cell_store_accumulator_slot_bytes(&mut code_bytes, *ty, *slot_idx);
                     local_offset += executable_op_encoded_len(op);
                 }
                 ExecutableOp::RawPtrLoad {
@@ -9286,6 +9510,15 @@ fn encode_aarch64_function(
             | AArch64AsmInstruction::CallWithArgs { symbol, .. }
             | AArch64AsmInstruction::CallCapture { symbol, .. } => {
                 emit_bl!(symbol);
+            }
+            // ── CallCaptureWithArgs (BL + store x0 to slot) ──────────────────
+            AArch64AsmInstruction::CallCaptureWithArgs {
+                symbol,
+                slot_idx,
+                ..
+            } => {
+                emit_bl!(symbol);
+                slot_str!(0, *slot_idx);
             }
 
             // ── Tail-call (LDP epilogue + B) ──────────────────────────────────
