@@ -55,6 +55,10 @@ jobs:
           components: rustfmt, clippy
           targets: ${{ matrix.build_target }}
 
+      - name: Add cross-compilation target
+        if: matrix.build_target != ''
+        run: rustup target add ${{ matrix.build_target }}
+
       # Gate the release: fail early if repo is broken (always native)
       - name: Gates (fmt/clippy/test)
         shell: bash

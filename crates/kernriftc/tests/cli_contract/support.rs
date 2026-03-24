@@ -1,4 +1,8 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use super::*;
+
+static FIXTURE_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// On Windows, `canonicalize()` returns an extended UNC path like `\\?\C:\...` and
 /// backslashes are not JSON-safe when used directly in format strings. Normalize all
@@ -423,8 +427,11 @@ pub(super) fn write_verify_report_fixture(label: &str, report_json: &Value) -> P
         .duration_since(UNIX_EPOCH)
         .expect("time")
         .as_nanos();
-    let report_path =
-        std::env::temp_dir().join(format!("kernrift-inspect-report-{}-{}.json", label, ts));
+    let seq = FIXTURE_SEQ.fetch_add(1, Ordering::Relaxed);
+    let report_path = std::env::temp_dir().join(format!(
+        "kernrift-inspect-report-{}-{}-{}.json",
+        label, ts, seq
+    ));
     fs::remove_file(&report_path).ok();
     fs::write(
         &report_path,
@@ -440,7 +447,9 @@ pub(super) fn write_promotion_repo_fixture(feature_id: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("time")
         .as_nanos();
-    let repo_dir = std::env::temp_dir().join(format!("kernrift-promotion-{}-{}", feature_id, ts));
+    let seq = FIXTURE_SEQ.fetch_add(1, Ordering::Relaxed);
+    let repo_dir =
+        std::env::temp_dir().join(format!("kernrift-promotion-{}-{}-{}", feature_id, ts, seq));
     let hir_dir = repo_dir.join("crates").join("hir").join("src");
     let proposal_dir = repo_dir.join("docs").join("design").join("examples");
     fs::create_dir_all(&hir_dir).expect("create hir dir");
