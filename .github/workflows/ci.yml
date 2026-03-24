@@ -97,3 +97,72 @@ jobs:
 
       - name: acceptance smoke
         run: ./tools/acceptance/all.sh
+
+  # ── Cross-platform coverage ────────────────────────────────────────────────
+  # Covers targets not exercised by the jobs above (Linux x86_64).
+  # The acceptance scripts require apt packages (lld, binutils) and are
+  # Linux x86_64 only, so they run in the kr0/acceptance-smoke jobs.
+  # Here we just need: build + cargo test + optional end-to-end smoke.
+  cross:
+    name: Cross (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux AArch64 – already verified on Pi 400, now confirmed in CI too
+          - name: "Linux AArch64"
+            os: ubuntu-24.04-arm
+            smoke: false   # hello.kr has no arm64 KRBO slice (MMIO unsupported by AArch64 encoder)
+
+          # macOS – both silicon generations; unverified until this CI runs
+          - name: "macOS x86_64 (Intel)"
+            os: macos-13
+            smoke: true
+
+          - name: "macOS AArch64 (Apple Silicon)"
+            os: macos-latest
+            smoke: false   # same MMIO limitation as Linux AArch64
+
+          # Windows – x86_64 verified locally; ARM64 runner is public beta
+          - name: "Windows x86_64"
+            os: windows-latest
+            smoke: false   # smoke script is Unix-only; cargo test covers Windows paths
+
+          - name: "Windows AArch64 (beta)"
+            os: windows-11-arm
+            smoke: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # rust-toolchain.toml pins the exact version (1.93.1 + rustfmt + clippy).
+      # `rustup show` forces rustup to read the file and install the toolchain
+      # before any cargo command runs, giving a clean install log.
+      - name: Install Rust toolchain
+        shell: bash
+        run: rustup show
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build (release)
+        run: cargo build --release
+
+      - name: Test (release)
+        run: cargo test --workspace --release
+
+      # End-to-end smoke: compile hello.kr → fat binary → run → verify output.
+      # Only on Unix x86_64 where hello.kr's MMIO instructions encode correctly
+      # and the fat binary's x86_64 slice can execute natively.
+      - name: Smoke – compile hello.kr
+        if: matrix.smoke
+        run: ./target/release/kernriftc hello.kr
+
+      - name: Smoke – run hello.krbo, expect "Hello, World!"
+        if: matrix.smoke
+        run: |
+          output=$(./target/release/kernrift hello.krbo)
+          printf '%s\n' "$output"
+          echo "$output" | grep -q "Hello, World!"
