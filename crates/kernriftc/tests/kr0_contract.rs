@@ -731,10 +731,12 @@ fn branch_op_symbol_layout_is_contiguous_in_x86_64_elf_object() {
 }
 
 #[test]
+#[cfg(unix)]
 fn staticlib_emit_produces_ar_archive_with_global_symbols() {
     // KR0 exit criterion: "freestanding static library callable from C"
     // --emit staticlib must produce a valid GNU ar archive containing the ELF object.
-    // Skipped when ar (binutils) is not available on the host.
+    // Unix-only: ELF + GNU ar are not available on Windows.
+    // Skipped at runtime when ar (binutils) is not available on the host.
     if std::process::Command::new("ar")
         .arg("--version")
         .output()
