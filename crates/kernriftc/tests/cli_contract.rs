@@ -37,8 +37,7 @@ const CANONICAL_FIX_PREVIEW_SCHEMA_V1: &str =
 const VERIFY_REPORT_SCHEMA_V1: &str =
     include_str!("../../../docs/schemas/kernrift_verify_report_v1.schema.json");
 const ARCHITECTURE_DOC_TEXT: &str = include_str!("../../../docs/ARCHITECTURE.md");
-const KERNEL_PROFILE_NOTES_TEXT: &str =
-    include_str!("kernel_profile_pr1_notes.md");
+const KERNEL_PROFILE_NOTES_TEXT: &str = include_str!("kernel_profile_pr1_notes.md");
 const KR0_KR3_PLAN_TEXT: &str = include_str!("../../../docs/KR0_KR3_PLAN.md");
 const KR0_AUTHORING_REFERENCE_TEXT: &str =
     include_str!("../../../docs/spec/kr0-canonical-authoring-reference.md");
