@@ -1,0 +1,13 @@
+// Minimal smoke-test entry point.
+//
+// Contains no MMIO operations, so the AArch64 encoder can produce a complete
+// fat binary slice (unlike hello.kr, which uses print() -> MMIO writes that
+// the current AArch64 encoder does not support).
+//
+// Expected behaviour on every supported platform:
+//   kernriftc smoke_noop.kr   -> smoke_noop.krbo (fat binary, both slices)
+//   kernrift   smoke_noop.krbo -> exits 0, no stdout output
+
+@ctx(thread, boot)
+fn entry() {
+}

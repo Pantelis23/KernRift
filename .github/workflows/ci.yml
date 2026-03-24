@@ -113,33 +113,33 @@ jobs:
           # Linux AArch64 – already verified on Pi 400, now confirmed in CI too
           - name: "Linux AArch64"
             os: ubuntu-24.04-arm
-            smoke: false   # hello.kr has no arm64 KRBO slice (MMIO unsupported by AArch64 encoder)
+            arch: aarch64
 
           # macOS – both silicon generations; unverified until this CI runs
           - name: "macOS x86_64 (Intel)"
             os: macos-13
-            smoke: true
+            arch: x86_64
 
           - name: "macOS AArch64 (Apple Silicon)"
             os: macos-latest
-            smoke: false   # same MMIO limitation as Linux AArch64
+            arch: aarch64
 
           # Windows – x86_64 verified locally; ARM64 runner is public beta
           - name: "Windows x86_64"
             os: windows-latest
-            smoke: false   # smoke script is Unix-only; cargo test covers Windows paths
+            arch: x86_64
 
           - name: "Windows AArch64 (beta)"
             os: windows-11-arm
-            smoke: false
+            arch: aarch64
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # rust-toolchain.toml pins the exact version (1.93.1 + rustfmt + clippy).
+      # rust-toolchain.toml pins the exact version (1.93.1).
       # `rustup show` forces rustup to read the file and install the toolchain
-      # before any cargo command runs, giving a clean install log.
+      # before any cargo command runs.
       - name: Install Rust toolchain
         shell: bash
         run: rustup show
@@ -153,16 +153,37 @@ jobs:
       - name: Test (release)
         run: cargo test --workspace --release
 
-      # End-to-end smoke: compile hello.kr → fat binary → run → verify output.
-      # Only on Unix x86_64 where hello.kr's MMIO instructions encode correctly
-      # and the fat binary's x86_64 slice can execute natively.
-      - name: Smoke – compile hello.kr
-        if: matrix.smoke
-        run: ./target/release/kernriftc hello.kr
+      # ── Smoke tests ────────────────────────────────────────────────────────
+      # Two tiers:
+      #
+      #  A. smoke_noop (ALL platforms, ARM64 + Windows included)
+      #     examples/smoke_noop.kr has no MMIO ops so the AArch64 encoder
+      #     produces a complete fat binary (both slices).  kernrift runs the
+      #     host-native slice and exits 0.
+      #
+      #  B. hello.kr (x86_64 only)
+      #     hello.kr uses print() → MMIO writes, so only the x86_64 slice is
+      #     present in the fat binary.  On x86_64 we also verify stdout output.
+      #
+      # Windows note: git bash (shell: bash on Windows Actions runners) does NOT
+      # automatically add .exe to ./path/to/bin, so we detect RUNNER_OS and set
+      # an $exe suffix that appends ".exe" on Windows.
 
-      - name: Smoke – run hello.krbo, expect "Hello, World!"
-        if: matrix.smoke
+      - name: Smoke – compile and run smoke_noop.kr (all platforms)
+        shell: bash
         run: |
-          output=$(./target/release/kernrift hello.krbo)
+          exe=""; [[ "$RUNNER_OS" == "Windows" ]] && exe=".exe"
+          "./target/release/kernriftc${exe}" examples/smoke_noop.kr
+          "./target/release/kernrift${exe}" smoke_noop.krbo
+          echo "smoke_noop: PASS"
+
+      - name: Smoke – compile hello.kr and verify output (x86_64 only)
+        if: matrix.arch == 'x86_64'
+        shell: bash
+        run: |
+          exe=""; [[ "$RUNNER_OS" == "Windows" ]] && exe=".exe"
+          "./target/release/kernriftc${exe}" hello.kr
+          output=$("./target/release/kernrift${exe}" hello.krbo)
           printf '%s\n' "$output"
           echo "$output" | grep -q "Hello, World!"
+          echo "hello smoke: PASS"
