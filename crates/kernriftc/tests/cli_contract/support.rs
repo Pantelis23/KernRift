@@ -463,19 +463,29 @@ pub(super) fn write_promotion_repo_fixture(feature_id: &str) -> PathBuf {
             .expect("copy proposal example");
         }
     }
+    // GIT_TEMPLATE_DIR="" prevents Homebrew-git from copying templates (avoids
+    // "File exists" on macOS CI).  GIT_CONFIG_NOSYSTEM=1 skips /etc/gitconfig.
+    // We set user.name, user.email, and commit.gpgsign locally so the global
+    // ~/.gitconfig (which may have commit.gpgsign=true on CI) is irrelevant.
     let git = |args: &[&str]| {
-        let status = std::process::Command::new("git")
+        let output = std::process::Command::new("git")
             .current_dir(&repo_dir)
+            .env("GIT_TEMPLATE_DIR", "")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
             .args(args)
-            .status()
+            .output()
             .expect("run git");
-        assert!(status.success(), "git {:?} failed", args);
+        assert!(
+            output.status.success(),
+            "git {:?} failed\nstdout: {}\nstderr: {}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     };
-    // -c init.templateDir= suppresses Homebrew-git template-copy failures on macOS.
-    git(&["-c", "init.templateDir=", "init", "-q", "-b", "main"]);
+    git(&["init", "-q", "-b", "main"]);
     git(&["config", "user.name", "KernRift Test"]);
     git(&["config", "user.email", "kernrift@example.test"]);
-    // Prevent GPG-signing failures on CI runners with commit.gpgsign=true globally.
     git(&["config", "commit.gpgsign", "false"]);
     git(&["add", "."]);
     git(&["commit", "-m", "baseline"]);
@@ -484,12 +494,18 @@ pub(super) fn write_promotion_repo_fixture(feature_id: &str) -> PathBuf {
 
 pub(super) fn git_commit_all(repo_dir: &Path, message: &str) {
     let git = |args: &[&str]| {
-        let status = std::process::Command::new("git")
+        let output = std::process::Command::new("git")
             .current_dir(repo_dir)
             .args(args)
-            .status()
+            .output()
             .expect("run git");
-        assert!(status.success(), "git {:?} failed", args);
+        assert!(
+            output.status.success(),
+            "git {:?} failed\nstdout: {}\nstderr: {}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     };
     git(&["add", "."]);
     git(&["commit", "-m", message]);
