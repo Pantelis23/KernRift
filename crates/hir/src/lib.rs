@@ -3198,9 +3198,7 @@ fn lower_stmt(
                             }
                         }
                         match lower_expr(arg, ops, slot_counter, device_regs, eff_used) {
-                            Ok(slot) => {
-                                krir_args.push(KrirMmioValueExpr::Ident { name: slot })
-                            }
+                            Ok(slot) => krir_args.push(KrirMmioValueExpr::Ident { name: slot }),
                             Err(e) => {
                                 errors.push(e);
                                 ok = false;

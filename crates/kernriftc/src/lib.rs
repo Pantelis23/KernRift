@@ -628,8 +628,9 @@ fn emit_x86_64_host_executable_bytes(
     executable: &krir::ExecutableKrirModule,
     target: &BackendTargetContract,
 ) -> Result<Vec<u8>, String> {
-    let cc = find_host_tool(&["cc", "gcc", "clang"])
-        .ok_or_else(|| "hostexe emit requires a C compiler driver (cc, gcc, or clang)".to_string())?;
+    let cc = find_host_tool(&["cc", "gcc", "clang"]).ok_or_else(|| {
+        "hostexe emit requires a C compiler driver (cc, gcc, or clang)".to_string()
+    })?;
 
     // Lower to ASM text (supports CompareIntoSlot / if-else / loops).
     let asm_module = lower_executable_krir_to_x86_64_asm(executable, target)?;
@@ -637,17 +638,22 @@ fn emit_x86_64_host_executable_bytes(
 
     let temp_dir = unique_temp_dir("hostexe");
     fs::create_dir_all(&temp_dir).map_err(|err| {
-        format!("failed to create temp dir '{}': {}", temp_dir.display(), err)
+        format!(
+            "failed to create temp dir '{}': {}",
+            temp_dir.display(),
+            err
+        )
     })?;
 
-    let cleanup = TempArtifactDir { path: temp_dir.clone() };
+    let cleanup = TempArtifactDir {
+        path: temp_dir.clone(),
+    };
     let asm_path = temp_dir.join("input.s");
     let object_path = temp_dir.join("input.o");
     let output_path = temp_dir.join("output");
 
-    fs::write(&asm_path, asm_text.as_bytes()).map_err(|err| {
-        format!("failed to write temp ASM '{}': {}", asm_path.display(), err)
-    })?;
+    fs::write(&asm_path, asm_text.as_bytes())
+        .map_err(|err| format!("failed to write temp ASM '{}': {}", asm_path.display(), err))?;
 
     // Assemble: cc -c input.s -o input.o
     let as_output = Command::new(&cc)
@@ -685,7 +691,11 @@ fn emit_x86_64_host_executable_bytes(
     }
 
     let bytes = fs::read(&output_path).map_err(|err| {
-        format!("failed to read linked output '{}': {}", output_path.display(), err)
+        format!(
+            "failed to read linked output '{}': {}",
+            output_path.display(),
+            err
+        )
     })?;
     drop(cleanup);
     Ok(bytes)

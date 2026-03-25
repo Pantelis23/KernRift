@@ -1213,9 +1213,8 @@ pub fn lower_current_krir_to_executable_krir(
         for op in &function.ops {
             if let KrirOp::LoadStaticCstrAddr { value, .. } = op {
                 if !string_indices.contains_key(value.as_str()) {
-                    let idx = u8::try_from(static_strings.len()).unwrap_or_else(|_| {
-                        panic!("too many string literals (max 256)")
-                    });
+                    let idx = u8::try_from(static_strings.len())
+                        .unwrap_or_else(|_| panic!("too many string literals (max 256)"));
                     string_indices.insert(value.clone(), idx);
                     static_strings.push(value.clone());
                 }
@@ -5869,7 +5868,10 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                     out.push_str(mmio_saved_value_register(*ty));
                     out.push_str(", (%rax)\n");
                 }
-                X86_64AsmInstruction::LoadStaticCstrAddr { str_label, slot_idx } => {
+                X86_64AsmInstruction::LoadStaticCstrAddr {
+                    str_label,
+                    slot_idx,
+                } => {
                     // lea __str_N(%rip), %rbx
                     out.push_str(&format!("    lea {}(%rip), %rbx\n", str_label));
                     // movq %rbx, OFFSET(%rsp)
@@ -6014,7 +6016,9 @@ pub fn emit_aarch64_asm_text(module: &AArch64AsmModule) -> String {
                 AArch64AsmInstruction::CallCapture { symbol, .. } => {
                     out.push_str(&format!("    bl {}\n", symbol));
                 }
-                AArch64AsmInstruction::CallCaptureWithArgs { symbol, slot_idx, .. } => {
+                AArch64AsmInstruction::CallCaptureWithArgs {
+                    symbol, slot_idx, ..
+                } => {
                     out.push_str(&format!("    bl {}\n", symbol));
                     // x0 holds the return value; store it to [x29 + #(16 + slot*8)].
                     let slot_offset = 16 + (*slot_idx as u32) * 8;
@@ -6271,10 +6275,12 @@ fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
         ExecutableOp::CallWithArgs { args, .. } => {
             args.iter().map(call_arg_encoded_bytes).sum::<u64>() + 5
         }
-        ExecutableOp::CallCaptureWithArgs { args, ty, slot_idx, .. } => {
+        ExecutableOp::CallCaptureWithArgs {
+            args, ty, slot_idx, ..
+        } => {
             args.iter().map(call_arg_encoded_bytes).sum::<u64>()
                 + 5  // call rel32
-                + stack_cell_access_bytes(*ty, *slot_idx)  // store acc -> slot
+                + stack_cell_access_bytes(*ty, *slot_idx) // store acc -> slot
         }
         // Loop ops:
         ExecutableOp::LoopBegin => 0,    // label only, no bytes
@@ -7798,7 +7804,12 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     });
                     local_offset += executable_op_encoded_len(op);
                 }
-                ExecutableOp::CallCaptureWithArgs { callee, args, ty, slot_idx } => {
+                ExecutableOp::CallCaptureWithArgs {
+                    callee,
+                    args,
+                    ty,
+                    slot_idx,
+                } => {
                     if !function_offsets.contains_key(callee) {
                         if !extern_names.contains(callee.as_str()) {
                             return Err(format!(
@@ -7896,7 +7907,11 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     code_bytes.extend_from_slice(&[0x48, 0x8D, 0x1D]);
                     code_bytes.extend_from_slice(&disp32.to_le_bytes());
                     // Store %rbx (saved-value register) into the stack slot.
-                    encode_stack_cell_store_saved_value_slot_bytes(&mut code_bytes, MmioScalarType::U64, *slot_idx);
+                    encode_stack_cell_store_saved_value_slot_bytes(
+                        &mut code_bytes,
+                        MmioScalarType::U64,
+                        *slot_idx,
+                    );
                     local_offset += executable_op_encoded_len(op);
                 }
                 ExecutableOp::InlineAsm(intr) => {
@@ -9764,9 +9779,7 @@ fn encode_aarch64_function(
             }
             // ── CallCaptureWithArgs (BL + store x0 to slot) ──────────────────
             AArch64AsmInstruction::CallCaptureWithArgs {
-                symbol,
-                slot_idx,
-                ..
+                symbol, slot_idx, ..
             } => {
                 emit_bl!(symbol);
                 slot_str!(0, *slot_idx);

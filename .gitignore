@@ -21,6 +21,9 @@ test-list.txt
 /dist
 .worktrees/
 
+# website (served separately, not part of the Rust workspace)
+/website/
+
 # internal AI workflow docs (plans/specs/design notes)
 /docs/superpowers/
 /docs/design/*.md
