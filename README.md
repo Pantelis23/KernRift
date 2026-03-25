@@ -19,7 +19,7 @@ Generic systems languages don't model kernel reality. KernRift bakes interrupt c
 |----------|-----------|
 | Linux | `bash <(curl -sSf https://raw.githubusercontent.com/Pantelis23/KernRift/main/scripts/install-linux.sh)` |
 | macOS | `bash <(curl -sSf https://raw.githubusercontent.com/Pantelis23/KernRift/main/scripts/install-macos.sh)` |
-| Windows | `cargo install --git https://github.com/Pantelis23/KernRift --bin kernriftc --bin kernrift --locked` (after [installing rustup](docs/getting-started.md#install-rustup-on-windows)) |
+| Windows | `cargo install --git https://github.com/Pantelis23/KernRift kernriftc --locked; cargo install --git https://github.com/Pantelis23/KernRift kernrift --locked` (after [installing rustup](docs/getting-started.md#install-rustup-on-windows)) |
 | All (prebuilt) | See [Releases](../../releases) |
 
 See [Getting Started](docs/getting-started.md) for manual install and prebuilt binaries.
