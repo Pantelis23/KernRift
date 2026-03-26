@@ -8219,7 +8219,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                 }
                 ExecutableOp::BranchIfZeroLoopBreak { slot_idx } => {
                     // mov al, [rsp + 8*slot_idx]  : 8A 44 24 disp8  (4 bytes)
-                    code_bytes.extend_from_slice(&[0x8A, 0x44, 0x24, (8 * slot_idx) as u8]);
+                    code_bytes.extend_from_slice(&[0x8A, 0x44, 0x24, 8 * slot_idx]);
                     // test eax, eax               : 85 C0            (2 bytes)
                     code_bytes.extend_from_slice(&[0x85, 0xC0]);
                     // JZ rel32                    : 0F 84 xx xx xx xx (6 bytes)
@@ -8234,7 +8234,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                 }
                 ExecutableOp::BranchIfNonZeroLoopBreak { slot_idx } => {
                     // mov al, [rsp + 8*slot_idx]  : 8A 44 24 disp8  (4 bytes)
-                    code_bytes.extend_from_slice(&[0x8A, 0x44, 0x24, (8 * slot_idx) as u8]);
+                    code_bytes.extend_from_slice(&[0x8A, 0x44, 0x24, 8 * slot_idx]);
                     // test eax, eax               : 85 C0            (2 bytes)
                     code_bytes.extend_from_slice(&[0x85, 0xC0]);
                     // JNZ rel32                   : 0F 85 xx xx xx xx (6 bytes)
