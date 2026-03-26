@@ -1401,8 +1401,9 @@ pub fn lower_to_krir_with_surface(
         }
     }
 
+    let mut module_fn_counter: u32 = 0;
     for item in &ast.items {
-        match lower_function(item, surface_profile, &const_map, &device_regs) {
+        match lower_function(item, surface_profile, &const_map, &device_regs, &mut module_fn_counter) {
             Ok(fns) => functions.extend(fns),
             Err(errs) => errors.extend(errs),
         }
@@ -1593,21 +1594,30 @@ fn lower_function(
     surface_profile: SurfaceProfile,
     const_map: &std::collections::BTreeMap<String, String>,
     device_regs: &DeviceRegMap,
+    fn_counter: &mut u32,
 ) -> Result<Vec<Function>, Vec<String>> {
     let facts = normalize_function_facts(item, surface_profile)?;
 
-    // Shared counters across all synthesized functions from this source function.
+    // slot_counter is per-function; fn_counter is module-level to avoid duplicate names.
     let mut slot_counter: u32 = 0;
-    let mut fn_counter: u32 = 0;
     let mut all_errors: Vec<String> = Vec::new();
     let mut result_functions: Vec<Function> = Vec::new();
 
     // Work queue: (name, params, attrs, ctx_ok, eff, caps, body, continuation)
     // Start with the main function body.
+    // Pre-populate slot_types with parameter types so that comparisons and
+    // arithmetic involving params use the correct KRIR type.
+    let mut initial_slot_types: BTreeMap<String, KrirMmioScalarType> = BTreeMap::new();
+    for (pname, pty) in &item.params {
+        if let ParserParamTy::Scalar(s) = pty {
+            initial_slot_types.insert(pname.clone(), lower_mmio_scalar_type(*s));
+        }
+    }
     let mut queue: Vec<PendingFn> = vec![PendingFn {
         name: item.name.clone(),
         body: item.body.clone(),
         continuation: String::new(),
+        slot_types: initial_slot_types,
     }];
     let main_params: Vec<(String, KrirParamTy)> = item
         .params
@@ -1625,6 +1635,27 @@ fn lower_function(
         let mut ops = Vec::new();
         let mut eff_used = base_eff.clone();
         let mut stmt_errors: Vec<String> = Vec::new();
+        let mut slot_types = work.slot_types;
+
+        // For the main function, spill each scalar parameter into a real
+        // StackCell so that comparisons and arithmetic can access them as
+        // regular stack cells (avoids virtual slot index mismatch in canonical-exec).
+        if work.name == item.name {
+            for (pname, pty) in &item.params {
+                if let ParserParamTy::Scalar(s) = pty {
+                    let kty = lower_mmio_scalar_type(*s);
+                    ops.push(KrirOp::StackCell {
+                        ty: kty,
+                        cell: pname.clone(),
+                    });
+                    ops.push(KrirOp::StackStore {
+                        ty: kty,
+                        cell: pname.clone(),
+                        value: KrirMmioValueExpr::Ident { name: pname.clone() },
+                    });
+                }
+            }
+        }
 
         for stmt in &work.body {
             lower_stmt(
@@ -1636,8 +1667,9 @@ fn lower_function(
                 &mut stmt_errors,
                 &mut slot_counter,
                 device_regs,
-                &mut fn_counter,
+                fn_counter,
                 &mut pending_fns,
+                &mut slot_types,
             );
         }
         // Append continuation call (for synthesized branches).
@@ -1736,6 +1768,8 @@ struct PendingFn {
     body: Vec<Stmt>,
     /// If non-empty, append `Call { callee: continuation }` at the end of the body.
     continuation: String,
+    /// Variable types known at the point this pending fn was pushed (for type inference).
+    slot_types: BTreeMap<String, KrirMmioScalarType>,
 }
 
 /// Allocate a fresh synthesized function name.
@@ -2701,6 +2735,7 @@ fn lower_expr(
     slot_counter: &mut u32,
     device_regs: &DeviceRegMap,
     eff_used: &mut BTreeSet<Eff>,
+    slot_types: &BTreeMap<String, KrirMmioScalarType>,
 ) -> Result<String, String> {
     match expr {
         ParserExpr::IntLiteral(n) => {
@@ -2775,14 +2810,13 @@ fn lower_expr(
         }
         ParserExpr::BinOp { op, lhs, rhs } => {
             let is_float = expr_is_float(lhs) || expr_is_float(rhs);
-            let l = lower_expr(lhs, ops, slot_counter, device_regs, eff_used)?;
-            let r = lower_expr(rhs, ops, slot_counter, device_regs, eff_used)?;
+            let l = lower_expr(lhs, ops, slot_counter, device_regs, eff_used, slot_types)?;
             if is_float {
+                let r = lower_expr(rhs, ops, slot_counter, device_regs, eff_used, slot_types)?;
                 let fop = binop_to_krir_farith(*op)
                     .ok_or_else(|| format!("unsupported float operator {:?}", op))?;
-                let float_ty = KrirMmioScalarType::F64;
                 ops.push(KrirOp::FloatArith {
-                    ty: float_ty,
+                    ty: KrirMmioScalarType::F64,
                     fop,
                     dst: l.clone(),
                     src: r,
@@ -2804,6 +2838,7 @@ fn lower_expr(
             }
             // Comparison ops produce 0 or 1 into a fresh bool slot.
             if let Some(cmp_op) = binop_to_krir_cmp(*op) {
+                let r = lower_expr(rhs, ops, slot_counter, device_regs, eff_used, slot_types)?;
                 let out = fresh_slot(slot_counter);
                 ops.push(KrirOp::StackCell {
                     ty: KrirMmioScalarType::U8,
@@ -2817,10 +2852,23 @@ fn lower_expr(
                 });
                 return Ok(out);
             }
+            // Arithmetic ops. Determine type from lhs.
             let arith_op = binop_to_krir_arith(*op)
                 .ok_or_else(|| format!("unsupported binary operator {:?}", op))?;
+            let arith_ty = slot_types.get(&l).copied().unwrap_or(KrirMmioScalarType::U64);
+            // Integer literal rhs: use immediate form to avoid type mismatch on temp slot.
+            if let ParserExpr::IntLiteral(n) = rhs.as_ref() {
+                ops.push(KrirOp::CellArithImm {
+                    ty: arith_ty,
+                    cell: l.clone(),
+                    arith_op,
+                    imm: *n,
+                });
+                return Ok(l);
+            }
+            let r = lower_expr(rhs, ops, slot_counter, device_regs, eff_used, slot_types)?;
             ops.push(KrirOp::SlotArith {
-                ty: KrirMmioScalarType::U64,
+                ty: arith_ty,
                 dst: l.clone(),
                 src: r,
                 arith_op,
@@ -2904,6 +2952,7 @@ fn lower_stmt(
     device_regs: &DeviceRegMap,
     fn_counter: &mut u32,
     pending_fns: &mut Vec<PendingFn>,
+    slot_types: &mut BTreeMap<String, KrirMmioScalarType>,
 ) {
     match stmt {
         Stmt::Call(callee) => ops.push(KrirOp::Call {
@@ -2927,6 +2976,7 @@ fn lower_stmt(
                     device_regs,
                     fn_counter,
                     pending_fns,
+                    slot_types,
                 );
             }
             ops.push(KrirOp::CriticalExit);
@@ -2945,6 +2995,7 @@ fn lower_stmt(
                     device_regs,
                     fn_counter,
                     pending_fns,
+                    slot_types,
                 );
             }
             ops.push(KrirOp::UnsafeExit);
@@ -3143,7 +3194,7 @@ fn lower_stmt(
                         });
                         continue;
                     }
-                    match lower_expr(arg, ops, slot_counter, device_regs, eff_used) {
+                    match lower_expr(arg, ops, slot_counter, device_regs, eff_used, slot_types) {
                         Ok(slot) => krir_args.push(KrirMmioValueExpr::Ident { name: slot }),
                         Err(e) => {
                             errors.push(e);
@@ -3159,14 +3210,16 @@ fn lower_stmt(
                 }
             }
             _ => {
-                if let Err(e) = lower_expr(expr, ops, slot_counter, device_regs, eff_used) {
+                if let Err(e) = lower_expr(expr, ops, slot_counter, device_regs, eff_used, slot_types) {
                     errors.push(e);
                 }
             }
         },
         Stmt::VarDecl { ty, name, init } => {
+            let var_ty = lower_mmio_scalar_type(ty.storage_type());
+            slot_types.insert(name.clone(), var_ty);
             ops.push(KrirOp::StackCell {
-                ty: lower_mmio_scalar_type(ty.storage_type()),
+                ty: var_ty,
                 cell: name.clone(),
             });
             if let Some(init_expr) = init {
@@ -3197,7 +3250,7 @@ fn lower_stmt(
                             });
                             continue;
                         }
-                        match lower_expr(arg, ops, slot_counter, device_regs, eff_used) {
+                        match lower_expr(arg, ops, slot_counter, device_regs, eff_used, slot_types) {
                             Ok(slot) => krir_args.push(KrirMmioValueExpr::Ident { name: slot }),
                             Err(e) => {
                                 errors.push(e);
@@ -3221,7 +3274,7 @@ fn lower_stmt(
                         },
                     });
                 } else {
-                    match lower_expr(init_expr, ops, slot_counter, device_regs, eff_used) {
+                    match lower_expr(init_expr, ops, slot_counter, device_regs, eff_used, slot_types) {
                         Ok(src) => ops.push(KrirOp::StackStore {
                             ty: lower_mmio_scalar_type(ty.storage_type()),
                             cell: name.clone(),
@@ -3234,12 +3287,19 @@ fn lower_stmt(
         }
         Stmt::Assign { target, value } => match target {
             ParserAssignTarget::Ident(name) => {
-                match lower_expr(value, ops, slot_counter, device_regs, eff_used) {
-                    Ok(src) => ops.push(KrirOp::StackStore {
-                        ty: KrirMmioScalarType::U64,
-                        cell: name.clone(),
-                        value: KrirMmioValueExpr::Ident { name: src },
-                    }),
+                let store_ty = slot_types.get(name).copied().unwrap_or(KrirMmioScalarType::U64);
+                match lower_expr(value, ops, slot_counter, device_regs, eff_used, slot_types) {
+                    Ok(src) => {
+                        // If src == name, the value was already updated in place
+                        // (e.g. by CellArithImm / SlotArith) — skip the redundant store.
+                        if src != *name {
+                            ops.push(KrirOp::StackStore {
+                                ty: store_ty,
+                                cell: name.clone(),
+                                value: KrirMmioValueExpr::Ident { name: src },
+                            });
+                        }
+                    }
                     Err(e) => errors.push(e),
                 }
             }
@@ -3255,7 +3315,7 @@ fn lower_stmt(
                     errors.push(format!("register '{}.{}' is read-only", device, field));
                     return;
                 }
-                match lower_expr(value, ops, slot_counter, device_regs, eff_used) {
+                match lower_expr(value, ops, slot_counter, device_regs, eff_used, slot_types) {
                     Ok(src) => {
                         ops.push(KrirOp::MmioWrite {
                             ty: lower_mmio_scalar_type(reg.ty),
@@ -3273,10 +3333,11 @@ fn lower_stmt(
         },
         Stmt::CompoundAssign { target, op, value } => match target {
             ParserAssignTarget::Ident(name) => {
-                match lower_expr(value, ops, slot_counter, device_regs, eff_used) {
+                let arith_ty = slot_types.get(name).copied().unwrap_or(KrirMmioScalarType::U64);
+                match lower_expr(value, ops, slot_counter, device_regs, eff_used, slot_types) {
                     Ok(rhs) => match binop_to_krir_arith(*op) {
                         Some(arith_op) => ops.push(KrirOp::SlotArith {
-                            ty: KrirMmioScalarType::U64,
+                            ty: arith_ty,
                             dst: name.clone(),
                             src: rhs,
                             arith_op,
@@ -3302,7 +3363,7 @@ fn lower_stmt(
             else_body,
         } => {
             // Lower condition into a bool slot.
-            let cond_slot = match lower_expr(cond, ops, slot_counter, device_regs, eff_used) {
+            let cond_slot = match lower_expr(cond, ops, slot_counter, device_regs, eff_used, slot_types) {
                 Ok(s) => s,
                 Err(e) => {
                     errors.push(e);
@@ -3326,23 +3387,26 @@ fn lower_stmt(
                 name: then_name,
                 body: then_body.clone(),
                 continuation: end_name.clone(),
+                slot_types: slot_types.clone(),
             });
             if !else_body.is_empty() {
                 pending_fns.push(PendingFn {
                     name: else_name,
                     body: else_body.clone(),
                     continuation: end_name.clone(),
+                    slot_types: slot_types.clone(),
                 });
             }
             pending_fns.push(PendingFn {
                 name: end_name,
                 body: vec![],
                 continuation: String::new(),
+                slot_types: slot_types.clone(),
             });
         }
         Stmt::While { cond, body } => {
             ops.push(KrirOp::LoopBegin);
-            match lower_expr(cond, ops, slot_counter, device_regs, eff_used) {
+            match lower_expr(cond, ops, slot_counter, device_regs, eff_used, slot_types) {
                 Ok(cond_slot) => ops.push(KrirOp::BranchIfZeroLoopBreak { slot: cond_slot }),
                 Err(e) => {
                     errors.push(e);
@@ -3361,6 +3425,7 @@ fn lower_stmt(
                     device_regs,
                     fn_counter,
                     pending_fns,
+                    slot_types,
                 );
             }
             ops.push(KrirOp::LoopEnd);
@@ -3377,7 +3442,7 @@ fn lower_stmt(
                 ty: KrirMmioScalarType::U32,
                 cell: var.clone(),
             });
-            match lower_expr(start, ops, slot_counter, device_regs, eff_used) {
+            match lower_expr(start, ops, slot_counter, device_regs, eff_used, slot_types) {
                 Ok(start_slot) => ops.push(KrirOp::StackStore {
                     ty: KrirMmioScalarType::U32,
                     cell: var.clone(),
@@ -3390,7 +3455,7 @@ fn lower_stmt(
             }
             ops.push(KrirOp::LoopBegin);
             // Compute end bound and break if var >= end (exclusive) or var > end (inclusive).
-            let end_slot = match lower_expr(end, ops, slot_counter, device_regs, eff_used) {
+            let end_slot = match lower_expr(end, ops, slot_counter, device_regs, eff_used, slot_types) {
                 Ok(s) => s,
                 Err(e) => {
                     errors.push(e);
@@ -3427,6 +3492,7 @@ fn lower_stmt(
                     device_regs,
                     fn_counter,
                     pending_fns,
+                    slot_types,
                 );
             }
             // Increment: var += 1.
@@ -3465,7 +3531,7 @@ fn lower_stmt(
             ty,
             addr_var,
             value,
-        } => match lower_expr(value, ops, slot_counter, device_regs, eff_used) {
+        } => match lower_expr(value, ops, slot_counter, device_regs, eff_used, slot_types) {
             Ok(src) => ops.push(KrirOp::RawPtrStore {
                 ty: lower_mmio_scalar_type(*ty),
                 addr_slot: addr_var.clone(),
@@ -3476,7 +3542,7 @@ fn lower_stmt(
         Stmt::Break => ops.push(KrirOp::LoopBreak),
         Stmt::Continue => ops.push(KrirOp::LoopContinue),
         Stmt::Return(Some(expr)) => {
-            match lower_expr(expr, ops, slot_counter, device_regs, eff_used) {
+            match lower_expr(expr, ops, slot_counter, device_regs, eff_used, slot_types) {
                 Ok(slot) => ops.push(KrirOp::ReturnSlot { slot }),
                 Err(e) => errors.push(e),
             }

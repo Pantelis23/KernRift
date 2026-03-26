@@ -1257,6 +1257,14 @@ pub fn lower_current_krir_to_executable_krir(
         let mut next_slot_idx: u8 = 0;
         let mut last_value = None::<ExecutableCapturedValue>;
         let mut tail_call_terminator: Option<(String, Vec<ExecutableCallArg>)> = None;
+        // Pre-scan: count real StackCell declarations so that param references
+        // in CompareIntoSlot etc. use the correct base slot index regardless of
+        // where in the op stream the comparison appears.
+        let n_real_stack_cells: u8 = function
+            .ops
+            .iter()
+            .filter(|op| matches!(op, KrirOp::StackCell { .. }))
+            .count() as u8;
         // Build lookup maps from param name to ABI slot indices.
         // Scalar params: 1 ABI slot each.  Slice params: 2 ABI slots (ptr then len).
         let mut param_map: std::collections::BTreeMap<&str, (u8, MmioScalarType)> =
@@ -2379,7 +2387,7 @@ pub fn lower_current_krir_to_executable_krir(
                     let lhs_info = if let Some(&(idx, ty)) = cell_slot_map.get(lhs.as_str()) {
                         Some((idx, ty))
                     } else if let Some(&(pidx, ty)) = param_map.get(lhs.as_str()) {
-                        Some((next_slot_idx + pidx, ty))
+                        Some((n_real_stack_cells + pidx, ty))
                     } else {
                         errors.push(format!(
                             "canonical-exec: function '{}' compare_{}: lhs '{}' not a declared stack cell or param",
@@ -2390,7 +2398,7 @@ pub fn lower_current_krir_to_executable_krir(
                     let rhs_idx = if let Some(&(idx, _)) = cell_slot_map.get(rhs.as_str()) {
                         Some(idx)
                     } else if let Some(&(pidx, _)) = param_map.get(rhs.as_str()) {
-                        Some(next_slot_idx + pidx)
+                        Some(n_real_stack_cells + pidx)
                     } else {
                         errors.push(format!(
                             "canonical-exec: function '{}' compare_{}: rhs '{}' not a declared stack cell or param",
@@ -2401,7 +2409,7 @@ pub fn lower_current_krir_to_executable_krir(
                     let out_idx = if let Some(&(idx, _)) = cell_slot_map.get(out.as_str()) {
                         Some(idx)
                     } else if let Some(&(pidx, _)) = param_map.get(out.as_str()) {
-                        Some(next_slot_idx + pidx)
+                        Some(n_real_stack_cells + pidx)
                     } else {
                         errors.push(format!(
                             "canonical-exec: function '{}' compare_{}: out '{}' not a declared stack cell or param",
@@ -2427,7 +2435,7 @@ pub fn lower_current_krir_to_executable_krir(
                     let slot_idx = if let Some(&(idx, _)) = cell_slot_map.get(slot.as_str()) {
                         Some(idx)
                     } else if let Some(&(pidx, _)) = param_map.get(slot.as_str()) {
-                        Some(next_slot_idx + pidx)
+                        Some(n_real_stack_cells + pidx)
                     } else {
                         errors.push(format!(
                             "canonical-exec: function '{}' branch_if_zero_loop_break: '{}' not a declared stack cell or param",
@@ -2443,7 +2451,7 @@ pub fn lower_current_krir_to_executable_krir(
                     let slot_idx = if let Some(&(idx, _)) = cell_slot_map.get(slot.as_str()) {
                         Some(idx)
                     } else if let Some(&(pidx, _)) = param_map.get(slot.as_str()) {
-                        Some(next_slot_idx + pidx)
+                        Some(n_real_stack_cells + pidx)
                     } else {
                         errors.push(format!(
                             "canonical-exec: function '{}' branch_if_nonzero_loop_break: '{}' not a declared stack cell or param",
@@ -5964,9 +5972,9 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                 X86_64AsmInstruction::PrintStdout { text, id: _ } => {
                     if !text.is_empty() {
                         // Cursor-based UART buffer write (cross-platform).
-                        out.push_str("    movabs $0x10000000, %rbx\n");
-                        out.push_str("    mov (%rbx), %rax\n");
-                        out.push_str("    lea 8(%rbx,%rax,1), %r8\n");
+                        out.push_str("    movabs $0x10000000, %rdi\n");
+                        out.push_str("    mov (%rdi), %rax\n");
+                        out.push_str("    lea 8(%rdi,%rax,1), %r8\n");
                         for (i, b) in text.bytes().enumerate() {
                             out.push_str(&format!(
                                 "    movb ${}, {}(%r8)\n",
@@ -5975,7 +5983,7 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                             ));
                         }
                         out.push_str(&format!("    add ${}, %rax\n", text.len()));
-                        out.push_str("    mov %rax, (%rbx)\n");
+                        out.push_str("    mov %rax, (%rdi)\n");
                     }
                 }
             }
@@ -7708,6 +7716,14 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                 local_offset += 5;
             }
         }
+        // Loop stack for intra-function branch relocation.
+        // Each entry: (head_abs_offset, break_patch_offsets)
+        // head_abs_offset: code_bytes index where the loop head begins (after LoopBegin).
+        // break_patch_offsets: indices into code_bytes of the 4-byte rel32 field
+        //   of each LoopBreak/BranchIfZeroLoopBreak/BranchIfNonZeroLoopBreak
+        //   instruction that targets the loop's exit.
+        let mut loop_stack: Vec<(usize, Vec<usize>)> = Vec::new();
+
         for op in &block.ops {
             match op {
                 ExecutableOp::Call { callee } => {
@@ -8133,33 +8149,109 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     // in the first 8 bytes of the buffer.  Works on all host OSes;
                     // kernrift's flush_uart reads [cursor] bytes starting at offset 8.
                     //
-                    // movabs rbx, 0x10000000        ; 48 BB 00 00 00 10 00 00 00 00
-                    code_bytes.extend_from_slice(&[0x48, 0xBB]);
+                    // Use caller-saved rdi (not rbx which is callee-saved and would
+                    // corrupt the Rust JIT wrapper's register state on return).
+                    //
+                    // movabs rdi, 0x10000000        ; 48 BF 00 00 00 10 00 00 00 00
+                    code_bytes.extend_from_slice(&[0x48, 0xBF]);
                     code_bytes.extend_from_slice(&0x10000000u64.to_le_bytes());
-                    // mov rax, [rbx]                ; 48 8B 03
-                    code_bytes.extend_from_slice(&[0x48, 0x8B, 0x03]);
-                    // lea r8, [rbx + rax + 8]       ; 4C 8D 44 03 08
-                    code_bytes.extend_from_slice(&[0x4C, 0x8D, 0x44, 0x03, 0x08]);
+                    // mov rax, [rdi]                ; 48 8B 07
+                    code_bytes.extend_from_slice(&[0x48, 0x8B, 0x07]);
+                    // lea r8, [rdi + rax + 8]       ; 4C 8D 44 07 08
+                    code_bytes.extend_from_slice(&[0x4C, 0x8D, 0x44, 0x07, 0x08]);
                     // For each byte: mov byte ptr [r8 + i], byte  ; 41 C6 40 <i> <byte>
                     for (i, &b) in text.as_bytes().iter().enumerate() {
                         code_bytes.extend_from_slice(&[0x41, 0xC6, 0x40, i as u8, b]);
                     }
                     // add rax, n                    ; 48 83 C0 <n>
                     code_bytes.extend_from_slice(&[0x48, 0x83, 0xC0, n as u8]);
-                    // mov [rbx], rax                ; 48 89 03
-                    code_bytes.extend_from_slice(&[0x48, 0x89, 0x03]);
+                    // mov [rdi], rax                ; 48 89 07
+                    code_bytes.extend_from_slice(&[0x48, 0x89, 0x07]);
                     local_offset += executable_op_encoded_len(op);
                 }
-                ExecutableOp::LoopBegin
-                | ExecutableOp::LoopEnd
-                | ExecutableOp::LoopBreak
-                | ExecutableOp::LoopContinue
-                | ExecutableOp::BranchIfZeroLoopBreak { .. }
-                | ExecutableOp::BranchIfNonZeroLoopBreak { .. } => {
-                    return Err(format!(
-                        "compiler-owned object emission: loop ops require Task 11 intra-function relocation (function '{}')",
-                        function.name
-                    ));
+                ExecutableOp::LoopBegin => {
+                    // No bytes emitted — just record the loop head position.
+                    loop_stack.push((code_bytes.len(), Vec::new()));
+                    // local_offset += 0 (LoopBegin has 0 encoded bytes)
+                }
+                ExecutableOp::LoopEnd => {
+                    let (head_abs, break_patches) =
+                        loop_stack.pop().expect("LoopEnd without matching LoopBegin");
+                    // Emit JMP rel32 backward to head.
+                    let jmp_start = code_bytes.len();
+                    code_bytes.push(0xE9);
+                    code_bytes.extend_from_slice(&[0u8; 4]);
+                    let after_jmp = code_bytes.len(); // jmp_start + 5
+                    let rel32 = (head_abs as i64 - after_jmp as i64) as i32;
+                    code_bytes[jmp_start + 1..jmp_start + 5]
+                        .copy_from_slice(&rel32.to_le_bytes());
+                    local_offset += 5;
+                    // Backfill break/branch-break patches to point past this LoopEnd.
+                    let after_loop = code_bytes.len();
+                    for patch in break_patches {
+                        let after_fwd_jmp = patch + 4;
+                        let fwd_rel32 =
+                            (after_loop as i64 - after_fwd_jmp as i64) as i32;
+                        code_bytes[patch..patch + 4]
+                            .copy_from_slice(&fwd_rel32.to_le_bytes());
+                    }
+                }
+                ExecutableOp::LoopBreak => {
+                    // Emit JMP rel32 forward (placeholder); record for backfilling.
+                    let jmp_start = code_bytes.len();
+                    code_bytes.push(0xE9);
+                    code_bytes.extend_from_slice(&[0u8; 4]);
+                    loop_stack
+                        .last_mut()
+                        .expect("LoopBreak outside loop")
+                        .1
+                        .push(jmp_start + 1);
+                    local_offset += 5;
+                }
+                ExecutableOp::LoopContinue => {
+                    // Emit JMP rel32 backward to head (same as LoopEnd but no pop/backfill).
+                    let head_abs = loop_stack
+                        .last()
+                        .expect("LoopContinue outside loop")
+                        .0;
+                    let jmp_start = code_bytes.len();
+                    code_bytes.push(0xE9);
+                    code_bytes.extend_from_slice(&[0u8; 4]);
+                    let after_jmp = code_bytes.len();
+                    let rel32 = (head_abs as i64 - after_jmp as i64) as i32;
+                    code_bytes[jmp_start + 1..jmp_start + 5]
+                        .copy_from_slice(&rel32.to_le_bytes());
+                    local_offset += 5;
+                }
+                ExecutableOp::BranchIfZeroLoopBreak { slot_idx } => {
+                    // mov al, [rsp + 8*slot_idx]  : 8A 44 24 disp8  (4 bytes)
+                    code_bytes.extend_from_slice(&[0x8A, 0x44, 0x24, (8 * slot_idx) as u8]);
+                    // test eax, eax               : 85 C0            (2 bytes)
+                    code_bytes.extend_from_slice(&[0x85, 0xC0]);
+                    // JZ rel32                    : 0F 84 xx xx xx xx (6 bytes)
+                    let jcc_start = code_bytes.len();
+                    code_bytes.extend_from_slice(&[0x0F, 0x84, 0x00, 0x00, 0x00, 0x00]);
+                    loop_stack
+                        .last_mut()
+                        .expect("BranchIfZeroLoopBreak outside loop")
+                        .1
+                        .push(jcc_start + 2);
+                    local_offset += 12;
+                }
+                ExecutableOp::BranchIfNonZeroLoopBreak { slot_idx } => {
+                    // mov al, [rsp + 8*slot_idx]  : 8A 44 24 disp8  (4 bytes)
+                    code_bytes.extend_from_slice(&[0x8A, 0x44, 0x24, (8 * slot_idx) as u8]);
+                    // test eax, eax               : 85 C0            (2 bytes)
+                    code_bytes.extend_from_slice(&[0x85, 0xC0]);
+                    // JNZ rel32                   : 0F 85 xx xx xx xx (6 bytes)
+                    let jcc_start = code_bytes.len();
+                    code_bytes.extend_from_slice(&[0x0F, 0x85, 0x00, 0x00, 0x00, 0x00]);
+                    loop_stack
+                        .last_mut()
+                        .expect("BranchIfNonZeroLoopBreak outside loop")
+                        .1
+                        .push(jcc_start + 2);
+                    local_offset += 12;
                 }
             }
         }
