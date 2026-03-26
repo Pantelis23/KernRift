@@ -328,7 +328,7 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
-    let code = match args[1].as_str() {
+    match args[1].as_str() {
         "--surface" => {
             if args.len() < 4 {
                 eprintln!("invalid emit mode: --surface requires a value");
@@ -625,8 +625,7 @@ fn main() -> ExitCode {
             );
             ExitCode::from(EXIT_INVALID_INPUT)
         }
-    };
-    code
+    }
 }
 
 fn parse_inspect_artifact_args(args: &[String]) -> Result<InspectArtifactArgs, String> {

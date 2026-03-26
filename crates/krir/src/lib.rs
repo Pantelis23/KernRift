@@ -10248,9 +10248,7 @@ fn encode_aarch64_function(
                     ),
                 };
                 // LDR[BH]? W0/X0, [X29, #lhs]  (zero-extends on 32-bit forms)
-                out.extend_from_slice(
-                    &(base_load | (lhs_imm12 << 10) | (29 << 5) | 0).to_le_bytes(),
-                );
+                out.extend_from_slice(&(base_load | (lhs_imm12 << 10) | (29 << 5)).to_le_bytes());
                 // LDR[BH]? W1/X1, [X29, #rhs]
                 out.extend_from_slice(
                     &(base_load | (rhs_imm12 << 10) | (29 << 5) | 1).to_le_bytes(),
