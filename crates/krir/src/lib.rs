@@ -5961,18 +5961,21 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                     out.push_str(mnemonic);
                     out.push('\n');
                 }
-                X86_64AsmInstruction::PrintStdout { text, id } => {
+                X86_64AsmInstruction::PrintStdout { text, id: _ } => {
                     if !text.is_empty() {
-                        let bytes: Vec<String> = text.bytes().map(|b| b.to_string()).collect();
-                        out.push_str(&format!("    jmp .L{id}_end\n"));
-                        out.push_str(&format!(".L{id}_str:\n"));
-                        out.push_str(&format!("    .byte {}\n", bytes.join(",")));
-                        out.push_str(&format!(".L{id}_end:\n"));
-                        out.push_str("    movl $1, %eax\n");
-                        out.push_str("    movl $1, %edi\n");
-                        out.push_str(&format!("    leaq .L{id}_str(%rip), %rsi\n"));
-                        out.push_str(&format!("    movl ${}, %edx\n", text.len()));
-                        out.push_str("    syscall\n");
+                        // Cursor-based UART buffer write (cross-platform).
+                        out.push_str("    movabs $0x10000000, %rbx\n");
+                        out.push_str("    mov (%rbx), %rax\n");
+                        out.push_str("    lea 8(%rbx,%rax,1), %r8\n");
+                        for (i, b) in text.bytes().enumerate() {
+                            out.push_str(&format!(
+                                "    movb ${}, {}(%r8)\n",
+                                b,
+                                if i == 0 { String::new() } else { i.to_string() }
+                            ));
+                        }
+                        out.push_str(&format!("    add ${}, %rax\n", text.len()));
+                        out.push_str("    mov %rax, (%rbx)\n");
                     }
                 }
             }
@@ -6439,8 +6442,9 @@ fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
         ExecutableOp::LoadStaticCstrAddr { slot_idx, .. } => {
             7 + stack_cell_access_bytes(MmioScalarType::U64, *slot_idx)
         }
-        // jmp rel32(5) + n bytes data + mov eax(5) + mov edi(5) + lea rsi(7) + mov edx(5) + syscall(2) = 29+n
-        ExecutableOp::PrintStdout { text } => 29 + text.len() as u64,
+        // movabs rbx(10) + mov rax,[rbx](3) + lea r8(5) + 5*n byte-writes + add rax,n(4) + mov [rbx],rax(3) = 5n+25
+        // Restricted to n < 128 so each index fits in disp8 and n fits in imm8.
+        ExecutableOp::PrintStdout { text } => 5 * text.len() as u64 + 25,
     }
 }
 
@@ -8124,26 +8128,26 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                 }
                 ExecutableOp::PrintStdout { text } => {
                     let n = text.len();
-                    // jmp rel32 over string data (E9 + 4-byte displacement = n)
-                    code_bytes.push(0xE9);
-                    code_bytes.extend_from_slice(&(n as i32).to_le_bytes());
-                    // String data (raw bytes)
-                    code_bytes.extend_from_slice(text.as_bytes());
-                    // mov eax, 1  (SYS_write)
-                    code_bytes.extend_from_slice(&[0xB8, 0x01, 0x00, 0x00, 0x00]);
-                    // mov edi, 1  (fd = stdout)
-                    code_bytes.extend_from_slice(&[0xBF, 0x01, 0x00, 0x00, 0x00]);
-                    // lea rsi, [rip + rel32]  where rel32 = -(17 + n)
-                    let rel32 = -(17i32 + n as i32);
-                    code_bytes.push(0x48);
-                    code_bytes.push(0x8D);
-                    code_bytes.push(0x35);
-                    code_bytes.extend_from_slice(&rel32.to_le_bytes());
-                    // mov edx, n  (length)
-                    code_bytes.push(0xBA);
-                    code_bytes.extend_from_slice(&(n as u32).to_le_bytes());
-                    // syscall
-                    code_bytes.extend_from_slice(&[0x0F, 0x05]);
+                    assert!(n < 128, "PrintStdout text must be < 128 bytes (got {})", n);
+                    // Write to UART ring-buffer at 0x10000000 using a cursor stored
+                    // in the first 8 bytes of the buffer.  Works on all host OSes;
+                    // kernrift's flush_uart reads [cursor] bytes starting at offset 8.
+                    //
+                    // movabs rbx, 0x10000000        ; 48 BB 00 00 00 10 00 00 00 00
+                    code_bytes.extend_from_slice(&[0x48, 0xBB]);
+                    code_bytes.extend_from_slice(&0x10000000u64.to_le_bytes());
+                    // mov rax, [rbx]                ; 48 8B 03
+                    code_bytes.extend_from_slice(&[0x48, 0x8B, 0x03]);
+                    // lea r8, [rbx + rax + 8]       ; 4C 8D 44 03 08
+                    code_bytes.extend_from_slice(&[0x4C, 0x8D, 0x44, 0x03, 0x08]);
+                    // For each byte: mov byte ptr [r8 + i], byte  ; 41 C6 40 <i> <byte>
+                    for (i, &b) in text.as_bytes().iter().enumerate() {
+                        code_bytes.extend_from_slice(&[0x41, 0xC6, 0x40, i as u8, b]);
+                    }
+                    // add rax, n                    ; 48 83 C0 <n>
+                    code_bytes.extend_from_slice(&[0x48, 0x83, 0xC0, n as u8]);
+                    // mov [rbx], rax                ; 48 89 03
+                    code_bytes.extend_from_slice(&[0x48, 0x89, 0x03]);
                     local_offset += executable_op_encoded_len(op);
                 }
                 ExecutableOp::LoopBegin
@@ -10224,22 +10228,22 @@ fn encode_aarch64_function(
                 let (base_load, lhs_imm12, rhs_imm12) = match ty {
                     MmioScalarType::U8 => (
                         0x3940_0000u32,
-                        lhs_byte_off,       // byte-scaled
+                        lhs_byte_off, // byte-scaled
                         rhs_byte_off,
                     ),
                     MmioScalarType::U16 => (
                         0x7940_0000u32,
-                        lhs_byte_off / 2,   // halfword-scaled
+                        lhs_byte_off / 2, // halfword-scaled
                         rhs_byte_off / 2,
                     ),
                     MmioScalarType::U32 | MmioScalarType::F32 => (
                         0xB940_0000u32,
-                        lhs_byte_off / 4,   // word-scaled
+                        lhs_byte_off / 4, // word-scaled
                         rhs_byte_off / 4,
                     ),
                     _ => (
                         0xF940_0000u32,
-                        lhs_byte_off / 8,   // doubleword-scaled (= 2 + idx)
+                        lhs_byte_off / 8, // doubleword-scaled (= 2 + idx)
                         rhs_byte_off / 8,
                     ),
                 };

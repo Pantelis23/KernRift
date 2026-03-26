@@ -163,14 +163,14 @@ fn map_executable(code: &[u8]) -> Result<*mut u8, String> {
 
 #[cfg(unix)]
 fn flush_uart(uart_ptr: *mut u8, buf_size: usize) {
-    let buf = unsafe { std::slice::from_raw_parts(uart_ptr, buf_size) };
-    let len = buf
-        .iter()
-        .position(|&b| b == 0)
-        .unwrap_or(buf_size)
-        .min(buf_size);
+    // First 8 bytes hold a u64 cursor = number of bytes written at offset 8+.
+    if buf_size < 8 {
+        return;
+    }
+    let cursor = unsafe { *(uart_ptr as *const u64) } as usize;
+    let len = cursor.min(buf_size - 8);
     if len > 0 {
-        unsafe { libc::write(1, buf.as_ptr() as *const _, len) };
+        unsafe { libc::write(1, uart_ptr.add(8) as *const _, len) };
     }
 }
 
@@ -232,14 +232,14 @@ fn map_executable(code: &[u8]) -> Result<*mut u8, String> {
 #[cfg(windows)]
 fn flush_uart(uart_ptr: *mut u8, buf_size: usize) {
     use std::io::Write;
-    let buf = unsafe { std::slice::from_raw_parts(uart_ptr, buf_size) };
-    let len = buf
-        .iter()
-        .position(|&b| b == 0)
-        .unwrap_or(buf_size)
-        .min(buf_size);
+    if buf_size < 8 {
+        return;
+    }
+    let cursor = unsafe { *(uart_ptr as *const u64) } as usize;
+    let len = cursor.min(buf_size - 8);
     if len > 0 {
-        let _ = std::io::stdout().write_all(&buf[..len]);
+        let data = unsafe { std::slice::from_raw_parts(uart_ptr.add(8), len) };
+        let _ = std::io::stdout().write_all(data);
     }
 }
 
