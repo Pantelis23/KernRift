@@ -3212,6 +3212,14 @@ fn lower_stmt(
                             capture_slot: name.clone(),
                         });
                     }
+                } else if let ParserExpr::IntLiteral(n) = init_expr {
+                    ops.push(KrirOp::StackStore {
+                        ty: lower_mmio_scalar_type(ty.storage_type()),
+                        cell: name.clone(),
+                        value: KrirMmioValueExpr::IntLiteral {
+                            value: n.to_string(),
+                        },
+                    });
                 } else {
                     match lower_expr(init_expr, ops, slot_counter, device_regs, eff_used) {
                         Ok(src) => ops.push(KrirOp::StackStore {
@@ -3286,30 +3294,7 @@ fn lower_stmt(
             }
         },
         Stmt::Print(text) => {
-            const UART_BASE: u64 = 0x10000000;
-            let bytes: Vec<u8> = text.bytes().collect();
-            for (i, byte) in bytes.iter().enumerate() {
-                ops.push(KrirOp::RawMmioWrite {
-                    ty: KrirMmioScalarType::U8,
-                    addr: KrirMmioAddrExpr::IntLiteral {
-                        value: format!("{:#x}", UART_BASE + i as u64),
-                    },
-                    value: KrirMmioValueExpr::IntLiteral {
-                        value: byte.to_string(),
-                    },
-                });
-            }
-            let end = UART_BASE + bytes.len() as u64;
-            ops.push(KrirOp::RawMmioWrite {
-                ty: KrirMmioScalarType::U8,
-                addr: KrirMmioAddrExpr::IntLiteral {
-                    value: format!("{:#x}", end),
-                },
-                value: KrirMmioValueExpr::IntLiteral {
-                    value: "0".to_string(),
-                },
-            });
-            eff_used.insert(Eff::Mmio);
+            ops.push(KrirOp::PrintStdout { text: text.clone() });
         }
         Stmt::If {
             cond,

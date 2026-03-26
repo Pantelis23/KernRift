@@ -405,6 +405,11 @@ pub enum KrirOp {
         value: String,
         cell: String,
     },
+    /// Emit an inline SYS_write syscall to print `text` to stdout (fd=1).
+    /// Produces self-contained machine code; does not use the UART MMIO buffer.
+    PrintStdout {
+        text: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -768,6 +773,7 @@ pub enum ExecutableOp {
     },
     /// Compare lhs_idx op rhs_idx and store 0 or 1 in out_idx.
     CompareIntoSlot {
+        ty: MmioScalarType,
         cmp_op: CmpOp,
         lhs_idx: u8,
         rhs_idx: u8,
@@ -792,6 +798,11 @@ pub enum ExecutableOp {
     LoadStaticCstrAddr {
         str_idx: u8,
         slot_idx: u8,
+    },
+    /// Emit an inline SYS_write syscall to print `text` to stdout (fd=1).
+    /// Self-contained: jmp over inline data + mov/lea/mov/syscall sequence.
+    PrintStdout {
+        text: String,
     },
 }
 
@@ -1064,7 +1075,8 @@ impl ExecutableKrirModule {
                         | ExecutableOp::RawPtrLoad { .. }
                         | ExecutableOp::RawPtrStore { .. }
                         | ExecutableOp::InlineAsm(_)
-                        | ExecutableOp::LoadStaticCstrAddr { .. } => {}
+                        | ExecutableOp::LoadStaticCstrAddr { .. }
+                        | ExecutableOp::PrintStdout { .. } => {}
                     }
                 }
             }
@@ -2364,10 +2376,10 @@ pub fn lower_current_krir_to_executable_krir(
                     rhs,
                     out,
                 } => {
-                    let lhs_idx = if let Some(&(idx, _)) = cell_slot_map.get(lhs.as_str()) {
-                        Some(idx)
-                    } else if let Some(&(pidx, _)) = param_map.get(lhs.as_str()) {
-                        Some(next_slot_idx + pidx)
+                    let lhs_info = if let Some(&(idx, ty)) = cell_slot_map.get(lhs.as_str()) {
+                        Some((idx, ty))
+                    } else if let Some(&(pidx, ty)) = param_map.get(lhs.as_str()) {
+                        Some((next_slot_idx + pidx, ty))
                     } else {
                         errors.push(format!(
                             "canonical-exec: function '{}' compare_{}: lhs '{}' not a declared stack cell or param",
@@ -2397,8 +2409,9 @@ pub fn lower_current_krir_to_executable_krir(
                         ));
                         None
                     };
-                    if let (Some(li), Some(ri), Some(oi)) = (lhs_idx, rhs_idx, out_idx) {
+                    if let (Some((li, lty)), Some(ri), Some(oi)) = (lhs_info, rhs_idx, out_idx) {
                         exec_ops.push(ExecutableOp::CompareIntoSlot {
+                            ty: lty,
                             cmp_op: *cmp_op,
                             lhs_idx: li,
                             rhs_idx: ri,
@@ -2581,6 +2594,9 @@ pub fn lower_current_krir_to_executable_krir(
                         }
                     };
                     exec_ops.push(ExecutableOp::LoadStaticCstrAddr { str_idx, slot_idx });
+                }
+                KrirOp::PrintStdout { text } => {
+                    exec_ops.push(ExecutableOp::PrintStdout { text: text.clone() });
                 }
             }
         }
@@ -3838,6 +3854,7 @@ pub enum X86_64AsmInstruction {
     TestEaxEax,
     /// Compare lhs_idx op rhs_idx and store 0 or 1 in out_idx.
     CompareSlots {
+        ty: MmioScalarType,
         cmp_op: CmpOp,
         lhs_idx: u8,
         rhs_idx: u8,
@@ -3867,6 +3884,12 @@ pub enum X86_64AsmInstruction {
     LoadStaticCstrAddr {
         str_label: String,
         slot_idx: u8,
+    },
+    /// Inline jmp-over-data + SYS_write syscall to print `text` to stdout.
+    /// `id` is a unique label suffix for the inline data labels.
+    PrintStdout {
+        text: String,
+        id: String,
     },
 }
 
@@ -4004,6 +4027,7 @@ pub enum AArch64AsmInstruction {
     TestEaxEax,
     /// Compare lhs_idx op rhs_idx and store 0 or 1 in out_idx.
     CompareSlots {
+        ty: MmioScalarType,
         cmp_op: CmpOp,
         lhs_idx: u8,
         rhs_idx: u8,
@@ -4445,6 +4469,7 @@ pub fn lower_executable_krir_to_x86_64_asm(
             let mut instrs: Vec<X86_64AsmInstruction> = Vec::new();
             let mut loop_stack: Vec<LoopFrame> = Vec::new();
             let mut loop_counter = 0usize;
+            let mut print_counter = 0usize;
 
             for op in &function.blocks[0].ops {
                 match op {
@@ -4679,12 +4704,14 @@ pub fn lower_executable_krir_to_x86_64_asm(
                         instrs.push(X86_64AsmInstruction::JmpIfNonZeroLabel(end));
                     }
                     ExecutableOp::CompareIntoSlot {
+                        ty,
                         cmp_op,
                         lhs_idx,
                         rhs_idx,
                         out_idx,
                     } => {
                         instrs.push(X86_64AsmInstruction::CompareSlots {
+                            ty: *ty,
                             cmp_op: *cmp_op,
                             lhs_idx: *lhs_idx,
                             rhs_idx: *rhs_idx,
@@ -4738,6 +4765,14 @@ pub fn lower_executable_krir_to_x86_64_asm(
                         instrs.push(X86_64AsmInstruction::LoadStaticCstrAddr {
                             str_label: label,
                             slot_idx: *slot_idx,
+                        });
+                    }
+                    ExecutableOp::PrintStdout { text } => {
+                        let id = format!("{}_print_{}", function.name, print_counter);
+                        print_counter += 1;
+                        instrs.push(X86_64AsmInstruction::PrintStdout {
+                            text: text.clone(),
+                            id,
                         });
                     }
                 }
@@ -5047,12 +5082,14 @@ pub fn lower_executable_krir_to_aarch64_asm(
                         instrs.push(AArch64AsmInstruction::JmpIfNonZeroLabel(end));
                     }
                     ExecutableOp::CompareIntoSlot {
+                        ty,
                         cmp_op,
                         lhs_idx,
                         rhs_idx,
                         out_idx,
                     } => {
                         instrs.push(AArch64AsmInstruction::CompareSlots {
+                            ty: *ty,
                             cmp_op: *cmp_op,
                             lhs_idx: *lhs_idx,
                             rhs_idx: *rhs_idx,
@@ -5104,6 +5141,12 @@ pub fn lower_executable_krir_to_aarch64_asm(
                     ExecutableOp::LoadStaticCstrAddr { .. } => {
                         return Err(format!(
                             "aarch64 ASM emit: LoadStaticCstrAddr requires object emit, not ASM (function '{}')",
+                            function.name
+                        ));
+                    }
+                    ExecutableOp::PrintStdout { .. } => {
+                        return Err(format!(
+                            "aarch64 ASM emit: PrintStdout not yet supported on aarch64 (function '{}')",
                             function.name
                         ));
                     }
@@ -5761,25 +5804,43 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                     out.push_str("    test %eax, %eax\n");
                 }
                 X86_64AsmInstruction::CompareSlots {
+                    ty,
                     cmp_op,
                     lhs_idx,
                     rhs_idx,
                     out_idx,
                 } => {
-                    // Load lhs into eax (zero-extended from qword slot)
                     let lhs_offset = 8u32 * u32::from(*lhs_idx);
                     let rhs_offset = 8u32 * u32::from(*rhs_idx);
                     let out_offset = 8u32 * u32::from(*out_idx);
-                    if lhs_offset == 0 {
-                        out.push_str("    movq (%rsp), %rax\n");
+                    // Load lhs with zero-extension based on type.
+                    let lhs_ref = if lhs_offset == 0 {
+                        "(%rsp)".to_string()
                     } else {
-                        out.push_str(&format!("    movq {}(%rsp), %rax\n", lhs_offset));
-                    }
-                    // cmp rax, [rhs slot]
-                    if rhs_offset == 0 {
-                        out.push_str("    cmpq (%rsp), %rax\n");
+                        format!("{}(%rsp)", lhs_offset)
+                    };
+                    let rhs_ref = if rhs_offset == 0 {
+                        "(%rsp)".to_string()
                     } else {
-                        out.push_str(&format!("    cmpq {}(%rsp), %rax\n", rhs_offset));
+                        format!("{}(%rsp)", rhs_offset)
+                    };
+                    match ty {
+                        MmioScalarType::U8 => {
+                            out.push_str(&format!("    movzbl {}, %eax\n", lhs_ref));
+                            out.push_str(&format!("    cmpb {}, %al\n", rhs_ref));
+                        }
+                        MmioScalarType::U16 => {
+                            out.push_str(&format!("    movzwl {}, %eax\n", lhs_ref));
+                            out.push_str(&format!("    cmpw {}, %ax\n", rhs_ref));
+                        }
+                        MmioScalarType::U32 => {
+                            out.push_str(&format!("    movl {}, %eax\n", lhs_ref));
+                            out.push_str(&format!("    cmpl {}, %eax\n", rhs_ref));
+                        }
+                        _ => {
+                            out.push_str(&format!("    movq {}, %rax\n", lhs_ref));
+                            out.push_str(&format!("    cmpq {}, %rax\n", rhs_ref));
+                        }
                     }
                     // setCC al
                     let setcc = match cmp_op {
@@ -5899,6 +5960,20 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                     out.push_str("    ");
                     out.push_str(mnemonic);
                     out.push('\n');
+                }
+                X86_64AsmInstruction::PrintStdout { text, id } => {
+                    if !text.is_empty() {
+                        let bytes: Vec<String> = text.bytes().map(|b| b.to_string()).collect();
+                        out.push_str(&format!("    jmp .L{id}_end\n"));
+                        out.push_str(&format!(".L{id}_str:\n"));
+                        out.push_str(&format!("    .byte {}\n", bytes.join(",")));
+                        out.push_str(&format!(".L{id}_end:\n"));
+                        out.push_str("    movl $1, %eax\n");
+                        out.push_str("    movl $1, %edi\n");
+                        out.push_str(&format!("    leaq .L{id}_str(%rip), %rsi\n"));
+                        out.push_str(&format!("    movl ${}, %edx\n", text.len()));
+                        out.push_str("    syscall\n");
+                    }
                 }
             }
         }
@@ -6039,6 +6114,36 @@ pub fn emit_aarch64_asm_text(module: &AArch64AsmModule) -> String {
                     let (mnem, reg) = aarch64_store_parts(*ty);
                     out.push_str(&format!("    ldr x1, =0x{:x}\n", addr));
                     out.push_str(&format!("    {} {}, [x1]\n", mnem, reg));
+                }
+                AArch64AsmInstruction::CompareSlots {
+                    ty,
+                    cmp_op,
+                    lhs_idx,
+                    rhs_idx,
+                    out_idx,
+                } => {
+                    let lhs_off = 16 + (*lhs_idx as u32) * 8;
+                    let rhs_off = 16 + (*rhs_idx as u32) * 8;
+                    let out_off = 16 + (*out_idx as u32) * 8;
+                    let (load_mnem, w) = match ty {
+                        MmioScalarType::U8 => ("ldrb", "w"),
+                        MmioScalarType::U16 => ("ldrh", "w"),
+                        MmioScalarType::U32 | MmioScalarType::F32 => ("ldr", "w"),
+                        _ => ("ldr", "x"),
+                    };
+                    out.push_str(&format!("    {} {}0, [x29, #{}]\n", load_mnem, w, lhs_off));
+                    out.push_str(&format!("    {} {}1, [x29, #{}]\n", load_mnem, w, rhs_off));
+                    out.push_str("    cmp x0, x1\n");
+                    let cset_cond = match cmp_op {
+                        CmpOp::Eq => "eq",
+                        CmpOp::Ne => "ne",
+                        CmpOp::Lt => "lt",
+                        CmpOp::Gt => "gt",
+                        CmpOp::Le => "le",
+                        CmpOp::Ge => "ge",
+                    };
+                    out.push_str(&format!("    cset w0, {}\n", cset_cond));
+                    out.push_str(&format!("    str x0, [x29, #{}]\n", out_off));
                 }
                 _ => {
                     // Remaining variants: emit a comment placeholder.
@@ -6334,6 +6439,8 @@ fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
         ExecutableOp::LoadStaticCstrAddr { slot_idx, .. } => {
             7 + stack_cell_access_bytes(MmioScalarType::U64, *slot_idx)
         }
+        // jmp rel32(5) + n bytes data + mov eax(5) + mov edi(5) + lea rsi(7) + mov edx(5) + syscall(2) = 29+n
+        ExecutableOp::PrintStdout { text } => 29 + text.len() as u64,
     }
 }
 
@@ -6554,6 +6661,73 @@ fn encode_stack_cell_load_slot_bytes_into_rcx(out: &mut Vec<u8>, ty: MmioScalarT
             }
         }
     }
+}
+
+/// Emit 21 bytes for `CompareIntoSlot { ty, cmp_op, lhs_idx, rhs_idx, out_idx }`.
+///
+/// Uses zero-extending loads to avoid reading garbage from sub-U64 slots (each slot is 8 bytes
+/// but smaller types only write 1/2/4 bytes). All encodings produce exactly 21 bytes.
+///
+/// U8  (5+4+1+3+3+5 = 21):  movzbl lhs(%rsp),%eax | cmpb rhs(%rsp),%al | nop | setCC | movzbl | movq
+/// U16 (5+5+3+3+5   = 21):  movzwl lhs(%rsp),%eax | cmpw rhs(%rsp),%ax  | setCC | movzbl | movq
+/// U32 (4+4+2+3+3+5 = 21):  movl lhs(%rsp),%eax   | cmpl rhs(%rsp),%eax | 2*nop | setCC | movzbl | movq
+/// U64 (5+5+3+3+5   = 21):  movq lhs(%rsp),%rax   | cmpq rhs(%rsp),%rax | setCC | movzbl | movq  (unchanged)
+fn encode_compare_into_slot_bytes(
+    out: &mut Vec<u8>,
+    ty: MmioScalarType,
+    cmp_op: CmpOp,
+    lhs_idx: u8,
+    rhs_idx: u8,
+    out_idx: u8,
+) {
+    let lhs_off = lhs_idx.wrapping_mul(8);
+    let rhs_off = rhs_idx.wrapping_mul(8);
+    // Steps 1+2: type-appropriate zero-extending load of lhs, then compare with rhs.
+    // All branches emit exactly 10 bytes for steps 1+2, with padding NOPs as needed.
+    match ty {
+        MmioScalarType::U8 => {
+            // movzbl lhs_off(%rsp), %eax  [0F B6 44 24 off]  (5 bytes)
+            out.extend_from_slice(&[0x0F, 0xB6, 0x44, 0x24, lhs_off]);
+            // cmpb rhs_off(%rsp), %al     [3A 44 24 off]     (4 bytes)
+            out.extend_from_slice(&[0x3A, 0x44, 0x24, rhs_off]);
+            // nop (1 byte pad to reach 10 total)
+            out.push(0x90);
+        }
+        MmioScalarType::U16 => {
+            // movzwl lhs_off(%rsp), %eax  [0F B7 44 24 off]  (5 bytes)
+            out.extend_from_slice(&[0x0F, 0xB7, 0x44, 0x24, lhs_off]);
+            // cmpw rhs_off(%rsp), %ax     [66 3B 44 24 off]  (5 bytes)
+            out.extend_from_slice(&[0x66, 0x3B, 0x44, 0x24, rhs_off]);
+        }
+        MmioScalarType::U32 => {
+            // movl lhs_off(%rsp), %eax    [8B 44 24 off]     (4 bytes)
+            out.extend_from_slice(&[0x8B, 0x44, 0x24, lhs_off]);
+            // cmpl rhs_off(%rsp), %eax    [3B 44 24 off]     (4 bytes)
+            out.extend_from_slice(&[0x3B, 0x44, 0x24, rhs_off]);
+            // 2-byte nop [66 90] to pad to 10 bytes
+            out.extend_from_slice(&[0x66, 0x90]);
+        }
+        _ => {
+            // U64: movq lhs_off(%rsp), %rax  [48 8B 44 24 off]  (5 bytes)
+            out.extend_from_slice(&[0x48, 0x8B, 0x44, 0x24, lhs_off]);
+            // cmpq rhs_off(%rsp), %rax       [48 3B 44 24 off]  (5 bytes)
+            out.extend_from_slice(&[0x48, 0x3B, 0x44, 0x24, rhs_off]);
+        }
+    }
+    // Step 3: setCC %al  [0F XX C0]  (3 bytes)
+    let setcc_byte: u8 = match cmp_op {
+        CmpOp::Eq => 0x94,
+        CmpOp::Ne => 0x95,
+        CmpOp::Lt => 0x9C,
+        CmpOp::Ge => 0x9D,
+        CmpOp::Le => 0x9E,
+        CmpOp::Gt => 0x9F,
+    };
+    out.extend_from_slice(&[0x0F, setcc_byte, 0xC0]);
+    // Step 4: movzbl %al, %eax  [0F B6 C0]  (3 bytes)
+    out.extend_from_slice(&[0x0F, 0xB6, 0xC0]);
+    // Step 5: movq %rax, out*8(%rsp)  [48 89 44 24 off]  (5 bytes)
+    out.extend_from_slice(&[0x48, 0x89, 0x44, 0x24, out_idx.wrapping_mul(8)]);
 }
 
 /// Emit a typed `op reg, dst_off(%rsp)` for `SlotArithSlot`.
@@ -7931,15 +8105,55 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     code_bytes.extend_from_slice(bytes);
                     local_offset += executable_op_encoded_len(op);
                 }
+                ExecutableOp::CompareIntoSlot {
+                    ty,
+                    cmp_op,
+                    lhs_idx,
+                    rhs_idx,
+                    out_idx,
+                } => {
+                    encode_compare_into_slot_bytes(
+                        &mut code_bytes,
+                        *ty,
+                        *cmp_op,
+                        *lhs_idx,
+                        *rhs_idx,
+                        *out_idx,
+                    );
+                    local_offset += executable_op_encoded_len(op);
+                }
+                ExecutableOp::PrintStdout { text } => {
+                    let n = text.len();
+                    // jmp rel32 over string data (E9 + 4-byte displacement = n)
+                    code_bytes.push(0xE9);
+                    code_bytes.extend_from_slice(&(n as i32).to_le_bytes());
+                    // String data (raw bytes)
+                    code_bytes.extend_from_slice(text.as_bytes());
+                    // mov eax, 1  (SYS_write)
+                    code_bytes.extend_from_slice(&[0xB8, 0x01, 0x00, 0x00, 0x00]);
+                    // mov edi, 1  (fd = stdout)
+                    code_bytes.extend_from_slice(&[0xBF, 0x01, 0x00, 0x00, 0x00]);
+                    // lea rsi, [rip + rel32]  where rel32 = -(17 + n)
+                    let rel32 = -(17i32 + n as i32);
+                    code_bytes.push(0x48);
+                    code_bytes.push(0x8D);
+                    code_bytes.push(0x35);
+                    code_bytes.extend_from_slice(&rel32.to_le_bytes());
+                    // mov edx, n  (length)
+                    code_bytes.push(0xBA);
+                    code_bytes.extend_from_slice(&(n as u32).to_le_bytes());
+                    // syscall
+                    code_bytes.extend_from_slice(&[0x0F, 0x05]);
+                    local_offset += executable_op_encoded_len(op);
+                }
                 ExecutableOp::LoopBegin
                 | ExecutableOp::LoopEnd
                 | ExecutableOp::LoopBreak
                 | ExecutableOp::LoopContinue
                 | ExecutableOp::BranchIfZeroLoopBreak { .. }
-                | ExecutableOp::BranchIfNonZeroLoopBreak { .. }
-                | ExecutableOp::CompareIntoSlot { .. } => {
+                | ExecutableOp::BranchIfNonZeroLoopBreak { .. } => {
                     return Err(format!(
-                        "compiler-owned object emission: loop/compare ops require Task 11 intra-function relocation (function '{}')",
+                        "compiler-owned object emission: loop ops require Task 11 intra-function relocation (function '{}')",
                         function.name
                     ));
                 }
@@ -9994,6 +10208,63 @@ fn encode_aarch64_function(
                 emit_bl!(else_symbol);
                 // .merge_lbl:
                 label_offsets.insert(merge_lbl, out.len() as u32);
+            }
+
+            // ── CompareSlots: load lhs/rhs from stack slots, compare, store 0/1 ─
+            AArch64AsmInstruction::CompareSlots {
+                ty,
+                cmp_op,
+                lhs_idx,
+                rhs_idx,
+                out_idx,
+            } => {
+                let lhs_byte_off = 16u32 + (*lhs_idx as u32) * 8;
+                let rhs_byte_off = 16u32 + (*rhs_idx as u32) * 8;
+                // Select load opcode base and imm12 scaling per type.
+                let (base_load, lhs_imm12, rhs_imm12) = match ty {
+                    MmioScalarType::U8 => (
+                        0x3940_0000u32,
+                        lhs_byte_off,       // byte-scaled
+                        rhs_byte_off,
+                    ),
+                    MmioScalarType::U16 => (
+                        0x7940_0000u32,
+                        lhs_byte_off / 2,   // halfword-scaled
+                        rhs_byte_off / 2,
+                    ),
+                    MmioScalarType::U32 | MmioScalarType::F32 => (
+                        0xB940_0000u32,
+                        lhs_byte_off / 4,   // word-scaled
+                        rhs_byte_off / 4,
+                    ),
+                    _ => (
+                        0xF940_0000u32,
+                        lhs_byte_off / 8,   // doubleword-scaled (= 2 + idx)
+                        rhs_byte_off / 8,
+                    ),
+                };
+                // LDR[BH]? W0/X0, [X29, #lhs]  (zero-extends on 32-bit forms)
+                out.extend_from_slice(
+                    &(base_load | (lhs_imm12 << 10) | (29 << 5) | 0).to_le_bytes(),
+                );
+                // LDR[BH]? W1/X1, [X29, #rhs]
+                out.extend_from_slice(
+                    &(base_load | (rhs_imm12 << 10) | (29 << 5) | 1).to_le_bytes(),
+                );
+                // CMP X0, X1  (SUBS XZR, X0, X1)
+                out.extend_from_slice(&0xEB01_001Fu32.to_le_bytes());
+                // CSET W0, cond  (CSINC W0, WZR, WZR, inv_cond)
+                let inv_cond: u32 = match cmp_op {
+                    CmpOp::Eq => 1,  // inv(EQ=0)  = NE=1
+                    CmpOp::Ne => 0,  // inv(NE=1)  = EQ=0
+                    CmpOp::Lt => 10, // inv(LT=11) = GE=10
+                    CmpOp::Gt => 13, // inv(GT=12) = LE=13
+                    CmpOp::Le => 12, // inv(LE=13) = GT=12
+                    CmpOp::Ge => 11, // inv(GE=10) = LT=11
+                };
+                out.extend_from_slice(&(0x1A9F_07E0u32 | (inv_cond << 12)).to_le_bytes());
+                // STR X0, [X29, #out_slot]
+                slot_str!(0, *out_idx);
             }
 
             _ => {

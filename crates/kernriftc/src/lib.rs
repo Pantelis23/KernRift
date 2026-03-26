@@ -1032,6 +1032,7 @@ fn telemetry_op_discriminant(op: &KrirOp) -> String {
         KrirOp::FloatArith { .. } => "float_arith",
         KrirOp::InlineAsm(_) => "inline_asm",
         KrirOp::LoadStaticCstrAddr { .. } => "load_static_cstr_addr",
+        KrirOp::PrintStdout { .. } => "print_stdout",
     }
     .to_string()
 }

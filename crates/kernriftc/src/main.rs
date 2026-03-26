@@ -328,7 +328,8 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
-    match args[1].as_str() {
+    let t0 = std::time::Instant::now();
+    let code = match args[1].as_str() {
         "--surface" => {
             if args.len() < 4 {
                 eprintln!("invalid emit mode: --surface requires a value");
@@ -625,7 +626,10 @@ fn main() -> ExitCode {
             );
             ExitCode::from(EXIT_INVALID_INPUT)
         }
-    }
+    };
+    let ms = t0.elapsed().as_secs_f64() * 1000.0;
+    eprintln!("  finished in {:.1} ms", ms);
+    code
 }
 
 fn parse_inspect_artifact_args(args: &[String]) -> Result<InspectArtifactArgs, String> {
