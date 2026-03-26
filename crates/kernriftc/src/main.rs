@@ -328,7 +328,6 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
-    let t0 = std::time::Instant::now();
     let code = match args[1].as_str() {
         "--surface" => {
             if args.len() < 4 {
@@ -627,8 +626,6 @@ fn main() -> ExitCode {
             ExitCode::from(EXIT_INVALID_INPUT)
         }
     };
-    let ms = t0.elapsed().as_secs_f64() * 1000.0;
-    eprintln!("  finished in {:.1} ms", ms);
     code
 }
 

@@ -11,6 +11,7 @@ use krir::TargetArch;
 use super::args::BackendEmitArgs;
 
 pub(crate) fn run_backend_emit(args: &BackendEmitArgs) -> ExitCode {
+    let t0 = std::time::Instant::now();
     // Determine the effective kind and target based on --arch.
     let (effective_kind, effective_target_id) = resolve_kind_and_target(args);
 
@@ -67,6 +68,8 @@ pub(crate) fn run_backend_emit(args: &BackendEmitArgs) -> ExitCode {
         }
     }
 
+    let ms = t0.elapsed().as_secs_f64() * 1000.0;
+    eprintln!("  finished in {:.1} ms", ms);
     ExitCode::SUCCESS
 }
 
