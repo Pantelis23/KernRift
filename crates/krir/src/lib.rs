@@ -6468,7 +6468,7 @@ pub fn emit_aarch64_asm_text(module: &AArch64AsmModule) -> String {
                         load_mnem, reg, slot_off
                     ));
                     // move imm into x9 for the operation
-                    out.push_str(&format!("    mov x9, #{}\n", imm));
+                    emit_aarch64_mov_imm64(&mut out, "x9", *imm);
                     let op_mnem = match arith_op {
                         ArithOp::Add => "add",
                         ArithOp::Sub => "sub",
@@ -6495,7 +6495,7 @@ pub fn emit_aarch64_asm_text(module: &AArch64AsmModule) -> String {
                     slot_idx,
                 } => {
                     let slot_off = 16 + (*slot_idx as u32) * 8;
-                    out.push_str(&format!("    mov x9, #{}\n", value));
+                    emit_aarch64_mov_imm64(&mut out, "x9", *value);
                     out.push_str(&format!("    str x9, [x29, #{}]\n", slot_off));
                 }
                 AArch64AsmInstruction::StackStoreValue { ty: _, slot_idx } => {
