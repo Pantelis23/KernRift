@@ -4301,9 +4301,55 @@ fn validate_executable_krir_linear_structure(
                 function.entry_block, function.name
             ));
         }
+
+        // Float types (f32/f64) require SSE2 register encoding which is not yet
+        // implemented. Reject them here so callers get a diagnostic instead of a
+        // compiler panic.
+        if target.arch == TargetArch::X86_64 {
+            for op in &entry.ops {
+                if let Some(ty) = executable_op_scalar_type(op).filter(|t| t.is_float()) {
+                    return Err(format!(
+                        "{lowering_name}: function '{}' uses {} type in op {:?} — \
+                         float MMIO/memory operations require SSE2 support \
+                         (not yet implemented)",
+                        function.name,
+                        ty.as_str(),
+                        op
+                    ));
+                }
+            }
+        }
     }
 
     Ok(())
+}
+
+/// Extract the scalar type from an `ExecutableOp`, if it carries one.
+/// Used to detect float-typed ops before codegen.
+fn executable_op_scalar_type(op: &ExecutableOp) -> Option<MmioScalarType> {
+    match op {
+        ExecutableOp::CallCapture { ty, .. }
+        | ExecutableOp::CallCaptureWithArgs { ty, .. }
+        | ExecutableOp::BranchIfZero { ty, .. }
+        | ExecutableOp::BranchIfEqImm { ty, .. }
+        | ExecutableOp::BranchIfMaskNonZeroImm { ty, .. }
+        | ExecutableOp::MmioRead { ty, .. }
+        | ExecutableOp::MmioWriteImm { ty, .. }
+        | ExecutableOp::MmioWriteValue { ty, .. }
+        | ExecutableOp::StackStoreImm { ty, .. }
+        | ExecutableOp::StackStoreValue { ty, .. }
+        | ExecutableOp::StackLoad { ty, .. }
+        | ExecutableOp::SlotArithImm { ty, .. }
+        | ExecutableOp::SlotArithSlot { ty, .. }
+        | ExecutableOp::ParamLoad { ty, .. }
+        | ExecutableOp::MmioReadParamAddr { ty, .. }
+        | ExecutableOp::MmioWriteImmParamAddr { ty, .. }
+        | ExecutableOp::MmioWriteValueParamAddr { ty, .. }
+        | ExecutableOp::CompareIntoSlot { ty, .. }
+        | ExecutableOp::RawPtrLoad { ty, .. }
+        | ExecutableOp::RawPtrStore { ty, .. } => Some(*ty),
+        _ => None,
+    }
 }
 
 pub fn validate_compiler_owned_object_for_x86_64_asm_export(
@@ -6605,7 +6651,9 @@ fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
             MmioScalarType::U8 | MmioScalarType::U32 => 4,
             MmioScalarType::U16 | MmioScalarType::U64 => 5,
             MmioScalarType::F32 | MmioScalarType::F64 => {
-                unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+                unreachable!(
+                    "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+                )
             }
         },
         // Param-addr MMIO: load addr from stack (5 bytes) then same as constant-addr variant minus movabs (10 bytes).
@@ -6666,7 +6714,9 @@ fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
                 }
                 MmioValueExpr::Ident { .. } => mmio_saved_value_store_bytes(*ty),
                 MmioValueExpr::FloatLiteral { .. } => {
-                    unreachable!("float RawPtrStore encoding requires SSE2 backend (Task 14)")
+                    unreachable!(
+                        "float RawPtrStore reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+                    )
                 }
             };
             stack_cell_access_bytes(MmioScalarType::U64, *addr_slot_idx) + value_bytes
@@ -6738,7 +6788,9 @@ fn encode_mmio_read_bytes(out: &mut Vec<u8>, ty: MmioScalarType, addr: u64, capt
         MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x00]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x00]),
         MmioScalarType::F32 | MmioScalarType::F64 => {
-            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
     if capture_value {
@@ -6755,7 +6807,9 @@ fn encode_mmio_write_imm_bytes(out: &mut Vec<u8>, ty: MmioScalarType, addr: u64,
         MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x08]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x08]),
         MmioScalarType::F32 | MmioScalarType::F64 => {
-            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
 }
@@ -6768,7 +6822,9 @@ fn encode_mmio_write_saved_value_bytes(out: &mut Vec<u8>, ty: MmioScalarType, ad
         MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x18]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x18]),
         MmioScalarType::F32 | MmioScalarType::F64 => {
-            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
 }
@@ -6788,7 +6844,9 @@ fn encode_stack_cell_store_imm_slot_bytes(
             MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x0C, 0x24]),
             MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x0C, 0x24]),
             MmioScalarType::F32 | MmioScalarType::F64 => {
-                unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+                unreachable!(
+                    "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+                )
             }
         }
     } else {
@@ -6798,7 +6856,9 @@ fn encode_stack_cell_store_imm_slot_bytes(
             MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x4C, 0x24, offset]),
             MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x4C, 0x24, offset]),
             MmioScalarType::F32 | MmioScalarType::F64 => {
-                unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+                unreachable!(
+                    "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+                )
             }
         }
     }
@@ -6817,7 +6877,9 @@ fn encode_stack_cell_store_saved_value_slot_bytes(
             MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x1C, 0x24]),
             MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x1C, 0x24]),
             MmioScalarType::F32 | MmioScalarType::F64 => {
-                unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+                unreachable!(
+                    "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+                )
             }
         }
     } else {
@@ -6827,7 +6889,9 @@ fn encode_stack_cell_store_saved_value_slot_bytes(
             MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x5C, 0x24, offset]),
             MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x5C, 0x24, offset]),
             MmioScalarType::F32 | MmioScalarType::F64 => {
-                unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+                unreachable!(
+                    "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+                )
             }
         }
     }
@@ -6842,7 +6906,9 @@ fn encode_stack_cell_load_slot_bytes(out: &mut Vec<u8>, ty: MmioScalarType, slot
             MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x1C, 0x24]),
             MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x1C, 0x24]),
             MmioScalarType::F32 | MmioScalarType::F64 => {
-                unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+                unreachable!(
+                    "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+                )
             }
         }
     } else {
@@ -6852,7 +6918,9 @@ fn encode_stack_cell_load_slot_bytes(out: &mut Vec<u8>, ty: MmioScalarType, slot
             MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x5C, 0x24, offset]),
             MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x5C, 0x24, offset]),
             MmioScalarType::F32 | MmioScalarType::F64 => {
-                unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+                unreachable!(
+                    "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+                )
             }
         }
     }
@@ -6868,7 +6936,9 @@ fn encode_stack_cell_load_slot_bytes_into_rax(out: &mut Vec<u8>, ty: MmioScalarT
             MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x04, 0x24]),
             MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x04, 0x24]),
             MmioScalarType::F32 | MmioScalarType::F64 => {
-                unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+                unreachable!(
+                    "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+                )
             }
         }
     } else {
@@ -6878,7 +6948,9 @@ fn encode_stack_cell_load_slot_bytes_into_rax(out: &mut Vec<u8>, ty: MmioScalarT
             MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x44, 0x24, offset]),
             MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x44, 0x24, offset]),
             MmioScalarType::F32 | MmioScalarType::F64 => {
-                unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+                unreachable!(
+                    "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+                )
             }
         }
     }
@@ -6894,7 +6966,9 @@ fn encode_stack_cell_load_slot_bytes_into_rcx(out: &mut Vec<u8>, ty: MmioScalarT
             MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x0C, 0x24]),
             MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x0C, 0x24]),
             MmioScalarType::F32 | MmioScalarType::F64 => {
-                unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+                unreachable!(
+                    "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+                )
             }
         }
     } else {
@@ -6904,7 +6978,9 @@ fn encode_stack_cell_load_slot_bytes_into_rcx(out: &mut Vec<u8>, ty: MmioScalarT
             MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x4C, 0x24, offset]),
             MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x4C, 0x24, offset]),
             MmioScalarType::F32 | MmioScalarType::F64 => {
-                unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+                unreachable!(
+                    "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+                )
             }
         }
     }
@@ -7018,7 +7094,9 @@ fn encode_slot_arith_slot_op_bytes(
                         out.extend_from_slice(&[0x48, opcode8 + 1, modrm_no, 0x24])
                     }
                     MmioScalarType::F32 | MmioScalarType::F64 => {
-                        unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+                        unreachable!(
+                            "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+                        )
                     }
                 }
             } else {
@@ -7034,7 +7112,9 @@ fn encode_slot_arith_slot_op_bytes(
                         out.extend_from_slice(&[0x48, opcode8 + 1, modrm_d8, 0x24, offset])
                     }
                     MmioScalarType::F32 | MmioScalarType::F64 => {
-                        unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+                        unreachable!(
+                            "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+                        )
                     }
                 }
             }
@@ -7054,7 +7134,9 @@ fn encode_slot_arith_slot_op_bytes(
                     MmioScalarType::U32 => out.extend_from_slice(&[0xD3, modrm_no, 0x24]),
                     MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0xD3, modrm_no, 0x24]),
                     MmioScalarType::F32 | MmioScalarType::F64 => {
-                        unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+                        unreachable!(
+                            "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+                        )
                     }
                 }
             } else {
@@ -7068,7 +7150,9 @@ fn encode_slot_arith_slot_op_bytes(
                         out.extend_from_slice(&[0x48, 0xD3, modrm_d8, 0x24, offset])
                     }
                     MmioScalarType::F32 | MmioScalarType::F64 => {
-                        unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+                        unreachable!(
+                            "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+                        )
                     }
                 }
             }
@@ -7232,7 +7316,9 @@ fn encode_param_load_bytes(out: &mut Vec<u8>, ty: MmioScalarType, offset: u8) {
         // movq  disp8(%rsp), %rbx — REX.W 0x8B /r
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x5C, 0x24, offset]),
         MmioScalarType::F32 | MmioScalarType::F64 => {
-            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
 }
@@ -7256,7 +7342,9 @@ fn encode_mmio_read_param_addr_bytes(
         MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x00]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x00]),
         MmioScalarType::F32 | MmioScalarType::F64 => {
-            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
     if capture_value {
@@ -7278,7 +7366,9 @@ fn encode_mmio_write_imm_param_addr_bytes(
         MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x08]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x08]),
         MmioScalarType::F32 | MmioScalarType::F64 => {
-            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
 }
@@ -7295,7 +7385,9 @@ fn encode_mmio_write_saved_value_param_addr_bytes(
         MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x18]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x18]),
         MmioScalarType::F32 | MmioScalarType::F64 => {
-            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
 }
@@ -7314,7 +7406,9 @@ fn encode_stack_cell_store_accumulator_slot_bytes(
             MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x04, 0x24]),
             MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x04, 0x24]),
             MmioScalarType::F32 | MmioScalarType::F64 => {
-                unreachable!("float RawPtrLoad encoding requires SSE2 backend (Task 14)")
+                unreachable!(
+                    "float RawPtrLoad reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+                )
             }
         }
     } else {
@@ -7324,7 +7418,9 @@ fn encode_stack_cell_store_accumulator_slot_bytes(
             MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x44, 0x24, offset]),
             MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x44, 0x24, offset]),
             MmioScalarType::F32 | MmioScalarType::F64 => {
-                unreachable!("float RawPtrLoad encoding requires SSE2 backend (Task 14)")
+                unreachable!(
+                    "float RawPtrLoad reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+                )
             }
         }
     }
@@ -7348,7 +7444,9 @@ fn encode_raw_ptr_load_bytes(
         MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x00]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x00]),
         MmioScalarType::F32 | MmioScalarType::F64 => {
-            unreachable!("float RawPtrLoad encoding requires SSE2 backend (Task 14)")
+            unreachable!(
+                "float RawPtrLoad reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
     // 3. Store result (%al/%ax/%eax/%rax) into out_slot on the stack.
@@ -7374,7 +7472,9 @@ fn encode_raw_ptr_store_imm_bytes(
         MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x08]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x08]),
         MmioScalarType::F32 | MmioScalarType::F64 => {
-            unreachable!("float RawPtrStore encoding requires SSE2 backend (Task 14)")
+            unreachable!(
+                "float RawPtrStore reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
 }
@@ -7395,7 +7495,9 @@ fn encode_raw_ptr_store_saved_value_bytes(
         MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x18]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x18]),
         MmioScalarType::F32 | MmioScalarType::F64 => {
-            unreachable!("float RawPtrStore encoding requires SSE2 backend (Task 14)")
+            unreachable!(
+                "float RawPtrStore reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
 }
@@ -7462,7 +7564,9 @@ fn push_mov_imm_to_accumulator_register(out: &mut Vec<u8>, ty: MmioScalarType, v
             push_u64_le(out, value);
         }
         MmioScalarType::F32 | MmioScalarType::F64 => {
-            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
 }
@@ -7486,7 +7590,9 @@ fn push_mov_imm_to_value_register(out: &mut Vec<u8>, ty: MmioScalarType, value: 
             push_u64_le(out, value);
         }
         MmioScalarType::F32 | MmioScalarType::F64 => {
-            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
 }
@@ -7498,7 +7604,9 @@ fn push_mov_accumulator_to_saved_value_register(out: &mut Vec<u8>, ty: MmioScala
         MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0xC3]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0xC3]),
         MmioScalarType::F32 | MmioScalarType::F64 => {
-            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
 }
@@ -7510,7 +7618,9 @@ fn push_mov_saved_value_to_accumulator_register(out: &mut Vec<u8>, ty: MmioScala
         MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0xD8]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0xD8]),
         MmioScalarType::F32 | MmioScalarType::F64 => {
-            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
 }
@@ -7522,7 +7632,9 @@ fn push_test_saved_value_register_zero(out: &mut Vec<u8>, ty: MmioScalarType) {
         MmioScalarType::U32 => out.extend_from_slice(&[0x85, 0xDB]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x85, 0xDB]),
         MmioScalarType::F32 | MmioScalarType::F64 => {
-            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
 }
@@ -7534,7 +7646,9 @@ fn push_cmp_accumulator_to_saved_value_register(out: &mut Vec<u8>, ty: MmioScala
         MmioScalarType::U32 => out.extend_from_slice(&[0x39, 0xC3]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x39, 0xC3]),
         MmioScalarType::F32 | MmioScalarType::F64 => {
-            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
 }
@@ -7546,7 +7660,9 @@ fn push_test_accumulator_with_saved_value_register(out: &mut Vec<u8>, ty: MmioSc
         MmioScalarType::U32 => out.extend_from_slice(&[0x85, 0xC3]),
         MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x85, 0xC3]),
         MmioScalarType::F32 | MmioScalarType::F64 => {
-            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
 }
@@ -7556,7 +7672,9 @@ fn mmio_load_bytes(ty: MmioScalarType) -> u64 {
         MmioScalarType::U8 | MmioScalarType::U32 => 2,
         MmioScalarType::U16 | MmioScalarType::U64 => 3,
         MmioScalarType::F32 | MmioScalarType::F64 => {
-            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
 }
@@ -7568,7 +7686,9 @@ fn mmio_value_load_immediate_bytes(ty: MmioScalarType) -> u64 {
         MmioScalarType::U32 => 5,
         MmioScalarType::U64 => 10,
         MmioScalarType::F32 | MmioScalarType::F64 => {
-            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
 }
@@ -7578,7 +7698,9 @@ fn mmio_saved_value_copy_bytes(ty: MmioScalarType) -> u64 {
         MmioScalarType::U8 | MmioScalarType::U32 => 2,
         MmioScalarType::U16 | MmioScalarType::U64 => 3,
         MmioScalarType::F32 | MmioScalarType::F64 => {
-            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
 }
@@ -7588,7 +7710,9 @@ fn mmio_saved_value_zero_test_bytes(ty: MmioScalarType) -> u64 {
         MmioScalarType::U8 | MmioScalarType::U32 => 2,
         MmioScalarType::U16 | MmioScalarType::U64 => 3,
         MmioScalarType::F32 | MmioScalarType::F64 => {
-            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
 }
@@ -7600,7 +7724,9 @@ fn mmio_accumulator_immediate_bytes(ty: MmioScalarType) -> u64 {
         MmioScalarType::U32 => 5,
         MmioScalarType::U64 => 10,
         MmioScalarType::F32 | MmioScalarType::F64 => {
-            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
 }
@@ -7610,7 +7736,9 @@ fn mmio_saved_value_compare_bytes(ty: MmioScalarType) -> u64 {
         MmioScalarType::U8 | MmioScalarType::U32 => 2,
         MmioScalarType::U16 | MmioScalarType::U64 => 3,
         MmioScalarType::F32 | MmioScalarType::F64 => {
-            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
 }
@@ -7628,7 +7756,9 @@ fn mmio_store_bytes(ty: MmioScalarType) -> u64 {
         MmioScalarType::U8 | MmioScalarType::U32 => 2,
         MmioScalarType::U16 | MmioScalarType::U64 => 3,
         MmioScalarType::F32 | MmioScalarType::F64 => {
-            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
 }
@@ -7645,7 +7775,9 @@ fn stack_cell_access_bytes(ty: MmioScalarType, slot_idx: u8) -> u64 {
         MmioScalarType::U8 | MmioScalarType::U32 => 3,
         MmioScalarType::U16 | MmioScalarType::U64 => 4,
         MmioScalarType::F32 | MmioScalarType::F64 => {
-            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     };
     base + if slot_idx > 0 { 1 } else { 0 }
@@ -7707,7 +7839,9 @@ fn slot_arith_slot_op_mnemonic(ty: MmioScalarType, op: ArithOp) -> &'static str 
         (MmioScalarType::U64, ArithOp::Shl) => "shlq",
         (MmioScalarType::U64, ArithOp::Shr) => "shrq",
         (MmioScalarType::F32 | MmioScalarType::F64, _) => {
-            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
         (_, ArithOp::Mul) | (_, ArithOp::Div) | (_, ArithOp::Rem) => {
             unreachable!("Mul/Div/Rem use special encoding, not mnemonic dispatch")
@@ -7722,7 +7856,9 @@ fn mmio_accumulator_register(ty: MmioScalarType) -> &'static str {
         MmioScalarType::U32 => "%eax",
         MmioScalarType::U64 => "%rax",
         MmioScalarType::F32 | MmioScalarType::F64 => {
-            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
 }
@@ -7734,7 +7870,9 @@ fn mmio_value_register(ty: MmioScalarType) -> &'static str {
         MmioScalarType::U32 => "%ecx",
         MmioScalarType::U64 => "%rcx",
         MmioScalarType::F32 | MmioScalarType::F64 => {
-            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
 }
@@ -7758,7 +7896,9 @@ fn mmio_saved_value_register(ty: MmioScalarType) -> &'static str {
         MmioScalarType::U32 => "%ebx",
         MmioScalarType::U64 => "%rbx",
         MmioScalarType::F32 | MmioScalarType::F64 => {
-            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
 }
@@ -7770,7 +7910,9 @@ fn mmio_load_mnemonic(ty: MmioScalarType) -> &'static str {
         MmioScalarType::U32 => "movl",
         MmioScalarType::U64 => "movq",
         MmioScalarType::F32 | MmioScalarType::F64 => {
-            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
 }
@@ -7794,7 +7936,9 @@ fn mmio_saved_value_zero_test_mnemonic(ty: MmioScalarType) -> &'static str {
         MmioScalarType::U32 => "testl %ebx, %ebx",
         MmioScalarType::U64 => "testq %rbx, %rbx",
         MmioScalarType::F32 | MmioScalarType::F64 => {
-            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
 }
@@ -7806,7 +7950,9 @@ fn mmio_saved_value_compare_mnemonic(ty: MmioScalarType) -> &'static str {
         MmioScalarType::U32 => "cmpl %eax, %ebx",
         MmioScalarType::U64 => "cmpq %rax, %rbx",
         MmioScalarType::F32 | MmioScalarType::F64 => {
-            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
 }
@@ -7818,7 +7964,9 @@ fn mmio_saved_value_mask_test_mnemonic(ty: MmioScalarType) -> &'static str {
         MmioScalarType::U32 => "testl %eax, %ebx",
         MmioScalarType::U64 => "testq %rax, %rbx",
         MmioScalarType::F32 | MmioScalarType::F64 => {
-            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
 }
@@ -7830,7 +7978,9 @@ fn mmio_accumulator_immediate_mnemonic(ty: MmioScalarType, value: u64) -> String
         MmioScalarType::U32 => "movl",
         MmioScalarType::U64 => "movabs",
         MmioScalarType::F32 | MmioScalarType::F64 => {
-            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     };
     format!(
@@ -7848,7 +7998,9 @@ fn mmio_immediate_mnemonic(ty: MmioScalarType, value: u64) -> String {
         MmioScalarType::U32 => "movl",
         MmioScalarType::U64 => "movabs",
         MmioScalarType::F32 | MmioScalarType::F64 => {
-            unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     };
     format!(
@@ -15439,6 +15591,57 @@ mod tests {
             err.contains("test.krbo"),
             "error should include filename: {}",
             err
+        );
+    }
+
+    #[test]
+    fn float_op_in_x86_64_codegen_returns_error_not_panic() {
+        use super::{
+            BackendTargetContract, Ctx, ExecutableBlock, ExecutableFacts, ExecutableFunction,
+            ExecutableKrirModule, ExecutableOp, ExecutableSignature, ExecutableTerminator,
+            ExecutableValue, ExecutableValueType, FunctionAttrs, MmioScalarType,
+            lower_executable_krir_to_compiler_owned_object,
+        };
+        // Build a minimal module with a single function that has a float-typed MmioRead.
+        let module = ExecutableKrirModule {
+            module_caps: vec![],
+            extern_declarations: vec![],
+            call_edges: vec![],
+            static_strings: vec![],
+            functions: vec![ExecutableFunction {
+                name: "bad_float".to_string(),
+                is_extern: false,
+                signature: ExecutableSignature {
+                    params: vec![],
+                    result: ExecutableValueType::Unit,
+                },
+                facts: ExecutableFacts {
+                    ctx_ok: vec![Ctx::Thread],
+                    eff_used: vec![],
+                    caps_req: vec![],
+                    attrs: FunctionAttrs::default(),
+                },
+                entry_block: "entry".to_string(),
+                blocks: vec![ExecutableBlock {
+                    label: "entry".to_string(),
+                    ops: vec![ExecutableOp::MmioRead {
+                        ty: MmioScalarType::F32,
+                        addr: 0xDEAD_BEEF,
+                        capture_value: false,
+                    }],
+                    terminator: ExecutableTerminator::Return {
+                        value: ExecutableValue::Unit,
+                    },
+                }],
+            }],
+        };
+        let target = BackendTargetContract::x86_64_sysv();
+        let result = lower_executable_krir_to_compiler_owned_object(&module, &target);
+        assert!(result.is_err(), "float op must produce an error, not panic");
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("f32") || msg.contains("float"),
+            "error must mention float type, got: {msg}"
         );
     }
 }
