@@ -1,0 +1,16 @@
+@ctx(irq, thread, boot)
+@eff(mmio)
+@caps()
+extern fn host_abort();
+
+@ctx(irq, thread, boot)
+@eff(mmio)
+@caps()
+fn kernel_panic(code: u64) {
+    host_abort()
+}
+
+@ctx(thread, boot)
+fn entry() {
+    kernel_panic(1)
+}

@@ -6423,9 +6423,116 @@ pub fn emit_aarch64_asm_text(module: &AArch64AsmModule) -> String {
                     }
                     out.push_str(&format!("    str x0, [x29, #{}]\n", slot_off));
                 }
-                _ => {
-                    // Remaining variants: emit a comment placeholder.
-                    out.push_str("    // TODO: unimplemented instruction\n");
+                AArch64AsmInstruction::StackStoreImm {
+                    ty: _,
+                    value,
+                    slot_idx,
+                } => {
+                    let slot_off = 16 + (*slot_idx as u32) * 8;
+                    out.push_str(&format!("    mov x9, #{}\n", value));
+                    out.push_str(&format!("    str x9, [x29, #{}]\n", slot_off));
+                }
+                AArch64AsmInstruction::StackStoreValue { ty: _, slot_idx } => {
+                    let slot_off = 16 + (*slot_idx as u32) * 8;
+                    out.push_str(&format!("    str x0, [x29, #{}]\n", slot_off));
+                }
+                AArch64AsmInstruction::StackLoad { ty, slot_idx } => {
+                    let slot_off = 16 + (*slot_idx as u32) * 8;
+                    let (mnem, reg) = aarch64_load_parts(*ty);
+                    out.push_str(&format!("    {} {}, [x29, #{}]\n", mnem, reg, slot_off));
+                }
+                AArch64AsmInstruction::ParamLoad { param_idx, ty: _ } => {
+                    // AAPCS64: params arrive in x0-x7; move into saved-value reg x0.
+                    out.push_str(&format!("    mov x0, x{}\n", param_idx));
+                }
+                AArch64AsmInstruction::MmioReadParamAddr {
+                    param_idx,
+                    ty,
+                    capture_value: _,
+                } => {
+                    let (mnem, reg) = aarch64_load_parts(*ty);
+                    out.push_str(&format!("    {} {}, [x{}]\n", mnem, reg, param_idx));
+                }
+                AArch64AsmInstruction::MmioWriteImmParamAddr {
+                    param_idx,
+                    ty,
+                    value,
+                } => {
+                    let (store_mnem, store_reg) = aarch64_store_parts(*ty);
+                    out.push_str(&format!("    mov {}, #{}\n", store_reg, value));
+                    out.push_str(&format!(
+                        "    {} {}, [x{}]\n",
+                        store_mnem, store_reg, param_idx
+                    ));
+                }
+                AArch64AsmInstruction::MmioWriteValueParamAddr { param_idx, ty } => {
+                    let (store_mnem, _) = aarch64_store_parts(*ty);
+                    let sv_reg = match ty {
+                        MmioScalarType::U64 | MmioScalarType::F64 => "x0",
+                        _ => "w0",
+                    };
+                    out.push_str(&format!(
+                        "    {} {}, [x{}]\n",
+                        store_mnem, sv_reg, param_idx
+                    ));
+                }
+                AArch64AsmInstruction::RawPtrLoad {
+                    ty,
+                    addr_slot_idx,
+                    out_slot_idx,
+                } => {
+                    let addr_off = 16 + (*addr_slot_idx as u32) * 8;
+                    let out_off = 16 + (*out_slot_idx as u32) * 8;
+                    let (mnem, reg) = aarch64_load_parts(*ty);
+                    out.push_str(&format!("    ldr x9, [x29, #{}]\n", addr_off));
+                    out.push_str(&format!("    {} {}, [x9]\n", mnem, reg));
+                    out.push_str(&format!("    str x0, [x29, #{}]\n", out_off));
+                }
+                AArch64AsmInstruction::RawPtrStoreImm {
+                    ty,
+                    addr_slot_idx,
+                    value,
+                } => {
+                    let addr_off = 16 + (*addr_slot_idx as u32) * 8;
+                    let (store_mnem, store_reg) = aarch64_store_parts(*ty);
+                    out.push_str(&format!("    ldr x9, [x29, #{}]\n", addr_off));
+                    out.push_str(&format!("    mov {}, #{}\n", store_reg, value));
+                    out.push_str(&format!("    {} {}, [x9]\n", store_mnem, store_reg));
+                }
+                AArch64AsmInstruction::RawPtrStoreSavedValue { ty, addr_slot_idx } => {
+                    let addr_off = 16 + (*addr_slot_idx as u32) * 8;
+                    let (store_mnem, _) = aarch64_store_parts(*ty);
+                    let sv_reg = match ty {
+                        MmioScalarType::U64 | MmioScalarType::F64 => "x0",
+                        _ => "w0",
+                    };
+                    out.push_str(&format!("    ldr x9, [x29, #{}]\n", addr_off));
+                    out.push_str(&format!("    {} {}, [x9]\n", store_mnem, sv_reg));
+                }
+                AArch64AsmInstruction::ReturnSavedValue { ty: _ } => {
+                    // AAPCS64: return value is already in x0 (saved-value register).
+                }
+                AArch64AsmInstruction::LoadSlotU8ToX9 { slot_idx } => {
+                    let slot_off = 16 + (*slot_idx as u32) * 8;
+                    out.push_str(&format!("    ldrb w9, [x29, #{}]\n", slot_off));
+                }
+                AArch64AsmInstruction::TestX9 => {
+                    out.push_str("    tst x9, x9\n");
+                }
+                AArch64AsmInstruction::InlineAsm(intr) => {
+                    let mnem = match intr {
+                        KernelIntrinsic::Nop => "nop",
+                        KernelIntrinsic::Pause => "yield",
+                        KernelIntrinsic::Hlt => "wfi",
+                        KernelIntrinsic::Int3 => "brk #0",
+                        KernelIntrinsic::Mfence => "dmb ish",
+                        KernelIntrinsic::Sfence => "dmb ishst",
+                        KernelIntrinsic::Lfence => "dmb ishld",
+                        KernelIntrinsic::Cli => "msr daifset, #0xf",
+                        KernelIntrinsic::Sti => "msr daifclr, #0xf",
+                        KernelIntrinsic::Wbinvd | KernelIntrinsic::Cpuid => "nop",
+                    };
+                    out.push_str(&format!("    {}\n", mnem));
                 }
             }
         }
@@ -10945,11 +11052,92 @@ fn encode_aarch64_function(
                 slot_str!(0, *slot_idx);
             }
 
-            _ => {
-                return Err(format!(
-                    "aarch64 object emission: unsupported instruction {:?} in function '{}'",
-                    instr, func.symbol
-                ));
+            // ── ParamLoad: move incoming AAPCS64 register into saved-value X0 ─
+            // Params 0-7 arrive in X0-X7.  MOV X0, X{n} = ORR X0, XZR, X{n}.
+            AArch64AsmInstruction::ParamLoad { param_idx, ty } => {
+                let _ = ty;
+                let rm = *param_idx as u32;
+                out.extend_from_slice(&(0xAA00_03E0u32 | (rm << 16)).to_le_bytes());
+            }
+
+            // ── MmioReadParamAddr: load from pointer held in X{param_idx} ─────
+            AArch64AsmInstruction::MmioReadParamAddr {
+                param_idx,
+                ty,
+                capture_value,
+            } => {
+                let _ = capture_value;
+                // MOV X9, X{param_idx}  (get address into scratch)
+                let rm = *param_idx as u32;
+                out.extend_from_slice(&(0xAA00_03E9u32 | (rm << 16)).to_le_bytes());
+                // LDR X0, [X9]  (load result into saved-value register)
+                emit_aa64_ldr_ty(out, 0, 9, *ty);
+            }
+
+            // ── MmioWriteImmParamAddr: store imm to pointer in X{param_idx} ───
+            AArch64AsmInstruction::MmioWriteImmParamAddr {
+                param_idx,
+                ty,
+                value,
+            } => {
+                // MOV X9, X{param_idx}
+                let rm = *param_idx as u32;
+                out.extend_from_slice(&(0xAA00_03E9u32 | (rm << 16)).to_le_bytes());
+                emit_aa64_imm64(out, 10, *value); // X10 = immediate
+                emit_aa64_str_ty(out, 10, 9, *ty); // [X9] = X10
+            }
+
+            // ── MmioWriteValueParamAddr: store X0 to pointer in X{param_idx} ─
+            AArch64AsmInstruction::MmioWriteValueParamAddr { param_idx, ty } => {
+                // MOV X9, X{param_idx}
+                let rm = *param_idx as u32;
+                out.extend_from_slice(&(0xAA00_03E9u32 | (rm << 16)).to_le_bytes());
+                emit_aa64_str_ty(out, 0, 9, *ty); // [X9] = X0
+            }
+
+            // ── RawPtrLoad: load scalar at address held in addr_slot ──────────
+            AArch64AsmInstruction::RawPtrLoad {
+                ty,
+                addr_slot_idx,
+                out_slot_idx,
+            } => {
+                slot_ldr!(9, *addr_slot_idx); // X9 = address
+                emit_aa64_ldr_ty(out, 0, 9, *ty); // X0 = [X9]
+                slot_str!(0, *out_slot_idx); // slot[out] = X0
+            }
+
+            // ── RawPtrStoreImm: store immediate to address in addr_slot ───────
+            AArch64AsmInstruction::RawPtrStoreImm {
+                ty,
+                addr_slot_idx,
+                value,
+            } => {
+                slot_ldr!(9, *addr_slot_idx); // X9 = address
+                emit_aa64_imm64(out, 10, *value); // X10 = value
+                emit_aa64_str_ty(out, 10, 9, *ty); // [X9] = X10
+            }
+
+            // ── RawPtrStoreSavedValue: store X0 to address in addr_slot ───────
+            AArch64AsmInstruction::RawPtrStoreSavedValue { ty, addr_slot_idx } => {
+                slot_ldr!(9, *addr_slot_idx); // X9 = address
+                emit_aa64_str_ty(out, 0, 9, *ty); // [X9] = X0
+            }
+
+            // ── InlineAsm: kernel intrinsics mapped to AArch64 equivalents ────
+            AArch64AsmInstruction::InlineAsm(intr) => {
+                let word: u32 = match intr {
+                    KernelIntrinsic::Nop => 0xD503_201F,    // NOP
+                    KernelIntrinsic::Pause => 0xD503_203F,  // YIELD
+                    KernelIntrinsic::Hlt => 0xD503_207F,    // WFI
+                    KernelIntrinsic::Int3 => 0xD420_0000,   // BRK #0
+                    KernelIntrinsic::Mfence => 0xD503_3BBF, // DMB ISH
+                    KernelIntrinsic::Sfence => 0xD503_3ABF, // DMB ISHST
+                    KernelIntrinsic::Lfence => 0xD503_39BF, // DMB ISHLD
+                    KernelIntrinsic::Cli => 0xD503_4FDF,    // MSR DAIFSet, #0xF
+                    KernelIntrinsic::Sti => 0xD503_4FFF,    // MSR DAIFClr, #0xF
+                    KernelIntrinsic::Wbinvd | KernelIntrinsic::Cpuid => 0xD503_201F, // NOP
+                };
+                out.extend_from_slice(&word.to_le_bytes());
             }
         }
     }

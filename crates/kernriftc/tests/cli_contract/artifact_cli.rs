@@ -125,6 +125,42 @@ fn emit_elfobj_writes_valid_relocatable_object() {
 }
 
 #[test]
+fn emit_elfobj_arm64_with_u64_param_succeeds() {
+    // Regression test: ParamLoad { param_idx: 0, ty: U64 } previously caused
+    // "unsupported instruction" error in the AArch64 object emitter.
+    let root = repo_root();
+    let fixture = root
+        .join("tests")
+        .join("must_pass")
+        .join("arm64_param_u64.kr");
+    let output_path = unique_temp_output_path("emit-elfobj-arm64-param", "o");
+    fs::remove_file(&output_path).ok();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("--emit=elfobj")
+        .arg("--arch")
+        .arg("arm64")
+        .arg("-o")
+        .arg(output_path.as_os_str())
+        .arg(fixture.as_os_str());
+    cmd.assert().success();
+
+    let bytes = fs::read(&output_path).expect("read aarch64 elf object");
+    assert!(bytes.len() >= 20, "elf object output too small");
+    assert_eq!(&bytes[0..4], b"\x7fELF");
+    assert_eq!(bytes[4], 2, "expected ELF64 class");
+    assert_eq!(bytes[5], 1, "expected little-endian ELF");
+    assert_eq!(
+        u16::from_le_bytes([bytes[18], bytes[19]]),
+        183,
+        "expected EM_AARCH64 (183)"
+    );
+
+    fs::remove_file(&output_path).ok();
+}
+
+#[test]
 fn emit_krboexe_writes_valid_executable() {
     let root = repo_root();
     let fixture = root
