@@ -188,6 +188,9 @@ pub enum ArithOp {
     Xor,
     Shl,
     Shr,
+    Mul,
+    Div,
+    Rem,
 }
 
 impl ArithOp {
@@ -200,6 +203,9 @@ impl ArithOp {
             Self::Xor => "xor",
             Self::Shl => "shl",
             Self::Shr => "shr",
+            Self::Mul => "mul",
+            Self::Div => "div",
+            Self::Rem => "rem",
         }
     }
 }
@@ -4027,12 +4033,12 @@ pub enum AArch64AsmInstruction {
     JmpIfZeroLabel(String),
     /// Emits conditional branch if non-zero.
     JmpIfNonZeroLabel(String),
-    /// Load U8 bool slot into a scratch register for comparison.
-    LoadSlotU8ToEax {
+    /// Load U8 bool slot into x9 for comparison.
+    LoadSlotU8ToX9 {
         slot_idx: u8,
     },
-    /// Test scratch register against itself — sets flags.
-    TestEaxEax,
+    /// Test x9 against itself — conceptually sets flags (no-op in binary emit, CBZ/CBNZ used).
+    TestX9,
     /// Compare lhs_idx op rhs_idx and store 0 or 1 in out_idx.
     CompareSlots {
         ty: MmioScalarType,
@@ -5071,10 +5077,10 @@ pub fn lower_executable_krir_to_aarch64_asm(
                             .expect("BranchIfZeroLoopBreak outside loop")
                             .end_label
                             .clone();
-                        instrs.push(AArch64AsmInstruction::LoadSlotU8ToEax {
+                        instrs.push(AArch64AsmInstruction::LoadSlotU8ToX9 {
                             slot_idx: *slot_idx,
                         });
-                        instrs.push(AArch64AsmInstruction::TestEaxEax);
+                        instrs.push(AArch64AsmInstruction::TestX9);
                         instrs.push(AArch64AsmInstruction::JmpIfZeroLabel(end));
                     }
                     ExecutableOp::BranchIfNonZeroLoopBreak { slot_idx } => {
@@ -5083,10 +5089,10 @@ pub fn lower_executable_krir_to_aarch64_asm(
                             .expect("BranchIfNonZeroLoopBreak outside loop")
                             .end_label
                             .clone();
-                        instrs.push(AArch64AsmInstruction::LoadSlotU8ToEax {
+                        instrs.push(AArch64AsmInstruction::LoadSlotU8ToX9 {
                             slot_idx: *slot_idx,
                         });
-                        instrs.push(AArch64AsmInstruction::TestEaxEax);
+                        instrs.push(AArch64AsmInstruction::TestX9);
                         instrs.push(AArch64AsmInstruction::JmpIfNonZeroLabel(end));
                     }
                     ExecutableOp::CompareIntoSlot {
@@ -5579,36 +5585,95 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                     imm,
                 } => {
                     let offset = 8u32 * u32::from(*slot_idx);
-                    // load from stack slot into saved-value register (%rbx family)
-                    out.push_str("    ");
-                    out.push_str(mmio_load_mnemonic(*ty));
-                    if offset == 0 {
-                        out.push_str(" (%rsp), ");
+                    if matches!(arith_op, ArithOp::Mul | ArithOp::Div | ArithOp::Rem) {
+                        match arith_op {
+                            ArithOp::Mul => {
+                                // load slot into %rbx
+                                out.push_str("    ");
+                                out.push_str(mmio_load_mnemonic(*ty));
+                                if offset == 0 {
+                                    out.push_str(" (%rsp), %rbx\n");
+                                } else {
+                                    out.push_str(&format!(" {}(%rsp), %rbx\n", offset));
+                                }
+                                // movabs $imm, %rax
+                                out.push_str(&format!("    movabsq ${}, %rax\n", imm));
+                                // imulq %rax, %rbx
+                                out.push_str("    imulq %rax, %rbx\n");
+                                // store %rbx back
+                                out.push_str("    ");
+                                out.push_str(mmio_store_mnemonic(*ty));
+                                if offset == 0 {
+                                    out.push_str(" %rbx, (%rsp)\n");
+                                } else {
+                                    out.push_str(&format!(" %rbx, {}(%rsp)\n", offset));
+                                }
+                            }
+                            ArithOp::Div | ArithOp::Rem => {
+                                // load slot into %rax
+                                out.push_str("    ");
+                                out.push_str(mmio_load_mnemonic(*ty));
+                                if offset == 0 {
+                                    out.push_str(" (%rsp), %rax\n");
+                                } else {
+                                    out.push_str(&format!(" {}(%rsp), %rax\n", offset));
+                                }
+                                // xorq %rdx, %rdx
+                                out.push_str("    xorq %rdx, %rdx\n");
+                                // movabs $imm, %rcx
+                                out.push_str(&format!("    movabsq ${}, %rcx\n", imm));
+                                // divq %rcx
+                                out.push_str("    divq %rcx\n");
+                                // store quotient (%rax) or remainder (%rdx) back
+                                out.push_str("    ");
+                                out.push_str(mmio_store_mnemonic(*ty));
+                                if *arith_op == ArithOp::Div {
+                                    if offset == 0 {
+                                        out.push_str(" %rax, (%rsp)\n");
+                                    } else {
+                                        out.push_str(&format!(" %rax, {}(%rsp)\n", offset));
+                                    }
+                                } else if offset == 0 {
+                                    out.push_str(" %rdx, (%rsp)\n");
+                                } else {
+                                    out.push_str(&format!(" %rdx, {}(%rsp)\n", offset));
+                                }
+                            }
+                            _ => unreachable!(),
+                        }
                     } else {
-                        out.push_str(&format!(" {}(%rsp), ", offset));
-                    }
-                    out.push_str(mmio_saved_value_register(*ty));
-                    out.push('\n');
-                    // 64-bit arithmetic on %rbx
-                    let mnemonic = match arith_op {
-                        ArithOp::Add => "addq",
-                        ArithOp::Sub => "subq",
-                        ArithOp::And => "andq",
-                        ArithOp::Or => "orq",
-                        ArithOp::Xor => "xorq",
-                        ArithOp::Shl => "shlq",
-                        ArithOp::Shr => "shrq",
-                    };
-                    out.push_str(&format!("    {} ${}, %rbx\n", mnemonic, imm));
-                    // store from saved-value register back to stack slot
-                    out.push_str("    ");
-                    out.push_str(mmio_store_mnemonic(*ty));
-                    out.push(' ');
-                    out.push_str(mmio_saved_value_register(*ty));
-                    if offset == 0 {
-                        out.push_str(", (%rsp)\n");
-                    } else {
-                        out.push_str(&format!(", {}(%rsp)\n", offset));
+                        // load from stack slot into saved-value register (%rbx family)
+                        out.push_str("    ");
+                        out.push_str(mmio_load_mnemonic(*ty));
+                        if offset == 0 {
+                            out.push_str(" (%rsp), ");
+                        } else {
+                            out.push_str(&format!(" {}(%rsp), ", offset));
+                        }
+                        out.push_str(mmio_saved_value_register(*ty));
+                        out.push('\n');
+                        // 64-bit arithmetic on %rbx
+                        let mnemonic = match arith_op {
+                            ArithOp::Add => "addq",
+                            ArithOp::Sub => "subq",
+                            ArithOp::And => "andq",
+                            ArithOp::Or => "orq",
+                            ArithOp::Xor => "xorq",
+                            ArithOp::Shl => "shlq",
+                            ArithOp::Shr => "shrq",
+                            ArithOp::Mul | ArithOp::Div | ArithOp::Rem => unreachable!(),
+                        };
+                        out.push_str(&format!("    {} ${}, %rbx\n", mnemonic, imm));
+                        // store from saved-value register back to stack slot
+                        out.push_str("    ");
+                        out.push_str(mmio_store_mnemonic(*ty));
+                        out.push(' ');
+                        out.push_str(mmio_saved_value_register(*ty));
+                        if offset == 0 {
+                            out.push_str(", (%rsp)\n");
+                        } else {
+                            out.push_str(&format!(", {}(%rsp)\n", offset));
+                        }
                     }
                 }
                 X86_64AsmInstruction::SlotArithSlot {
@@ -5619,30 +5684,102 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                 } => {
                     let src_offset = 8u32 * u32::from(*src_slot_idx);
                     let dst_offset = 8u32 * u32::from(*dst_slot_idx);
-                    // load src into scratch register (%rax for non-shifts, %rcx for shifts)
-                    let src_reg = match arith_op {
-                        ArithOp::Shl | ArithOp::Shr => mmio_value_register(*ty),
-                        _ => mmio_accumulator_register(*ty),
-                    };
-                    out.push_str("    ");
-                    out.push_str(mmio_load_mnemonic(*ty));
-                    if src_offset == 0 {
-                        out.push_str(" (%rsp), ");
+                    if matches!(arith_op, ArithOp::Mul | ArithOp::Div | ArithOp::Rem) {
+                        match arith_op {
+                            ArithOp::Mul => {
+                                // load dst into %rbx
+                                out.push_str("    ");
+                                out.push_str(mmio_load_mnemonic(*ty));
+                                if dst_offset == 0 {
+                                    out.push_str(" (%rsp), %rbx\n");
+                                } else {
+                                    out.push_str(&format!(" {}(%rsp), %rbx\n", dst_offset));
+                                }
+                                // load src into %rax
+                                out.push_str("    ");
+                                out.push_str(mmio_load_mnemonic(*ty));
+                                if src_offset == 0 {
+                                    out.push_str(" (%rsp), %rax\n");
+                                } else {
+                                    out.push_str(&format!(" {}(%rsp), %rax\n", src_offset));
+                                }
+                                // imulq %rax, %rbx
+                                out.push_str("    imulq %rax, %rbx\n");
+                                // store %rbx to dst slot
+                                out.push_str("    ");
+                                out.push_str(mmio_store_mnemonic(*ty));
+                                if dst_offset == 0 {
+                                    out.push_str(" %rbx, (%rsp)\n");
+                                } else {
+                                    out.push_str(&format!(" %rbx, {}(%rsp)\n", dst_offset));
+                                }
+                            }
+                            ArithOp::Div | ArithOp::Rem => {
+                                // load dst into %rax
+                                out.push_str("    ");
+                                out.push_str(mmio_load_mnemonic(*ty));
+                                if dst_offset == 0 {
+                                    out.push_str(" (%rsp), %rax\n");
+                                } else {
+                                    out.push_str(&format!(" {}(%rsp), %rax\n", dst_offset));
+                                }
+                                // xorq %rdx, %rdx
+                                out.push_str("    xorq %rdx, %rdx\n");
+                                // load src into %rcx
+                                out.push_str("    ");
+                                out.push_str(mmio_load_mnemonic(*ty));
+                                if src_offset == 0 {
+                                    out.push_str(" (%rsp), %rcx\n");
+                                } else {
+                                    out.push_str(&format!(" {}(%rsp), %rcx\n", src_offset));
+                                }
+                                // divq %rcx
+                                out.push_str("    divq %rcx\n");
+                                // store quotient (%rax) or remainder (%rdx)
+                                out.push_str("    ");
+                                out.push_str(mmio_store_mnemonic(*ty));
+                                if *arith_op == ArithOp::Div {
+                                    if dst_offset == 0 {
+                                        out.push_str(" %rax, (%rsp)\n");
+                                    } else {
+                                        out.push_str(&format!(" %rax, {}(%rsp)\n", dst_offset));
+                                    }
+                                } else {
+                                    if dst_offset == 0 {
+                                        out.push_str(" %rdx, (%rsp)\n");
+                                    } else {
+                                        out.push_str(&format!(" %rdx, {}(%rsp)\n", dst_offset));
+                                    }
+                                }
+                            }
+                            _ => unreachable!(),
+                        }
                     } else {
-                        out.push_str(&format!(" {}(%rsp), ", src_offset));
-                    }
-                    out.push_str(src_reg);
-                    out.push('\n');
-                    // typed op into dst memory slot
-                    out.push_str("    ");
-                    out.push_str(slot_arith_slot_op_mnemonic(*ty, *arith_op));
-                    out.push(' ');
-                    out.push_str(src_reg);
-                    out.push_str(", ");
-                    if dst_offset == 0 {
-                        out.push_str("(%rsp)\n");
-                    } else {
-                        out.push_str(&format!("{}(%rsp)\n", dst_offset));
+                        // load src into scratch register (%rax for non-shifts, %rcx for shifts)
+                        let src_reg = match arith_op {
+                            ArithOp::Shl | ArithOp::Shr => mmio_value_register(*ty),
+                            _ => mmio_accumulator_register(*ty),
+                        };
+                        out.push_str("    ");
+                        out.push_str(mmio_load_mnemonic(*ty));
+                        if src_offset == 0 {
+                            out.push_str(" (%rsp), ");
+                        } else {
+                            out.push_str(&format!(" {}(%rsp), ", src_offset));
+                        }
+                        out.push_str(src_reg);
+                        out.push('\n');
+                        // typed op into dst memory slot
+                        out.push_str("    ");
+                        out.push_str(slot_arith_slot_op_mnemonic(*ty, *arith_op));
+                        out.push(' ');
+                        out.push_str(src_reg);
+                        out.push_str(", ");
+                        if dst_offset == 0 {
+                            out.push_str("(%rsp)\n");
+                        } else {
+                            out.push_str(&format!("{}(%rsp)\n", dst_offset));
+                        }
                     }
                 }
                 X86_64AsmInstruction::CallWithArgs { symbol, args } => {
@@ -6156,6 +6293,92 @@ pub fn emit_aarch64_asm_text(module: &AArch64AsmModule) -> String {
                     out.push_str(&format!("    cset w0, {}\n", cset_cond));
                     out.push_str(&format!("    str x0, [x29, #{}]\n", out_off));
                 }
+                AArch64AsmInstruction::SlotArithSlot {
+                    ty,
+                    dst_slot_idx,
+                    src_slot_idx,
+                    arith_op,
+                } => {
+                    let dst_off = 16 + (*dst_slot_idx as u32) * 8;
+                    let src_off = 16 + (*src_slot_idx as u32) * 8;
+                    let (load_mnem, reg_d, reg_s) = match ty {
+                        MmioScalarType::U8 => ("ldrb", "w0", "w1"),
+                        MmioScalarType::U16 => ("ldrh", "w0", "w1"),
+                        MmioScalarType::U32 | MmioScalarType::F32 => ("ldr", "w0", "w1"),
+                        _ => ("ldr", "x0", "x1"),
+                    };
+                    out.push_str(&format!(
+                        "    {} {}, [x29, #{}]\n",
+                        load_mnem, reg_d, dst_off
+                    ));
+                    out.push_str(&format!(
+                        "    {} {}, [x29, #{}]\n",
+                        load_mnem, reg_s, src_off
+                    ));
+                    let op_mnem = match arith_op {
+                        ArithOp::Add => "add",
+                        ArithOp::Sub => "sub",
+                        ArithOp::And => "and",
+                        ArithOp::Or => "orr",
+                        ArithOp::Xor => "eor",
+                        ArithOp::Shl => "lsl",
+                        ArithOp::Shr => "lsr",
+                        ArithOp::Mul => "mul",
+                        ArithOp::Div => "udiv",
+                        ArithOp::Rem => "udiv", // UDIV + MSUB
+                    };
+                    if *arith_op == ArithOp::Rem {
+                        // remainder: x0 = x0 - (x0/x1)*x1
+                        out.push_str(&format!("    udiv x2, {}, {}\n", reg_d, reg_s));
+                        out.push_str(&format!("    msub {}, x2, {}, {}\n", reg_d, reg_s, reg_d));
+                    } else {
+                        out.push_str(&format!(
+                            "    {} {}, {}, {}\n",
+                            op_mnem, reg_d, reg_d, reg_s
+                        ));
+                    }
+                    let store_off = dst_off;
+                    out.push_str(&format!("    str x0, [x29, #{}]\n", store_off));
+                }
+                AArch64AsmInstruction::SlotArithImm {
+                    ty,
+                    slot_idx,
+                    arith_op,
+                    imm,
+                } => {
+                    let slot_off = 16 + (*slot_idx as u32) * 8;
+                    let (load_mnem, reg) = match ty {
+                        MmioScalarType::U8 => ("ldrb", "w0"),
+                        MmioScalarType::U16 => ("ldrh", "w0"),
+                        MmioScalarType::U32 | MmioScalarType::F32 => ("ldr", "w0"),
+                        _ => ("ldr", "x0"),
+                    };
+                    out.push_str(&format!(
+                        "    {} {}, [x29, #{}]\n",
+                        load_mnem, reg, slot_off
+                    ));
+                    // move imm into x9 for the operation
+                    out.push_str(&format!("    mov x9, #{}\n", imm));
+                    let op_mnem = match arith_op {
+                        ArithOp::Add => "add",
+                        ArithOp::Sub => "sub",
+                        ArithOp::And => "and",
+                        ArithOp::Or => "orr",
+                        ArithOp::Xor => "eor",
+                        ArithOp::Shl => "lsl",
+                        ArithOp::Shr => "lsr",
+                        ArithOp::Mul => "mul",
+                        ArithOp::Div => "udiv",
+                        ArithOp::Rem => "udiv",
+                    };
+                    if *arith_op == ArithOp::Rem {
+                        out.push_str("    udiv x2, x0, x9\n");
+                        out.push_str("    msub x0, x2, x9, x0\n");
+                    } else {
+                        out.push_str(&format!("    {} x0, x0, x9\n", op_mnem));
+                    }
+                    out.push_str(&format!("    str x0, [x29, #{}]\n", slot_off));
+                }
                 _ => {
                     // Remaining variants: emit a comment placeholder.
                     out.push_str("    // TODO: unimplemented instruction\n");
@@ -6359,12 +6582,26 @@ fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
             ty,
             dst_slot_idx,
             src_slot_idx,
-            ..
-        } => {
-            // load src into scratch reg + typed op into dst memory
-            stack_cell_access_bytes(*ty, *src_slot_idx)
-                + stack_cell_access_bytes(*ty, *dst_slot_idx)
-        }
+            arith_op,
+        } => match arith_op {
+            ArithOp::Mul => {
+                // load dst + load src + imulq(4) + store dst
+                2 * stack_cell_access_bytes(*ty, *dst_slot_idx)
+                    + stack_cell_access_bytes(*ty, *src_slot_idx)
+                    + 4
+            }
+            ArithOp::Div | ArithOp::Rem => {
+                // load dst_rax + xorq(3) + load src_rcx + divq(3) + store
+                2 * stack_cell_access_bytes(*ty, *dst_slot_idx)
+                    + stack_cell_access_bytes(*ty, *src_slot_idx)
+                    + 6
+            }
+            _ => {
+                // load src into scratch reg + typed op into dst memory
+                stack_cell_access_bytes(*ty, *src_slot_idx)
+                    + stack_cell_access_bytes(*ty, *dst_slot_idx)
+            }
+        },
         // ParamLoad: movb/movw/movl/movq disp8(%rsp), %bl/%bx/%ebx/%rbx
         ExecutableOp::ParamLoad { ty, .. } => match ty {
             MmioScalarType::U8 | MmioScalarType::U32 => 4,
@@ -6838,6 +7075,9 @@ fn encode_slot_arith_slot_op_bytes(
                 }
             }
         }
+        ArithOp::Mul | ArithOp::Div | ArithOp::Rem => {
+            unreachable!("Mul/Div/Rem use special encoding, not encode_slot_arith_slot_op_bytes")
+        }
     }
 }
 
@@ -6862,6 +7102,10 @@ fn encode_slot_arith_imm_bytes(out: &mut Vec<u8>, op: ArithOp, imm: u64) {
         // count>1: REX.W 0xC1 ModRM imm8 (4 bytes)
         ArithOp::Shl => encode_rbx_shift_imm(out, 0xE3, imm),
         ArithOp::Shr => encode_rbx_shift_imm(out, 0xEB, imm),
+        // Mul/Div/Rem are handled before this function is called
+        ArithOp::Mul | ArithOp::Div | ArithOp::Rem => {
+            unreachable!("Mul/Div/Rem use special encoding, not encode_slot_arith_imm_bytes")
+        }
     }
 }
 
@@ -7421,6 +7665,8 @@ fn slot_arith_imm_op_bytes(op: ArithOp, imm: u64) -> u64 {
                 4
             }
         }
+        ArithOp::Mul => 14, // movabs $imm, %rax (10) + imulq %rax, %rbx (4)
+        ArithOp::Div | ArithOp::Rem => 16, // xorq %rdx,%rdx (3) + movabs $imm,%rcx (10) + divq %rcx (3)
         _ => {
             if imm <= 127 {
                 4
@@ -7464,6 +7710,9 @@ fn slot_arith_slot_op_mnemonic(ty: MmioScalarType, op: ArithOp) -> &'static str 
         (MmioScalarType::U64, ArithOp::Shr) => "shrq",
         (MmioScalarType::F32 | MmioScalarType::F64, _) => {
             unreachable!("float MMIO encoding requires SSE2 backend (Task 14)")
+        }
+        (_, ArithOp::Mul) | (_, ArithOp::Div) | (_, ArithOp::Rem) => {
+            unreachable!("Mul/Div/Rem use special encoding, not mnemonic dispatch")
         }
     }
 }
@@ -7909,9 +8158,64 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     arith_op,
                     imm,
                 } => {
-                    encode_stack_cell_load_slot_bytes(&mut code_bytes, *ty, *slot_idx);
-                    encode_slot_arith_imm_bytes(&mut code_bytes, *arith_op, *imm);
-                    encode_stack_cell_store_saved_value_slot_bytes(&mut code_bytes, *ty, *slot_idx);
+                    match arith_op {
+                        ArithOp::Mul => {
+                            // load slot into %rbx
+                            encode_stack_cell_load_slot_bytes(&mut code_bytes, *ty, *slot_idx);
+                            // movabs $imm, %rax: REX.W 0xB8 + imm64 = [0x48, 0xB8, imm_8_bytes]
+                            code_bytes.extend_from_slice(&[0x48, 0xB8]);
+                            code_bytes.extend_from_slice(&imm.to_le_bytes());
+                            // imulq %rax, %rbx: REX.W 0F AF /r (reg=rbx=3, r/m=rax=0) = [0x48, 0x0F, 0xAF, 0xD8]
+                            code_bytes.extend_from_slice(&[0x48, 0x0F, 0xAF, 0xD8]);
+                            // store %rbx back
+                            encode_stack_cell_store_saved_value_slot_bytes(
+                                &mut code_bytes,
+                                *ty,
+                                *slot_idx,
+                            );
+                        }
+                        ArithOp::Div | ArithOp::Rem => {
+                            // load slot into %rax
+                            encode_stack_cell_load_slot_bytes_into_rax(
+                                &mut code_bytes,
+                                *ty,
+                                *slot_idx,
+                            );
+                            // xorq %rdx, %rdx
+                            code_bytes.extend_from_slice(&[0x48, 0x31, 0xD2]);
+                            // movabs $imm, %rcx: REX.W 0xB9 imm64
+                            code_bytes.extend_from_slice(&[0x48, 0xB9]);
+                            code_bytes.extend_from_slice(&imm.to_le_bytes());
+                            // divq %rcx
+                            code_bytes.extend_from_slice(&[0x48, 0xF7, 0xF1]);
+                            if *arith_op == ArithOp::Div {
+                                // store %rax (quotient) to dst slot
+                                encode_stack_cell_store_accumulator_slot_bytes(
+                                    &mut code_bytes,
+                                    *ty,
+                                    *slot_idx,
+                                );
+                            } else {
+                                // store %rdx (remainder) to slot
+                                // movq %rdx, offset(%rsp): REX.W 0x89 /2 ModRM SIB [disp8]
+                                let offset = 8u8 * slot_idx;
+                                if offset == 0 {
+                                    code_bytes.extend_from_slice(&[0x48, 0x89, 0x14, 0x24]);
+                                } else {
+                                    code_bytes.extend_from_slice(&[0x48, 0x89, 0x54, 0x24, offset]);
+                                }
+                            }
+                        }
+                        _ => {
+                            encode_stack_cell_load_slot_bytes(&mut code_bytes, *ty, *slot_idx);
+                            encode_slot_arith_imm_bytes(&mut code_bytes, *arith_op, *imm);
+                            encode_stack_cell_store_saved_value_slot_bytes(
+                                &mut code_bytes,
+                                *ty,
+                                *slot_idx,
+                            );
+                        }
+                    }
                     local_offset += executable_op_encoded_len(op);
                 }
                 ExecutableOp::SlotArithSlot {
@@ -7921,11 +8225,69 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     arith_op,
                 } => {
                     match arith_op {
+                        ArithOp::Mul => {
+                            // load dst into %rbx (saved-value register)
+                            encode_stack_cell_load_slot_bytes(&mut code_bytes, *ty, *dst_slot_idx);
+                            // load src into %rax (accumulator)
+                            encode_stack_cell_load_slot_bytes_into_rax(
+                                &mut code_bytes,
+                                *ty,
+                                *src_slot_idx,
+                            );
+                            // imulq %rax, %rbx: REX.W 0F AF /r (reg=rbx=3, r/m=rax=0)
+                            code_bytes.extend_from_slice(&[0x48, 0x0F, 0xAF, 0xD8]);
+                            // store %rbx to dst slot
+                            encode_stack_cell_store_saved_value_slot_bytes(
+                                &mut code_bytes,
+                                *ty,
+                                *dst_slot_idx,
+                            );
+                        }
+                        ArithOp::Div | ArithOp::Rem => {
+                            // load dst into %rax
+                            encode_stack_cell_load_slot_bytes_into_rax(
+                                &mut code_bytes,
+                                *ty,
+                                *dst_slot_idx,
+                            );
+                            // xorq %rdx, %rdx
+                            code_bytes.extend_from_slice(&[0x48, 0x31, 0xD2]);
+                            // load src into %rcx
+                            encode_stack_cell_load_slot_bytes_into_rcx(
+                                &mut code_bytes,
+                                *ty,
+                                *src_slot_idx,
+                            );
+                            // divq %rcx: REX.W 0xF7 /6 ModRM(rcx) = [0x48, 0xF7, 0xF1]
+                            code_bytes.extend_from_slice(&[0x48, 0xF7, 0xF1]);
+                            if *arith_op == ArithOp::Div {
+                                // store %rax (quotient) to dst slot
+                                encode_stack_cell_store_accumulator_slot_bytes(
+                                    &mut code_bytes,
+                                    *ty,
+                                    *dst_slot_idx,
+                                );
+                            } else {
+                                // store %rdx (remainder) to dst slot
+                                let offset = 8u8 * dst_slot_idx;
+                                if offset == 0 {
+                                    code_bytes.extend_from_slice(&[0x48, 0x89, 0x14, 0x24]);
+                                } else {
+                                    code_bytes.extend_from_slice(&[0x48, 0x89, 0x54, 0x24, offset]);
+                                }
+                            }
+                        }
                         ArithOp::Shl | ArithOp::Shr => {
                             encode_stack_cell_load_slot_bytes_into_rcx(
                                 &mut code_bytes,
                                 *ty,
                                 *src_slot_idx,
+                            );
+                            encode_slot_arith_slot_op_bytes(
+                                &mut code_bytes,
+                                *ty,
+                                *arith_op,
+                                *dst_slot_idx,
                             );
                         }
                         _ => {
@@ -7934,9 +8296,14 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                                 *ty,
                                 *src_slot_idx,
                             );
+                            encode_slot_arith_slot_op_bytes(
+                                &mut code_bytes,
+                                *ty,
+                                *arith_op,
+                                *dst_slot_idx,
+                            );
                         }
                     }
-                    encode_slot_arith_slot_op_bytes(&mut code_bytes, *ty, *arith_op, *dst_slot_idx);
                     local_offset += executable_op_encoded_len(op);
                 }
                 ExecutableOp::ParamLoad { param_idx, ty } => {
@@ -9971,7 +10338,7 @@ fn emit_aa64_ldr_ty(out: &mut Vec<u8>, rt: u32, rn: u32, ty: MmioScalarType) {
 ///   x0  — "saved value": holds the result of the last `CallCapture`, `MmioRead`,
 ///          or `StackLoad`.  Also used as the return value register (AAPCS64).
 ///   x9  — scratch A: used for MMIO addresses, compare values, masks, and the
-///          loop-condition register (replacing x86-64's `eax` in `TestEaxEax`).
+///          loop-condition register (loaded by `LoadSlotU8ToX9`).
 ///   x10 — scratch B: used for write values in `MmioWriteImm`.
 ///   x29 — frame pointer; stack slots live at `[x29 + 16 + slot_idx * 8]`.
 fn encode_aarch64_function(
@@ -10011,7 +10378,7 @@ fn encode_aarch64_function(
     enum BPKind {
         B,      // B  imm26  (0x14000000)
         CbzX0,  // CBZ  X0,  imm19
-        CbzX9,  // CBZ  X9,  imm19  (after LoadSlotU8ToEax)
+        CbzX9,  // CBZ  X9,  imm19  (after LoadSlotU8ToX9)
         CbnzX9, // CBNZ X9,  imm19
         BNe,    // B.NE      imm19
         BEq,    // B.EQ      imm19
@@ -10118,7 +10485,7 @@ fn encode_aarch64_function(
                 out.extend_from_slice(&0x1400_0000u32.to_le_bytes());
             }
 
-            // ── Conditional jumps (x9 was loaded by LoadSlotU8ToEax) ─────────
+            // ── Conditional jumps (x9 was loaded by LoadSlotU8ToX9) ──────────
             AArch64AsmInstruction::JmpIfZeroLabel(label) => {
                 let po = out.len() as u32;
                 branch_patches.push((po, label.clone(), BPKind::CbzX9));
@@ -10130,10 +10497,9 @@ fn encode_aarch64_function(
                 out.extend_from_slice(&0xB500_0009u32.to_le_bytes()); // CBNZ X9 placeholder
             }
 
-            // ── Loop-condition slot load (x86-64: mov eax,[rbp-n]) ────────────
-            // On AArch64 we load the u8 slot into x9 (our "eax" equivalent).
+            // ── Loop-condition slot load (loads u8 slot into x9) ─────────────
             // LDRB W9, [X29, #(16 + slot_idx * 8)]  — byte access, imm12 = byte offset
-            AArch64AsmInstruction::LoadSlotU8ToEax { slot_idx } => {
+            AArch64AsmInstruction::LoadSlotU8ToX9 { slot_idx } => {
                 let byte_off = 16u32 + (*slot_idx as u32) * 8;
                 if byte_off > 4095 {
                     return Err(format!(
@@ -10147,10 +10513,10 @@ fn encode_aarch64_function(
                 );
             }
 
-            // ── Flags set for loop condition (x86-64: test eax, eax) ─────────
+            // ── TestX9: conceptually "test x9" — no-op in binary emit ────────
             // On AArch64 we use CBZ/CBNZ directly on x9, so no separate
             // flag-setting instruction is required.
-            AArch64AsmInstruction::TestEaxEax => {}
+            AArch64AsmInstruction::TestX9 => {}
 
             // ── Return saved value (x0 already holds it — no-op) ─────────────
             AArch64AsmInstruction::ReturnSavedValue { ty } => {
@@ -10353,6 +10719,80 @@ fn encode_aarch64_function(
                 out.extend_from_slice(&(0x1A9F_07E0u32 | (inv_cond << 12)).to_le_bytes());
                 // STR X0, [X29, #out_slot]
                 slot_str!(0, *out_idx);
+            }
+
+            // ── SlotArithSlot: load dst→x0, src→x1, apply op, store x0 ──────
+            AArch64AsmInstruction::SlotArithSlot {
+                ty: _,
+                dst_slot_idx,
+                src_slot_idx,
+                arith_op,
+            } => {
+                slot_ldr!(0, *dst_slot_idx); // x0 = slot[dst]
+                slot_ldr!(1, *src_slot_idx); // x1 = slot[src]
+                let instr: u32 = match arith_op {
+                    // ADD X0, X0, X1:  0x8B010000
+                    ArithOp::Add => 0x8B010000,
+                    // SUB X0, X0, X1:  0xCB010000
+                    ArithOp::Sub => 0xCB010000,
+                    // AND X0, X0, X1:  0x8A010000
+                    ArithOp::And => 0x8A010000,
+                    // ORR X0, X0, X1:  0xAA010000
+                    ArithOp::Or => 0xAA010000,
+                    // EOR X0, X0, X1:  0xCA010000
+                    ArithOp::Xor => 0xCA010000,
+                    // LSLV X0, X0, X1: 0x9AC12000
+                    ArithOp::Shl => 0x9AC12000,
+                    // LSRV X0, X0, X1: 0x9AC12400
+                    ArithOp::Shr => 0x9AC12400,
+                    // MUL X0, X0, X1 (= MADD X0, X0, X1, XZR): 0x9B017C00
+                    ArithOp::Mul => 0x9B017C00,
+                    // UDIV X0, X0, X1: 0x9AC10800
+                    ArithOp::Div => 0x9AC10800,
+                    // UDIV X9, X0, X1 then MSUB X0, X9, X1, X0 — handled below
+                    ArithOp::Rem => 0, // placeholder, handled specially
+                };
+                if *arith_op == ArithOp::Rem {
+                    // UDIV X9, X0, X1: Rd=9, Rn=0, Rm=1 → 0x9AC10809
+                    out.extend_from_slice(&0x9AC10809u32.to_le_bytes());
+                    // MSUB X0, X9, X1, X0: Rd=0, Rn=9, Rm=1, Ra=0 → 0x9B018120
+                    out.extend_from_slice(&0x9B018120u32.to_le_bytes());
+                } else {
+                    out.extend_from_slice(&instr.to_le_bytes());
+                }
+                slot_str!(0, *dst_slot_idx);
+            }
+
+            // ── SlotArithImm: load slot→x0, load imm→x9, apply op, store x0 ─
+            AArch64AsmInstruction::SlotArithImm {
+                ty: _,
+                slot_idx,
+                arith_op,
+                imm,
+            } => {
+                slot_ldr!(0, *slot_idx); // x0 = slot
+                emit_aa64_imm64(out, 9, *imm); // x9 = imm
+                let instr: u32 = match arith_op {
+                    ArithOp::Add => 0x8B090000, // ADD X0, X0, X9
+                    ArithOp::Sub => 0xCB090000, // SUB X0, X0, X9
+                    ArithOp::And => 0x8A090000, // AND X0, X0, X9
+                    ArithOp::Or => 0xAA090000,  // ORR X0, X0, X9
+                    ArithOp::Xor => 0xCA090000, // EOR X0, X0, X9
+                    ArithOp::Shl => 0x9AC92000, // LSLV X0, X0, X9
+                    ArithOp::Shr => 0x9AC92400, // LSRV X0, X0, X9
+                    ArithOp::Mul => 0x9B097C00, // MUL X0, X0, X9 (MADD Rd=0,Rn=0,Rm=9,Ra=XZR)
+                    ArithOp::Div => 0x9AC90800, // UDIV X0, X0, X9 (Rm=9)
+                    ArithOp::Rem => 0,          // handled below
+                };
+                if *arith_op == ArithOp::Rem {
+                    // UDIV X2, X0, X9: Rd=2, Rn=0, Rm=9 → 0x9AC90802
+                    out.extend_from_slice(&0x9AC90802u32.to_le_bytes());
+                    // MSUB X0, X2, X9, X0: Rd=0, Rn=2, Ra=0, Rm=9 → 0x9B098040
+                    out.extend_from_slice(&0x9B098040u32.to_le_bytes());
+                } else {
+                    out.extend_from_slice(&instr.to_le_bytes());
+                }
+                slot_str!(0, *slot_idx);
             }
 
             _ => {

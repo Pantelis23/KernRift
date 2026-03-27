@@ -1423,7 +1423,8 @@ fn get_val() -> uint32 {
 }
 
 #[test]
-fn mul_op_in_expr_returns_compile_error() {
+fn mul_op_in_expr_compiles_successfully() {
+    use krir::KrirOp;
     let src = r#"
 @ctx(thread)
 fn bad(uint32 x) -> uint32 {
@@ -1431,13 +1432,16 @@ fn bad(uint32 x) -> uint32 {
     return result
 }
 "#;
-    let result = compile_source(src);
-    assert!(result.is_err(), "expected compile error for multiplication");
-    let errs = result.unwrap_err();
+    let module = compile_source(src).expect("multiplication should compile");
+    let f = module
+        .functions
+        .iter()
+        .find(|f| f.name == "bad")
+        .unwrap();
     assert!(
-        errs.iter().any(|e| e.contains("multiplication")),
-        "expected 'multiplication' in error, got: {:?}",
-        errs
+        f.ops.iter().any(|op| matches!(op, KrirOp::SlotArith { .. } | KrirOp::CellArithImm { .. })),
+        "expected SlotArith/CellArithImm in bad ops, got: {:?}",
+        f.ops
     );
 }
 

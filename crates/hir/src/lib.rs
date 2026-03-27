@@ -2832,11 +2832,6 @@ fn lower_expr(
                 return Ok(l);
             }
             match op {
-                ParserBinOpKind::Mul | ParserBinOpKind::Div | ParserBinOpKind::Rem => {
-                    return Err(
-                        "multiplication/division/modulo not yet supported (V1 limitation)".into(),
-                    );
-                }
                 ParserBinOpKind::LogAnd | ParserBinOpKind::LogOr => {
                     return Err(
                         "logical && / || not yet lowered (short-circuit not implemented)".into(),
@@ -2916,6 +2911,9 @@ fn binop_to_krir_arith(op: ParserBinOpKind) -> Option<KrirArithOp> {
         ParserBinOpKind::Xor => KrirArithOp::Xor,
         ParserBinOpKind::Shl => KrirArithOp::Shl,
         ParserBinOpKind::Shr => KrirArithOp::Shr,
+        ParserBinOpKind::Mul => KrirArithOp::Mul,
+        ParserBinOpKind::Div => KrirArithOp::Div,
+        ParserBinOpKind::Rem => KrirArithOp::Rem,
         _ => return None,
     })
 }

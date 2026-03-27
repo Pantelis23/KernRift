@@ -167,9 +167,9 @@ All supported compound operators:
 | `^=`     | bitwise XOR        |
 | `<<=`    | left shift         |
 | `>>=`    | right shift        |
-| `*=`     | multiply *(V2)*    |
-| `/=`     | divide *(V2)*      |
-| `%=`     | remainder *(V2)*   |
+| `*=`     | multiply           |
+| `/=`     | divide             |
+| `%=`     | remainder          |
 
 ```kr
 count += 1
@@ -187,7 +187,7 @@ Expressions use a Pratt parser.  Precedence from highest (tightest) to lowest:
 | Precedence | Operators            | Notes                     |
 |------------|----------------------|---------------------------|
 | 110 (prefix) | `!`, `~`, `-`      | Logical not, bitwise not, negation |
-| 100        | `*`, `/`, `%`        | Multiply, divide, remainder *(V2)* |
+| 100        | `*`, `/`, `%`        | Multiply, divide, remainder        |
 | 90         | `+`, `-`             | Add, subtract             |
 | 80         | `<<`, `>>`           | Shift left, shift right   |
 | 50         | `&`                  | Bitwise AND               |
