@@ -260,10 +260,11 @@ fn find_fix_sites_on(source: &str) -> Vec<FixSite> {
         let closes = line.chars().filter(|&c| c == '}').count();
 
         // Inside a function body: look for the last bare call on this line.
-        if in_fn_body && depth > fn_body_depth {
-            if let Some(col) = last_call_col(line) {
-                last_call_offset = Some(byte_offset + col);
-            }
+        if in_fn_body
+            && depth > fn_body_depth
+            && let Some(col) = last_call_col(line)
+        {
+            last_call_offset = Some(byte_offset + col);
         }
 
         depth = depth.saturating_add(opens).saturating_sub(closes);
@@ -308,12 +309,10 @@ fn find_fix_sites_on(source: &str) -> Vec<FixSite> {
     }
 
     // Malformed source: body never closed — emit whatever we have.
-    if in_fn_body {
-        if let Some(offset) = last_call_offset.take() {
-            sites.push(FixSite {
-                insert_before: offset,
-            });
-        }
+    if in_fn_body && let Some(offset) = last_call_offset.take() {
+        sites.push(FixSite {
+            insert_before: offset,
+        });
     }
 
     sites
