@@ -58,6 +58,12 @@ fn pci_device_disable() {
     mmio_write<u32>(BAR0 + 0x04, 0x00);
 }
 
+// Boot entry point — enables the device on startup.
+@ctx(thread, boot)
+fn entry() {
+    pci_device_enable();
+}
+
 // Read the PCI vendor/device ID from config space via I/O ports.
 // BDF 00:01:0 (bus 0, device 1, function 0) — register 0 (vendor + device ID).
 @caps(Ioport)
