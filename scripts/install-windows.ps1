@@ -4,7 +4,7 @@
     Installs kernriftc and kernrift on Windows.
 .DESCRIPTION
     Downloads and runs the official rustup installer if Rust is not present,
-    then installs the KernRift binaries via cargo.
+    then clones the KernRift repository and installs the binaries via cargo.
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File install-windows.ps1
 #>
@@ -50,11 +50,23 @@ if ($env:PATH -notlike "*$cargoBin*") {
     $env:PATH = "$cargoBin;$env:PATH"
 }
 
-# ── 3. install KernRift ───────────────────────────────────────────────────────
+# ── 3. clone and install ──────────────────────────────────────────────────────
 Write-Info "Installing kernriftc and kernrift from $Repo ..."
-cargo install --git $Repo --locked kernriftc
-cargo install --git $Repo --locked kernrift
-if ($LASTEXITCODE -ne 0) { Write-Error 'cargo install failed.'; exit 1 }
+$tmpDir = Join-Path $env:TEMP "kernrift-install-$([System.IO.Path]::GetRandomFileName())"
+New-Item -ItemType Directory -Path $tmpDir | Out-Null
+
+try {
+    git clone --depth=1 $Repo "$tmpDir\kernrift"
+    if ($LASTEXITCODE -ne 0) { Write-Error 'git clone failed.'; exit 1 }
+
+    cargo install --path "$tmpDir\kernrift\crates\kernriftc" --locked
+    if ($LASTEXITCODE -ne 0) { Write-Error 'cargo install kernriftc failed.'; exit 1 }
+
+    cargo install --path "$tmpDir\kernrift\crates\kernrift" --locked
+    if ($LASTEXITCODE -ne 0) { Write-Error 'cargo install kernrift failed.'; exit 1 }
+} finally {
+    Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+}
 
 # ── 4. verify ─────────────────────────────────────────────────────────────────
 Write-Host ''

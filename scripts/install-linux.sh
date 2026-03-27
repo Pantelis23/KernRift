@@ -44,10 +44,14 @@ fi
 # make sure cargo is on PATH for the rest of this script
 export PATH="$HOME/.cargo/bin:$PATH"
 
-# ── 3. install KernRift ───────────────────────────────────────────────────────
+# ── 3. clone and install ──────────────────────────────────────────────────────
 info "Installing kernriftc and kernrift from $REPO ..."
-cargo install --git "$REPO" --locked kernriftc
-cargo install --git "$REPO" --locked kernrift
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+
+git clone --depth=1 "$REPO" "$tmpdir/kernrift"
+cargo install --path "$tmpdir/kernrift/crates/kernriftc" --locked
+cargo install --path "$tmpdir/kernrift/crates/kernrift"  --locked
 
 # ── 4. verify ─────────────────────────────────────────────────────────────────
 echo
