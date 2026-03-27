@@ -801,10 +801,9 @@ fn emit_aarch64_elf_executable_bytes(
     // ld.lld auto-detects architecture from the ELF object.
     // aarch64-linux-gnu-ld is the standard Binutils cross-linker.
     // Plain ld works on a native AArch64 host.
-    let ld = find_host_tool(&["ld.lld", "aarch64-linux-gnu-ld", "ld"])
-        .ok_or_else(|| {
-            "elfexe aarch64 emit requires a linker (ld.lld, aarch64-linux-gnu-ld, or ld)".to_string()
-        })?;
+    let ld = find_host_tool(&["ld.lld", "aarch64-linux-gnu-ld", "ld"]).ok_or_else(|| {
+        "elfexe aarch64 emit requires a linker (ld.lld, aarch64-linux-gnu-ld, or ld)".to_string()
+    })?;
 
     let object_bytes = emit_aarch64_elf_object_bytes(executable, target)?;
 
@@ -817,17 +816,25 @@ fn emit_aarch64_elf_executable_bytes(
         )
     })?;
 
-    let cleanup = TempArtifactDir { path: temp_dir.clone() };
+    let cleanup = TempArtifactDir {
+        path: temp_dir.clone(),
+    };
     let object_path = temp_dir.join("input.o");
     let output_path = temp_dir.join("output.elf");
 
     fs::write(&object_path, &object_bytes).map_err(|err| {
-        format!("failed to write temp object '{}': {}", object_path.display(), err)
+        format!(
+            "failed to write temp object '{}': {}",
+            object_path.display(),
+            err
+        )
     })?;
 
     let ld_output = Command::new(&ld)
-        .arg("-e").arg("entry")
-        .arg("-o").arg(&output_path)
+        .arg("-e")
+        .arg("entry")
+        .arg("-o")
+        .arg(&output_path)
         .arg(&object_path)
         .output()
         .map_err(|err| format!("failed to run linker '{}': {}", ld, err))?;
@@ -842,7 +849,11 @@ fn emit_aarch64_elf_executable_bytes(
     }
 
     let bytes = fs::read(&output_path).map_err(|err| {
-        format!("failed to read linked output '{}': {}", output_path.display(), err)
+        format!(
+            "failed to read linked output '{}': {}",
+            output_path.display(),
+            err
+        )
     })?;
     drop(cleanup);
     Ok(bytes)
@@ -861,15 +872,25 @@ fn emit_aarch64_static_library(
 
     let temp_dir = unique_temp_dir("staticlib-aarch64");
     fs::create_dir_all(&temp_dir).map_err(|err| {
-        format!("failed to create temporary dir '{}': {}", temp_dir.display(), err)
+        format!(
+            "failed to create temporary dir '{}': {}",
+            temp_dir.display(),
+            err
+        )
     })?;
 
-    let cleanup = TempArtifactDir { path: temp_dir.clone() };
+    let cleanup = TempArtifactDir {
+        path: temp_dir.clone(),
+    };
     let object_path = temp_dir.join("input.o");
     let archive_path = temp_dir.join("output.a");
 
     fs::write(&object_path, &object_bytes).map_err(|err| {
-        format!("failed to write temporary object '{}': {}", object_path.display(), err)
+        format!(
+            "failed to write temporary object '{}': {}",
+            object_path.display(),
+            err
+        )
     })?;
 
     let ar_output = Command::new(&ar)
@@ -889,7 +910,11 @@ fn emit_aarch64_static_library(
     }
 
     let bytes = fs::read(&archive_path).map_err(|err| {
-        format!("failed to read archive '{}': {}", archive_path.display(), err)
+        format!(
+            "failed to read archive '{}': {}",
+            archive_path.display(),
+            err
+        )
     })?;
     drop(cleanup);
     Ok(bytes)
@@ -911,10 +936,16 @@ fn emit_aarch64_host_executable_bytes(
 
     let temp_dir = unique_temp_dir("hostexe-aarch64");
     fs::create_dir_all(&temp_dir).map_err(|err| {
-        format!("failed to create temp dir '{}': {}", temp_dir.display(), err)
+        format!(
+            "failed to create temp dir '{}': {}",
+            temp_dir.display(),
+            err
+        )
     })?;
 
-    let cleanup = TempArtifactDir { path: temp_dir.clone() };
+    let cleanup = TempArtifactDir {
+        path: temp_dir.clone(),
+    };
     let asm_path = temp_dir.join("input.s");
     let object_path = temp_dir.join("input.o");
     let output_path = temp_dir.join("output");
@@ -956,7 +987,11 @@ fn emit_aarch64_host_executable_bytes(
     }
 
     let bytes = fs::read(&output_path).map_err(|err| {
-        format!("failed to read linked output '{}': {}", output_path.display(), err)
+        format!(
+            "failed to read linked output '{}': {}",
+            output_path.display(),
+            err
+        )
     })?;
     drop(cleanup);
     Ok(bytes)

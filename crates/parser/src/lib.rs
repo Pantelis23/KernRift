@@ -3432,7 +3432,11 @@ impl<'a> Parser<'a> {
                 // the last statement in a block does not require a trailing `;`.
                 // An empty `out` means we are at the end of the block with no
                 // pending statement — signal that to the caller via None.
-                return if out.trim().is_empty() { None } else { Some(out) };
+                return if out.trim().is_empty() {
+                    None
+                } else {
+                    Some(out)
+                };
             }
 
             if ch == '"' {

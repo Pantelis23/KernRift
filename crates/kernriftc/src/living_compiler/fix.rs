@@ -94,7 +94,7 @@ fn sanitize_source(src: &str) -> String {
                 i += 1;
             }
             // leave the '\n' as-is
-        // Block comment: /* … */
+            // Block comment: /* … */
         } else if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
             out[i] = b' ';
             out[i + 1] = b' ';
@@ -212,7 +212,10 @@ fn last_call_col(line: &str) -> Option<usize> {
         let mut found = false;
         for ch in seg_trimmed[ident_end..].chars() {
             match ch {
-                '(' => { found = true; break; }
+                '(' => {
+                    found = true;
+                    break;
+                }
                 ' ' | '\t' => {}
                 _ => break,
             }
@@ -281,7 +284,9 @@ fn find_fix_sites_on(source: &str) -> Vec<FixSite> {
         // Function body closed.
         if in_fn_body && depth <= fn_body_depth {
             if let Some(offset) = last_call_offset.take() {
-                sites.push(FixSite { insert_before: offset });
+                sites.push(FixSite {
+                    insert_before: offset,
+                });
             }
             in_fn_body = false;
             fn_body_depth = 0;
@@ -305,7 +310,9 @@ fn find_fix_sites_on(source: &str) -> Vec<FixSite> {
     // Malformed source: body never closed — emit whatever we have.
     if in_fn_body {
         if let Some(offset) = last_call_offset.take() {
-            sites.push(FixSite { insert_before: offset });
+            sites.push(FixSite {
+                insert_before: offset,
+            });
         }
     }
 
@@ -419,7 +426,10 @@ mod tests {
         let san = sanitize_source(src);
         // The two non-newline chars of "/*" and "*/" are blanked; inner newlines kept.
         assert!(san.contains('\n'), "newlines must be preserved");
-        assert!(!san.contains("init()"), "call inside comment must be erased");
+        assert!(
+            !san.contains("init()"),
+            "call inside comment must be erased"
+        );
         assert!(san.ends_with(" foo()"));
     }
 
