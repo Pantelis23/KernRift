@@ -47,6 +47,9 @@ fn build_backend_artifact_metadata(
         BackendArtifactKind::KrboFat => {
             return Err("invalid emit mode: --meta-out is unsupported for 'krbofat'".to_string());
         }
+        BackendArtifactKind::CoffObject => {
+            return Err("invalid emit mode: --meta-out is unsupported for 'coffobj'".to_string());
+        }
         BackendArtifactKind::HostExecutable => {
             return Err("invalid emit mode: --meta-out is unsupported for 'hostexe'".to_string());
         }

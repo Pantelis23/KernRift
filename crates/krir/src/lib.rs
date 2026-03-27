@@ -6237,6 +6237,28 @@ fn aarch64_store_parts(ty: MmioScalarType) -> (&'static str, &'static str) {
     }
 }
 
+/// Emit a 64-bit immediate into `reg` using MOVZ + MOVK.
+///
+/// `ldr Xn, =<imm>` is a GNU as pseudo that LLVM's integrated assembler
+/// (used by rustc/global_asm!) does not support.  This helper emits a
+/// portable MOVZ/MOVK sequence that works with both assemblers.
+fn emit_aarch64_mov_imm64(out: &mut String, reg: &str, value: u64) {
+    let h0 = (value & 0xFFFF) as u16;
+    let h1 = ((value >> 16) & 0xFFFF) as u16;
+    let h2 = ((value >> 32) & 0xFFFF) as u16;
+    let h3 = ((value >> 48) & 0xFFFF) as u16;
+    out.push_str(&format!("    movz {}, #{}\n", reg, h0));
+    if h1 != 0 {
+        out.push_str(&format!("    movk {}, #{}, lsl #16\n", reg, h1));
+    }
+    if h2 != 0 {
+        out.push_str(&format!("    movk {}, #{}, lsl #32\n", reg, h2));
+    }
+    if h3 != 0 {
+        out.push_str(&format!("    movk {}, #{}, lsl #48\n", reg, h3));
+    }
+}
+
 pub fn emit_aarch64_asm_text(module: &AArch64AsmModule) -> String {
     let mut out = String::new();
     out.push_str(&format!("    .section {}\n", module.section));
@@ -6276,7 +6298,15 @@ pub fn emit_aarch64_asm_text(module: &AArch64AsmModule) -> String {
                     else_symbol,
                     ..
                 } => {
-                    out.push_str(&format!("    cmp x0, #{}\n", compare_value));
+                    // CMP immediate is limited to 12-bit (0-4095) in AArch64.
+                    // For larger values load into x1 first so both GNU as and
+                    // LLVM's integrated assembler accept the instruction.
+                    if *compare_value <= 4095 {
+                        out.push_str(&format!("    cmp x0, #{}\n", compare_value));
+                    } else {
+                        emit_aarch64_mov_imm64(&mut out, "x1", *compare_value);
+                        out.push_str("    cmp x0, x1\n");
+                    }
                     out.push_str(&format!("    b.eq {}\n", then_symbol));
                     out.push_str(&format!("    b {}\n", else_symbol));
                 }
@@ -6286,7 +6316,11 @@ pub fn emit_aarch64_asm_text(module: &AArch64AsmModule) -> String {
                     else_symbol,
                     ..
                 } => {
-                    out.push_str(&format!("    tst x0, #{}\n", mask_value));
+                    // TST immediate must be a valid AArch64 logical immediate.
+                    // Loading the mask into a register works with any value and
+                    // is accepted by both GNU as and LLVM's integrated assembler.
+                    emit_aarch64_mov_imm64(&mut out, "x1", *mask_value);
+                    out.push_str("    tst x0, x1\n");
                     out.push_str(&format!("    b.ne {}\n", then_symbol));
                     out.push_str(&format!("    b {}\n", else_symbol));
                 }
@@ -6319,18 +6353,24 @@ pub fn emit_aarch64_asm_text(module: &AArch64AsmModule) -> String {
                 }
                 AArch64AsmInstruction::MmioRead { addr, ty, .. } => {
                     let (mnem, reg) = aarch64_load_parts(*ty);
-                    out.push_str(&format!("    ldr x1, =0x{:x}\n", addr));
+                    // `ldr x1, =<addr>` is a GNU as literal-pool pseudo not
+                    // supported by LLVM's integrated assembler.  Use MOVZ/MOVK.
+                    emit_aarch64_mov_imm64(&mut out, "x1", *addr);
                     out.push_str(&format!("    {} {}, [x1]\n", mnem, reg));
                 }
                 AArch64AsmInstruction::MmioWriteImm { addr, value, ty } => {
                     let (mnem, reg) = aarch64_store_parts(*ty);
-                    out.push_str(&format!("    ldr x1, =0x{:x}\n", addr));
-                    out.push_str(&format!("    mov {}, #{}\n", reg, value));
+                    emit_aarch64_mov_imm64(&mut out, "x1", *addr);
+                    // Always load the value into x2 (the 64-bit alias of w2)
+                    // so the MOVZ/MOVK sequence is valid for any bit width.
+                    // The subsequent store uses reg (w2 or x2) which are the
+                    // same physical register in AArch64.
+                    emit_aarch64_mov_imm64(&mut out, "x2", *value);
                     out.push_str(&format!("    {} {}, [x1]\n", mnem, reg));
                 }
                 AArch64AsmInstruction::MmioWriteValue { addr, ty } => {
                     let (mnem, reg) = aarch64_store_parts(*ty);
-                    out.push_str(&format!("    ldr x1, =0x{:x}\n", addr));
+                    emit_aarch64_mov_imm64(&mut out, "x1", *addr);
                     out.push_str(&format!("    {} {}, [x1]\n", mnem, reg));
                 }
                 AArch64AsmInstruction::CompareSlots {

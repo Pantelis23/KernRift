@@ -20,9 +20,9 @@ pub use hir::{
 pub use krir::BackendTargetId as CompilerBackendTargetId;
 use krir::{
     BackendTargetContract, BackendTargetId, KRBO_FAT_ARCH_AARCH64, KRBO_FAT_ARCH_X86_64,
-    KrirModule, KrirOp, TargetArch, emit_aarch64_asm_text, emit_aarch64_elf_object_bytes,
-    emit_aarch64_executable_bytes, emit_compiler_owned_object_bytes, emit_krbo_bytes,
-    emit_krbofat_bytes, emit_x86_64_asm_text, emit_x86_64_object_bytes,
+    KrirModule, KrirOp, TargetArch, emit_aarch64_asm_text, emit_aarch64_coff_object_bytes,
+    emit_aarch64_elf_object_bytes, emit_aarch64_executable_bytes, emit_compiler_owned_object_bytes,
+    emit_krbo_bytes, emit_krbofat_bytes, emit_x86_64_asm_text, emit_x86_64_object_bytes,
     lower_current_krir_to_executable_krir, lower_executable_krir_to_aarch64_asm,
     lower_executable_krir_to_compiler_owned_object, lower_executable_krir_to_x86_64_asm,
     lower_executable_krir_to_x86_64_object,
@@ -55,6 +55,10 @@ pub struct CanonicalFixSourceResult {
 pub enum BackendArtifactKind {
     Krbo,
     ElfObject,
+    /// PE/COFF relocatable object.  Required for linking into UEFI images
+    /// (`aarch64-unknown-uefi`) because rust-lld operates in PE/COFF mode
+    /// for that target and rejects ELF input files.
+    CoffObject,
     ElfExecutable,
     KrboExecutable,
     KrboFat,
@@ -70,6 +74,7 @@ impl BackendArtifactKind {
         match self {
             Self::Krbo => "krbo",
             Self::ElfObject => "elfobj",
+            Self::CoffObject => "coffobj",
             Self::ElfExecutable => "elfexe",
             Self::KrboExecutable => "krboexe",
             Self::KrboFat => "krbofat",
@@ -83,6 +88,7 @@ impl BackendArtifactKind {
         match value {
             "krbo" => Ok(Self::Krbo),
             "elfobj" => Ok(Self::ElfObject),
+            "coffobj" => Ok(Self::CoffObject),
             "elfexe" => Ok(Self::ElfExecutable),
             "krboexe" => Ok(Self::KrboExecutable),
             "krbofat" => Ok(Self::KrboFat),
@@ -90,7 +96,7 @@ impl BackendArtifactKind {
             "staticlib" => Ok(Self::StaticLib),
             "hostexe" => Ok(Self::HostExecutable),
             _ => Err(format!(
-                "unsupported emit target '{}'; expected 'krbo', 'elfobj', 'elfexe', 'krboexe', 'krbofat', 'asm', 'staticlib', or 'hostexe'",
+                "unsupported emit target '{}'; expected 'krbo', 'elfobj', 'coffobj', 'elfexe', 'krboexe', 'krbofat', 'asm', 'staticlib', or 'hostexe'",
                 value
             )),
         }
@@ -175,6 +181,19 @@ pub fn emit_backend_artifact_file_with_surface_and_target(
             }
             TargetArch::AArch64 => {
                 emit_aarch64_elf_object_bytes(&executable, &target).map_err(|err| vec![err])
+            }
+        },
+        BackendArtifactKind::CoffObject => match target.arch {
+            TargetArch::X86_64 => Err(vec![
+                "coffobj is only supported for arm64; x86_64 COFF is not yet implemented"
+                    .to_string(),
+            ]),
+            TargetArch::AArch64 => {
+                // Use the aarch64-win target contract so the emitted COFF carries
+                // IMAGE_FILE_MACHINE_ARM64 (0xAA64) and IMAGE_REL_ARM64_BRANCH26
+                // relocations that rust-lld accepts in aarch64-unknown-uefi mode.
+                let win_target = BackendTargetId::Aarch64Win.default_contract();
+                emit_aarch64_coff_object_bytes(&executable, &win_target).map_err(|err| vec![err])
             }
         },
         BackendArtifactKind::ElfExecutable => match target.arch {

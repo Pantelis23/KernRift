@@ -254,6 +254,10 @@ fn flush_uart(uart_ptr: *mut u8, buf_size: usize) {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.len() == 2 && (args[1] == "--version" || args[1] == "-V") {
+        println!("kernrift {}", env!("CARGO_PKG_VERSION"));
+        std::process::exit(0);
+    }
     if args.len() < 2 {
         eprintln!("usage: kernrift <file.krbo>");
         std::process::exit(2);

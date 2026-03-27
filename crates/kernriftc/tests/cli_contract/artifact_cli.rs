@@ -337,6 +337,79 @@ fn emit_krbofat_with_extern_produces_import_aware_x86_64_slice() {
 }
 
 #[test]
+fn emit_coffobj_arm64_writes_pe_coff_relocatable_object() {
+    // Regression test: --emit=coffobj --arch arm64 must produce a PE/COFF
+    // relocatable object (Machine=0xAA64) so that rust-lld in
+    // aarch64-unknown-uefi mode accepts it as a linkable input.
+    let root = repo_root();
+    let fixture = root.join("tests").join("must_pass").join("basic.kr");
+    let output_path = unique_temp_output_path("emit-coffobj-arm64", "obj");
+    fs::remove_file(&output_path).ok();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("--emit=coffobj")
+        .arg("--arch")
+        .arg("arm64")
+        .arg("-o")
+        .arg(output_path.as_os_str())
+        .arg(fixture.as_os_str());
+    cmd.assert().success();
+
+    let bytes = fs::read(&output_path).expect("read coffobj output");
+    assert!(bytes.len() >= 20, "coffobj output too small");
+    // IMAGE_FILE_HEADER: Machine field at bytes 0-1 = 0xAA64 (ARM64).
+    assert_eq!(
+        u16::from_le_bytes([bytes[0], bytes[1]]),
+        0xAA64,
+        "expected IMAGE_FILE_MACHINE_ARM64 (0xAA64)"
+    );
+    // Section count at bytes 2-3 should be 1 (.text only).
+    assert_eq!(
+        u16::from_le_bytes([bytes[2], bytes[3]]),
+        1,
+        "expected 1 section"
+    );
+
+    fs::remove_file(&output_path).ok();
+}
+
+#[test]
+fn emit_asm_arm64_uses_movz_movk_not_ldr_pseudo() {
+    // Regression test: ARM64 asm text must use MOVZ/MOVK for address/immediate
+    // loading instead of the GNU `ldr Xn, =<imm>` literal-pool pseudo-instruction
+    // which LLVM's integrated assembler (used by rustc global_asm!) rejects.
+    let root = repo_root();
+    let fixture = root.join("examples").join("uart_console_probe.kr");
+    let output_path = unique_temp_output_path("emit-asm-arm64-movz", "s");
+    fs::remove_file(&output_path).ok();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("--emit=asm")
+        .arg("--arch")
+        .arg("arm64")
+        .arg("-o")
+        .arg(output_path.as_os_str())
+        .arg(fixture.as_os_str());
+    cmd.assert().success();
+
+    let text = fs::read_to_string(&output_path).expect("read arm64 asm output");
+    assert!(
+        !text.contains("ldr x1, ="),
+        "arm64 asm must not contain `ldr x1, =` pseudo-instruction (rejected by LLVM AS):\n{}",
+        text
+    );
+    assert!(
+        text.contains("movz x1,"),
+        "arm64 asm must use movz for address loading:\n{}",
+        text
+    );
+
+    fs::remove_file(&output_path).ok();
+}
+
+#[test]
 fn emit_elfobj_supports_declared_extern_call_target_and_metadata_verifies() {
     let root = repo_root();
     let fixture = root

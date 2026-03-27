@@ -2075,6 +2075,7 @@ emit:
   kernriftc --emit=elfobj --arch x86_64 -o <output.o> <file.kr>
   kernriftc --emit=elfobj --arch arm64 -o <output.o> <file.kr>
   kernriftc --emit=elfobj -o <output.o> --meta-out <output.json> <file.kr>
+  kernriftc --emit=coffobj --arch arm64 -o <output.obj> <file.kr>
   kernriftc --emit=krboexe -o <output.krbo> <file.kr>
   kernriftc --emit=asm -o <output.s> <file.kr>
   kernriftc --emit=asm --arch x86_64 -o <output.s> <file.kr>
@@ -2087,6 +2088,7 @@ emit:
   kernriftc --surface stable --emit=krbo -o <output.krbo> --meta-out <output.json> <file.kr>
   kernriftc --surface stable --emit=elfobj -o <output.o> <file.kr>
   kernriftc --surface stable --emit=elfobj -o <output.o> --meta-out <output.json> <file.kr>
+  kernriftc --surface stable --emit=coffobj --arch arm64 -o <output.obj> <file.kr>
   kernriftc --surface stable --emit=krboexe -o <output.krbo> <file.kr>
   kernriftc --surface stable --emit=asm -o <output.s> <file.kr>
   kernriftc --emit krir <file.kr>
