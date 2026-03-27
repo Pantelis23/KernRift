@@ -29,7 +29,8 @@ instructions; there are no hidden costs.
 16. [Critical Blocks](#16-critical-blocks)
 17. [Unsafe Blocks](#17-unsafe-blocks)
 18. [Compiler CLI Reference](#18-compiler-cli-reference)
-19. [Binary Artifact Formats](#19-binary-artifact-formats)
+19. [Adaptive Surface & Living Compiler](#19-adaptive-surface--living-compiler)
+20. [Binary Artifact Formats](#20-binary-artifact-formats)
 
 ---
 
@@ -940,7 +941,132 @@ memory, runs the entry function, and flushes `print()` output to stdout.
 
 ---
 
-## 19. Binary Artifact Formats
+## 19. Adaptive Surface & Living Compiler
+
+KernRift's compiler has a built-in mechanism for evolving the language without
+breaking existing code.  Every attribute alias or shorthand goes through a
+lifecycle tracked by the compiler itself: `experimental` → `stable` →
+`deprecated`.  This section documents how to interact with that system.
+
+### The `#lang` directive
+
+A source file may declare its required surface profile at the very first line:
+
+```kr
+#lang stable
+```
+
+```kr
+#lang experimental
+```
+
+This overrides the `--surface` flag passed to the compiler for that file.  Use
+it to pin production kernel code to `stable` while keeping experimental
+feature work in separate files.
+
+You can also pin a specific language version:
+
+```kr
+#lang 1.0
+```
+
+The compiler rejects files that require a version higher than its own
+(`CURRENT_LANG_VERSION = 1.0`).  This prevents silently compiling code with a
+toolchain that does not fully understand it.
+
+### Surface profiles
+
+| Profile        | Meaning                                                          |
+|----------------|------------------------------------------------------------------|
+| `stable`       | Default. All promoted features. Suitable for production code.    |
+| `experimental` | Also allows features tagged `Experimental`. Not for shipping.    |
+
+Pass `--surface experimental` on the command line, or write `#lang experimental`
+in the source file.
+
+### Adaptive feature aliases
+
+Adaptive features are ergonomic aliases for verbose canonical forms.  Each has
+a lifecycle status and a safe mechanical replacement.
+
+| Alias            | Expands to          | Status       | Profile gate   |
+|------------------|---------------------|--------------|----------------|
+| `@irq_handler`   | `@ctx(irq)`         | Experimental | experimental   |
+| `@thread_entry`  | `@ctx(thread)`      | Stable       | stable         |
+| `@may_block`     | `@eff(block)`       | Experimental | experimental   |
+| `@irq_legacy`    | `@ctx(irq)`         | Deprecated   | —              |
+
+Using an alias outside its gate produces a compiler error.  Using a deprecated
+alias always produces an error regardless of surface profile.
+
+The compiler also accepts legacy shorthand attributes inherited from earlier
+syntax revisions (`@irq`, `@noirq`, `@alloc`, `@block`, `@preempt_off`).
+These are always accepted and lower to their canonical equivalents.
+
+### Inspecting available features
+
+List the active feature aliases for a profile:
+
+```sh
+kernriftc features --surface stable
+kernriftc features --surface experimental
+kernriftc features --surface stable --json
+```
+
+### The `proposals` subcommand
+
+Proposals track the promotion lifecycle of every adaptive feature.  Use them
+to audit the compiler's own roadmap:
+
+```sh
+# List all proposals with their current status.
+kernriftc proposals
+
+# Validate internal consistency of the proposal table.
+kernriftc proposals --validate
+
+# Show which proposals are ready to promote to the next lifecycle stage.
+kernriftc proposals --promotion-readiness
+
+# Preview what promoting a feature would change (dry run + diff).
+kernriftc proposals --promote irq_handler_alias --dry-run --diff
+
+# Perform the promotion (updates the compiler's internal table).
+kernriftc proposals --promote irq_handler_alias
+```
+
+Promoting a feature means advancing it from `Experimental` → `Stable`, or
+`Stable` → `Deprecated`.  The `--dry-run` flag prints what would change
+without writing anything.
+
+### The living compiler (`lc`)
+
+The living compiler analyses a source file and produces fitness scores and
+fixup suggestions.  It is the primary tool for adopting the latest canonical
+style:
+
+```sh
+kernriftc lc <file.kr>                      # analyse and report fitness
+kernriftc lc --surface experimental <file.kr>
+kernriftc lc --ci <file.kr>                 # exit 1 if fitness < threshold
+kernriftc lc --ci --min-fitness 70 <file.kr>
+kernriftc lc --diff <file.kr>               # show suggested rewrites as a diff
+kernriftc lc --fix --dry-run <file.kr>      # preview in-place fixes
+kernriftc lc --fix --write <file.kr>        # apply fixes in-place
+```
+
+The living compiler scans for patterns such as:
+
+- IRQ handlers that use raw MMIO (`@ctx(irq)` + `raw_mmio_write`)
+- High lock depth (call chains that hold many locks simultaneously)
+- MMIO access without a lock guard
+
+Each pattern produces a fitness score (0–100).  A score of 100 means the code
+is idiomatic and no suggestions are available.
+
+---
+
+## 20. Binary Artifact Formats
 
 ### `.krbo` — KernRift binary object
 
