@@ -708,6 +708,13 @@ fn emit_x86_64_host_executable_bytes(
     // The C runtime startup calls `main`.  If the module doesn't already
     // define a `main` symbol (e.g. it uses `fn entry()`), append a thin
     // trampoline so the CRT can locate the entry point.
+    #[cfg(not(windows))]
+    let asm_final = if !asm_text.contains("\nmain:\n") {
+        format!("{}\n.globl main\nmain:\n    jmp entry\n", asm_text)
+    } else {
+        asm_text
+    };
+    #[cfg(windows)]
     let mut asm_final = if !asm_text.contains("\nmain:\n") {
         format!("{}\n.globl main\nmain:\n    jmp entry\n", asm_text)
     } else {
