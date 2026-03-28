@@ -2776,6 +2776,7 @@ fn lower_expr(
     device_regs: &DeviceRegMap,
     eff_used: &mut BTreeSet<Eff>,
     slot_types: &BTreeMap<String, KrirMmioScalarType>,
+    const_map: &std::collections::BTreeMap<String, String>,
 ) -> Result<String, String> {
     match expr {
         ParserExpr::IntLiteral(n) => {
@@ -2824,7 +2825,28 @@ fn lower_expr(
             });
             Ok(slot)
         }
-        ParserExpr::Ident(name) => Ok(name.clone()),
+        ParserExpr::Ident(name) => {
+            // If this identifier names a module-level constant, materialise
+            // it into a fresh stack cell so downstream lowering always sees a
+            // proper slot rather than an unresolved name.
+            if let Some(literal) = const_map.get(name.as_str()) {
+                let slot = fresh_slot(slot_counter);
+                ops.push(KrirOp::StackCell {
+                    ty: KrirMmioScalarType::U64,
+                    cell: slot.clone(),
+                });
+                ops.push(KrirOp::StackStore {
+                    ty: KrirMmioScalarType::U64,
+                    cell: slot.clone(),
+                    value: KrirMmioValueExpr::IntLiteral {
+                        value: literal.clone(),
+                    },
+                });
+                Ok(slot)
+            } else {
+                Ok(name.clone())
+            }
+        }
         ParserExpr::DeviceField { device, field } => {
             let reg = device_regs
                 .get(&(device.clone(), field.clone()))
@@ -2850,9 +2872,9 @@ fn lower_expr(
         }
         ParserExpr::BinOp { op, lhs, rhs } => {
             let is_float = expr_is_float(lhs) || expr_is_float(rhs);
-            let l = lower_expr(lhs, ops, slot_counter, device_regs, eff_used, slot_types)?;
+            let l = lower_expr(lhs, ops, slot_counter, device_regs, eff_used, slot_types, const_map)?;
             if is_float {
-                let r = lower_expr(rhs, ops, slot_counter, device_regs, eff_used, slot_types)?;
+                let r = lower_expr(rhs, ops, slot_counter, device_regs, eff_used, slot_types, const_map)?;
                 let fop = binop_to_krir_farith(*op)
                     .ok_or_else(|| format!("unsupported float operator {:?}", op))?;
                 ops.push(KrirOp::FloatArith {
@@ -2873,7 +2895,7 @@ fn lower_expr(
             }
             // Comparison ops produce 0 or 1 into a fresh bool slot.
             if let Some(cmp_op) = binop_to_krir_cmp(*op) {
-                let r = lower_expr(rhs, ops, slot_counter, device_regs, eff_used, slot_types)?;
+                let r = lower_expr(rhs, ops, slot_counter, device_regs, eff_used, slot_types, const_map)?;
                 let out = fresh_slot(slot_counter);
                 ops.push(KrirOp::StackCell {
                     ty: KrirMmioScalarType::U8,
@@ -2904,7 +2926,7 @@ fn lower_expr(
                 });
                 return Ok(l);
             }
-            let r = lower_expr(rhs, ops, slot_counter, device_regs, eff_used, slot_types)?;
+            let r = lower_expr(rhs, ops, slot_counter, device_regs, eff_used, slot_types, const_map)?;
             ops.push(KrirOp::SlotArith {
                 ty: arith_ty,
                 dst: l.clone(),
@@ -2944,7 +2966,7 @@ fn lower_expr(
             } else {
                 let mut krir_args = Vec::new();
                 for arg in args {
-                    match lower_expr(arg, ops, slot_counter, device_regs, eff_used, slot_types) {
+                    match lower_expr(arg, ops, slot_counter, device_regs, eff_used, slot_types, const_map) {
                         Ok(s) => krir_args.push(KrirMmioValueExpr::Ident { name: s }),
                         Err(e) => return Err(e),
                     }
@@ -3265,7 +3287,7 @@ fn lower_stmt(
                         });
                         continue;
                     }
-                    match lower_expr(arg, ops, slot_counter, device_regs, eff_used, slot_types) {
+                    match lower_expr(arg, ops, slot_counter, device_regs, eff_used, slot_types, const_map) {
                         Ok(slot) => krir_args.push(KrirMmioValueExpr::Ident { name: slot }),
                         Err(e) => {
                             errors.push(e);
@@ -3282,7 +3304,7 @@ fn lower_stmt(
             }
             _ => {
                 if let Err(e) =
-                    lower_expr(expr, ops, slot_counter, device_regs, eff_used, slot_types)
+                    lower_expr(expr, ops, slot_counter, device_regs, eff_used, slot_types, const_map)
                 {
                     errors.push(e);
                 }
@@ -3323,7 +3345,7 @@ fn lower_stmt(
                             });
                             continue;
                         }
-                        match lower_expr(arg, ops, slot_counter, device_regs, eff_used, slot_types)
+                        match lower_expr(arg, ops, slot_counter, device_regs, eff_used, slot_types, const_map)
                         {
                             Ok(slot) => krir_args.push(KrirMmioValueExpr::Ident { name: slot }),
                             Err(e) => {
@@ -3355,6 +3377,7 @@ fn lower_stmt(
                         device_regs,
                         eff_used,
                         slot_types,
+                        const_map,
                     ) {
                         Ok(src) => ops.push(KrirOp::StackStore {
                             ty: lower_mmio_scalar_type(ty.storage_type()),
@@ -3391,7 +3414,7 @@ fn lower_stmt(
                         },
                     });
                 } else {
-                    match lower_expr(value, ops, slot_counter, device_regs, eff_used, slot_types) {
+                    match lower_expr(value, ops, slot_counter, device_regs, eff_used, slot_types, const_map) {
                         Ok(src) => {
                             // If src == name, the value was already updated in place
                             // (e.g. by CellArithImm / SlotArith) — skip the redundant store.
@@ -3419,7 +3442,7 @@ fn lower_stmt(
                     errors.push(format!("register '{}.{}' is read-only", device, field));
                     return;
                 }
-                match lower_expr(value, ops, slot_counter, device_regs, eff_used, slot_types) {
+                match lower_expr(value, ops, slot_counter, device_regs, eff_used, slot_types, const_map) {
                     Ok(src) => {
                         ops.push(KrirOp::MmioWrite {
                             ty: lower_mmio_scalar_type(reg.ty),
@@ -3441,7 +3464,7 @@ fn lower_stmt(
                     .get(name)
                     .copied()
                     .unwrap_or(KrirMmioScalarType::U64);
-                match lower_expr(value, ops, slot_counter, device_regs, eff_used, slot_types) {
+                match lower_expr(value, ops, slot_counter, device_regs, eff_used, slot_types, const_map) {
                     Ok(rhs) => match binop_to_krir_arith(*op) {
                         Some(arith_op) => ops.push(KrirOp::SlotArith {
                             ty: arith_ty,
@@ -3471,7 +3494,7 @@ fn lower_stmt(
         } => {
             // Lower condition into a bool slot.
             let cond_slot =
-                match lower_expr(cond, ops, slot_counter, device_regs, eff_used, slot_types) {
+                match lower_expr(cond, ops, slot_counter, device_regs, eff_used, slot_types, const_map) {
                     Ok(s) => s,
                     Err(e) => {
                         errors.push(e);
@@ -3535,7 +3558,7 @@ fn lower_stmt(
         }
         Stmt::While { cond, body } => {
             ops.push(KrirOp::LoopBegin);
-            match lower_expr(cond, ops, slot_counter, device_regs, eff_used, slot_types) {
+            match lower_expr(cond, ops, slot_counter, device_regs, eff_used, slot_types, const_map) {
                 Ok(cond_slot) => ops.push(KrirOp::BranchIfZeroLoopBreak { slot: cond_slot }),
                 Err(e) => {
                     errors.push(e);
@@ -3571,7 +3594,7 @@ fn lower_stmt(
                 ty: KrirMmioScalarType::U32,
                 cell: var.clone(),
             });
-            match lower_expr(start, ops, slot_counter, device_regs, eff_used, slot_types) {
+            match lower_expr(start, ops, slot_counter, device_regs, eff_used, slot_types, const_map) {
                 Ok(start_slot) => ops.push(KrirOp::StackStore {
                     ty: KrirMmioScalarType::U32,
                     cell: var.clone(),
@@ -3585,7 +3608,7 @@ fn lower_stmt(
             ops.push(KrirOp::LoopBegin);
             // Compute end bound and break if var >= end (exclusive) or var > end (inclusive).
             let end_slot =
-                match lower_expr(end, ops, slot_counter, device_regs, eff_used, slot_types) {
+                match lower_expr(end, ops, slot_counter, device_regs, eff_used, slot_types, const_map) {
                     Ok(s) => s,
                     Err(e) => {
                         errors.push(e);
@@ -3661,7 +3684,7 @@ fn lower_stmt(
             ty,
             addr_var,
             value,
-        } => match lower_expr(value, ops, slot_counter, device_regs, eff_used, slot_types) {
+        } => match lower_expr(value, ops, slot_counter, device_regs, eff_used, slot_types, const_map) {
             Ok(src) => ops.push(KrirOp::RawPtrStore {
                 ty: lower_mmio_scalar_type(*ty),
                 addr_slot: addr_var.clone(),
@@ -3672,7 +3695,7 @@ fn lower_stmt(
         Stmt::Break => ops.push(KrirOp::LoopBreak),
         Stmt::Continue => ops.push(KrirOp::LoopContinue),
         Stmt::Return(Some(expr)) => {
-            match lower_expr(expr, ops, slot_counter, device_regs, eff_used, slot_types) {
+            match lower_expr(expr, ops, slot_counter, device_regs, eff_used, slot_types, const_map) {
                 Ok(slot) => ops.push(KrirOp::ReturnSlot { slot }),
                 Err(e) => errors.push(e),
             }
