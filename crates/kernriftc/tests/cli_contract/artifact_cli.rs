@@ -765,6 +765,61 @@ fn emit_krboexe_supports_uart_console_stack_cell_proof_program_and_inspection_ve
 }
 
 #[test]
+fn emit_krboexe_supports_local_intliteral_assign_probe2() {
+    // Probe 2: Stmt::Assign { value: IntLiteral } must lower to a direct
+    // StackStore instead of routing through a temp slot (__t0) that the
+    // executable lowering cannot resolve.
+    let root = repo_root();
+    let fixture = root.join("examples").join("uart_console_local_assign.kr");
+    let artifact_path = unique_temp_output_path("emit-krboexe-local-assign", "krbo");
+    fs::remove_file(&artifact_path).ok();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("--emit=krboexe")
+        .arg("-o")
+        .arg(artifact_path.as_os_str())
+        .arg(fixture.as_os_str());
+    cmd.assert().success();
+
+    let bytes = fs::read(&artifact_path).expect("read krbo output");
+    assert!(bytes.len() >= 16, "krbo output too small");
+    assert_eq!(&bytes[0..4], b"KRBO", "expected KRBO magic");
+    assert_eq!(bytes[4], 1, "expected KRBO version 1");
+    assert_eq!(bytes[5], 0x01, "expected x86-64 arch (0x01)");
+
+    fs::remove_file(&artifact_path).ok();
+}
+
+#[test]
+fn emit_krboexe_supports_param_dispatch_tree_probe3() {
+    // Probe 3: if-statement inside a function with scalar params triggers
+    // BranchIfZeroWithArgs (inherited_cells non-empty). The synthesized CPS
+    // functions (__if_then_N / __if_else_N / __if_end_N) must receive `pid`
+    // as a parameter and spill it to a StackCell.
+    let root = repo_root();
+    let fixture = root.join("examples").join("uart_console_param_dispatch.kr");
+    let artifact_path = unique_temp_output_path("emit-krboexe-param-dispatch", "krbo");
+    fs::remove_file(&artifact_path).ok();
+
+    let mut cmd: Command = cargo_bin_cmd!("kernriftc");
+    cmd.current_dir(&root)
+        .arg("--emit=krboexe")
+        .arg("-o")
+        .arg(artifact_path.as_os_str())
+        .arg(fixture.as_os_str());
+    cmd.assert().success();
+
+    let bytes = fs::read(&artifact_path).expect("read krbo output");
+    assert!(bytes.len() >= 16, "krbo output too small");
+    assert_eq!(&bytes[0..4], b"KRBO", "expected KRBO magic");
+    assert_eq!(bytes[4], 1, "expected KRBO version 1");
+    assert_eq!(bytes[5], 0x01, "expected x86-64 arch (0x01)");
+
+    fs::remove_file(&artifact_path).ok();
+}
+
+#[test]
 fn inspect_artifact_json_reports_uart_console_probe_elf_object_shape() {
     let root = repo_root();
     let fixture = root.join("examples").join("uart_console_probe.kr");

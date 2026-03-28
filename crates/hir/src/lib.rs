@@ -1624,6 +1624,7 @@ fn lower_function(
         body: item.body.clone(),
         continuation: String::new(),
         slot_types: initial_slot_types,
+        inherited_cells: vec![],
     }];
     let main_params: Vec<(String, KrirParamTy)> = item
         .params
@@ -1663,6 +1664,22 @@ fn lower_function(
                     });
                 }
             }
+        } else {
+            // For synthesized continuation functions, spill each inherited cell
+            // from its corresponding function parameter so the body can use it.
+            for (cell_name, cell_ty) in &work.inherited_cells {
+                ops.push(KrirOp::StackCell {
+                    ty: *cell_ty,
+                    cell: cell_name.clone(),
+                });
+                ops.push(KrirOp::StackStore {
+                    ty: *cell_ty,
+                    cell: cell_name.clone(),
+                    value: KrirMmioValueExpr::Ident {
+                        name: cell_name.clone(),
+                    },
+                });
+            }
         }
 
         for stmt in &work.body {
@@ -1689,12 +1706,17 @@ fn lower_function(
 
         all_errors.extend(stmt_errors);
 
-        // Synthesized functions get empty params/ctx/caps/attrs — they're internal helpers.
+        // Synthesized functions get their params from inherited_cells; main uses main_params.
         let is_main = work.name == item.name;
+        let synth_params: Vec<(String, KrirParamTy)> = work
+            .inherited_cells
+            .iter()
+            .map(|(name, ty)| (name.clone(), KrirParamTy::Scalar { ty: *ty }))
+            .collect();
         result_functions.push(Function {
             name: work.name,
             is_extern: if is_main { item.is_extern } else { false },
-            params: if is_main { main_params.clone() } else { vec![] },
+            params: if is_main { main_params.clone() } else { synth_params },
             ctx_ok: main_ctx_ok.clone(),
             eff_used: eff_used.into_iter().collect(),
             caps_req: main_caps_req.clone(),
@@ -1778,6 +1800,12 @@ struct PendingFn {
     continuation: String,
     /// Variable types known at the point this pending fn was pushed (for type inference).
     slot_types: BTreeMap<String, KrirMmioScalarType>,
+    /// Outer-scope cells to pass as arguments to this synthesized function (for
+    /// canonical-exec lowering). Each entry is (cell_name, cell_type) in the order
+    /// they will be passed as function parameters (alphabetical, matching BTreeMap order).
+    /// Temp slots (__tN) are excluded — they are compiler-internal and not meaningful
+    /// across function boundaries.
+    inherited_cells: Vec<(String, KrirMmioScalarType)>,
 }
 
 /// Allocate a fresh synthesized function name.
@@ -3340,19 +3368,35 @@ fn lower_stmt(
                     .get(name)
                     .copied()
                     .unwrap_or(KrirMmioScalarType::U64);
-                match lower_expr(value, ops, slot_counter, device_regs, eff_used, slot_types) {
-                    Ok(src) => {
-                        // If src == name, the value was already updated in place
-                        // (e.g. by CellArithImm / SlotArith) — skip the redundant store.
-                        if src != *name {
-                            ops.push(KrirOp::StackStore {
-                                ty: store_ty,
-                                cell: name.clone(),
-                                value: KrirMmioValueExpr::Ident { name: src },
-                            });
+                // Bypass temp slot for literal assignments (mirrors the VarDecl special case).
+                if let ParserExpr::IntLiteral(n) = value {
+                    ops.push(KrirOp::StackStore {
+                        ty: store_ty,
+                        cell: name.clone(),
+                        value: KrirMmioValueExpr::IntLiteral { value: n.to_string() },
+                    });
+                } else if let ParserExpr::BoolLiteral(b) = value {
+                    let n: u64 = if *b { 1 } else { 0 };
+                    ops.push(KrirOp::StackStore {
+                        ty: store_ty,
+                        cell: name.clone(),
+                        value: KrirMmioValueExpr::IntLiteral { value: n.to_string() },
+                    });
+                } else {
+                    match lower_expr(value, ops, slot_counter, device_regs, eff_used, slot_types) {
+                        Ok(src) => {
+                            // If src == name, the value was already updated in place
+                            // (e.g. by CellArithImm / SlotArith) — skip the redundant store.
+                            if src != *name {
+                                ops.push(KrirOp::StackStore {
+                                    ty: store_ty,
+                                    cell: name.clone(),
+                                    value: KrirMmioValueExpr::Ident { name: src },
+                                });
+                            }
                         }
+                        Err(e) => errors.push(e),
                     }
-                    Err(e) => errors.push(e),
                 }
             }
             ParserAssignTarget::DeviceField { device, field } => {
@@ -3433,17 +3477,36 @@ fn lower_stmt(
             } else {
                 fresh_fn_name("__if_else", fn_counter)
             };
+            // Collect user-visible cells to pass as args to synthesized functions
+            // (canonical-exec requires values be in scope). Exclude compiler temp
+            // slots (__tN) — they are not meaningful across function boundaries.
+            let inherited: Vec<(String, KrirMmioScalarType)> = slot_types
+                .iter()
+                .filter(|(k, _)| !k.starts_with("__t"))
+                .map(|(k, v)| (k.clone(), *v))
+                .collect();
             // BranchIfZero: slot==0 → false → else/end; slot!=0 → true → then
-            ops.push(KrirOp::BranchIfZero {
-                slot: cond_slot,
-                then_callee: else_name.clone(), // zero = false
-                else_callee: then_name.clone(), // nonzero = true
-            });
+            if inherited.is_empty() {
+                ops.push(KrirOp::BranchIfZero {
+                    slot: cond_slot,
+                    then_callee: else_name.clone(), // zero = false
+                    else_callee: then_name.clone(), // nonzero = true
+                });
+            } else {
+                let arg_names: Vec<String> = inherited.iter().map(|(k, _)| k.clone()).collect();
+                ops.push(KrirOp::BranchIfZeroWithArgs {
+                    slot: cond_slot,
+                    then_callee: else_name.clone(), // zero = false
+                    else_callee: then_name.clone(), // nonzero = true
+                    args: arg_names,
+                });
+            }
             pending_fns.push(PendingFn {
                 name: then_name,
                 body: then_body.clone(),
                 continuation: end_name.clone(),
                 slot_types: slot_types.clone(),
+                inherited_cells: inherited.clone(),
             });
             if !else_body.is_empty() {
                 pending_fns.push(PendingFn {
@@ -3451,6 +3514,7 @@ fn lower_stmt(
                     body: else_body.clone(),
                     continuation: end_name.clone(),
                     slot_types: slot_types.clone(),
+                    inherited_cells: inherited.clone(),
                 });
             }
             pending_fns.push(PendingFn {
@@ -3458,6 +3522,7 @@ fn lower_stmt(
                 body: vec![],
                 continuation: String::new(),
                 slot_types: slot_types.clone(),
+                inherited_cells: inherited,
             });
         }
         Stmt::While { cond, body } => {

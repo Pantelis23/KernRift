@@ -1186,6 +1186,15 @@ fn fold_trivial_branches(module: &mut ExecutableKrirModule) {
                     } if then_callee == else_callee => ExecutableOp::Call {
                         callee: then_callee.clone(),
                     },
+                    ExecutableOp::BranchIfZeroWithArgs {
+                        ref then_callee,
+                        ref else_callee,
+                        ref args,
+                        ..
+                    } if then_callee == else_callee => ExecutableOp::CallWithArgs {
+                        callee: then_callee.clone(),
+                        args: args.clone(),
+                    },
                     ExecutableOp::BranchIfEqImm {
                         ref then_callee,
                         ref else_callee,

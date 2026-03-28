@@ -1262,6 +1262,7 @@ fn telemetry_op_discriminant(op: &KrirOp) -> String {
         KrirOp::CallCapture { .. } => "call_capture",
         KrirOp::CallCaptureWithArgs { .. } => "call_capture_with_args",
         KrirOp::BranchIfZero { .. } => "branch_if_zero",
+        KrirOp::BranchIfZeroWithArgs { .. } => "branch_if_zero_with_args",
         KrirOp::BranchIfEq { .. } => "branch_if_eq",
         KrirOp::BranchIfMaskNonZero { .. } => "branch_if_mask_non_zero",
         KrirOp::CriticalEnter => "critical_enter",
