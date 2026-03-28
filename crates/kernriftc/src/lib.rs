@@ -705,7 +705,11 @@ fn emit_x86_64_host_executable_bytes(
     let object_path = temp_dir.join("input.o");
     let output_path = temp_dir.join("output");
 
-    fs::write(&asm_path, asm_text.as_bytes())
+    // The C runtime startup calls `main`.  KernRift modules expose `entry`, so
+    // append a thin trampoline that satisfies the CRT without changing the
+    // module's own symbol name.
+    let asm_with_main = format!("{}\n.globl main\nmain:\n    jmp entry\n", asm_text);
+    fs::write(&asm_path, asm_with_main.as_bytes())
         .map_err(|err| format!("failed to write temp ASM '{}': {}", asm_path.display(), err))?;
 
     // Assemble: cc -c input.s -o input.o
@@ -726,11 +730,14 @@ fn emit_x86_64_host_executable_bytes(
         ));
     }
 
-    // Link: cc input.o -o output  (adds CRT _start, resolves libc)
-    let cc_output = Command::new(&cc)
-        .arg(&object_path)
-        .arg("-o")
-        .arg(&output_path)
+    // Link: cc input.o -o output  (adds CRT _start, resolves libc).
+    // On Windows the PE format needs an explicit subsystem flag so the MSVC
+    // linker (invoked by VS-bundled clang) doesn't reject the image.
+    let mut link_cmd = Command::new(&cc);
+    link_cmd.arg(&object_path).arg("-o").arg(&output_path);
+    #[cfg(windows)]
+    link_cmd.arg("-Wl,/SUBSYSTEM:CONSOLE");
+    let cc_output = link_cmd
         .output()
         .map_err(|err| format!("failed to link with '{}': {}", cc, err))?;
 
