@@ -680,7 +680,9 @@ fn emit_x86_64_host_executable_bytes(
     target: &BackendTargetContract,
 ) -> Result<Vec<u8>, String> {
     let cc = find_host_tool(&["cc", "gcc", "clang"]).ok_or_else(|| {
-        "hostexe emit requires a C compiler driver (cc, gcc, or clang)".to_string()
+        "hostexe emit requires a C compiler driver (cc, gcc, or clang); \
+         on Windows install Visual Studio 2019/2022 with 'C++ Clang tools for Windows'"
+            .to_string()
     })?;
 
     // Lower to ASM text (supports CompareIntoSlot / if-else / loops).
@@ -1029,17 +1031,74 @@ fn emit_aarch64_host_executable_bytes(
 }
 
 fn find_host_tool(candidates: &[&str]) -> Option<String> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).find_map(|dir| {
-        candidates.iter().find_map(|candidate| {
-            let full = dir.join(candidate);
-            if full.is_file() {
-                Some(candidate.to_string())
-            } else {
-                None
-            }
-        })
-    })
+    // On Windows, also try the `.exe` suffix when searching PATH.
+    let exe_suffix = if cfg!(windows) { ".exe" } else { "" };
+
+    if let Some(path) = std::env::var_os("PATH") {
+        let found = std::env::split_paths(&path).find_map(|dir| {
+            candidates.iter().find_map(|candidate| {
+                let full = dir.join(format!("{}{}", candidate, exe_suffix));
+                if full.is_file() {
+                    Some(full.to_string_lossy().into_owned())
+                } else {
+                    let plain = dir.join(candidate);
+                    if plain.is_file() {
+                        Some(plain.to_string_lossy().into_owned())
+                    } else {
+                        None
+                    }
+                }
+            })
+        });
+        if found.is_some() {
+            return found;
+        }
+    }
+
+    // On Windows, probe VS-bundled LLVM via vswhere.exe when not in PATH.
+    #[cfg(windows)]
+    {
+        if let Some(p) = find_vs_bundled_clang() {
+            return Some(p.to_string_lossy().into_owned());
+        }
+    }
+
+    None
+}
+
+/// On Windows, use `vswhere.exe` to locate the VS installation and return the
+/// path to the bundled `clang.exe` (ships with the "C++ Clang tools for Windows"
+/// optional component, or the "LLVM tools" workload).
+#[cfg(windows)]
+fn find_vs_bundled_clang() -> Option<PathBuf> {
+    let vswhere =
+        PathBuf::from(r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe");
+    if !vswhere.is_file() {
+        return None;
+    }
+    let out = Command::new(&vswhere)
+        .args(["-latest", "-property", "installationPath"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let vs_path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if vs_path.is_empty() {
+        return None;
+    }
+    // VS bundles LLVM in <VS>\VC\Tools\Llvm\x64\bin\clang.exe (x64 host)
+    // and <VS>\VC\Tools\Llvm\bin\clang.exe (x86 host).
+    for sub in &[
+        r"VC\Tools\Llvm\x64\bin\clang.exe",
+        r"VC\Tools\Llvm\bin\clang.exe",
+    ] {
+        let candidate = PathBuf::from(&vs_path).join(sub);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 fn unique_temp_dir(label: &str) -> PathBuf {
