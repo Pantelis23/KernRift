@@ -498,6 +498,10 @@ pub enum MmioScalarType {
     U16,
     U32,
     U64,
+    I8,
+    I16,
+    I32,
+    I64,
     F32,
     F64,
 }
@@ -509,6 +513,10 @@ impl MmioScalarType {
             Self::U16 => "u16",
             Self::U32 => "u32",
             Self::U64 => "u64",
+            Self::I8 => "i8",
+            Self::I16 => "i16",
+            Self::I32 => "i32",
+            Self::I64 => "i64",
             Self::F32 => "f32",
             Self::F64 => "f64",
         }
@@ -517,16 +525,21 @@ impl MmioScalarType {
     /// Width in bytes.
     pub fn byte_width(self) -> usize {
         match self {
-            Self::U8 => 1,
-            Self::U16 => 2,
-            Self::U32 | Self::F32 => 4,
-            Self::U64 | Self::F64 => 8,
+            Self::U8 | Self::I8 => 1,
+            Self::U16 | Self::I16 => 2,
+            Self::U32 | Self::I32 | Self::F32 => 4,
+            Self::U64 | Self::I64 | Self::F64 => 8,
         }
     }
 
     /// True for the two floating-point variants.
     pub fn is_float(self) -> bool {
         matches!(self, Self::F32 | Self::F64)
+    }
+
+    /// Returns true if this is a signed integer type.
+    pub fn is_signed(self) -> bool {
+        matches!(self, Self::I8 | Self::I16 | Self::I32 | Self::I64)
     }
 }
 
@@ -663,10 +676,10 @@ impl ExecutableValueType {
 
 fn executable_value_type_from_mmio_scalar(ty: MmioScalarType) -> ExecutableValueType {
     match ty {
-        MmioScalarType::U8 => ExecutableValueType::U8,
-        MmioScalarType::U16 => ExecutableValueType::U16,
-        MmioScalarType::U32 => ExecutableValueType::U32,
-        MmioScalarType::U64 => ExecutableValueType::U64,
+        MmioScalarType::U8 | MmioScalarType::I8 => ExecutableValueType::U8,
+        MmioScalarType::U16 | MmioScalarType::I16 => ExecutableValueType::U16,
+        MmioScalarType::U32 | MmioScalarType::I32 => ExecutableValueType::U32,
+        MmioScalarType::U64 | MmioScalarType::I64 => ExecutableValueType::U64,
         MmioScalarType::F32 => ExecutableValueType::U32,
         MmioScalarType::F64 => ExecutableValueType::U64,
     }
@@ -3256,10 +3269,10 @@ fn resolve_executable_mmio_write_value(
         MmioValueExpr::IntLiteral { value } => {
             let parsed = parse_integer_literal_u64(value)?;
             let max_value = match ty {
-                MmioScalarType::U8 => u8::MAX as u64,
-                MmioScalarType::U16 => u16::MAX as u64,
-                MmioScalarType::U32 => u32::MAX as u64,
-                MmioScalarType::U64 => u64::MAX,
+                MmioScalarType::U8 | MmioScalarType::I8 => u8::MAX as u64,
+                MmioScalarType::U16 | MmioScalarType::I16 => u16::MAX as u64,
+                MmioScalarType::U32 | MmioScalarType::I32 => u32::MAX as u64,
+                MmioScalarType::U64 | MmioScalarType::I64 => u64::MAX,
                 MmioScalarType::F32 => u32::MAX as u64,
                 MmioScalarType::F64 => u64::MAX,
             };
@@ -3433,10 +3446,10 @@ fn resolve_executable_branch_compare_value(
 ) -> Result<u64, String> {
     let parsed = parse_integer_literal_u64(compare_value)?;
     let max_value = match ty {
-        MmioScalarType::U8 => u8::MAX as u64,
-        MmioScalarType::U16 => u16::MAX as u64,
-        MmioScalarType::U32 => u32::MAX as u64,
-        MmioScalarType::U64 => u64::MAX,
+        MmioScalarType::U8 | MmioScalarType::I8 => u8::MAX as u64,
+        MmioScalarType::U16 | MmioScalarType::I16 => u16::MAX as u64,
+        MmioScalarType::U32 | MmioScalarType::I32 => u32::MAX as u64,
+        MmioScalarType::U64 | MmioScalarType::I64 => u64::MAX,
         MmioScalarType::F32 => u32::MAX as u64,
         MmioScalarType::F64 => u64::MAX,
     };
@@ -3457,10 +3470,10 @@ fn resolve_executable_branch_mask_value(
 ) -> Result<u64, String> {
     let parsed = parse_integer_literal_u64(mask_value)?;
     let max_value = match ty {
-        MmioScalarType::U8 => u8::MAX as u64,
-        MmioScalarType::U16 => u16::MAX as u64,
-        MmioScalarType::U32 => u32::MAX as u64,
-        MmioScalarType::U64 => u64::MAX,
+        MmioScalarType::U8 | MmioScalarType::I8 => u8::MAX as u64,
+        MmioScalarType::U16 | MmioScalarType::I16 => u16::MAX as u64,
+        MmioScalarType::U32 | MmioScalarType::I32 => u32::MAX as u64,
+        MmioScalarType::U64 | MmioScalarType::I64 => u64::MAX,
         MmioScalarType::F32 => u32::MAX as u64,
         MmioScalarType::F64 => u64::MAX,
     };
@@ -6360,15 +6373,30 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                 }
                 X86_64AsmInstruction::StackLoad { ty, slot_idx } => {
                     let offset = 8u32 * u32::from(*slot_idx);
-                    out.push_str("    ");
-                    out.push_str(mmio_load_mnemonic(*ty));
-                    if offset == 0 {
-                        out.push_str(" (%rsp), ");
+                    let src = if offset == 0 {
+                        "(%rsp)".to_string()
                     } else {
-                        out.push_str(&format!(" {}(%rsp), ", offset));
+                        format!("{}(%rsp)", offset)
+                    };
+                    // For signed narrow types, use sign-extending moves.
+                    match ty {
+                        MmioScalarType::I8 => {
+                            out.push_str(&format!("    movsbl {}, %ebx\n", src));
+                        }
+                        MmioScalarType::I16 => {
+                            out.push_str(&format!("    movswl {}, %ebx\n", src));
+                        }
+                        MmioScalarType::I32 => {
+                            out.push_str(&format!("    movslq {}, %rbx\n", src));
+                        }
+                        _ => {
+                            out.push_str("    ");
+                            out.push_str(mmio_load_mnemonic(*ty));
+                            out.push_str(&format!(" {}, ", src));
+                            out.push_str(mmio_saved_value_register(*ty));
+                            out.push('\n');
+                        }
                     }
-                    out.push_str(mmio_saved_value_register(*ty));
-                    out.push('\n');
                 }
                 X86_64AsmInstruction::SlotArithImm {
                     ty,
@@ -6772,15 +6800,15 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                         format!("{}(%rsp)", rhs_offset)
                     };
                     match ty {
-                        MmioScalarType::U8 => {
+                        MmioScalarType::U8 | MmioScalarType::I8 => {
                             out.push_str(&format!("    movzbl {}, %eax\n", lhs_ref));
                             out.push_str(&format!("    cmpb {}, %al\n", rhs_ref));
                         }
-                        MmioScalarType::U16 => {
+                        MmioScalarType::U16 | MmioScalarType::I16 => {
                             out.push_str(&format!("    movzwl {}, %eax\n", lhs_ref));
                             out.push_str(&format!("    cmpw {}, %ax\n", rhs_ref));
                         }
-                        MmioScalarType::U32 => {
+                        MmioScalarType::U32 | MmioScalarType::I32 => {
                             out.push_str(&format!("    movl {}, %eax\n", lhs_ref));
                             out.push_str(&format!("    cmpl {}, %eax\n", rhs_ref));
                         }
@@ -6789,14 +6817,40 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                             out.push_str(&format!("    cmpq {}, %rax\n", rhs_ref));
                         }
                     }
-                    // setCC al
+                    // setCC al — use signed condition codes for signed types,
+                    // unsigned codes for unsigned types.
+                    let signed = ty.is_signed();
                     let setcc = match cmp_op {
                         CmpOp::Eq => "sete",
                         CmpOp::Ne => "setne",
-                        CmpOp::Lt => "setl",
-                        CmpOp::Gt => "setg",
-                        CmpOp::Le => "setle",
-                        CmpOp::Ge => "setge",
+                        CmpOp::Lt => {
+                            if signed {
+                                "setl"
+                            } else {
+                                "setb"
+                            }
+                        }
+                        CmpOp::Gt => {
+                            if signed {
+                                "setg"
+                            } else {
+                                "seta"
+                            }
+                        }
+                        CmpOp::Le => {
+                            if signed {
+                                "setle"
+                            } else {
+                                "setbe"
+                            }
+                        }
+                        CmpOp::Ge => {
+                            if signed {
+                                "setge"
+                            } else {
+                                "setae"
+                            }
+                        }
                     };
                     out.push_str(&format!("    {} %al\n", setcc));
                     // movzx eax, al
@@ -6821,11 +6875,25 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                         out.push_str(&format!("    movq {}(%rsp), %rax\n", addr_offset));
                     }
                     // 2. Indirect load [%rax] into accumulator register.
-                    out.push_str("    ");
-                    out.push_str(mmio_load_mnemonic(*ty));
-                    out.push_str(" (%rax), ");
-                    out.push_str(mmio_accumulator_register(*ty));
-                    out.push('\n');
+                    // For signed narrow types, use sign-extending loads.
+                    match ty {
+                        MmioScalarType::I8 => {
+                            out.push_str("    movsbl (%rax), %eax\n");
+                        }
+                        MmioScalarType::I16 => {
+                            out.push_str("    movswl (%rax), %eax\n");
+                        }
+                        MmioScalarType::I32 => {
+                            out.push_str("    movslq (%rax), %rax\n");
+                        }
+                        _ => {
+                            out.push_str("    ");
+                            out.push_str(mmio_load_mnemonic(*ty));
+                            out.push_str(" (%rax), ");
+                            out.push_str(mmio_accumulator_register(*ty));
+                            out.push('\n');
+                        }
+                    }
                     // 3. Store accumulator into out_slot.
                     let out_offset = 8u32 * u32::from(*out_slot_idx);
                     out.push_str("    ");
@@ -7017,10 +7085,10 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
 /// Returns (mnemonic, load_reg) for an AArch64 MMIO load.
 fn aarch64_load_parts(ty: MmioScalarType) -> (&'static str, &'static str) {
     match ty {
-        MmioScalarType::U8 => ("ldrb", "w0"),
-        MmioScalarType::U16 => ("ldrh", "w0"),
-        MmioScalarType::U32 => ("ldr", "w0"),
-        MmioScalarType::U64 => ("ldr", "x0"),
+        MmioScalarType::U8 | MmioScalarType::I8 => ("ldrb", "w0"),
+        MmioScalarType::U16 | MmioScalarType::I16 => ("ldrh", "w0"),
+        MmioScalarType::U32 | MmioScalarType::I32 => ("ldr", "w0"),
+        MmioScalarType::U64 | MmioScalarType::I64 => ("ldr", "x0"),
         MmioScalarType::F32 => ("ldr", "w0"),
         MmioScalarType::F64 => ("ldr", "x0"),
     }
@@ -7029,10 +7097,10 @@ fn aarch64_load_parts(ty: MmioScalarType) -> (&'static str, &'static str) {
 /// Returns (mnemonic, store_reg) for an AArch64 MMIO store.
 fn aarch64_store_parts(ty: MmioScalarType) -> (&'static str, &'static str) {
     match ty {
-        MmioScalarType::U8 => ("strb", "w2"),
-        MmioScalarType::U16 => ("strh", "w2"),
-        MmioScalarType::U32 => ("str", "w2"),
-        MmioScalarType::U64 => ("str", "x2"),
+        MmioScalarType::U8 | MmioScalarType::I8 => ("strb", "w2"),
+        MmioScalarType::U16 | MmioScalarType::I16 => ("strh", "w2"),
+        MmioScalarType::U32 | MmioScalarType::I32 => ("str", "w2"),
+        MmioScalarType::U64 | MmioScalarType::I64 => ("str", "x2"),
         MmioScalarType::F32 => ("str", "w2"),
         MmioScalarType::F64 => ("str", "x2"),
     }
@@ -7194,21 +7262,50 @@ pub fn emit_aarch64_asm_text(module: &AArch64AsmModule) -> String {
                     let rhs_off = 16 + (*rhs_idx as u32) * 8;
                     let out_off = 16 + (*out_idx as u32) * 8;
                     let (load_mnem, w) = match ty {
-                        MmioScalarType::U8 => ("ldrb", "w"),
-                        MmioScalarType::U16 => ("ldrh", "w"),
-                        MmioScalarType::U32 | MmioScalarType::F32 => ("ldr", "w"),
+                        MmioScalarType::U8 | MmioScalarType::I8 => ("ldrb", "w"),
+                        MmioScalarType::U16 | MmioScalarType::I16 => ("ldrh", "w"),
+                        MmioScalarType::U32 | MmioScalarType::I32 | MmioScalarType::F32 => {
+                            ("ldr", "w")
+                        }
                         _ => ("ldr", "x"),
                     };
                     out.push_str(&format!("    {} {}0, [x29, #{}]\n", load_mnem, w, lhs_off));
                     out.push_str(&format!("    {} {}1, [x29, #{}]\n", load_mnem, w, rhs_off));
                     out.push_str("    cmp x0, x1\n");
+                    // Use signed condition codes (lt/gt/le/ge) for signed types,
+                    // unsigned codes (lo/hi/ls/hs) for unsigned types.
+                    let signed = ty.is_signed();
                     let cset_cond = match cmp_op {
                         CmpOp::Eq => "eq",
                         CmpOp::Ne => "ne",
-                        CmpOp::Lt => "lt",
-                        CmpOp::Gt => "gt",
-                        CmpOp::Le => "le",
-                        CmpOp::Ge => "ge",
+                        CmpOp::Lt => {
+                            if signed {
+                                "lt"
+                            } else {
+                                "lo"
+                            }
+                        }
+                        CmpOp::Gt => {
+                            if signed {
+                                "gt"
+                            } else {
+                                "hi"
+                            }
+                        }
+                        CmpOp::Le => {
+                            if signed {
+                                "le"
+                            } else {
+                                "ls"
+                            }
+                        }
+                        CmpOp::Ge => {
+                            if signed {
+                                "ge"
+                            } else {
+                                "hs"
+                            }
+                        }
                     };
                     out.push_str(&format!("    cset w0, {}\n", cset_cond));
                     out.push_str(&format!("    str x0, [x29, #{}]\n", out_off));
@@ -7222,9 +7319,11 @@ pub fn emit_aarch64_asm_text(module: &AArch64AsmModule) -> String {
                     let dst_off = 16 + (*dst_slot_idx as u32) * 8;
                     let src_off = 16 + (*src_slot_idx as u32) * 8;
                     let (load_mnem, reg_d, reg_s) = match ty {
-                        MmioScalarType::U8 => ("ldrb", "w0", "w1"),
-                        MmioScalarType::U16 => ("ldrh", "w0", "w1"),
-                        MmioScalarType::U32 | MmioScalarType::F32 => ("ldr", "w0", "w1"),
+                        MmioScalarType::U8 | MmioScalarType::I8 => ("ldrb", "w0", "w1"),
+                        MmioScalarType::U16 | MmioScalarType::I16 => ("ldrh", "w0", "w1"),
+                        MmioScalarType::U32 | MmioScalarType::I32 | MmioScalarType::F32 => {
+                            ("ldr", "w0", "w1")
+                        }
                         _ => ("ldr", "x0", "x1"),
                     };
                     out.push_str(&format!(
@@ -7268,9 +7367,11 @@ pub fn emit_aarch64_asm_text(module: &AArch64AsmModule) -> String {
                 } => {
                     let slot_off = 16 + (*slot_idx as u32) * 8;
                     let (load_mnem, reg) = match ty {
-                        MmioScalarType::U8 => ("ldrb", "w0"),
-                        MmioScalarType::U16 => ("ldrh", "w0"),
-                        MmioScalarType::U32 | MmioScalarType::F32 => ("ldr", "w0"),
+                        MmioScalarType::U8 | MmioScalarType::I8 => ("ldrb", "w0"),
+                        MmioScalarType::U16 | MmioScalarType::I16 => ("ldrh", "w0"),
+                        MmioScalarType::U32 | MmioScalarType::I32 | MmioScalarType::F32 => {
+                            ("ldr", "w0")
+                        }
                         _ => ("ldr", "x0"),
                     };
                     out.push_str(&format!(
@@ -7314,8 +7415,22 @@ pub fn emit_aarch64_asm_text(module: &AArch64AsmModule) -> String {
                 }
                 AArch64AsmInstruction::StackLoad { ty, slot_idx } => {
                     let slot_off = 16 + (*slot_idx as u32) * 8;
-                    let (mnem, reg) = aarch64_load_parts(*ty);
-                    out.push_str(&format!("    {} {}, [x29, #{}]\n", mnem, reg, slot_off));
+                    // For signed narrow types, use sign-extending loads.
+                    match ty {
+                        MmioScalarType::I8 => {
+                            out.push_str(&format!("    ldrsb x0, [x29, #{}]\n", slot_off));
+                        }
+                        MmioScalarType::I16 => {
+                            out.push_str(&format!("    ldrsh x0, [x29, #{}]\n", slot_off));
+                        }
+                        MmioScalarType::I32 => {
+                            out.push_str(&format!("    ldrsw x0, [x29, #{}]\n", slot_off));
+                        }
+                        _ => {
+                            let (mnem, reg) = aarch64_load_parts(*ty);
+                            out.push_str(&format!("    {} {}, [x29, #{}]\n", mnem, reg, slot_off));
+                        }
+                    }
                 }
                 AArch64AsmInstruction::ParamLoad { param_idx, ty: _ } => {
                     // AAPCS64: params arrive in x0-x7; move into saved-value reg x0.
@@ -7344,7 +7459,7 @@ pub fn emit_aarch64_asm_text(module: &AArch64AsmModule) -> String {
                 AArch64AsmInstruction::MmioWriteValueParamAddr { param_idx, ty } => {
                     let (store_mnem, _) = aarch64_store_parts(*ty);
                     let sv_reg = match ty {
-                        MmioScalarType::U64 | MmioScalarType::F64 => "x0",
+                        MmioScalarType::U64 | MmioScalarType::I64 | MmioScalarType::F64 => "x0",
                         _ => "w0",
                     };
                     out.push_str(&format!(
@@ -7379,7 +7494,7 @@ pub fn emit_aarch64_asm_text(module: &AArch64AsmModule) -> String {
                     let addr_off = 16 + (*addr_slot_idx as u32) * 8;
                     let (store_mnem, _) = aarch64_store_parts(*ty);
                     let sv_reg = match ty {
-                        MmioScalarType::U64 | MmioScalarType::F64 => "x0",
+                        MmioScalarType::U64 | MmioScalarType::I64 | MmioScalarType::F64 => "x0",
                         _ => "w0",
                     };
                     out.push_str(&format!("    ldr x9, [x29, #{}]\n", addr_off));
@@ -7542,10 +7657,10 @@ fn decode_x86_64_mmio_instruction(
     ] {
         if rest.starts_with(imm) {
             let immediate_bytes = match ty {
-                MmioScalarType::U8 => 1usize,
-                MmioScalarType::U16 => 2usize,
-                MmioScalarType::U32 => 4usize,
-                MmioScalarType::U64 => 8usize,
+                MmioScalarType::U8 | MmioScalarType::I8 => 1usize,
+                MmioScalarType::U16 | MmioScalarType::I16 => 2usize,
+                MmioScalarType::U32 | MmioScalarType::I32 => 4usize,
+                MmioScalarType::U64 | MmioScalarType::I64 => 8usize,
                 MmioScalarType::F32 => 4usize,
                 MmioScalarType::F64 => 8usize,
             };
@@ -7554,18 +7669,18 @@ fn decode_x86_64_mmio_instruction(
             }
             let value_offset = loadless_value_offset(cursor, imm.len());
             let value = match ty {
-                MmioScalarType::U8 => bytes[value_offset] as u64,
-                MmioScalarType::U16 => u16::from_le_bytes(
+                MmioScalarType::U8 | MmioScalarType::I8 => bytes[value_offset] as u64,
+                MmioScalarType::U16 | MmioScalarType::I16 => u16::from_le_bytes(
                     bytes[value_offset..value_offset + 2]
                         .try_into()
                         .expect("u16 immediate bytes"),
                 ) as u64,
-                MmioScalarType::U32 => u32::from_le_bytes(
+                MmioScalarType::U32 | MmioScalarType::I32 => u32::from_le_bytes(
                     bytes[value_offset..value_offset + 4]
                         .try_into()
                         .expect("u32 immediate bytes"),
                 ) as u64,
-                MmioScalarType::U64 => u64::from_le_bytes(
+                MmioScalarType::U64 | MmioScalarType::I64 => u64::from_le_bytes(
                     bytes[value_offset..value_offset + 8]
                         .try_into()
                         .expect("u64 immediate bytes"),
@@ -7841,8 +7956,13 @@ fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
         },
         // ParamLoad: movb/movw/movl/movq disp8(%rsp), %bl/%bx/%ebx/%rbx
         ExecutableOp::ParamLoad { ty, .. } => match ty {
-            MmioScalarType::U8 | MmioScalarType::U32 => 4,
-            MmioScalarType::U16 | MmioScalarType::U64 => 5,
+            MmioScalarType::U8 | MmioScalarType::I8 | MmioScalarType::U32 | MmioScalarType::I32 => {
+                4
+            }
+            MmioScalarType::U16
+            | MmioScalarType::I16
+            | MmioScalarType::U64
+            | MmioScalarType::I64 => 5,
             MmioScalarType::F32 | MmioScalarType::F64 => {
                 unreachable!(
                     "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -7987,10 +8107,10 @@ fn executable_terminator_encoded_len(function: &ExecutableFunction) -> u64 {
 fn encode_mmio_read_bytes(out: &mut Vec<u8>, ty: MmioScalarType, addr: u64, capture_value: bool) {
     push_movabs_rax_imm64(out, addr);
     match ty {
-        MmioScalarType::U8 => out.extend_from_slice(&[0x8A, 0x00]),
-        MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x8B, 0x00]),
-        MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x00]),
-        MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x00]),
+        MmioScalarType::U8 | MmioScalarType::I8 => out.extend_from_slice(&[0x8A, 0x00]),
+        MmioScalarType::U16 | MmioScalarType::I16 => out.extend_from_slice(&[0x66, 0x8B, 0x00]),
+        MmioScalarType::U32 | MmioScalarType::I32 => out.extend_from_slice(&[0x8B, 0x00]),
+        MmioScalarType::U64 | MmioScalarType::I64 => out.extend_from_slice(&[0x48, 0x8B, 0x00]),
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!(
                 "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -8006,10 +8126,10 @@ fn encode_mmio_write_imm_bytes(out: &mut Vec<u8>, ty: MmioScalarType, addr: u64,
     push_movabs_rax_imm64(out, addr);
     push_mov_imm_to_value_register(out, ty, value);
     match ty {
-        MmioScalarType::U8 => out.extend_from_slice(&[0x88, 0x08]),
-        MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x08]),
-        MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x08]),
-        MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x08]),
+        MmioScalarType::U8 | MmioScalarType::I8 => out.extend_from_slice(&[0x88, 0x08]),
+        MmioScalarType::U16 | MmioScalarType::I16 => out.extend_from_slice(&[0x66, 0x89, 0x08]),
+        MmioScalarType::U32 | MmioScalarType::I32 => out.extend_from_slice(&[0x89, 0x08]),
+        MmioScalarType::U64 | MmioScalarType::I64 => out.extend_from_slice(&[0x48, 0x89, 0x08]),
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!(
                 "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -8021,10 +8141,10 @@ fn encode_mmio_write_imm_bytes(out: &mut Vec<u8>, ty: MmioScalarType, addr: u64,
 fn encode_mmio_write_saved_value_bytes(out: &mut Vec<u8>, ty: MmioScalarType, addr: u64) {
     push_movabs_rax_imm64(out, addr);
     match ty {
-        MmioScalarType::U8 => out.extend_from_slice(&[0x88, 0x18]),
-        MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x18]),
-        MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x18]),
-        MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x18]),
+        MmioScalarType::U8 | MmioScalarType::I8 => out.extend_from_slice(&[0x88, 0x18]),
+        MmioScalarType::U16 | MmioScalarType::I16 => out.extend_from_slice(&[0x66, 0x89, 0x18]),
+        MmioScalarType::U32 | MmioScalarType::I32 => out.extend_from_slice(&[0x89, 0x18]),
+        MmioScalarType::U64 | MmioScalarType::I64 => out.extend_from_slice(&[0x48, 0x89, 0x18]),
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!(
                 "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -8043,10 +8163,14 @@ fn encode_stack_cell_store_imm_slot_bytes(
     push_mov_imm_to_value_register(out, ty, value);
     if offset == 0 {
         match ty {
-            MmioScalarType::U8 => out.extend_from_slice(&[0x88, 0x0C, 0x24]),
-            MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x0C, 0x24]),
-            MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x0C, 0x24]),
-            MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x0C, 0x24]),
+            MmioScalarType::U8 | MmioScalarType::I8 => out.extend_from_slice(&[0x88, 0x0C, 0x24]),
+            MmioScalarType::U16 | MmioScalarType::I16 => {
+                out.extend_from_slice(&[0x66, 0x89, 0x0C, 0x24])
+            }
+            MmioScalarType::U32 | MmioScalarType::I32 => out.extend_from_slice(&[0x89, 0x0C, 0x24]),
+            MmioScalarType::U64 | MmioScalarType::I64 => {
+                out.extend_from_slice(&[0x48, 0x89, 0x0C, 0x24])
+            }
             MmioScalarType::F32 | MmioScalarType::F64 => {
                 unreachable!(
                     "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -8055,10 +8179,18 @@ fn encode_stack_cell_store_imm_slot_bytes(
         }
     } else {
         match ty {
-            MmioScalarType::U8 => out.extend_from_slice(&[0x88, 0x4C, 0x24, offset]),
-            MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x4C, 0x24, offset]),
-            MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x4C, 0x24, offset]),
-            MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x4C, 0x24, offset]),
+            MmioScalarType::U8 | MmioScalarType::I8 => {
+                out.extend_from_slice(&[0x88, 0x4C, 0x24, offset])
+            }
+            MmioScalarType::U16 | MmioScalarType::I16 => {
+                out.extend_from_slice(&[0x66, 0x89, 0x4C, 0x24, offset])
+            }
+            MmioScalarType::U32 | MmioScalarType::I32 => {
+                out.extend_from_slice(&[0x89, 0x4C, 0x24, offset])
+            }
+            MmioScalarType::U64 | MmioScalarType::I64 => {
+                out.extend_from_slice(&[0x48, 0x89, 0x4C, 0x24, offset])
+            }
             MmioScalarType::F32 | MmioScalarType::F64 => {
                 unreachable!(
                     "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -8076,10 +8208,14 @@ fn encode_stack_cell_store_saved_value_slot_bytes(
     let offset = 8u8 * slot_idx;
     if offset == 0 {
         match ty {
-            MmioScalarType::U8 => out.extend_from_slice(&[0x88, 0x1C, 0x24]),
-            MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x1C, 0x24]),
-            MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x1C, 0x24]),
-            MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x1C, 0x24]),
+            MmioScalarType::U8 | MmioScalarType::I8 => out.extend_from_slice(&[0x88, 0x1C, 0x24]),
+            MmioScalarType::U16 | MmioScalarType::I16 => {
+                out.extend_from_slice(&[0x66, 0x89, 0x1C, 0x24])
+            }
+            MmioScalarType::U32 | MmioScalarType::I32 => out.extend_from_slice(&[0x89, 0x1C, 0x24]),
+            MmioScalarType::U64 | MmioScalarType::I64 => {
+                out.extend_from_slice(&[0x48, 0x89, 0x1C, 0x24])
+            }
             MmioScalarType::F32 | MmioScalarType::F64 => {
                 unreachable!(
                     "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -8088,10 +8224,18 @@ fn encode_stack_cell_store_saved_value_slot_bytes(
         }
     } else {
         match ty {
-            MmioScalarType::U8 => out.extend_from_slice(&[0x88, 0x5C, 0x24, offset]),
-            MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x5C, 0x24, offset]),
-            MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x5C, 0x24, offset]),
-            MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x5C, 0x24, offset]),
+            MmioScalarType::U8 | MmioScalarType::I8 => {
+                out.extend_from_slice(&[0x88, 0x5C, 0x24, offset])
+            }
+            MmioScalarType::U16 | MmioScalarType::I16 => {
+                out.extend_from_slice(&[0x66, 0x89, 0x5C, 0x24, offset])
+            }
+            MmioScalarType::U32 | MmioScalarType::I32 => {
+                out.extend_from_slice(&[0x89, 0x5C, 0x24, offset])
+            }
+            MmioScalarType::U64 | MmioScalarType::I64 => {
+                out.extend_from_slice(&[0x48, 0x89, 0x5C, 0x24, offset])
+            }
             MmioScalarType::F32 | MmioScalarType::F64 => {
                 unreachable!(
                     "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -8105,10 +8249,14 @@ fn encode_stack_cell_load_slot_bytes(out: &mut Vec<u8>, ty: MmioScalarType, slot
     let offset = 8u8 * slot_idx;
     if offset == 0 {
         match ty {
-            MmioScalarType::U8 => out.extend_from_slice(&[0x8A, 0x1C, 0x24]),
-            MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x8B, 0x1C, 0x24]),
-            MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x1C, 0x24]),
-            MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x1C, 0x24]),
+            MmioScalarType::U8 | MmioScalarType::I8 => out.extend_from_slice(&[0x8A, 0x1C, 0x24]),
+            MmioScalarType::U16 | MmioScalarType::I16 => {
+                out.extend_from_slice(&[0x66, 0x8B, 0x1C, 0x24])
+            }
+            MmioScalarType::U32 | MmioScalarType::I32 => out.extend_from_slice(&[0x8B, 0x1C, 0x24]),
+            MmioScalarType::U64 | MmioScalarType::I64 => {
+                out.extend_from_slice(&[0x48, 0x8B, 0x1C, 0x24])
+            }
             MmioScalarType::F32 | MmioScalarType::F64 => {
                 unreachable!(
                     "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -8117,10 +8265,18 @@ fn encode_stack_cell_load_slot_bytes(out: &mut Vec<u8>, ty: MmioScalarType, slot
         }
     } else {
         match ty {
-            MmioScalarType::U8 => out.extend_from_slice(&[0x8A, 0x5C, 0x24, offset]),
-            MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x8B, 0x5C, 0x24, offset]),
-            MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x5C, 0x24, offset]),
-            MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x5C, 0x24, offset]),
+            MmioScalarType::U8 | MmioScalarType::I8 => {
+                out.extend_from_slice(&[0x8A, 0x5C, 0x24, offset])
+            }
+            MmioScalarType::U16 | MmioScalarType::I16 => {
+                out.extend_from_slice(&[0x66, 0x8B, 0x5C, 0x24, offset])
+            }
+            MmioScalarType::U32 | MmioScalarType::I32 => {
+                out.extend_from_slice(&[0x8B, 0x5C, 0x24, offset])
+            }
+            MmioScalarType::U64 | MmioScalarType::I64 => {
+                out.extend_from_slice(&[0x48, 0x8B, 0x5C, 0x24, offset])
+            }
             MmioScalarType::F32 | MmioScalarType::F64 => {
                 unreachable!(
                     "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -8135,10 +8291,14 @@ fn encode_stack_cell_load_slot_bytes_into_rax(out: &mut Vec<u8>, ty: MmioScalarT
     let offset = 8u8 * slot_idx;
     if offset == 0 {
         match ty {
-            MmioScalarType::U8 => out.extend_from_slice(&[0x8A, 0x04, 0x24]),
-            MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x8B, 0x04, 0x24]),
-            MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x04, 0x24]),
-            MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x04, 0x24]),
+            MmioScalarType::U8 | MmioScalarType::I8 => out.extend_from_slice(&[0x8A, 0x04, 0x24]),
+            MmioScalarType::U16 | MmioScalarType::I16 => {
+                out.extend_from_slice(&[0x66, 0x8B, 0x04, 0x24])
+            }
+            MmioScalarType::U32 | MmioScalarType::I32 => out.extend_from_slice(&[0x8B, 0x04, 0x24]),
+            MmioScalarType::U64 | MmioScalarType::I64 => {
+                out.extend_from_slice(&[0x48, 0x8B, 0x04, 0x24])
+            }
             MmioScalarType::F32 | MmioScalarType::F64 => {
                 unreachable!(
                     "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -8147,10 +8307,18 @@ fn encode_stack_cell_load_slot_bytes_into_rax(out: &mut Vec<u8>, ty: MmioScalarT
         }
     } else {
         match ty {
-            MmioScalarType::U8 => out.extend_from_slice(&[0x8A, 0x44, 0x24, offset]),
-            MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x8B, 0x44, 0x24, offset]),
-            MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x44, 0x24, offset]),
-            MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x44, 0x24, offset]),
+            MmioScalarType::U8 | MmioScalarType::I8 => {
+                out.extend_from_slice(&[0x8A, 0x44, 0x24, offset])
+            }
+            MmioScalarType::U16 | MmioScalarType::I16 => {
+                out.extend_from_slice(&[0x66, 0x8B, 0x44, 0x24, offset])
+            }
+            MmioScalarType::U32 | MmioScalarType::I32 => {
+                out.extend_from_slice(&[0x8B, 0x44, 0x24, offset])
+            }
+            MmioScalarType::U64 | MmioScalarType::I64 => {
+                out.extend_from_slice(&[0x48, 0x8B, 0x44, 0x24, offset])
+            }
             MmioScalarType::F32 | MmioScalarType::F64 => {
                 unreachable!(
                     "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -8165,10 +8333,14 @@ fn encode_stack_cell_load_slot_bytes_into_rcx(out: &mut Vec<u8>, ty: MmioScalarT
     let offset = 8u8 * slot_idx;
     if offset == 0 {
         match ty {
-            MmioScalarType::U8 => out.extend_from_slice(&[0x8A, 0x0C, 0x24]),
-            MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x8B, 0x0C, 0x24]),
-            MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x0C, 0x24]),
-            MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x0C, 0x24]),
+            MmioScalarType::U8 | MmioScalarType::I8 => out.extend_from_slice(&[0x8A, 0x0C, 0x24]),
+            MmioScalarType::U16 | MmioScalarType::I16 => {
+                out.extend_from_slice(&[0x66, 0x8B, 0x0C, 0x24])
+            }
+            MmioScalarType::U32 | MmioScalarType::I32 => out.extend_from_slice(&[0x8B, 0x0C, 0x24]),
+            MmioScalarType::U64 | MmioScalarType::I64 => {
+                out.extend_from_slice(&[0x48, 0x8B, 0x0C, 0x24])
+            }
             MmioScalarType::F32 | MmioScalarType::F64 => {
                 unreachable!(
                     "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -8177,10 +8349,18 @@ fn encode_stack_cell_load_slot_bytes_into_rcx(out: &mut Vec<u8>, ty: MmioScalarT
         }
     } else {
         match ty {
-            MmioScalarType::U8 => out.extend_from_slice(&[0x8A, 0x4C, 0x24, offset]),
-            MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x8B, 0x4C, 0x24, offset]),
-            MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x4C, 0x24, offset]),
-            MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x4C, 0x24, offset]),
+            MmioScalarType::U8 | MmioScalarType::I8 => {
+                out.extend_from_slice(&[0x8A, 0x4C, 0x24, offset])
+            }
+            MmioScalarType::U16 | MmioScalarType::I16 => {
+                out.extend_from_slice(&[0x66, 0x8B, 0x4C, 0x24, offset])
+            }
+            MmioScalarType::U32 | MmioScalarType::I32 => {
+                out.extend_from_slice(&[0x8B, 0x4C, 0x24, offset])
+            }
+            MmioScalarType::U64 | MmioScalarType::I64 => {
+                out.extend_from_slice(&[0x48, 0x8B, 0x4C, 0x24, offset])
+            }
             MmioScalarType::F32 | MmioScalarType::F64 => {
                 unreachable!(
                     "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -8212,7 +8392,7 @@ fn encode_compare_into_slot_bytes(
     // Steps 1+2: type-appropriate zero-extending load of lhs, then compare with rhs.
     // All branches emit exactly 10 bytes for steps 1+2, with padding NOPs as needed.
     match ty {
-        MmioScalarType::U8 => {
+        MmioScalarType::U8 | MmioScalarType::I8 => {
             // movzbl lhs_off(%rsp), %eax  [0F B6 44 24 off]  (5 bytes)
             out.extend_from_slice(&[0x0F, 0xB6, 0x44, 0x24, lhs_off]);
             // cmpb rhs_off(%rsp), %al     [3A 44 24 off]     (4 bytes)
@@ -8220,13 +8400,13 @@ fn encode_compare_into_slot_bytes(
             // nop (1 byte pad to reach 10 total)
             out.push(0x90);
         }
-        MmioScalarType::U16 => {
+        MmioScalarType::U16 | MmioScalarType::I16 => {
             // movzwl lhs_off(%rsp), %eax  [0F B7 44 24 off]  (5 bytes)
             out.extend_from_slice(&[0x0F, 0xB7, 0x44, 0x24, lhs_off]);
             // cmpw rhs_off(%rsp), %ax     [66 3B 44 24 off]  (5 bytes)
             out.extend_from_slice(&[0x66, 0x3B, 0x44, 0x24, rhs_off]);
         }
-        MmioScalarType::U32 => {
+        MmioScalarType::U32 | MmioScalarType::I32 => {
             // movl lhs_off(%rsp), %eax    [8B 44 24 off]     (4 bytes)
             out.extend_from_slice(&[0x8B, 0x44, 0x24, lhs_off]);
             // cmpl rhs_off(%rsp), %eax    [3B 44 24 off]     (4 bytes)
@@ -8242,13 +8422,40 @@ fn encode_compare_into_slot_bytes(
         }
     }
     // Step 3: setCC %al  [0F XX C0]  (3 bytes)
+    // Use signed condition codes (setl/setg/setle/setge) for signed types,
+    // unsigned codes (setb/seta/setbe/setae) for unsigned types.
+    let signed = ty.is_signed();
     let setcc_byte: u8 = match cmp_op {
-        CmpOp::Eq => 0x94,
-        CmpOp::Ne => 0x95,
-        CmpOp::Lt => 0x9C,
-        CmpOp::Ge => 0x9D,
-        CmpOp::Le => 0x9E,
-        CmpOp::Gt => 0x9F,
+        CmpOp::Eq => 0x94, // sete
+        CmpOp::Ne => 0x95, // setne
+        CmpOp::Lt => {
+            if signed {
+                0x9C // setl
+            } else {
+                0x92 // setb
+            }
+        }
+        CmpOp::Ge => {
+            if signed {
+                0x9D // setge
+            } else {
+                0x93 // setae
+            }
+        }
+        CmpOp::Le => {
+            if signed {
+                0x9E // setle
+            } else {
+                0x96 // setbe
+            }
+        }
+        CmpOp::Gt => {
+            if signed {
+                0x9F // setg
+            } else {
+                0x97 // seta
+            }
+        }
     };
     out.extend_from_slice(&[0x0F, setcc_byte, 0xC0]);
     // Step 4: movzbl %al, %eax  [0F B6 C0]  (3 bytes)
@@ -8289,12 +8496,16 @@ fn encode_slot_arith_slot_op_bytes(
             };
             if offset == 0 {
                 match ty {
-                    MmioScalarType::U8 => out.extend_from_slice(&[opcode8, modrm_no, 0x24]),
-                    MmioScalarType::U16 => {
+                    MmioScalarType::U8 | MmioScalarType::I8 => {
+                        out.extend_from_slice(&[opcode8, modrm_no, 0x24])
+                    }
+                    MmioScalarType::U16 | MmioScalarType::I16 => {
                         out.extend_from_slice(&[0x66, opcode8 + 1, modrm_no, 0x24])
                     }
-                    MmioScalarType::U32 => out.extend_from_slice(&[opcode8 + 1, modrm_no, 0x24]),
-                    MmioScalarType::U64 => {
+                    MmioScalarType::U32 | MmioScalarType::I32 => {
+                        out.extend_from_slice(&[opcode8 + 1, modrm_no, 0x24])
+                    }
+                    MmioScalarType::U64 | MmioScalarType::I64 => {
                         out.extend_from_slice(&[0x48, opcode8 + 1, modrm_no, 0x24])
                     }
                     MmioScalarType::F32 | MmioScalarType::F64 => {
@@ -8305,14 +8516,16 @@ fn encode_slot_arith_slot_op_bytes(
                 }
             } else {
                 match ty {
-                    MmioScalarType::U8 => out.extend_from_slice(&[opcode8, modrm_d8, 0x24, offset]),
-                    MmioScalarType::U16 => {
+                    MmioScalarType::U8 | MmioScalarType::I8 => {
+                        out.extend_from_slice(&[opcode8, modrm_d8, 0x24, offset])
+                    }
+                    MmioScalarType::U16 | MmioScalarType::I16 => {
                         out.extend_from_slice(&[0x66, opcode8 + 1, modrm_d8, 0x24, offset])
                     }
-                    MmioScalarType::U32 => {
+                    MmioScalarType::U32 | MmioScalarType::I32 => {
                         out.extend_from_slice(&[opcode8 + 1, modrm_d8, 0x24, offset])
                     }
-                    MmioScalarType::U64 => {
+                    MmioScalarType::U64 | MmioScalarType::I64 => {
                         out.extend_from_slice(&[0x48, opcode8 + 1, modrm_d8, 0x24, offset])
                     }
                     MmioScalarType::F32 | MmioScalarType::F64 => {
@@ -8333,10 +8546,18 @@ fn encode_slot_arith_slot_op_bytes(
             };
             if offset == 0 {
                 match ty {
-                    MmioScalarType::U8 => out.extend_from_slice(&[0xD2, modrm_no, 0x24]),
-                    MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0xD3, modrm_no, 0x24]),
-                    MmioScalarType::U32 => out.extend_from_slice(&[0xD3, modrm_no, 0x24]),
-                    MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0xD3, modrm_no, 0x24]),
+                    MmioScalarType::U8 | MmioScalarType::I8 => {
+                        out.extend_from_slice(&[0xD2, modrm_no, 0x24])
+                    }
+                    MmioScalarType::U16 | MmioScalarType::I16 => {
+                        out.extend_from_slice(&[0x66, 0xD3, modrm_no, 0x24])
+                    }
+                    MmioScalarType::U32 | MmioScalarType::I32 => {
+                        out.extend_from_slice(&[0xD3, modrm_no, 0x24])
+                    }
+                    MmioScalarType::U64 | MmioScalarType::I64 => {
+                        out.extend_from_slice(&[0x48, 0xD3, modrm_no, 0x24])
+                    }
                     MmioScalarType::F32 | MmioScalarType::F64 => {
                         unreachable!(
                             "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -8345,12 +8566,16 @@ fn encode_slot_arith_slot_op_bytes(
                 }
             } else {
                 match ty {
-                    MmioScalarType::U8 => out.extend_from_slice(&[0xD2, modrm_d8, 0x24, offset]),
-                    MmioScalarType::U16 => {
+                    MmioScalarType::U8 | MmioScalarType::I8 => {
+                        out.extend_from_slice(&[0xD2, modrm_d8, 0x24, offset])
+                    }
+                    MmioScalarType::U16 | MmioScalarType::I16 => {
                         out.extend_from_slice(&[0x66, 0xD3, modrm_d8, 0x24, offset])
                     }
-                    MmioScalarType::U32 => out.extend_from_slice(&[0xD3, modrm_d8, 0x24, offset]),
-                    MmioScalarType::U64 => {
+                    MmioScalarType::U32 | MmioScalarType::I32 => {
+                        out.extend_from_slice(&[0xD3, modrm_d8, 0x24, offset])
+                    }
+                    MmioScalarType::U64 | MmioScalarType::I64 => {
                         out.extend_from_slice(&[0x48, 0xD3, modrm_d8, 0x24, offset])
                     }
                     MmioScalarType::F32 | MmioScalarType::F64 => {
@@ -8549,13 +8774,21 @@ fn encode_call_arg_to_gpr(out: &mut Vec<u8>, reg_field: u8, is_ext: bool, arg: &
 fn encode_param_load_bytes(out: &mut Vec<u8>, ty: MmioScalarType, offset: u8) {
     match ty {
         // movb  disp8(%rsp), %bl  — 0x8A /r  ModRM=0x5C SIB=0x24
-        MmioScalarType::U8 => out.extend_from_slice(&[0x8A, 0x5C, 0x24, offset]),
+        MmioScalarType::U8 | MmioScalarType::I8 => {
+            out.extend_from_slice(&[0x8A, 0x5C, 0x24, offset])
+        }
         // movw  disp8(%rsp), %bx  — 0x66 0x8B /r
-        MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x8B, 0x5C, 0x24, offset]),
+        MmioScalarType::U16 | MmioScalarType::I16 => {
+            out.extend_from_slice(&[0x66, 0x8B, 0x5C, 0x24, offset])
+        }
         // movl  disp8(%rsp), %ebx — 0x8B /r  (zero-extends to rbx)
-        MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x5C, 0x24, offset]),
+        MmioScalarType::U32 | MmioScalarType::I32 => {
+            out.extend_from_slice(&[0x8B, 0x5C, 0x24, offset])
+        }
         // movq  disp8(%rsp), %rbx — REX.W 0x8B /r
-        MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x5C, 0x24, offset]),
+        MmioScalarType::U64 | MmioScalarType::I64 => {
+            out.extend_from_slice(&[0x48, 0x8B, 0x5C, 0x24, offset])
+        }
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!(
                 "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -8578,10 +8811,10 @@ fn encode_mmio_read_param_addr_bytes(
 ) {
     push_load_param_addr_to_rax(out, offset);
     match ty {
-        MmioScalarType::U8 => out.extend_from_slice(&[0x8A, 0x00]),
-        MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x8B, 0x00]),
-        MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x00]),
-        MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x00]),
+        MmioScalarType::U8 | MmioScalarType::I8 => out.extend_from_slice(&[0x8A, 0x00]),
+        MmioScalarType::U16 | MmioScalarType::I16 => out.extend_from_slice(&[0x66, 0x8B, 0x00]),
+        MmioScalarType::U32 | MmioScalarType::I32 => out.extend_from_slice(&[0x8B, 0x00]),
+        MmioScalarType::U64 | MmioScalarType::I64 => out.extend_from_slice(&[0x48, 0x8B, 0x00]),
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!(
                 "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -8602,10 +8835,10 @@ fn encode_mmio_write_imm_param_addr_bytes(
     push_load_param_addr_to_rax(out, offset);
     push_mov_imm_to_value_register(out, ty, value);
     match ty {
-        MmioScalarType::U8 => out.extend_from_slice(&[0x88, 0x08]),
-        MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x08]),
-        MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x08]),
-        MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x08]),
+        MmioScalarType::U8 | MmioScalarType::I8 => out.extend_from_slice(&[0x88, 0x08]),
+        MmioScalarType::U16 | MmioScalarType::I16 => out.extend_from_slice(&[0x66, 0x89, 0x08]),
+        MmioScalarType::U32 | MmioScalarType::I32 => out.extend_from_slice(&[0x89, 0x08]),
+        MmioScalarType::U64 | MmioScalarType::I64 => out.extend_from_slice(&[0x48, 0x89, 0x08]),
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!(
                 "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -8621,10 +8854,10 @@ fn encode_mmio_write_saved_value_param_addr_bytes(
 ) {
     push_load_param_addr_to_rax(out, offset);
     match ty {
-        MmioScalarType::U8 => out.extend_from_slice(&[0x88, 0x18]),
-        MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x18]),
-        MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x18]),
-        MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x18]),
+        MmioScalarType::U8 | MmioScalarType::I8 => out.extend_from_slice(&[0x88, 0x18]),
+        MmioScalarType::U16 | MmioScalarType::I16 => out.extend_from_slice(&[0x66, 0x89, 0x18]),
+        MmioScalarType::U32 | MmioScalarType::I32 => out.extend_from_slice(&[0x89, 0x18]),
+        MmioScalarType::U64 | MmioScalarType::I64 => out.extend_from_slice(&[0x48, 0x89, 0x18]),
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!(
                 "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -8642,10 +8875,14 @@ fn encode_stack_cell_store_accumulator_slot_bytes(
     let offset = 8u8 * slot_idx;
     if offset == 0 {
         match ty {
-            MmioScalarType::U8 => out.extend_from_slice(&[0x88, 0x04, 0x24]),
-            MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x04, 0x24]),
-            MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x04, 0x24]),
-            MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x04, 0x24]),
+            MmioScalarType::U8 | MmioScalarType::I8 => out.extend_from_slice(&[0x88, 0x04, 0x24]),
+            MmioScalarType::U16 | MmioScalarType::I16 => {
+                out.extend_from_slice(&[0x66, 0x89, 0x04, 0x24])
+            }
+            MmioScalarType::U32 | MmioScalarType::I32 => out.extend_from_slice(&[0x89, 0x04, 0x24]),
+            MmioScalarType::U64 | MmioScalarType::I64 => {
+                out.extend_from_slice(&[0x48, 0x89, 0x04, 0x24])
+            }
             MmioScalarType::F32 | MmioScalarType::F64 => {
                 unreachable!(
                     "float RawPtrLoad reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -8654,10 +8891,18 @@ fn encode_stack_cell_store_accumulator_slot_bytes(
         }
     } else {
         match ty {
-            MmioScalarType::U8 => out.extend_from_slice(&[0x88, 0x44, 0x24, offset]),
-            MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x44, 0x24, offset]),
-            MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x44, 0x24, offset]),
-            MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x44, 0x24, offset]),
+            MmioScalarType::U8 | MmioScalarType::I8 => {
+                out.extend_from_slice(&[0x88, 0x44, 0x24, offset])
+            }
+            MmioScalarType::U16 | MmioScalarType::I16 => {
+                out.extend_from_slice(&[0x66, 0x89, 0x44, 0x24, offset])
+            }
+            MmioScalarType::U32 | MmioScalarType::I32 => {
+                out.extend_from_slice(&[0x89, 0x44, 0x24, offset])
+            }
+            MmioScalarType::U64 | MmioScalarType::I64 => {
+                out.extend_from_slice(&[0x48, 0x89, 0x44, 0x24, offset])
+            }
             MmioScalarType::F32 | MmioScalarType::F64 => {
                 unreachable!(
                     "float RawPtrLoad reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -8680,10 +8925,10 @@ fn encode_raw_ptr_load_bytes(
     encode_stack_cell_load_slot_bytes_into_rax(out, MmioScalarType::U64, addr_slot_idx);
     // 2. Indirect load from [%rax] into %al/%ax/%eax/%rax.
     match ty {
-        MmioScalarType::U8 => out.extend_from_slice(&[0x8A, 0x00]),
-        MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x8B, 0x00]),
-        MmioScalarType::U32 => out.extend_from_slice(&[0x8B, 0x00]),
-        MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x8B, 0x00]),
+        MmioScalarType::U8 | MmioScalarType::I8 => out.extend_from_slice(&[0x8A, 0x00]),
+        MmioScalarType::U16 | MmioScalarType::I16 => out.extend_from_slice(&[0x66, 0x8B, 0x00]),
+        MmioScalarType::U32 | MmioScalarType::I32 => out.extend_from_slice(&[0x8B, 0x00]),
+        MmioScalarType::U64 | MmioScalarType::I64 => out.extend_from_slice(&[0x48, 0x8B, 0x00]),
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!(
                 "float RawPtrLoad reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -8708,10 +8953,10 @@ fn encode_raw_ptr_store_imm_bytes(
     push_mov_imm_to_value_register(out, ty, value);
     // 3. Store %cl/%cx/%ecx/%rcx to [%rax].
     match ty {
-        MmioScalarType::U8 => out.extend_from_slice(&[0x88, 0x08]),
-        MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x08]),
-        MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x08]),
-        MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x08]),
+        MmioScalarType::U8 | MmioScalarType::I8 => out.extend_from_slice(&[0x88, 0x08]),
+        MmioScalarType::U16 | MmioScalarType::I16 => out.extend_from_slice(&[0x66, 0x89, 0x08]),
+        MmioScalarType::U32 | MmioScalarType::I32 => out.extend_from_slice(&[0x89, 0x08]),
+        MmioScalarType::U64 | MmioScalarType::I64 => out.extend_from_slice(&[0x48, 0x89, 0x08]),
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!(
                 "float RawPtrStore reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -8731,10 +8976,10 @@ fn encode_raw_ptr_store_saved_value_bytes(
     encode_stack_cell_load_slot_bytes_into_rax(out, MmioScalarType::U64, addr_slot_idx);
     // 2. Store %bl/%bx/%ebx/%rbx to [%rax].
     match ty {
-        MmioScalarType::U8 => out.extend_from_slice(&[0x88, 0x18]),
-        MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0x18]),
-        MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0x18]),
-        MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0x18]),
+        MmioScalarType::U8 | MmioScalarType::I8 => out.extend_from_slice(&[0x88, 0x18]),
+        MmioScalarType::U16 | MmioScalarType::I16 => out.extend_from_slice(&[0x66, 0x89, 0x18]),
+        MmioScalarType::U32 | MmioScalarType::I32 => out.extend_from_slice(&[0x89, 0x18]),
+        MmioScalarType::U64 | MmioScalarType::I64 => out.extend_from_slice(&[0x48, 0x89, 0x18]),
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!(
                 "float RawPtrStore reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -8788,19 +9033,19 @@ fn push_movabs_rax_imm64(out: &mut Vec<u8>, value: u64) {
 
 fn push_mov_imm_to_accumulator_register(out: &mut Vec<u8>, ty: MmioScalarType, value: u64) {
     match ty {
-        MmioScalarType::U8 => {
+        MmioScalarType::U8 | MmioScalarType::I8 => {
             out.push(0xB0);
             out.push(value as u8);
         }
-        MmioScalarType::U16 => {
+        MmioScalarType::U16 | MmioScalarType::I16 => {
             out.extend_from_slice(&[0x66, 0xB8]);
             push_u16_le(out, value as u16);
         }
-        MmioScalarType::U32 => {
+        MmioScalarType::U32 | MmioScalarType::I32 => {
             out.push(0xB8);
             push_u32_le(out, value as u32);
         }
-        MmioScalarType::U64 => {
+        MmioScalarType::U64 | MmioScalarType::I64 => {
             out.extend_from_slice(&[0x48, 0xB8]);
             push_u64_le(out, value);
         }
@@ -8814,19 +9059,19 @@ fn push_mov_imm_to_accumulator_register(out: &mut Vec<u8>, ty: MmioScalarType, v
 
 fn push_mov_imm_to_value_register(out: &mut Vec<u8>, ty: MmioScalarType, value: u64) {
     match ty {
-        MmioScalarType::U8 => {
+        MmioScalarType::U8 | MmioScalarType::I8 => {
             out.push(0xB1);
             out.push(value as u8);
         }
-        MmioScalarType::U16 => {
+        MmioScalarType::U16 | MmioScalarType::I16 => {
             out.extend_from_slice(&[0x66, 0xB9]);
             push_u16_le(out, value as u16);
         }
-        MmioScalarType::U32 => {
+        MmioScalarType::U32 | MmioScalarType::I32 => {
             out.push(0xB9);
             push_u32_le(out, value as u32);
         }
-        MmioScalarType::U64 => {
+        MmioScalarType::U64 | MmioScalarType::I64 => {
             out.extend_from_slice(&[0x48, 0xB9]);
             push_u64_le(out, value);
         }
@@ -8840,10 +9085,10 @@ fn push_mov_imm_to_value_register(out: &mut Vec<u8>, ty: MmioScalarType, value: 
 
 fn push_mov_accumulator_to_saved_value_register(out: &mut Vec<u8>, ty: MmioScalarType) {
     match ty {
-        MmioScalarType::U8 => out.extend_from_slice(&[0x88, 0xC3]),
-        MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0xC3]),
-        MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0xC3]),
-        MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0xC3]),
+        MmioScalarType::U8 | MmioScalarType::I8 => out.extend_from_slice(&[0x88, 0xC3]),
+        MmioScalarType::U16 | MmioScalarType::I16 => out.extend_from_slice(&[0x66, 0x89, 0xC3]),
+        MmioScalarType::U32 | MmioScalarType::I32 => out.extend_from_slice(&[0x89, 0xC3]),
+        MmioScalarType::U64 | MmioScalarType::I64 => out.extend_from_slice(&[0x48, 0x89, 0xC3]),
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!(
                 "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -8854,10 +9099,10 @@ fn push_mov_accumulator_to_saved_value_register(out: &mut Vec<u8>, ty: MmioScala
 
 fn push_mov_saved_value_to_accumulator_register(out: &mut Vec<u8>, ty: MmioScalarType) {
     match ty {
-        MmioScalarType::U8 => out.extend_from_slice(&[0x88, 0xD8]),
-        MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x89, 0xD8]),
-        MmioScalarType::U32 => out.extend_from_slice(&[0x89, 0xD8]),
-        MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x89, 0xD8]),
+        MmioScalarType::U8 | MmioScalarType::I8 => out.extend_from_slice(&[0x88, 0xD8]),
+        MmioScalarType::U16 | MmioScalarType::I16 => out.extend_from_slice(&[0x66, 0x89, 0xD8]),
+        MmioScalarType::U32 | MmioScalarType::I32 => out.extend_from_slice(&[0x89, 0xD8]),
+        MmioScalarType::U64 | MmioScalarType::I64 => out.extend_from_slice(&[0x48, 0x89, 0xD8]),
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!(
                 "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -8868,10 +9113,10 @@ fn push_mov_saved_value_to_accumulator_register(out: &mut Vec<u8>, ty: MmioScala
 
 fn push_test_saved_value_register_zero(out: &mut Vec<u8>, ty: MmioScalarType) {
     match ty {
-        MmioScalarType::U8 => out.extend_from_slice(&[0x84, 0xDB]),
-        MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x85, 0xDB]),
-        MmioScalarType::U32 => out.extend_from_slice(&[0x85, 0xDB]),
-        MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x85, 0xDB]),
+        MmioScalarType::U8 | MmioScalarType::I8 => out.extend_from_slice(&[0x84, 0xDB]),
+        MmioScalarType::U16 | MmioScalarType::I16 => out.extend_from_slice(&[0x66, 0x85, 0xDB]),
+        MmioScalarType::U32 | MmioScalarType::I32 => out.extend_from_slice(&[0x85, 0xDB]),
+        MmioScalarType::U64 | MmioScalarType::I64 => out.extend_from_slice(&[0x48, 0x85, 0xDB]),
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!(
                 "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -8882,10 +9127,10 @@ fn push_test_saved_value_register_zero(out: &mut Vec<u8>, ty: MmioScalarType) {
 
 fn push_cmp_accumulator_to_saved_value_register(out: &mut Vec<u8>, ty: MmioScalarType) {
     match ty {
-        MmioScalarType::U8 => out.extend_from_slice(&[0x38, 0xC3]),
-        MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x39, 0xC3]),
-        MmioScalarType::U32 => out.extend_from_slice(&[0x39, 0xC3]),
-        MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x39, 0xC3]),
+        MmioScalarType::U8 | MmioScalarType::I8 => out.extend_from_slice(&[0x38, 0xC3]),
+        MmioScalarType::U16 | MmioScalarType::I16 => out.extend_from_slice(&[0x66, 0x39, 0xC3]),
+        MmioScalarType::U32 | MmioScalarType::I32 => out.extend_from_slice(&[0x39, 0xC3]),
+        MmioScalarType::U64 | MmioScalarType::I64 => out.extend_from_slice(&[0x48, 0x39, 0xC3]),
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!(
                 "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -8896,10 +9141,10 @@ fn push_cmp_accumulator_to_saved_value_register(out: &mut Vec<u8>, ty: MmioScala
 
 fn push_test_accumulator_with_saved_value_register(out: &mut Vec<u8>, ty: MmioScalarType) {
     match ty {
-        MmioScalarType::U8 => out.extend_from_slice(&[0x84, 0xC3]),
-        MmioScalarType::U16 => out.extend_from_slice(&[0x66, 0x85, 0xC3]),
-        MmioScalarType::U32 => out.extend_from_slice(&[0x85, 0xC3]),
-        MmioScalarType::U64 => out.extend_from_slice(&[0x48, 0x85, 0xC3]),
+        MmioScalarType::U8 | MmioScalarType::I8 => out.extend_from_slice(&[0x84, 0xC3]),
+        MmioScalarType::U16 | MmioScalarType::I16 => out.extend_from_slice(&[0x66, 0x85, 0xC3]),
+        MmioScalarType::U32 | MmioScalarType::I32 => out.extend_from_slice(&[0x85, 0xC3]),
+        MmioScalarType::U64 | MmioScalarType::I64 => out.extend_from_slice(&[0x48, 0x85, 0xC3]),
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!(
                 "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -8910,8 +9155,8 @@ fn push_test_accumulator_with_saved_value_register(out: &mut Vec<u8>, ty: MmioSc
 
 fn mmio_load_bytes(ty: MmioScalarType) -> u64 {
     match ty {
-        MmioScalarType::U8 | MmioScalarType::U32 => 2,
-        MmioScalarType::U16 | MmioScalarType::U64 => 3,
+        MmioScalarType::U8 | MmioScalarType::I8 | MmioScalarType::U32 | MmioScalarType::I32 => 2,
+        MmioScalarType::U16 | MmioScalarType::I16 | MmioScalarType::U64 | MmioScalarType::I64 => 3,
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!(
                 "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -8922,10 +9167,10 @@ fn mmio_load_bytes(ty: MmioScalarType) -> u64 {
 
 fn mmio_value_load_immediate_bytes(ty: MmioScalarType) -> u64 {
     match ty {
-        MmioScalarType::U8 => 2,
-        MmioScalarType::U16 => 4,
-        MmioScalarType::U32 => 5,
-        MmioScalarType::U64 => 10,
+        MmioScalarType::U8 | MmioScalarType::I8 => 2,
+        MmioScalarType::U16 | MmioScalarType::I16 => 4,
+        MmioScalarType::U32 | MmioScalarType::I32 => 5,
+        MmioScalarType::U64 | MmioScalarType::I64 => 10,
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!(
                 "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -8936,8 +9181,8 @@ fn mmio_value_load_immediate_bytes(ty: MmioScalarType) -> u64 {
 
 fn mmio_saved_value_copy_bytes(ty: MmioScalarType) -> u64 {
     match ty {
-        MmioScalarType::U8 | MmioScalarType::U32 => 2,
-        MmioScalarType::U16 | MmioScalarType::U64 => 3,
+        MmioScalarType::U8 | MmioScalarType::I8 | MmioScalarType::U32 | MmioScalarType::I32 => 2,
+        MmioScalarType::U16 | MmioScalarType::I16 | MmioScalarType::U64 | MmioScalarType::I64 => 3,
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!(
                 "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -8948,8 +9193,8 @@ fn mmio_saved_value_copy_bytes(ty: MmioScalarType) -> u64 {
 
 fn mmio_saved_value_zero_test_bytes(ty: MmioScalarType) -> u64 {
     match ty {
-        MmioScalarType::U8 | MmioScalarType::U32 => 2,
-        MmioScalarType::U16 | MmioScalarType::U64 => 3,
+        MmioScalarType::U8 | MmioScalarType::I8 | MmioScalarType::U32 | MmioScalarType::I32 => 2,
+        MmioScalarType::U16 | MmioScalarType::I16 | MmioScalarType::U64 | MmioScalarType::I64 => 3,
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!(
                 "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -8960,10 +9205,10 @@ fn mmio_saved_value_zero_test_bytes(ty: MmioScalarType) -> u64 {
 
 fn mmio_accumulator_immediate_bytes(ty: MmioScalarType) -> u64 {
     match ty {
-        MmioScalarType::U8 => 2,
-        MmioScalarType::U16 => 4,
-        MmioScalarType::U32 => 5,
-        MmioScalarType::U64 => 10,
+        MmioScalarType::U8 | MmioScalarType::I8 => 2,
+        MmioScalarType::U16 | MmioScalarType::I16 => 4,
+        MmioScalarType::U32 | MmioScalarType::I32 => 5,
+        MmioScalarType::U64 | MmioScalarType::I64 => 10,
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!(
                 "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -8974,8 +9219,8 @@ fn mmio_accumulator_immediate_bytes(ty: MmioScalarType) -> u64 {
 
 fn mmio_saved_value_compare_bytes(ty: MmioScalarType) -> u64 {
     match ty {
-        MmioScalarType::U8 | MmioScalarType::U32 => 2,
-        MmioScalarType::U16 | MmioScalarType::U64 => 3,
+        MmioScalarType::U8 | MmioScalarType::I8 | MmioScalarType::U32 | MmioScalarType::I32 => 2,
+        MmioScalarType::U16 | MmioScalarType::I16 | MmioScalarType::U64 | MmioScalarType::I64 => 3,
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!(
                 "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -8994,8 +9239,8 @@ fn mmio_saved_value_literal_mask_test_bytes(ty: MmioScalarType) -> u64 {
 
 fn mmio_store_bytes(ty: MmioScalarType) -> u64 {
     match ty {
-        MmioScalarType::U8 | MmioScalarType::U32 => 2,
-        MmioScalarType::U16 | MmioScalarType::U64 => 3,
+        MmioScalarType::U8 | MmioScalarType::I8 | MmioScalarType::U32 | MmioScalarType::I32 => 2,
+        MmioScalarType::U16 | MmioScalarType::I16 | MmioScalarType::U64 | MmioScalarType::I64 => 3,
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!(
                 "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -9013,8 +9258,8 @@ fn mmio_saved_value_store_bytes(ty: MmioScalarType) -> u64 {
 /// slot_idx>0 uses the disp8 SIB form (4/5 bytes).
 fn stack_cell_access_bytes(ty: MmioScalarType, slot_idx: u8) -> u64 {
     let base: u64 = match ty {
-        MmioScalarType::U8 | MmioScalarType::U32 => 3,
-        MmioScalarType::U16 | MmioScalarType::U64 => 4,
+        MmioScalarType::U8 | MmioScalarType::I8 | MmioScalarType::U32 | MmioScalarType::I32 => 3,
+        MmioScalarType::U16 | MmioScalarType::I16 | MmioScalarType::U64 | MmioScalarType::I64 => 4,
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!(
                 "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -9051,34 +9296,34 @@ fn slot_arith_imm_op_bytes(op: ArithOp, imm: u64) -> u64 {
 /// AT&T mnemonic for a typed `op r/m, reg` instruction used in `SlotArithSlot`.
 fn slot_arith_slot_op_mnemonic(ty: MmioScalarType, op: ArithOp) -> &'static str {
     match (ty, op) {
-        (MmioScalarType::U8, ArithOp::Add) => "addb",
-        (MmioScalarType::U8, ArithOp::Sub) => "subb",
-        (MmioScalarType::U8, ArithOp::And) => "andb",
-        (MmioScalarType::U8, ArithOp::Or) => "orb",
-        (MmioScalarType::U8, ArithOp::Xor) => "xorb",
-        (MmioScalarType::U8, ArithOp::Shl) => "shlb",
-        (MmioScalarType::U8, ArithOp::Shr) => "shrb",
-        (MmioScalarType::U16, ArithOp::Add) => "addw",
-        (MmioScalarType::U16, ArithOp::Sub) => "subw",
-        (MmioScalarType::U16, ArithOp::And) => "andw",
-        (MmioScalarType::U16, ArithOp::Or) => "orw",
-        (MmioScalarType::U16, ArithOp::Xor) => "xorw",
-        (MmioScalarType::U16, ArithOp::Shl) => "shlw",
-        (MmioScalarType::U16, ArithOp::Shr) => "shrw",
-        (MmioScalarType::U32, ArithOp::Add) => "addl",
-        (MmioScalarType::U32, ArithOp::Sub) => "subl",
-        (MmioScalarType::U32, ArithOp::And) => "andl",
-        (MmioScalarType::U32, ArithOp::Or) => "orl",
-        (MmioScalarType::U32, ArithOp::Xor) => "xorl",
-        (MmioScalarType::U32, ArithOp::Shl) => "shll",
-        (MmioScalarType::U32, ArithOp::Shr) => "shrl",
-        (MmioScalarType::U64, ArithOp::Add) => "addq",
-        (MmioScalarType::U64, ArithOp::Sub) => "subq",
-        (MmioScalarType::U64, ArithOp::And) => "andq",
-        (MmioScalarType::U64, ArithOp::Or) => "orq",
-        (MmioScalarType::U64, ArithOp::Xor) => "xorq",
-        (MmioScalarType::U64, ArithOp::Shl) => "shlq",
-        (MmioScalarType::U64, ArithOp::Shr) => "shrq",
+        (MmioScalarType::U8 | MmioScalarType::I8, ArithOp::Add) => "addb",
+        (MmioScalarType::U8 | MmioScalarType::I8, ArithOp::Sub) => "subb",
+        (MmioScalarType::U8 | MmioScalarType::I8, ArithOp::And) => "andb",
+        (MmioScalarType::U8 | MmioScalarType::I8, ArithOp::Or) => "orb",
+        (MmioScalarType::U8 | MmioScalarType::I8, ArithOp::Xor) => "xorb",
+        (MmioScalarType::U8 | MmioScalarType::I8, ArithOp::Shl) => "shlb",
+        (MmioScalarType::U8 | MmioScalarType::I8, ArithOp::Shr) => "shrb",
+        (MmioScalarType::U16 | MmioScalarType::I16, ArithOp::Add) => "addw",
+        (MmioScalarType::U16 | MmioScalarType::I16, ArithOp::Sub) => "subw",
+        (MmioScalarType::U16 | MmioScalarType::I16, ArithOp::And) => "andw",
+        (MmioScalarType::U16 | MmioScalarType::I16, ArithOp::Or) => "orw",
+        (MmioScalarType::U16 | MmioScalarType::I16, ArithOp::Xor) => "xorw",
+        (MmioScalarType::U16 | MmioScalarType::I16, ArithOp::Shl) => "shlw",
+        (MmioScalarType::U16 | MmioScalarType::I16, ArithOp::Shr) => "shrw",
+        (MmioScalarType::U32 | MmioScalarType::I32, ArithOp::Add) => "addl",
+        (MmioScalarType::U32 | MmioScalarType::I32, ArithOp::Sub) => "subl",
+        (MmioScalarType::U32 | MmioScalarType::I32, ArithOp::And) => "andl",
+        (MmioScalarType::U32 | MmioScalarType::I32, ArithOp::Or) => "orl",
+        (MmioScalarType::U32 | MmioScalarType::I32, ArithOp::Xor) => "xorl",
+        (MmioScalarType::U32 | MmioScalarType::I32, ArithOp::Shl) => "shll",
+        (MmioScalarType::U32 | MmioScalarType::I32, ArithOp::Shr) => "shrl",
+        (MmioScalarType::U64 | MmioScalarType::I64, ArithOp::Add) => "addq",
+        (MmioScalarType::U64 | MmioScalarType::I64, ArithOp::Sub) => "subq",
+        (MmioScalarType::U64 | MmioScalarType::I64, ArithOp::And) => "andq",
+        (MmioScalarType::U64 | MmioScalarType::I64, ArithOp::Or) => "orq",
+        (MmioScalarType::U64 | MmioScalarType::I64, ArithOp::Xor) => "xorq",
+        (MmioScalarType::U64 | MmioScalarType::I64, ArithOp::Shl) => "shlq",
+        (MmioScalarType::U64 | MmioScalarType::I64, ArithOp::Shr) => "shrq",
         (MmioScalarType::F32 | MmioScalarType::F64, _) => {
             unreachable!(
                 "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -9092,10 +9337,10 @@ fn slot_arith_slot_op_mnemonic(ty: MmioScalarType, op: ArithOp) -> &'static str 
 
 fn mmio_accumulator_register(ty: MmioScalarType) -> &'static str {
     match ty {
-        MmioScalarType::U8 => "%al",
-        MmioScalarType::U16 => "%ax",
-        MmioScalarType::U32 => "%eax",
-        MmioScalarType::U64 => "%rax",
+        MmioScalarType::U8 | MmioScalarType::I8 => "%al",
+        MmioScalarType::U16 | MmioScalarType::I16 => "%ax",
+        MmioScalarType::U32 | MmioScalarType::I32 => "%eax",
+        MmioScalarType::U64 | MmioScalarType::I64 => "%rax",
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!(
                 "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -9106,10 +9351,10 @@ fn mmio_accumulator_register(ty: MmioScalarType) -> &'static str {
 
 fn mmio_value_register(ty: MmioScalarType) -> &'static str {
     match ty {
-        MmioScalarType::U8 => "%cl",
-        MmioScalarType::U16 => "%cx",
-        MmioScalarType::U32 => "%ecx",
-        MmioScalarType::U64 => "%rcx",
+        MmioScalarType::U8 | MmioScalarType::I8 => "%cl",
+        MmioScalarType::U16 | MmioScalarType::I16 => "%cx",
+        MmioScalarType::U32 | MmioScalarType::I32 => "%ecx",
+        MmioScalarType::U64 | MmioScalarType::I64 => "%rcx",
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!(
                 "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -9149,10 +9394,10 @@ fn abi_param_register(abi: TargetAbi, param_idx: u8) -> &'static str {
 
 fn mmio_saved_value_register(ty: MmioScalarType) -> &'static str {
     match ty {
-        MmioScalarType::U8 => "%bl",
-        MmioScalarType::U16 => "%bx",
-        MmioScalarType::U32 => "%ebx",
-        MmioScalarType::U64 => "%rbx",
+        MmioScalarType::U8 | MmioScalarType::I8 => "%bl",
+        MmioScalarType::U16 | MmioScalarType::I16 => "%bx",
+        MmioScalarType::U32 | MmioScalarType::I32 => "%ebx",
+        MmioScalarType::U64 | MmioScalarType::I64 => "%rbx",
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!(
                 "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -9163,10 +9408,10 @@ fn mmio_saved_value_register(ty: MmioScalarType) -> &'static str {
 
 fn mmio_load_mnemonic(ty: MmioScalarType) -> &'static str {
     match ty {
-        MmioScalarType::U8 => "movb",
-        MmioScalarType::U16 => "movw",
-        MmioScalarType::U32 => "movl",
-        MmioScalarType::U64 => "movq",
+        MmioScalarType::U8 | MmioScalarType::I8 => "movb",
+        MmioScalarType::U16 | MmioScalarType::I16 => "movw",
+        MmioScalarType::U32 | MmioScalarType::I32 => "movl",
+        MmioScalarType::U64 | MmioScalarType::I64 => "movq",
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!(
                 "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -9189,10 +9434,10 @@ fn mmio_move_return_value_mnemonic(ty: MmioScalarType) -> &'static str {
 
 fn mmio_saved_value_zero_test_mnemonic(ty: MmioScalarType) -> &'static str {
     match ty {
-        MmioScalarType::U8 => "testb %bl, %bl",
-        MmioScalarType::U16 => "testw %bx, %bx",
-        MmioScalarType::U32 => "testl %ebx, %ebx",
-        MmioScalarType::U64 => "testq %rbx, %rbx",
+        MmioScalarType::U8 | MmioScalarType::I8 => "testb %bl, %bl",
+        MmioScalarType::U16 | MmioScalarType::I16 => "testw %bx, %bx",
+        MmioScalarType::U32 | MmioScalarType::I32 => "testl %ebx, %ebx",
+        MmioScalarType::U64 | MmioScalarType::I64 => "testq %rbx, %rbx",
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!(
                 "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -9203,10 +9448,10 @@ fn mmio_saved_value_zero_test_mnemonic(ty: MmioScalarType) -> &'static str {
 
 fn mmio_saved_value_compare_mnemonic(ty: MmioScalarType) -> &'static str {
     match ty {
-        MmioScalarType::U8 => "cmpb %al, %bl",
-        MmioScalarType::U16 => "cmpw %ax, %bx",
-        MmioScalarType::U32 => "cmpl %eax, %ebx",
-        MmioScalarType::U64 => "cmpq %rax, %rbx",
+        MmioScalarType::U8 | MmioScalarType::I8 => "cmpb %al, %bl",
+        MmioScalarType::U16 | MmioScalarType::I16 => "cmpw %ax, %bx",
+        MmioScalarType::U32 | MmioScalarType::I32 => "cmpl %eax, %ebx",
+        MmioScalarType::U64 | MmioScalarType::I64 => "cmpq %rax, %rbx",
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!(
                 "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -9217,10 +9462,10 @@ fn mmio_saved_value_compare_mnemonic(ty: MmioScalarType) -> &'static str {
 
 fn mmio_saved_value_mask_test_mnemonic(ty: MmioScalarType) -> &'static str {
     match ty {
-        MmioScalarType::U8 => "testb %al, %bl",
-        MmioScalarType::U16 => "testw %ax, %bx",
-        MmioScalarType::U32 => "testl %eax, %ebx",
-        MmioScalarType::U64 => "testq %rax, %rbx",
+        MmioScalarType::U8 | MmioScalarType::I8 => "testb %al, %bl",
+        MmioScalarType::U16 | MmioScalarType::I16 => "testw %ax, %bx",
+        MmioScalarType::U32 | MmioScalarType::I32 => "testl %eax, %ebx",
+        MmioScalarType::U64 | MmioScalarType::I64 => "testq %rax, %rbx",
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!(
                 "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -9231,10 +9476,10 @@ fn mmio_saved_value_mask_test_mnemonic(ty: MmioScalarType) -> &'static str {
 
 fn mmio_accumulator_immediate_mnemonic(ty: MmioScalarType, value: u64) -> String {
     let mnemonic = match ty {
-        MmioScalarType::U8 => "movb",
-        MmioScalarType::U16 => "movw",
-        MmioScalarType::U32 => "movl",
-        MmioScalarType::U64 => "movabs",
+        MmioScalarType::U8 | MmioScalarType::I8 => "movb",
+        MmioScalarType::U16 | MmioScalarType::I16 => "movw",
+        MmioScalarType::U32 | MmioScalarType::I32 => "movl",
+        MmioScalarType::U64 | MmioScalarType::I64 => "movabs",
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!(
                 "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -9251,10 +9496,10 @@ fn mmio_accumulator_immediate_mnemonic(ty: MmioScalarType, value: u64) -> String
 
 fn mmio_immediate_mnemonic(ty: MmioScalarType, value: u64) -> String {
     let mnemonic = match ty {
-        MmioScalarType::U8 => "movb",
-        MmioScalarType::U16 => "movw",
-        MmioScalarType::U32 => "movl",
-        MmioScalarType::U64 => "movabs",
+        MmioScalarType::U8 | MmioScalarType::I8 => "movb",
+        MmioScalarType::U16 | MmioScalarType::I16 => "movw",
+        MmioScalarType::U32 | MmioScalarType::I32 => "movl",
+        MmioScalarType::U64 | MmioScalarType::I64 => "movabs",
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!(
                 "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
@@ -12482,10 +12727,10 @@ fn emit_aa64_imm64(out: &mut Vec<u8>, rd: u32, value: u64) {
 /// - F32/F64        → same as U32/U64 (MMIO cares only about bit width)
 fn emit_aa64_str_ty(out: &mut Vec<u8>, rt: u32, rn: u32, ty: MmioScalarType) {
     let base: u32 = match ty {
-        MmioScalarType::U8 => 0x3900_0000,
-        MmioScalarType::U16 => 0x7900_0000,
-        MmioScalarType::U32 | MmioScalarType::F32 => 0xB900_0000,
-        MmioScalarType::U64 | MmioScalarType::F64 => 0xF900_0000,
+        MmioScalarType::U8 | MmioScalarType::I8 => 0x3900_0000,
+        MmioScalarType::U16 | MmioScalarType::I16 => 0x7900_0000,
+        MmioScalarType::U32 | MmioScalarType::I32 | MmioScalarType::F32 => 0xB900_0000,
+        MmioScalarType::U64 | MmioScalarType::I64 | MmioScalarType::F64 => 0xF900_0000,
     };
     out.extend_from_slice(&(base | (rn << 5) | rt).to_le_bytes());
 }
@@ -12493,10 +12738,10 @@ fn emit_aa64_str_ty(out: &mut Vec<u8>, rt: u32, rn: u32, ty: MmioScalarType) {
 /// Emit a typed load: `LDR[BH]? Rt, [Rn]` with zero offset (zero-extends).
 fn emit_aa64_ldr_ty(out: &mut Vec<u8>, rt: u32, rn: u32, ty: MmioScalarType) {
     let base: u32 = match ty {
-        MmioScalarType::U8 => 0x3940_0000,
-        MmioScalarType::U16 => 0x7940_0000,
-        MmioScalarType::U32 | MmioScalarType::F32 => 0xB940_0000,
-        MmioScalarType::U64 | MmioScalarType::F64 => 0xF940_0000,
+        MmioScalarType::U8 | MmioScalarType::I8 => 0x3940_0000,
+        MmioScalarType::U16 | MmioScalarType::I16 => 0x7940_0000,
+        MmioScalarType::U32 | MmioScalarType::I32 | MmioScalarType::F32 => 0xB940_0000,
+        MmioScalarType::U64 | MmioScalarType::I64 | MmioScalarType::F64 => 0xF940_0000,
     };
     out.extend_from_slice(&(base | (rn << 5) | rt).to_le_bytes());
 }
@@ -12907,17 +13152,17 @@ fn encode_aarch64_function(
                 let rhs_byte_off = 16u32 + (*rhs_idx as u32) * 8;
                 // Select load opcode base and imm12 scaling per type.
                 let (base_load, lhs_imm12, rhs_imm12) = match ty {
-                    MmioScalarType::U8 => (
+                    MmioScalarType::U8 | MmioScalarType::I8 => (
                         0x3940_0000u32,
                         lhs_byte_off, // byte-scaled
                         rhs_byte_off,
                     ),
-                    MmioScalarType::U16 => (
+                    MmioScalarType::U16 | MmioScalarType::I16 => (
                         0x7940_0000u32,
                         lhs_byte_off / 2, // halfword-scaled
                         rhs_byte_off / 2,
                     ),
-                    MmioScalarType::U32 | MmioScalarType::F32 => (
+                    MmioScalarType::U32 | MmioScalarType::I32 | MmioScalarType::F32 => (
                         0xB940_0000u32,
                         lhs_byte_off / 4, // word-scaled
                         rhs_byte_off / 4,

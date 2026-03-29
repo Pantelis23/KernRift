@@ -3818,7 +3818,7 @@ fn lower_stmt(
             }
         },
         Stmt::VarDecl { ty, name, init } => {
-            let var_ty = lower_mmio_scalar_type(ty.storage_type());
+            let var_ty = lower_mmio_scalar_type(*ty);
             slot_types.insert(name.clone(), var_ty);
             ops.push(KrirOp::StackCell {
                 ty: var_ty,
@@ -3827,7 +3827,7 @@ fn lower_stmt(
             if let Some(init_expr) = init {
                 // Special case: string literal as rvalue — LoadStaticCstrAddr (uint64 only).
                 if let ParserExpr::StringLiteral(s) = init_expr {
-                    if lower_mmio_scalar_type(ty.storage_type()) != KrirMmioScalarType::U64 {
+                    if lower_mmio_scalar_type(*ty) != KrirMmioScalarType::U64 {
                         errors.push(format!(
                             "string literal can only be assigned to uint64 (variable '{}')",
                             name
@@ -3953,7 +3953,7 @@ fn lower_stmt(
                     }
                 } else if let ParserExpr::IntLiteral(n) = init_expr {
                     ops.push(KrirOp::StackStore {
-                        ty: lower_mmio_scalar_type(ty.storage_type()),
+                        ty: lower_mmio_scalar_type(*ty),
                         cell: name.clone(),
                         value: KrirMmioValueExpr::IntLiteral {
                             value: n.to_string(),
@@ -3971,7 +3971,7 @@ fn lower_stmt(
                         slice_elem_types,
                     ) {
                         Ok(src) => ops.push(KrirOp::StackStore {
-                            ty: lower_mmio_scalar_type(ty.storage_type()),
+                            ty: lower_mmio_scalar_type(*ty),
                             cell: name.clone(),
                             value: KrirMmioValueExpr::Ident { name: src },
                         }),
@@ -4543,15 +4543,16 @@ fn lower_kernel_intrinsic(intr: &ParserKernelIntrinsic) -> KrirKernelIntrinsic {
 
 fn lower_mmio_scalar_type(ty: ParserMmioScalarType) -> KrirMmioScalarType {
     match ty {
-        ParserMmioScalarType::U8
-        | ParserMmioScalarType::I8
-        | ParserMmioScalarType::Bool
-        | ParserMmioScalarType::Char => KrirMmioScalarType::U8,
-        ParserMmioScalarType::U16 | ParserMmioScalarType::I16 | ParserMmioScalarType::F16 => {
-            KrirMmioScalarType::U16
+        ParserMmioScalarType::U8 | ParserMmioScalarType::Bool | ParserMmioScalarType::Char => {
+            KrirMmioScalarType::U8
         }
-        ParserMmioScalarType::U32 | ParserMmioScalarType::I32 => KrirMmioScalarType::U32,
-        ParserMmioScalarType::U64 | ParserMmioScalarType::I64 => KrirMmioScalarType::U64,
+        ParserMmioScalarType::I8 => KrirMmioScalarType::I8,
+        ParserMmioScalarType::U16 | ParserMmioScalarType::F16 => KrirMmioScalarType::U16,
+        ParserMmioScalarType::I16 => KrirMmioScalarType::I16,
+        ParserMmioScalarType::U32 => KrirMmioScalarType::U32,
+        ParserMmioScalarType::I32 => KrirMmioScalarType::I32,
+        ParserMmioScalarType::U64 => KrirMmioScalarType::U64,
+        ParserMmioScalarType::I64 => KrirMmioScalarType::I64,
         ParserMmioScalarType::F32 => KrirMmioScalarType::F32,
         ParserMmioScalarType::F64 => KrirMmioScalarType::F64,
     }
