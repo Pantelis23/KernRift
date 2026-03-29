@@ -1396,10 +1396,9 @@ pub fn lower_to_krir_with_surface(
         }
     }
 
-    // Register built-in names so they bypass the "undefined symbol" check.
-    // Port I/O names (inb/outb/...) lower to PortIn/PortOut ops, not Call ops,
-    // so they don't need to be in `names`.  Host builtins are rewritten to
-    // __kr_* Call ops, so we add those rewritten callee names.
+    // Register built-in host function names so they pass the "undefined symbol"
+    // check during call-edge validation below.  The actual extern Function entries
+    // are added AFTER lowering, only for symbols that are actually referenced.
     for (_, rewritten) in HOST_BUILTINS {
         names.insert(rewritten.to_string());
     }
@@ -1495,6 +1494,19 @@ pub fn lower_to_krir_with_surface(
                     });
                 }
                 KrirOp::CallCapture { callee, .. } => {
+                    if !names.contains(callee) {
+                        errors.push(format!(
+                            "undefined symbol '{}': add extern declaration with canonical facts (@ctx/@eff/@caps)",
+                            callee
+                        ));
+                        continue;
+                    }
+                    call_edges.push(CallEdge {
+                        caller: function.name.clone(),
+                        callee: callee.clone(),
+                    });
+                }
+                KrirOp::CallWithArgs { callee, .. } => {
                     if !names.contains(callee) {
                         errors.push(format!(
                             "undefined symbol '{}': add extern declaration with canonical facts (@ctx/@eff/@caps)",
@@ -1622,6 +1634,36 @@ pub fn lower_to_krir_with_surface(
 
     if !errors.is_empty() {
         return Err(errors);
+    }
+
+    // Add extern Function entries for __kr_* host builtins that are actually
+    // referenced in call edges.  We only add the ones that are used — adding
+    // all 9 unconditionally would pollute krboexe/elfexe modules that don't
+    // call any host builtins and reject extern declarations.
+    let used_kr_symbols: BTreeSet<&str> = call_edges
+        .iter()
+        .map(|e| e.callee.as_str())
+        .filter(|c| c.starts_with("__kr_"))
+        .collect();
+    for sym in &used_kr_symbols {
+        functions.push(krir::Function {
+            name: sym.to_string(),
+            is_extern: true,
+            params: Vec::new(),
+            // Runtime functions are callable from any context — they are
+            // resolved by the hostexe linker, not the kernel.
+            ctx_ok: vec![
+                krir::Ctx::Boot,
+                krir::Ctx::Irq,
+                krir::Ctx::Nmi,
+                krir::Ctx::Thread,
+                krir::Ctx::Host,
+            ],
+            eff_used: Vec::new(),
+            caps_req: Vec::new(),
+            attrs: krir::FunctionAttrs::default(),
+            ops: Vec::new(),
+        });
     }
 
     let mut module = KrirModule {

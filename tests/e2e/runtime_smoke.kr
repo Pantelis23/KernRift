@@ -1,0 +1,28 @@
+// End-to-end smoke test for the native hostexe runtime.
+// Exercises: write, alloc, str_copy, str_cat, str_len, getenv, exit.
+// Expected output on stdout: "PASS: runtime smoke test\n"
+// Exit code: 0 on success, 1 on failure.
+
+fn main() {
+    // Test alloc + str_copy + str_cat
+    uint64 buf = alloc(256)
+    str_copy(buf, "PASS: ")
+    str_cat(buf, "runtime ")
+    str_cat(buf, "smoke test\n")
+
+    // Test str_len
+    uint64 len = str_len(buf)
+
+    // Test write
+    write(1, buf, len)
+
+    // Test getenv (HOME should exist on Linux)
+    uint64 home = getenv("HOME")
+    if home == 0 {
+        uint64 warn = alloc(64)
+        str_copy(warn, "WARN: HOME not set\n")
+        write(1, warn, str_len(warn))
+    }
+
+    exit(0)
+}

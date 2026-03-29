@@ -1438,3 +1438,62 @@ fn macho_executable_has_valid_header_arm64() {
     let filetype = u32::from_le_bytes(bytes[12..16].try_into().unwrap());
     assert_eq!(filetype, 2);
 }
+
+// ---------------------------------------------------------------------------
+// End-to-end hostexe tests: compile .kr → native binary → run → check output
+// ---------------------------------------------------------------------------
+
+#[test]
+#[cfg(all(unix, target_os = "linux", target_arch = "x86_64"))]
+fn e2e_hostexe_runtime_smoke_test() {
+    let fixture = repo_root().join("tests").join("e2e").join("runtime_smoke.kr");
+    let bytes = emit_backend_artifact_file(&fixture, BackendArtifactKind::HostExecutable)
+        .expect("hostexe emit");
+
+    // Write to temp file and run
+    let tmp = std::env::temp_dir().join("kr_e2e_smoke");
+    std::fs::write(&tmp, &bytes).expect("write temp");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+    let output = std::process::Command::new(&tmp)
+        .output()
+        .expect("run hostexe");
+    let _ = std::fs::remove_file(&tmp);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("PASS: runtime smoke test"),
+        "expected 'PASS: runtime smoke test' in stdout, got: {}", stdout
+    );
+    assert!(output.status.success(), "hostexe exited with non-zero: {:?}", output.status);
+}
+
+#[test]
+#[cfg(all(unix, target_os = "linux", target_arch = "x86_64"))]
+fn e2e_hostexe_exec_runs_shell_command() {
+    let fixture = repo_root().join("tests").join("e2e").join("exec_test.kr");
+    let bytes = emit_backend_artifact_file(&fixture, BackendArtifactKind::HostExecutable)
+        .expect("hostexe emit");
+
+    let tmp = std::env::temp_dir().join("kr_e2e_exec");
+    std::fs::write(&tmp, &bytes).expect("write temp");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+    let output = std::process::Command::new(&tmp)
+        .output()
+        .expect("run hostexe");
+    let _ = std::fs::remove_file(&tmp);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("e2e_exec_ok"),
+        "expected 'e2e_exec_ok' in stdout, got: {}", stdout
+    );
+    assert!(output.status.success(), "hostexe exited with non-zero: {:?}", output.status);
+}
