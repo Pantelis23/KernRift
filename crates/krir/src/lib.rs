@@ -1187,6 +1187,40 @@ fn infer_executable_function_result_types(
             continue;
         }
 
+        // Fast path: if the function has a ReturnSlot, infer the return type
+        // directly from the slot's StackCell declaration.  This avoids the
+        // restrictive old-syntax validation that requires the return value to
+        // come from mmio_read or call_capture — general-purpose code can
+        // return any computed variable.
+        let has_return_slot = function
+            .ops
+            .iter()
+            .any(|op| matches!(op, KrirOp::ReturnSlot { .. }));
+        if has_return_slot {
+            // Build cell→type map
+            let mut cell_types: BTreeMap<&str, MmioScalarType> = BTreeMap::new();
+            for op in &function.ops {
+                if let KrirOp::StackCell { ty, cell } = op {
+                    cell_types.insert(cell.as_str(), *ty);
+                }
+            }
+            // Find the ReturnSlot and look up its type
+            let mut inferred = None;
+            for op in &function.ops {
+                if let KrirOp::ReturnSlot { slot } = op {
+                    inferred = cell_types.get(slot.as_str()).copied();
+                }
+            }
+            // Only take the fast path when the return slot resolved to
+            // a declared StackCell.  Old-style functions that use
+            // return_slot with an mmio capture name (no StackCell) fall
+            // through to the original inference logic below.
+            if inferred.is_some() {
+                results.insert(function.name.clone(), inferred);
+                continue;
+            }
+        }
+
         let mut executable_slot_name = None::<String>;
         let mut last_read = None::<(String, MmioScalarType)>;
         let mut result_ty = None::<MmioScalarType>;
@@ -1226,6 +1260,28 @@ fn infer_executable_function_result_types(
                 KrirOp::StackLoad { ty, slot, .. } => {
                     executable_slot_name = Some(slot.clone());
                     last_read = Some((slot.clone(), *ty));
+                }
+                // Any op that writes a value into a named cell makes that
+                // cell eligible as a return slot.  The original restriction
+                // (mmio_read/call_capture only) was an artifact of the old
+                // syntax; the new expression syntax can return any computed
+                // value.
+                KrirOp::StackStore { ty, cell, .. } => {
+                    last_read = Some((cell.clone(), *ty));
+                }
+                KrirOp::CellArithImm { ty, cell, .. } => {
+                    last_read = Some((cell.clone(), *ty));
+                }
+                KrirOp::SlotArith { ty, dst, .. } => {
+                    last_read = Some((dst.clone(), *ty));
+                }
+                KrirOp::CompareIntoSlot { out, .. } => {
+                    if let Some(&ty) = cell_type_map.get(out.as_str()) {
+                        last_read = Some((out.clone(), ty));
+                    }
+                }
+                KrirOp::RawPtrLoad { ty, out_slot, .. } => {
+                    last_read = Some((out_slot.clone(), *ty));
                 }
                 KrirOp::ReturnSlot { slot } => {
                     let invocation = format_return_slot_invocation(slot);
@@ -1335,6 +1391,19 @@ pub fn lower_current_krir_to_executable_krir(
         let mut next_slot_idx: u8 = 0;
         let mut last_value = None::<ExecutableCapturedValue>;
         let mut tail_call_terminator: Option<(String, Vec<ExecutableCallArg>)> = None;
+        // New-syntax functions use multiple StackCell declarations (one per
+        // variable).  The old "one executable slot per function" restriction
+        // doesn't apply — skip executable_slot_name conflict checks.
+        let new_syntax = function
+            .ops
+            .iter()
+            .filter(|op| matches!(op, KrirOp::StackCell { .. }))
+            .count()
+            > 1
+            || function
+                .ops
+                .iter()
+                .any(|op| matches!(op, KrirOp::ReturnSlot { .. }));
         // Pre-scan: count real StackCell declarations so that param references
         // in CompareIntoSlot etc. use the correct base slot index regardless of
         // where in the op stream the comparison appears.
@@ -1735,26 +1804,28 @@ pub fn lower_current_krir_to_executable_krir(
                         continue;
                     }
                     // Old-style path: slot must be the mmio/call captured slot.
-                    let Some(captured_slot) = executable_slot_name.as_deref() else {
-                        errors.push(format!(
-                            "canonical-exec: function '{}' contains unsupported {}: branch test slot '{}' requires a prior mmio_read<...>(..., {}) or raw_mmio_read<...>(..., {}) in the same function",
-                            function.name,
-                            format_branch_if_zero_invocation(slot, then_callee, else_callee),
-                            slot,
-                            slot,
-                            slot
-                        ));
-                        continue;
-                    };
-                    if slot != captured_slot {
-                        errors.push(format!(
-                            "canonical-exec: function '{}' contains unsupported {}: branch test slot '{}' does not match the captured executable slot '{}' in this function",
-                            function.name,
-                            format_branch_if_zero_invocation(slot, then_callee, else_callee),
-                            slot,
-                            captured_slot
-                        ));
-                        continue;
+                    if !new_syntax {
+                        let Some(captured_slot) = executable_slot_name.as_deref() else {
+                            errors.push(format!(
+                                "canonical-exec: function '{}' contains unsupported {}: branch test slot '{}' requires a prior mmio_read<...>(..., {}) or raw_mmio_read<...>(..., {}) in the same function",
+                                function.name,
+                                format_branch_if_zero_invocation(slot, then_callee, else_callee),
+                                slot,
+                                slot,
+                                slot
+                            ));
+                            continue;
+                        };
+                        if slot != captured_slot {
+                            errors.push(format!(
+                                "canonical-exec: function '{}' contains unsupported {}: branch test slot '{}' does not match the captured executable slot '{}' in this function",
+                                function.name,
+                                format_branch_if_zero_invocation(slot, then_callee, else_callee),
+                                slot,
+                                captured_slot
+                            ));
+                            continue;
+                        }
                     }
                     let Some(current_value) = last_value.as_ref() else {
                         errors.push(format!(
@@ -1829,36 +1900,38 @@ pub fn lower_current_krir_to_executable_krir(
                         continue;
                     }
                     // Old-style path: slot must be the mmio/call captured slot.
-                    let Some(captured_slot) = executable_slot_name.as_deref() else {
-                        errors.push(format!(
-                            "canonical-exec: function '{}' contains unsupported {}: branch test slot '{}' requires a prior mmio_read<...>(..., {}) or raw_mmio_read<...>(..., {}) in the same function",
-                            function.name,
-                            format_branch_if_eq_invocation(
+                    if !new_syntax {
+                        let Some(captured_slot) = executable_slot_name.as_deref() else {
+                            errors.push(format!(
+                                "canonical-exec: function '{}' contains unsupported {}: branch test slot '{}' requires a prior mmio_read<...>(..., {}) or raw_mmio_read<...>(..., {}) in the same function",
+                                function.name,
+                                format_branch_if_eq_invocation(
+                                    slot,
+                                    compare_value,
+                                    then_callee,
+                                    else_callee
+                                ),
                                 slot,
-                                compare_value,
-                                then_callee,
-                                else_callee
-                            ),
-                            slot,
-                            slot,
-                            slot
-                        ));
-                        continue;
-                    };
-                    if slot != captured_slot {
-                        errors.push(format!(
-                            "canonical-exec: function '{}' contains unsupported {}: branch test slot '{}' does not match the captured executable slot '{}' in this function",
-                            function.name,
-                            format_branch_if_eq_invocation(
                                 slot,
-                                compare_value,
-                                then_callee,
-                                else_callee
-                            ),
-                            slot,
-                            captured_slot
-                        ));
-                        continue;
+                                slot
+                            ));
+                            continue;
+                        };
+                        if slot != captured_slot {
+                            errors.push(format!(
+                                "canonical-exec: function '{}' contains unsupported {}: branch test slot '{}' does not match the captured executable slot '{}' in this function",
+                                function.name,
+                                format_branch_if_eq_invocation(
+                                    slot,
+                                    compare_value,
+                                    then_callee,
+                                    else_callee
+                                ),
+                                slot,
+                                captured_slot
+                            ));
+                            continue;
+                        }
                     }
                     let Some(current_value) = last_value.as_ref() else {
                         errors.push(format!(
@@ -1957,36 +2030,38 @@ pub fn lower_current_krir_to_executable_krir(
                         continue;
                     }
                     // Old-style path: slot must be the mmio/call captured slot.
-                    let Some(captured_slot) = executable_slot_name.as_deref() else {
-                        errors.push(format!(
-                            "canonical-exec: function '{}' contains unsupported {}: branch test slot '{}' requires a prior mmio_read<...>(..., {}) or raw_mmio_read<...>(..., {}) in the same function",
-                            function.name,
-                            format_branch_if_mask_nonzero_invocation(
+                    if !new_syntax {
+                        let Some(captured_slot) = executable_slot_name.as_deref() else {
+                            errors.push(format!(
+                                "canonical-exec: function '{}' contains unsupported {}: branch test slot '{}' requires a prior mmio_read<...>(..., {}) or raw_mmio_read<...>(..., {}) in the same function",
+                                function.name,
+                                format_branch_if_mask_nonzero_invocation(
+                                    slot,
+                                    mask_value,
+                                    then_callee,
+                                    else_callee
+                                ),
                                 slot,
-                                mask_value,
-                                then_callee,
-                                else_callee
-                            ),
-                            slot,
-                            slot,
-                            slot
-                        ));
-                        continue;
-                    };
-                    if slot != captured_slot {
-                        errors.push(format!(
-                            "canonical-exec: function '{}' contains unsupported {}: branch test slot '{}' does not match the captured executable slot '{}' in this function",
-                            function.name,
-                            format_branch_if_mask_nonzero_invocation(
                                 slot,
-                                mask_value,
-                                then_callee,
-                                else_callee
-                            ),
-                            slot,
-                            captured_slot
-                        ));
-                        continue;
+                                slot
+                            ));
+                            continue;
+                        };
+                        if slot != captured_slot {
+                            errors.push(format!(
+                                "canonical-exec: function '{}' contains unsupported {}: branch test slot '{}' does not match the captured executable slot '{}' in this function",
+                                function.name,
+                                format_branch_if_mask_nonzero_invocation(
+                                    slot,
+                                    mask_value,
+                                    then_callee,
+                                    else_callee
+                                ),
+                                slot,
+                                captured_slot
+                            ));
+                            continue;
+                        }
                     }
                     let Some(current_value) = last_value.as_ref() else {
                         errors.push(format!(
@@ -2112,6 +2187,7 @@ pub fn lower_current_krir_to_executable_krir(
                             value,
                             executable_slot_name.as_deref(),
                             None,
+                            new_syntax,
                         ),
                         MmioValueExpr::Ident { name } => {
                             if let Some(&(param_idx, param_ty)) = param_map.get(name.as_str()) {
@@ -2131,6 +2207,7 @@ pub fn lower_current_krir_to_executable_krir(
                                     last_value
                                         .as_ref()
                                         .map(|value| (value.slot.as_str(), value.ty)),
+                                    new_syntax,
                                 )
                             } else {
                                 resolve_executable_mmio_write_value(
@@ -2143,6 +2220,7 @@ pub fn lower_current_krir_to_executable_krir(
                                         }
                                         ExecutableCapturedValueSource::SavedSlot => None,
                                     }),
+                                    new_syntax,
                                 )
                             }
                         }
@@ -2414,6 +2492,7 @@ pub fn lower_current_krir_to_executable_krir(
                             value,
                             executable_slot_name.as_deref(),
                             None,
+                            new_syntax,
                         ),
                         MmioValueExpr::Ident { name } => {
                             // Check if the ident refers to a function parameter
@@ -2434,6 +2513,7 @@ pub fn lower_current_krir_to_executable_krir(
                                     last_value
                                         .as_ref()
                                         .map(|value| (value.slot.as_str(), value.ty)),
+                                    new_syntax,
                                 )
                             } else {
                                 resolve_executable_mmio_write_value(
@@ -2446,6 +2526,7 @@ pub fn lower_current_krir_to_executable_krir(
                                         }
                                         ExecutableCapturedValueSource::SavedSlot => None,
                                     }),
+                                    new_syntax,
                                 )
                             }
                         }
@@ -2512,16 +2593,18 @@ pub fn lower_current_krir_to_executable_krir(
                 }
                 KrirOp::SliceLen { slice, slot } => {
                     if let Some(&(_, len_abi_idx, _)) = slice_param_map.get(slice.as_str()) {
-                        if let Some(existing) = &executable_slot_name {
-                            if existing != slot {
-                                errors.push(format!(
-                                    "canonical-exec: function '{}' contains unsupported slice_len({}, {}): executable value slot '{}' conflicts with already-captured slot '{}' in the same function",
-                                    function.name, slice, slot, slot, existing
-                                ));
-                                continue;
+                        if !new_syntax {
+                            if let Some(existing) = &executable_slot_name {
+                                if existing != slot {
+                                    errors.push(format!(
+                                        "canonical-exec: function '{}' contains unsupported slice_len({}, {}): executable value slot '{}' conflicts with already-captured slot '{}' in the same function",
+                                        function.name, slice, slot, slot, existing
+                                    ));
+                                    continue;
+                                }
+                            } else {
+                                executable_slot_name = Some(slot.clone());
                             }
-                        } else {
-                            executable_slot_name = Some(slot.clone());
                         }
                         exec_ops.push(ExecutableOp::ParamLoad {
                             param_idx: len_abi_idx,
@@ -2541,16 +2624,18 @@ pub fn lower_current_krir_to_executable_krir(
                 }
                 KrirOp::SlicePtr { slice, slot } => {
                     if let Some(&(ptr_abi_idx, _, _)) = slice_param_map.get(slice.as_str()) {
-                        if let Some(existing) = &executable_slot_name {
-                            if existing != slot {
-                                errors.push(format!(
-                                    "canonical-exec: function '{}' contains unsupported slice_ptr({}, {}): executable value slot '{}' conflicts with already-captured slot '{}' in the same function",
-                                    function.name, slice, slot, slot, existing
-                                ));
-                                continue;
+                        if !new_syntax {
+                            if let Some(existing) = &executable_slot_name {
+                                if existing != slot {
+                                    errors.push(format!(
+                                        "canonical-exec: function '{}' contains unsupported slice_ptr({}, {}): executable value slot '{}' conflicts with already-captured slot '{}' in the same function",
+                                        function.name, slice, slot, slot, existing
+                                    ));
+                                    continue;
+                                }
+                            } else {
+                                executable_slot_name = Some(slot.clone());
                             }
-                        } else {
-                            executable_slot_name = Some(slot.clone());
                         }
                         exec_ops.push(ExecutableOp::ParamLoad {
                             param_idx: ptr_abi_idx,
@@ -2723,6 +2808,7 @@ pub fn lower_current_krir_to_executable_krir(
                             value,
                             executable_slot_name.as_deref(),
                             None,
+                            new_syntax,
                         ),
                         MmioValueExpr::Ident { name } => {
                             if let Some(&(param_idx, param_ty)) = param_map.get(name.as_str()) {
@@ -2742,6 +2828,7 @@ pub fn lower_current_krir_to_executable_krir(
                                     last_value
                                         .as_ref()
                                         .map(|value| (value.slot.as_str(), value.ty)),
+                                    new_syntax,
                                 )
                             } else {
                                 resolve_executable_mmio_write_value(
@@ -2754,6 +2841,7 @@ pub fn lower_current_krir_to_executable_krir(
                                         }
                                         ExecutableCapturedValueSource::SavedSlot => None,
                                     }),
+                                    new_syntax,
                                 )
                             }
                         }
@@ -3158,6 +3246,7 @@ fn resolve_executable_mmio_write_value(
     value: &MmioValueExpr,
     executable_slot_name: Option<&str>,
     available_read_value: Option<(&str, MmioScalarType)>,
+    new_syntax: bool,
 ) -> Result<ExecutableMmioWriteValue, String> {
     match value {
         MmioValueExpr::FloatLiteral { value } => Err(format!(
@@ -3187,66 +3276,78 @@ fn resolve_executable_mmio_write_value(
         MmioValueExpr::Ident { name } => {
             let is_implicit_value = name == DEFAULT_EXECUTABLE_MMIO_SLOT;
             let Some(slot_name) = executable_slot_name else {
-                return Err(if is_implicit_value {
-                    format!(
-                        "implicit write value '{}' requires a prior mmio_read<{}>(...) or raw_mmio_read<{}>(...) in the same function",
-                        name,
-                        ty.as_str(),
-                        ty.as_str()
-                    )
-                } else {
-                    format!(
-                        "named write value '{}' requires a prior mmio_read<{}>(..., {}) or raw_mmio_read<{}>(..., {}) in the same function",
-                        name,
-                        ty.as_str(),
-                        name,
-                        ty.as_str(),
-                        name
-                    )
-                });
+                if !new_syntax {
+                    return Err(if is_implicit_value {
+                        format!(
+                            "implicit write value '{}' requires a prior mmio_read<{}>(...) or raw_mmio_read<{}>(...) in the same function",
+                            name,
+                            ty.as_str(),
+                            ty.as_str()
+                        )
+                    } else {
+                        format!(
+                            "named write value '{}' requires a prior mmio_read<{}>(..., {}) or raw_mmio_read<{}>(..., {}) in the same function",
+                            name,
+                            ty.as_str(),
+                            name,
+                            ty.as_str(),
+                            name
+                        )
+                    });
+                }
+                return Ok(ExecutableMmioWriteValue::SavedValue);
             };
             if name != slot_name {
-                return Err(format!(
-                    "named write value '{}' does not match the captured executable slot '{}' in this function",
-                    name, slot_name
-                ));
+                if !new_syntax {
+                    return Err(format!(
+                        "named write value '{}' does not match the captured executable slot '{}' in this function",
+                        name, slot_name
+                    ));
+                }
+                return Ok(ExecutableMmioWriteValue::SavedValue);
             }
             let Some((read_slot, read_ty)) = available_read_value else {
-                return Err(if is_implicit_value {
-                    format!(
-                        "implicit write value '{}' requires a prior mmio_read<{}>(...) or raw_mmio_read<{}>(...) in the same function",
-                        name,
-                        ty.as_str(),
-                        ty.as_str()
-                    )
-                } else {
-                    format!(
-                        "named write value '{}' requires a prior mmio_read<{}>(..., {}) or raw_mmio_read<{}>(..., {}) in the same function",
-                        name,
-                        ty.as_str(),
-                        name,
-                        ty.as_str(),
-                        name
-                    )
-                });
+                if !new_syntax {
+                    return Err(if is_implicit_value {
+                        format!(
+                            "implicit write value '{}' requires a prior mmio_read<{}>(...) or raw_mmio_read<{}>(...) in the same function",
+                            name,
+                            ty.as_str(),
+                            ty.as_str()
+                        )
+                    } else {
+                        format!(
+                            "named write value '{}' requires a prior mmio_read<{}>(..., {}) or raw_mmio_read<{}>(..., {}) in the same function",
+                            name,
+                            ty.as_str(),
+                            name,
+                            ty.as_str(),
+                            name
+                        )
+                    });
+                }
+                return Ok(ExecutableMmioWriteValue::SavedValue);
             };
             debug_assert_eq!(read_slot, slot_name);
             if read_ty != ty {
-                return Err(if is_implicit_value {
-                    format!(
-                        "implicit write value '{}' has type {} from the prior read and does not match write type {}",
-                        name,
-                        read_ty.as_str(),
-                        ty.as_str()
-                    )
-                } else {
-                    format!(
-                        "named write value '{}' has type {} from the prior read and does not match write type {}",
-                        name,
-                        read_ty.as_str(),
-                        ty.as_str()
-                    )
-                });
+                if !new_syntax {
+                    return Err(if is_implicit_value {
+                        format!(
+                            "implicit write value '{}' has type {} from the prior read and does not match write type {}",
+                            name,
+                            read_ty.as_str(),
+                            ty.as_str()
+                        )
+                    } else {
+                        format!(
+                            "named write value '{}' has type {} from the prior read and does not match write type {}",
+                            name,
+                            read_ty.as_str(),
+                            ty.as_str()
+                        )
+                    });
+                }
+                return Ok(ExecutableMmioWriteValue::SavedValue);
             }
             Ok(ExecutableMmioWriteValue::SavedValue)
         }
@@ -3258,57 +3359,70 @@ fn resolve_executable_saved_slot_write_value(
     name: &str,
     executable_slot_name: Option<&str>,
     available_saved_value: Option<(&str, MmioScalarType)>,
+    new_syntax: bool,
 ) -> Result<ExecutableMmioWriteValue, String> {
     let is_implicit_value = name == DEFAULT_EXECUTABLE_MMIO_SLOT;
     let Some(slot_name) = executable_slot_name else {
-        return Err(if is_implicit_value {
-            format!(
-                "implicit write value '{}' requires a prior call_capture(...) in the same function",
-                name
-            )
-        } else {
-            format!(
-                "named write value '{}' requires a prior call_capture(..., {}) in the same function",
-                name, name
-            )
-        });
+        if !new_syntax {
+            return Err(if is_implicit_value {
+                format!(
+                    "implicit write value '{}' requires a prior call_capture(...) in the same function",
+                    name
+                )
+            } else {
+                format!(
+                    "named write value '{}' requires a prior call_capture(..., {}) in the same function",
+                    name, name
+                )
+            });
+        }
+        return Ok(ExecutableMmioWriteValue::SavedValue);
     };
     if name != slot_name {
-        return Err(format!(
-            "named write value '{}' does not match the captured executable slot '{}' in this function",
-            name, slot_name
-        ));
+        if !new_syntax {
+            return Err(format!(
+                "named write value '{}' does not match the captured executable slot '{}' in this function",
+                name, slot_name
+            ));
+        }
+        return Ok(ExecutableMmioWriteValue::SavedValue);
     }
     let Some((saved_slot, saved_ty)) = available_saved_value else {
-        return Err(if is_implicit_value {
-            format!(
-                "implicit write value '{}' requires a prior call_capture(...) in the same function",
-                name
-            )
-        } else {
-            format!(
-                "named write value '{}' requires a prior call_capture(..., {}) in the same function",
-                name, name
-            )
-        });
+        if !new_syntax {
+            return Err(if is_implicit_value {
+                format!(
+                    "implicit write value '{}' requires a prior call_capture(...) in the same function",
+                    name
+                )
+            } else {
+                format!(
+                    "named write value '{}' requires a prior call_capture(..., {}) in the same function",
+                    name, name
+                )
+            });
+        }
+        return Ok(ExecutableMmioWriteValue::SavedValue);
     };
     debug_assert_eq!(saved_slot, slot_name);
     if saved_ty != ty {
-        return Err(if is_implicit_value {
-            format!(
-                "implicit write value '{}' has type {} from the prior captured call result and does not match write type {}",
-                name,
-                saved_ty.as_str(),
-                ty.as_str()
-            )
-        } else {
-            format!(
-                "named write value '{}' has type {} from the prior captured call result and does not match write type {}",
-                name,
-                saved_ty.as_str(),
-                ty.as_str()
-            )
-        });
+        if !new_syntax {
+            return Err(if is_implicit_value {
+                format!(
+                    "implicit write value '{}' has type {} from the prior captured call result and does not match write type {}",
+                    name,
+                    saved_ty.as_str(),
+                    ty.as_str()
+                )
+            } else {
+                format!(
+                    "named write value '{}' has type {} from the prior captured call result and does not match write type {}",
+                    name,
+                    saved_ty.as_str(),
+                    ty.as_str()
+                )
+            });
+        }
+        return Ok(ExecutableMmioWriteValue::SavedValue);
     }
     Ok(ExecutableMmioWriteValue::SavedValue)
 }
