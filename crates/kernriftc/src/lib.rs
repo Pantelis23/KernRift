@@ -1113,6 +1113,130 @@ fn emit_native_hostexe_windows_x86_64(
     Ok(krir::emit_pe_executable_x86_64(&text, entry_in_text, &imports, true))
 }
 
+/// Native hostexe emitter for Windows AArch64.
+///
+/// AArch64 encoding with BL imm26 patching, uses the Windows AArch64 runtime
+/// blob, and emits a PE executable with kernel32.dll imports and a minimal
+/// `.reloc` section (required for DYNAMIC_BASE on ARM64).
+#[cfg(target_os = "windows")]
+fn emit_native_hostexe_windows_aarch64(
+    executable: &krir::ExecutableKrirModule,
+    _target: &BackendTargetContract,
+) -> Result<Vec<u8>, String> {
+    use crate::runtime::windows_aarch64::BLOB as RT;
+
+    // Windows AArch64 uses the standard AAPCS64 calling convention (same
+    // register allocation as other AArch64 targets).
+    let win_target = krir::BackendTargetContract::aarch64_win();
+
+    // 1. Lower user code to AArch64 object (internal BL/B already resolved)
+    let (user_text, sym_table, external_relocs) =
+        lower_executable_krir_to_aarch64_object_inner(executable, &win_target)?;
+    let user_len = user_text.len();
+    let rt_len = RT.code.len();
+
+    // 2. Combine user code + runtime blob
+    let mut text = Vec::with_capacity(user_len + rt_len);
+    text.extend_from_slice(&user_text);
+    text.extend_from_slice(RT.code);
+
+    // 3. Build symbol offset map from user symbols
+    let mut user_syms: std::collections::BTreeMap<&str, u32> = std::collections::BTreeMap::new();
+    for &(ref name, offset, _size) in &sym_table {
+        user_syms.insert(name.as_str(), offset);
+    }
+
+    // 4. Resolve external relocations (user code -> runtime functions)
+    for &(patch_offset, ref target_sym) in &external_relocs {
+        let target_offset = if let Some(rt_off) = RT.symbol_offset(target_sym) {
+            user_len as i64 + rt_off as i64
+        } else if let Some(&user_off) = user_syms.get(target_sym.as_str()) {
+            user_off as i64
+        } else {
+            return Err(format!("hostexe: unresolved symbol '{}'", target_sym));
+        };
+
+        // AArch64 BL/B fixup: imm26 field
+        let patch_pc = patch_offset as i64;
+        let disp = target_offset - patch_pc;
+        if disp % 4 != 0 {
+            return Err(format!(
+                "hostexe aarch64: displacement to '{}' not 4-byte aligned", target_sym
+            ));
+        }
+        let imm26 = (disp / 4) as i32;
+        if !(-(1 << 25)..(1 << 25)).contains(&imm26) {
+            return Err(format!(
+                "hostexe aarch64: displacement to '{}' exceeds imm26 range", target_sym
+            ));
+        }
+        let idx = patch_offset as usize;
+        let existing = u32::from_le_bytes(text[idx..idx + 4].try_into().unwrap());
+        let word = (existing & 0xFC00_0000) | ((imm26 as u32) & 0x03FF_FFFF);
+        text[idx..idx + 4].copy_from_slice(&word.to_le_bytes());
+    }
+
+    // 5. Patch runtime's BL main to reach user's main/entry
+    let main_offset = user_syms.get("main")
+        .or_else(|| user_syms.get("entry"))
+        .copied()
+        .ok_or_else(|| "hostexe: no 'main' or 'entry' symbol".to_string())?;
+
+    let bl_offset = user_len as i64 + RT.main_call_fixup as i64;
+    let disp = main_offset as i64 - bl_offset;
+    let imm26 = ((disp >> 2) as u32) & 0x03FF_FFFF;
+    let bl_instr = 0x94000000u32 | imm26;
+    let fixup_off = (user_len as u32 + RT.main_call_fixup) as usize;
+    text[fixup_off..fixup_off + 4].copy_from_slice(&bl_instr.to_le_bytes());
+
+    // 6. Entry point = _start in runtime
+    let start_offset = RT.symbol_offset("_start")
+        .ok_or_else(|| "runtime blob missing _start".to_string())?;
+    let entry_in_text = user_len as u32 + start_offset;
+
+    // 7. Build PE imports for kernel32.dll
+    //    IAT order must match the blob's expectations:
+    //    [0] GetStdHandle, [1] WriteFile, [2] ExitProcess, [3] VirtualAlloc
+    let imports = vec![krir::PeImport {
+        dll_name: "kernel32.dll".to_string(),
+        functions: vec![
+            "GetStdHandle".to_string(),
+            "WriteFile".to_string(),
+            "ExitProcess".to_string(),
+            "VirtualAlloc".to_string(),
+        ],
+    }];
+
+    // 8. Patch iat_base data slot with IAT virtual address.
+    //    The PE emitter places .text at RVA 0x1000 and .idata immediately after.
+    //    Within .idata: IDT, then ILT, then IAT.
+    //    IAT offset = IDT_size + ILT_size.
+    //    IDT = (num_dlls + 1) * 20.  ILT = (num_funcs + 1) * 8 per DLL.
+    let iat_base_off = RT.iat_base_data_offset
+        .ok_or_else(|| "windows runtime blob missing iat_base_data_offset".to_string())?;
+    let abs_iat_base_off = user_len as u32 + iat_base_off;
+
+    // Compute IAT RVA within .idata.  Mirrors emit_pe_executable_aarch64 layout.
+    let text_rva: u32 = 0x1000;
+    let text_virtual_size = text.len() as u32;
+    let idata_rva = text_rva + ((text_virtual_size.max(1) + 0xFFF) & !0xFFF);
+    let num_dlls = imports.len() as u32;
+    let idt_size = (num_dlls + 1) * 20;
+    let mut ilt_size: u32 = 0;
+    for imp in &imports {
+        ilt_size += (imp.functions.len() as u32 + 1) * 8;
+    }
+    let iat_rva = idata_rva + idt_size + ilt_size;
+    let image_base: u64 = 0x140000000;
+    let iat_va = image_base + iat_rva as u64;
+
+    let slot = abs_iat_base_off as usize;
+    text[slot..slot + 8].copy_from_slice(&iat_va.to_le_bytes());
+
+    // 9. Produce PE executable (writable text for runtime data area)
+    Ok(krir::emit_pe_executable_aarch64(&text, entry_in_text, &imports, true))
+}
+
 fn emit_x86_64_static_library(
     executable: &krir::ExecutableKrirModule,
     target: &BackendTargetContract,
@@ -1139,11 +1263,10 @@ fn emit_aarch64_static_library(
     Ok(krir::emit_native_ar_archive("input.o", &object_bytes, &symbols))
 }
 
-/// On Linux/macOS, uses the native hostexe path for AArch64: lower to an
-/// AArch64 object, concatenate the pre-assembled runtime blob, resolve BL
-/// relocations, and emit ELF/Mach-O directly.
+/// On Linux/macOS/Windows, uses the native hostexe path for AArch64: lower to
+/// an AArch64 object, concatenate the pre-assembled runtime blob, resolve BL
+/// relocations, and emit ELF/Mach-O/PE directly.
 ///
-/// Windows AArch64 PE writer is not yet implemented; falls back to cc.
 /// On unsupported platforms, falls back to the cc-based path.
 fn emit_aarch64_host_executable_bytes(
     executable: &krir::ExecutableKrirModule,
@@ -1159,9 +1282,13 @@ fn emit_aarch64_host_executable_bytes(
         return emit_native_hostexe_macos_aarch64(executable, target);
     }
 
-    // Windows AArch64 and other OSes: fall back to cc-based path.
-    // (AArch64 PE writer not yet implemented.)
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(target_os = "windows")]
+    {
+        return emit_native_hostexe_windows_aarch64(executable, target);
+    }
+
+    // Exotic OSes: fall back to cc-based path.
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
         let cc = find_host_tool(&["aarch64-linux-gnu-gcc", "cc", "gcc", "clang"]).ok_or_else(|| {
             "hostexe aarch64 emit requires a C compiler (aarch64-linux-gnu-gcc, cc, gcc, or clang)"

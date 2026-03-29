@@ -1381,6 +1381,37 @@ fn pe_executable_has_valid_header() {
 }
 
 #[test]
+fn pe_executable_aarch64_has_valid_header() {
+    // Minimal AArch64 code: mov x0, #0; ret
+    let text = vec![0x00, 0x00, 0x80, 0xD2, 0xC0, 0x03, 0x5F, 0xD6];
+    let bytes = krir::emit_pe_executable_aarch64(&text, 0, &[], false);
+    // DOS magic "MZ"
+    assert_eq!(bytes[0], b'M');
+    assert_eq!(bytes[1], b'Z');
+    // e_lfanew at offset 0x3C points to PE sig at 0x40
+    let lfanew = u32::from_le_bytes(bytes[0x3C..0x40].try_into().unwrap());
+    assert_eq!(lfanew, 0x40);
+    // PE signature "PE\0\0"
+    assert_eq!(&bytes[0x40..0x44], b"PE\0\0");
+    // Machine = 0xAA64 (ARM64)
+    let machine = u16::from_le_bytes(bytes[0x44..0x46].try_into().unwrap());
+    assert_eq!(machine, 0xAA64);
+    // Optional header magic = 0x020B (PE32+)
+    let magic = u16::from_le_bytes(bytes[0x58..0x5A].try_into().unwrap());
+    assert_eq!(magic, 0x020B);
+    // DllCharacteristics at offset 0x9E has DYNAMIC_BASE bit (0x0040) set
+    let dll_chars = u16::from_le_bytes(bytes[0x9E..0xA0].try_into().unwrap());
+    assert_eq!(dll_chars & 0x0040, 0x0040, "DYNAMIC_BASE must be set for ARM64 PE");
+    // Data directory [5] (Base Relocation Table) should be non-zero
+    // Data directories start at offset 0xC8 (0x58 + 112), each is 8 bytes
+    // [5] is at 0xC8 + 5*8 = 0xF0
+    let reloc_rva = u32::from_le_bytes(bytes[0xF0..0xF4].try_into().unwrap());
+    let reloc_size = u32::from_le_bytes(bytes[0xF4..0xF8].try_into().unwrap());
+    assert!(reloc_rva > 0, "Base Relocation Table RVA should be non-zero");
+    assert_eq!(reloc_size, 8, "Base Relocation Table size should be 8 (minimal block)");
+}
+
+#[test]
 fn macho_executable_has_valid_header_x86_64() {
     let text = vec![0x31, 0xC0, 0xC3]; // xor eax,eax; ret
     let bytes = krir::emit_macho_executable(&text, 0, false, false);
