@@ -11370,7 +11370,7 @@ pub fn emit_native_ar_archive(member_name: &str, object_bytes: &[u8], symbols: &
     // Write object member
     emit_ar_member_header(&mut out, member_name, object_bytes.len());
     out.extend_from_slice(object_bytes);
-    if object_bytes.len() % 2 != 0 {
+    if !object_bytes.len().is_multiple_of(2) {
         out.push(b'\n');
     }
 
@@ -12139,6 +12139,8 @@ pub fn parse_krbo_header(bytes: &[u8]) -> Result<KrboHeader, String> {
     })
 }
 
+type KrboFatEntry<'a> = (u32, Vec<u8>, Option<&'a [u8]>);
+
 /// Emit a KRBOFAT v2 fat binary from `(arch_id, krbo_bytes, optional_runtime_bytes)` entries.
 ///
 /// Format v2 per-arch entry (48 bytes):
@@ -12151,7 +12153,7 @@ pub fn parse_krbo_header(bytes: &[u8]) -> Result<KrboHeader, String> {
 /// +32: runtime_offset   (u64 LE)  — byte offset to runtime blob (0 if none)
 /// +40: runtime_len      (u64 LE)  — byte length of runtime blob (0 if none)
 /// ```
-pub fn emit_krbofat_bytes_v2(entries: &[(u32, Vec<u8>, Option<&[u8]>)]) -> Result<Vec<u8>, String> {
+pub fn emit_krbofat_bytes_v2(entries: &[KrboFatEntry<'_>]) -> Result<Vec<u8>, String> {
     use lz4_flex::frame::FrameEncoder;
     use std::io::Write as IoWrite;
 
@@ -12225,7 +12227,7 @@ pub fn emit_krbofat_bytes_v2(entries: &[(u32, Vec<u8>, Option<&[u8]>)]) -> Resul
 /// Emit a KRBOFAT fat binary from (arch_id, raw_krbo_bytes) slices.
 /// Each slice is LZ4-compressed. Emits format version 2 with no runtime blobs.
 pub fn emit_krbofat_bytes(slices: &[(u32, Vec<u8>)]) -> Result<Vec<u8>, String> {
-    let entries: Vec<(u32, Vec<u8>, Option<&[u8]>)> = slices
+    let entries: Vec<KrboFatEntry<'_>> = slices
         .iter()
         .map(|(arch_id, raw)| (*arch_id, raw.clone(), None))
         .collect();
@@ -12404,7 +12406,7 @@ fn encode_aa64_call_arg(out: &mut Vec<u8>, rd: u32, arg: &ExecutableCallArg) {
             // MOV Xrd, X0  (ORR Xrd, XZR, X0)
             // The "saved value" register in this codebase is x0.
             if rd != 0 {
-                out.extend_from_slice(&(0xAA00_03E0u32 | (0u32 << 16) | rd).to_le_bytes());
+                out.extend_from_slice(&(0xAA00_03E0u32 | rd).to_le_bytes());
             }
         }
     }
@@ -13030,7 +13032,7 @@ fn encode_aarch64_function(
                     // frame-relative slot_str! encoding: imm12 = (16 + off) / 8.
                     let imm12 = (16 + off) / 8;
                     out.extend_from_slice(
-                        &(0xF900_0000u32 | (imm12 << 10) | (29 << 5) | 0).to_le_bytes(),
+                        &(0xF900_0000u32 | (imm12 << 10) | (29 << 5)).to_le_bytes(),
                     );
                 }
             }
@@ -14001,22 +14003,20 @@ pub fn emit_pe_executable_x86_64(
                 push_u32_le(&mut idata, iat_rva); // FirstThunk
             }
             // Null terminator entry (20 zero bytes)
-            for _ in 0..20 {
-                idata.push(0);
-            }
+            idata.extend(std::iter::repeat_n(0u8, 20));
 
             // ILT entries
             for (di, imp) in imports.iter().enumerate() {
-                for fi in 0..imp.functions.len() {
-                    push_u64_le(&mut idata, hint_name_rvas[di][fi] as u64);
+                for rva in hint_name_rvas[di].iter().take(imp.functions.len()) {
+                    push_u64_le(&mut idata, *rva as u64);
                 }
                 push_u64_le(&mut idata, 0); // null terminator
             }
 
             // IAT entries (identical to ILT at link time; loader patches these)
             for (di, imp) in imports.iter().enumerate() {
-                for fi in 0..imp.functions.len() {
-                    push_u64_le(&mut idata, hint_name_rvas[di][fi] as u64);
+                for rva in hint_name_rvas[di].iter().take(imp.functions.len()) {
+                    push_u64_le(&mut idata, *rva as u64);
                 }
                 push_u64_le(&mut idata, 0); // null terminator
             }
@@ -14029,9 +14029,7 @@ pub fn emit_pe_executable_x86_64(
                 idata.push(0); // null terminator
                 // Pad to even alignment
                 let written = 2 + name.len() + 1;
-                for _ in written..(padded_size as usize) {
-                    idata.push(0);
-                }
+                idata.extend(std::iter::repeat_n(0u8, padded_size as usize - written));
             }
 
             // DLL name strings
@@ -14322,22 +14320,20 @@ pub fn emit_pe_executable_aarch64(
                 push_u32_le(&mut idata, iat_rva); // FirstThunk
             }
             // Null terminator entry (20 zero bytes)
-            for _ in 0..20 {
-                idata.push(0);
-            }
+            idata.extend(std::iter::repeat_n(0u8, 20));
 
             // ILT entries
             for (di, imp) in imports.iter().enumerate() {
-                for fi in 0..imp.functions.len() {
-                    push_u64_le(&mut idata, hint_name_rvas[di][fi] as u64);
+                for rva in hint_name_rvas[di].iter().take(imp.functions.len()) {
+                    push_u64_le(&mut idata, *rva as u64);
                 }
                 push_u64_le(&mut idata, 0); // null terminator
             }
 
             // IAT entries (identical to ILT at link time; loader patches these)
             for (di, imp) in imports.iter().enumerate() {
-                for fi in 0..imp.functions.len() {
-                    push_u64_le(&mut idata, hint_name_rvas[di][fi] as u64);
+                for rva in hint_name_rvas[di].iter().take(imp.functions.len()) {
+                    push_u64_le(&mut idata, *rva as u64);
                 }
                 push_u64_le(&mut idata, 0); // null terminator
             }
@@ -14350,9 +14346,7 @@ pub fn emit_pe_executable_aarch64(
                 idata.push(0); // null terminator
                 // Pad to even alignment
                 let written = 2 + name.len() + 1;
-                for _ in written..(padded_size as usize) {
-                    idata.push(0);
-                }
+                idata.extend(std::iter::repeat_n(0u8, padded_size as usize - written));
             }
 
             // DLL name strings
@@ -14649,7 +14643,7 @@ pub fn emit_macho_executable(
 
     // Entry point offset from start of __TEXT segment (segment starts at vmaddr = base_vmaddr,
     // which maps to file offset 0, so entryoff = text_file_offset + entry_offset).
-    let entryoff = text_file_offset as u64 + entry_offset as u64;
+    let entryoff = text_file_offset + entry_offset as u64;
 
     // Total file size
     let total_file_size = linkedit_fileoff + linkedit_data_size as u64;
@@ -14766,9 +14760,7 @@ pub fn emit_macho_executable(
     out.extend_from_slice(dylinker_path);
     // Pad to lc_dylinker_size total (we wrote 12 + 14 = 26 bytes so far in this LC)
     let dylinker_written = 12 + dylinker_path.len() as u32;
-    for _ in dylinker_written..lc_dylinker_size {
-        out.push(0);
-    }
+    out.extend(std::iter::repeat_n(0u8, (lc_dylinker_size - dylinker_written) as usize));
 
     // ===== LC_LOAD_DYLIB (padded to 8) =====
     push_u32_le(&mut out, 0x0C); // cmd: LC_LOAD_DYLIB
@@ -14780,9 +14772,7 @@ pub fn emit_macho_executable(
     out.extend_from_slice(dylib_path);
     // Pad to lc_dylib_size total (we wrote 24 + 26 = 50 bytes so far in this LC)
     let dylib_written = 24 + dylib_path.len() as u32;
-    for _ in dylib_written..lc_dylib_size {
-        out.push(0);
-    }
+    out.extend(std::iter::repeat_n(0u8, (lc_dylib_size - dylib_written) as usize));
 
     // ===== LC_MAIN (24 bytes) =====
     push_u32_le(&mut out, 0x8000_0028); // cmd: LC_MAIN

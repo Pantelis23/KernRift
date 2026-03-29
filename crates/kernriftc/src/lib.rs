@@ -612,7 +612,7 @@ fn emit_x86_64_host_executable_bytes(
 ) -> Result<Vec<u8>, String> {
     #[cfg(target_os = "linux")]
     {
-        return emit_native_hostexe_linux_x86_64(executable, target);
+        emit_native_hostexe_linux_x86_64(executable, target)
     }
 
     #[cfg(target_os = "macos")]
@@ -1337,7 +1337,7 @@ fn emit_aarch64_host_executable_bytes(
 ) -> Result<Vec<u8>, String> {
     #[cfg(target_os = "linux")]
     {
-        return emit_native_hostexe_linux_aarch64(executable, target);
+        emit_native_hostexe_linux_aarch64(executable, target)
     }
 
     #[cfg(target_os = "macos")]
