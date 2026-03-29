@@ -13706,6 +13706,262 @@ pub fn emit_pe_executable_x86_64(
     out
 }
 
+// ---------------------------------------------------------------------------
+// Mach-O MH_EXECUTE writer (x86_64 + AArch64)
+// ---------------------------------------------------------------------------
+
+/// Write a 16-byte null-padded segment/section name field.
+fn push_segname(out: &mut Vec<u8>, name: &str) {
+    let bytes = name.as_bytes();
+    out.extend_from_slice(bytes);
+    for _ in bytes.len()..16 {
+        out.push(0);
+    }
+}
+
+/// Emit a Mach-O MH_EXECUTE binary.
+///
+/// `text_bytes` -- resolved machine code (internal relocations already patched).
+/// `entry_offset` -- byte offset of entry function within text_bytes.
+/// `is_arm64` -- true for AArch64, false for x86_64.
+pub fn emit_macho_executable(
+    text_bytes: &[u8],
+    entry_offset: u32,
+    is_arm64: bool,
+) -> Vec<u8> {
+    let page_size: u64 = if is_arm64 { 0x4000 } else { 0x1000 };
+    let base_vmaddr: u64 = 0x1_0000_0000;
+
+    // --- Helper: round up to page boundary ---
+    let align_page = |v: u64| -> u64 { (v + page_size - 1) & !(page_size - 1) };
+
+    // --- Pre-compute load command sizes ---
+    let lc_segment64_base: u32 = 72; // LC_SEGMENT_64 without sections
+    let section64_size: u32 = 80;
+
+    let lc_pagezero_size: u32 = lc_segment64_base; // 72
+    let lc_text_size: u32 = lc_segment64_base + section64_size; // 152
+    let lc_linkedit_size: u32 = lc_segment64_base; // 72
+    let lc_symtab_size: u32 = 24;
+    let lc_dysymtab_size: u32 = 80;
+
+    // Version command: LC_VERSION_MIN_MACOSX (16) for x86_64, LC_BUILD_VERSION (24) for arm64
+    let lc_version_size: u32 = if is_arm64 { 24 } else { 16 };
+
+    // LC_LOAD_DYLINKER: cmd(4) + cmdsize(4) + name.offset(4) + "/usr/lib/dyld\0" + pad to 8
+    let dylinker_path = b"/usr/lib/dyld\0";
+    let dylinker_raw = 12 + dylinker_path.len() as u32; // 12 + 14 = 26
+    let lc_dylinker_size: u32 = (dylinker_raw + 7) & !7; // 32
+
+    // LC_LOAD_DYLIB: cmd(4) + cmdsize(4) + name.offset(4) + timestamp(4) + current_version(4) + compat_version(4) + path + pad
+    let dylib_path = b"/usr/lib/libSystem.B.dylib\0";
+    let dylib_raw = 24 + dylib_path.len() as u32; // 24 + 26 = 50
+    let lc_dylib_size: u32 = (dylib_raw + 7) & !7; // 56
+
+    let lc_main_size: u32 = 24;
+
+    let ncmds: u32 = 9;
+    let sizeofcmds: u32 = lc_pagezero_size
+        + lc_text_size
+        + lc_linkedit_size
+        + lc_symtab_size
+        + lc_dysymtab_size
+        + lc_version_size
+        + lc_dylinker_size
+        + lc_dylib_size
+        + lc_main_size;
+
+    let header_size: u32 = 32; // mach_header_64
+    let header_plus_cmds = header_size + sizeofcmds;
+
+    // __text file offset: page-aligned after headers
+    let text_file_offset = align_page(header_plus_cmds as u64);
+    let text_len = text_bytes.len() as u64;
+
+    // __TEXT segment covers from file offset 0 to end of text (page-aligned)
+    let text_segment_vmsize = align_page(text_file_offset + text_len);
+    let text_segment_filesize = text_segment_vmsize;
+
+    // __LINKEDIT: symbol table (0 entries) + string table (4 bytes "\0\0\0\0")
+    let symtab_data_size: u32 = 0; // 0 nlist entries
+    let strtab_data_size: u32 = 4; // minimum 4 bytes
+    let linkedit_data_size = symtab_data_size + strtab_data_size;
+    let linkedit_fileoff = text_segment_filesize;
+    let linkedit_vmaddr = base_vmaddr + text_segment_vmsize;
+    let linkedit_vmsize = align_page(linkedit_data_size as u64);
+
+    // Symtab/strtab offsets within the file
+    let symtab_offset = linkedit_fileoff as u32;
+    let strtab_offset = symtab_offset + symtab_data_size;
+
+    // Section __text addr and offset
+    let text_section_addr = base_vmaddr + text_file_offset;
+
+    // Entry point offset from start of __TEXT segment (segment starts at vmaddr = base_vmaddr,
+    // which maps to file offset 0, so entryoff = text_file_offset + entry_offset).
+    let entryoff = text_file_offset as u64 + entry_offset as u64;
+
+    // Total file size
+    let total_file_size = linkedit_fileoff + linkedit_data_size as u64;
+
+    let mut out = Vec::with_capacity(total_file_size as usize);
+
+    // ===== mach_header_64 (32 bytes) =====
+    push_u32_le(&mut out, 0xFEED_FACF); // magic: MH_MAGIC_64
+    if is_arm64 {
+        push_u32_le(&mut out, 0x0100_000C); // cputype: CPU_TYPE_ARM64
+        push_u32_le(&mut out, 0x0000_0000); // cpusubtype: CPU_SUBTYPE_ARM64_ALL
+    } else {
+        push_u32_le(&mut out, 0x0100_0007); // cputype: CPU_TYPE_X86_64
+        push_u32_le(&mut out, 0x0000_0003); // cpusubtype: CPU_SUBTYPE_X86_64_ALL
+    }
+    push_u32_le(&mut out, 2); // filetype: MH_EXECUTE
+    push_u32_le(&mut out, ncmds);
+    push_u32_le(&mut out, sizeofcmds);
+    push_u32_le(&mut out, 0x0020_0085); // flags: MH_NOUNDEFS|MH_DYLDLINK|MH_TWOLEVEL|MH_PIE
+    push_u32_le(&mut out, 0); // reserved
+    debug_assert_eq!(out.len(), 32);
+
+    // ===== LC_SEGMENT_64 __PAGEZERO (72 bytes) =====
+    push_u32_le(&mut out, 0x19); // cmd: LC_SEGMENT_64
+    push_u32_le(&mut out, lc_pagezero_size);
+    push_segname(&mut out, "__PAGEZERO");
+    push_u64_le(&mut out, 0); // vmaddr
+    push_u64_le(&mut out, base_vmaddr); // vmsize = 0x100000000
+    push_u64_le(&mut out, 0); // fileoff
+    push_u64_le(&mut out, 0); // filesize
+    push_u32_le(&mut out, 0); // maxprot
+    push_u32_le(&mut out, 0); // initprot
+    push_u32_le(&mut out, 0); // nsects
+    push_u32_le(&mut out, 0); // flags
+
+    // ===== LC_SEGMENT_64 __TEXT (152 bytes = 72 + 80 section) =====
+    push_u32_le(&mut out, 0x19); // cmd: LC_SEGMENT_64
+    push_u32_le(&mut out, lc_text_size);
+    push_segname(&mut out, "__TEXT");
+    push_u64_le(&mut out, base_vmaddr); // vmaddr
+    push_u64_le(&mut out, text_segment_vmsize); // vmsize (page-aligned)
+    push_u64_le(&mut out, 0); // fileoff
+    push_u64_le(&mut out, text_segment_filesize); // filesize
+    push_u32_le(&mut out, 5); // maxprot: VM_PROT_READ|VM_PROT_EXECUTE
+    push_u32_le(&mut out, 5); // initprot
+    push_u32_le(&mut out, 1); // nsects
+    push_u32_le(&mut out, 0); // flags
+
+    // -- section_64 __text (80 bytes) --
+    push_segname(&mut out, "__text"); // sectname (16 bytes)
+    push_segname(&mut out, "__TEXT"); // segname (16 bytes)
+    push_u64_le(&mut out, text_section_addr); // addr
+    push_u64_le(&mut out, text_len); // size
+    push_u32_le(&mut out, text_file_offset as u32); // offset
+    push_u32_le(&mut out, 4); // align (log2 → 2^4 = 16)
+    push_u32_le(&mut out, 0); // reloff
+    push_u32_le(&mut out, 0); // nreloc
+    push_u32_le(&mut out, 0x8000_0400); // flags: S_REGULAR|S_ATTR_PURE_INSTRUCTIONS|S_ATTR_SOME_INSTRUCTIONS
+    push_u32_le(&mut out, 0); // reserved1
+    push_u32_le(&mut out, 0); // reserved2
+    push_u32_le(&mut out, 0); // reserved3
+
+    // ===== LC_SEGMENT_64 __LINKEDIT (72 bytes) =====
+    push_u32_le(&mut out, 0x19); // cmd: LC_SEGMENT_64
+    push_u32_le(&mut out, lc_linkedit_size);
+    push_segname(&mut out, "__LINKEDIT");
+    push_u64_le(&mut out, linkedit_vmaddr); // vmaddr
+    push_u64_le(&mut out, linkedit_vmsize); // vmsize (page-aligned)
+    push_u64_le(&mut out, linkedit_fileoff); // fileoff
+    push_u64_le(&mut out, linkedit_data_size as u64); // filesize
+    push_u32_le(&mut out, 1); // maxprot: VM_PROT_READ
+    push_u32_le(&mut out, 1); // initprot
+    push_u32_le(&mut out, 0); // nsects
+    push_u32_le(&mut out, 0); // flags
+
+    // ===== LC_SYMTAB (24 bytes) =====
+    push_u32_le(&mut out, 0x02); // cmd: LC_SYMTAB
+    push_u32_le(&mut out, lc_symtab_size);
+    push_u32_le(&mut out, symtab_offset); // symoff
+    push_u32_le(&mut out, 0); // nsyms
+    push_u32_le(&mut out, strtab_offset); // stroff
+    push_u32_le(&mut out, strtab_data_size); // strsize
+
+    // ===== LC_DYSYMTAB (80 bytes) =====
+    push_u32_le(&mut out, 0x0B); // cmd: LC_DYSYMTAB
+    push_u32_le(&mut out, lc_dysymtab_size);
+    // 18 u32 fields, all zero
+    for _ in 0..18 {
+        push_u32_le(&mut out, 0);
+    }
+
+    // ===== Version command =====
+    if is_arm64 {
+        // LC_BUILD_VERSION (24 bytes)
+        push_u32_le(&mut out, 0x32); // cmd: LC_BUILD_VERSION
+        push_u32_le(&mut out, 24); // cmdsize
+        push_u32_le(&mut out, 1); // platform: MACOS
+        push_u32_le(&mut out, 0x000C_0000); // minos: 12.0.0
+        push_u32_le(&mut out, 0x000C_0000); // sdk: 12.0.0
+        push_u32_le(&mut out, 0); // ntools
+    } else {
+        // LC_VERSION_MIN_MACOSX (16 bytes)
+        push_u32_le(&mut out, 0x24); // cmd: LC_VERSION_MIN_MACOSX
+        push_u32_le(&mut out, 16); // cmdsize
+        push_u32_le(&mut out, 0x000A_0D00); // version: 10.13.0
+        push_u32_le(&mut out, 0x000A_0D00); // sdk: 10.13.0
+    }
+
+    // ===== LC_LOAD_DYLINKER (padded to 8) =====
+    push_u32_le(&mut out, 0x0E); // cmd: LC_LOAD_DYLINKER
+    push_u32_le(&mut out, lc_dylinker_size);
+    push_u32_le(&mut out, 12); // name.offset (from start of this load command)
+    out.extend_from_slice(dylinker_path);
+    // Pad to lc_dylinker_size total (we wrote 12 + 14 = 26 bytes so far in this LC)
+    let dylinker_written = 12 + dylinker_path.len() as u32;
+    for _ in dylinker_written..lc_dylinker_size {
+        out.push(0);
+    }
+
+    // ===== LC_LOAD_DYLIB (padded to 8) =====
+    push_u32_le(&mut out, 0x0C); // cmd: LC_LOAD_DYLIB
+    push_u32_le(&mut out, lc_dylib_size);
+    push_u32_le(&mut out, 24); // name.offset (from start of this load command)
+    push_u32_le(&mut out, 0); // timestamp
+    push_u32_le(&mut out, 0x0501_0000); // current_version: 1281.0.0
+    push_u32_le(&mut out, 0x0001_0000); // compatibility_version: 1.0.0
+    out.extend_from_slice(dylib_path);
+    // Pad to lc_dylib_size total (we wrote 24 + 26 = 50 bytes so far in this LC)
+    let dylib_written = 24 + dylib_path.len() as u32;
+    for _ in dylib_written..lc_dylib_size {
+        out.push(0);
+    }
+
+    // ===== LC_MAIN (24 bytes) =====
+    push_u32_le(&mut out, 0x8000_0028); // cmd: LC_MAIN
+    push_u32_le(&mut out, lc_main_size);
+    push_u64_le(&mut out, entryoff); // entryoff
+    push_u64_le(&mut out, 0); // stacksize
+
+    debug_assert_eq!(
+        out.len() as u32,
+        header_plus_cmds,
+        "header + load commands size mismatch"
+    );
+
+    // ===== Pad to page boundary for __text =====
+    out.resize(text_file_offset as usize, 0);
+
+    // ===== __text section data =====
+    out.extend_from_slice(text_bytes);
+
+    // ===== Pad to __LINKEDIT file offset =====
+    out.resize(linkedit_fileoff as usize, 0);
+
+    // ===== __LINKEDIT data: string table (4 zero bytes) =====
+    out.extend_from_slice(&[0u8; 4]);
+
+    debug_assert_eq!(out.len() as u64, total_file_size);
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
