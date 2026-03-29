@@ -13391,6 +13391,321 @@ pub fn emit_aarch64_coff_object_bytes(
     Ok(out)
 }
 
+/// A DLL import specification for the PE import directory.
+#[derive(Debug, Clone)]
+pub struct PeImport {
+    pub dll_name: String,
+    pub functions: Vec<String>,
+}
+
+/// Emit a valid PE32+ (Windows x86_64) executable.
+///
+/// - `text_bytes`: raw machine code for the `.text` section.
+/// - `entry_offset`: byte offset within `text_bytes` of the entry point.
+/// - `imports`: DLL imports; when empty, a single-section executable is produced.
+pub fn emit_pe_executable_x86_64(
+    text_bytes: &[u8],
+    entry_offset: u32,
+    imports: &[PeImport],
+) -> Vec<u8> {
+    const FILE_ALIGNMENT: u32 = 0x200;
+    const SECTION_ALIGNMENT: u32 = 0x1000;
+    const IMAGE_BASE: u64 = 0x140000000;
+
+    fn align_up(value: u32, align: u32) -> u32 {
+        (value + align - 1) & !(align - 1)
+    }
+
+    let has_imports = !imports.is_empty();
+    let num_sections: u16 = if has_imports { 2 } else { 1 };
+
+    // --- Compute header sizes ---
+    // DOS header: 64 bytes
+    // PE signature: 4 bytes
+    // COFF header: 20 bytes
+    // Optional header: 112 + 128 = 240 bytes
+    // Section table: num_sections * 40
+    let headers_raw = 64 + 4 + 20 + 240 + (num_sections as u32) * 40;
+    let size_of_headers = align_up(headers_raw, FILE_ALIGNMENT);
+
+    // --- .text section ---
+    let text_rva: u32 = SECTION_ALIGNMENT; // 0x1000
+    let text_virtual_size = text_bytes.len() as u32;
+    let text_raw_size = align_up(text_virtual_size, FILE_ALIGNMENT);
+    let text_file_offset = size_of_headers;
+
+    // --- .idata section (optional) ---
+    let (idata_rva, idata_virtual_size, idata_raw_size, idata_file_offset, idata_bytes) =
+        if has_imports {
+            let idata_rva = text_rva + align_up(text_virtual_size.max(1), SECTION_ALIGNMENT);
+
+            // Build .idata content. All RVAs are relative to image base (i.e. from 0).
+            // We need to compute the layout in two passes: first measure sizes, then fill in RVAs.
+
+            // Pass 1: measure sizes of each sub-table.
+            let idt_size = (imports.len() as u32 + 1) * 20; // +1 for null terminator
+
+            let mut ilt_size: u32 = 0;
+            for imp in imports {
+                ilt_size += (imp.functions.len() as u32 + 1) * 8; // +1 null terminator per DLL
+            }
+
+            let iat_size = ilt_size; // IAT is same size as ILT
+
+            // Hint/Name table: per function, 2-byte hint + name + null + pad to even
+            let mut hint_name_entries: Vec<(usize, usize, u32)> = Vec::new(); // (dll_idx, func_idx, size)
+            let mut hint_name_total: u32 = 0;
+            for (di, imp) in imports.iter().enumerate() {
+                for (fi, func) in imp.functions.iter().enumerate() {
+                    let entry_size = 2 + func.len() as u32 + 1; // hint(2) + name + null
+                    let padded = align_up(entry_size, 2);
+                    hint_name_entries.push((di, fi, padded));
+                    hint_name_total += padded;
+                }
+            }
+
+            // DLL name strings
+            let mut dll_name_sizes: Vec<u32> = Vec::new();
+            let mut dll_names_total: u32 = 0;
+            for imp in imports {
+                let size = imp.dll_name.len() as u32 + 1; // null terminated
+                dll_name_sizes.push(size);
+                dll_names_total += size;
+            }
+
+            let idata_total = idt_size + ilt_size + iat_size + hint_name_total + dll_names_total;
+
+            // Pass 2: compute offsets within .idata section and build content.
+            let idt_offset: u32 = 0;
+            let ilt_offset: u32 = idt_offset + idt_size;
+            let iat_offset: u32 = ilt_offset + ilt_size;
+            let hint_name_offset: u32 = iat_offset + iat_size;
+            let dll_names_offset: u32 = hint_name_offset + hint_name_total;
+
+            // Compute per-DLL ILT/IAT start offsets within the ILT/IAT blocks.
+            let mut dll_ilt_offsets: Vec<u32> = Vec::new();
+            let mut cur: u32 = 0;
+            for imp in imports {
+                dll_ilt_offsets.push(cur);
+                cur += (imp.functions.len() as u32 + 1) * 8;
+            }
+
+            // Compute per-function hint/name RVAs.
+            // hint_name_rvas[dll_idx][func_idx] = RVA of the hint/name entry
+            let mut hint_name_rvas: Vec<Vec<u32>> = vec![Vec::new(); imports.len()];
+            let mut hn_cur: u32 = 0;
+            for &(di, _fi, size) in &hint_name_entries {
+                hint_name_rvas[di].push(idata_rva + hint_name_offset + hn_cur);
+                hn_cur += size;
+            }
+
+            // Compute per-DLL name RVAs.
+            let mut dll_name_rvas: Vec<u32> = Vec::new();
+            let mut dn_cur: u32 = 0;
+            for (i, _imp) in imports.iter().enumerate() {
+                dll_name_rvas.push(idata_rva + dll_names_offset + dn_cur);
+                dn_cur += dll_name_sizes[i];
+            }
+
+            // Now build the actual idata bytes.
+            let mut idata = Vec::with_capacity(idata_total as usize);
+
+            // IDT entries
+            for (di, _imp) in imports.iter().enumerate() {
+                let ilt_rva = idata_rva + ilt_offset + dll_ilt_offsets[di];
+                let iat_rva = idata_rva + iat_offset + dll_ilt_offsets[di];
+                push_u32_le(&mut idata, ilt_rva); // OriginalFirstThunk
+                push_u32_le(&mut idata, 0); // TimeDateStamp
+                push_u32_le(&mut idata, 0); // ForwarderChain
+                push_u32_le(&mut idata, dll_name_rvas[di]); // Name RVA
+                push_u32_le(&mut idata, iat_rva); // FirstThunk
+            }
+            // Null terminator entry (20 zero bytes)
+            for _ in 0..20 {
+                idata.push(0);
+            }
+
+            // ILT entries
+            for (di, imp) in imports.iter().enumerate() {
+                for fi in 0..imp.functions.len() {
+                    push_u64_le(&mut idata, hint_name_rvas[di][fi] as u64);
+                }
+                push_u64_le(&mut idata, 0); // null terminator
+            }
+
+            // IAT entries (identical to ILT at link time; loader patches these)
+            for (di, imp) in imports.iter().enumerate() {
+                for fi in 0..imp.functions.len() {
+                    push_u64_le(&mut idata, hint_name_rvas[di][fi] as u64);
+                }
+                push_u64_le(&mut idata, 0); // null terminator
+            }
+
+            // Hint/Name table
+            for &(di, fi, padded_size) in &hint_name_entries {
+                let name = &imports[di].functions[fi];
+                push_u16_le(&mut idata, 0); // hint = 0
+                idata.extend_from_slice(name.as_bytes());
+                idata.push(0); // null terminator
+                // Pad to even alignment
+                let written = 2 + name.len() + 1;
+                for _ in written..(padded_size as usize) {
+                    idata.push(0);
+                }
+            }
+
+            // DLL name strings
+            for imp in imports {
+                idata.extend_from_slice(imp.dll_name.as_bytes());
+                idata.push(0);
+            }
+
+            debug_assert_eq!(idata.len(), idata_total as usize);
+
+            let raw_size = align_up(idata_total, FILE_ALIGNMENT);
+            let file_off = text_file_offset + text_raw_size;
+            (idata_rva, idata_total, raw_size, file_off, idata)
+        } else {
+            (0, 0, 0, 0, Vec::new())
+        };
+
+    // --- Compute SizeOfImage ---
+    let last_section_end_rva = if has_imports {
+        idata_rva + align_up(idata_virtual_size.max(1), SECTION_ALIGNMENT)
+    } else {
+        text_rva + align_up(text_virtual_size.max(1), SECTION_ALIGNMENT)
+    };
+    let size_of_image = last_section_end_rva;
+
+    let text_size_aligned = align_up(text_virtual_size, FILE_ALIGNMENT);
+    let idata_size_aligned = if has_imports {
+        align_up(idata_virtual_size, FILE_ALIGNMENT)
+    } else {
+        0
+    };
+
+    // --- Build the PE ---
+    let total_file_size = if has_imports {
+        idata_file_offset + idata_raw_size
+    } else {
+        text_file_offset + text_raw_size
+    };
+    let mut out = Vec::with_capacity(total_file_size as usize);
+
+    // ===== DOS Header (64 bytes) =====
+    push_u16_le(&mut out, 0x5A4D); // e_magic = "MZ"
+    out.resize(0x3C, 0); // zero-fill to e_lfanew offset
+    push_u32_le(&mut out, 0x40); // e_lfanew = offset to PE signature
+    out.resize(64, 0); // pad to 64 bytes
+
+    // ===== PE Signature (4 bytes at 0x40) =====
+    out.extend_from_slice(b"PE\0\0");
+
+    // ===== COFF Header (20 bytes at 0x44) =====
+    push_u16_le(&mut out, 0x8664); // Machine = IMAGE_FILE_MACHINE_AMD64
+    push_u16_le(&mut out, num_sections); // NumberOfSections
+    push_u32_le(&mut out, 0); // TimeDateStamp
+    push_u32_le(&mut out, 0); // PointerToSymbolTable
+    push_u32_le(&mut out, 0); // NumberOfSymbols
+    push_u16_le(&mut out, 240); // SizeOfOptionalHeader
+    push_u16_le(&mut out, 0x0022); // Characteristics: EXECUTABLE_IMAGE | LARGE_ADDRESS_AWARE
+
+    // ===== Optional Header PE32+ (112 bytes at 0x58) =====
+    push_u16_le(&mut out, 0x020B); // Magic = PE32+
+    out.push(0); // MajorLinkerVersion
+    out.push(1); // MinorLinkerVersion
+    push_u32_le(&mut out, text_size_aligned); // SizeOfCode
+    push_u32_le(&mut out, idata_size_aligned); // SizeOfInitializedData
+    push_u32_le(&mut out, 0); // SizeOfUninitializedData
+    push_u32_le(&mut out, text_rva + entry_offset); // AddressOfEntryPoint
+    push_u32_le(&mut out, text_rva); // BaseOfCode
+    push_u64_le(&mut out, IMAGE_BASE); // ImageBase
+    push_u32_le(&mut out, SECTION_ALIGNMENT); // SectionAlignment
+    push_u32_le(&mut out, FILE_ALIGNMENT); // FileAlignment
+    push_u16_le(&mut out, 6); // MajorOperatingSystemVersion
+    push_u16_le(&mut out, 0); // MinorOperatingSystemVersion
+    push_u16_le(&mut out, 0); // MajorImageVersion
+    push_u16_le(&mut out, 0); // MinorImageVersion
+    push_u16_le(&mut out, 6); // MajorSubsystemVersion
+    push_u16_le(&mut out, 0); // MinorSubsystemVersion
+    push_u32_le(&mut out, 0); // Win32VersionValue
+    push_u32_le(&mut out, size_of_image); // SizeOfImage
+    push_u32_le(&mut out, size_of_headers); // SizeOfHeaders
+    push_u32_le(&mut out, 0); // CheckSum
+    push_u16_le(&mut out, 3); // Subsystem = IMAGE_SUBSYSTEM_WINDOWS_CUI
+    push_u16_le(&mut out, 0); // DllCharacteristics
+    push_u64_le(&mut out, 0x100000); // SizeOfStackReserve (1MB)
+    push_u64_le(&mut out, 0x1000); // SizeOfStackCommit
+    push_u64_le(&mut out, 0x100000); // SizeOfHeapReserve (1MB)
+    push_u64_le(&mut out, 0x1000); // SizeOfHeapCommit
+    push_u32_le(&mut out, 0); // LoaderFlags
+    push_u32_le(&mut out, 16); // NumberOfRvaAndSizes
+
+    // ===== Data Directories (128 bytes = 16 x 8) =====
+    // [0] Export Table: zeroed
+    push_u32_le(&mut out, 0);
+    push_u32_le(&mut out, 0);
+    // [1] Import Table
+    if has_imports {
+        // IDT starts at the beginning of .idata
+        let idt_size = (imports.len() as u32 + 1) * 20;
+        push_u32_le(&mut out, idata_rva); // RVA
+        push_u32_le(&mut out, idt_size); // Size
+    } else {
+        push_u32_le(&mut out, 0);
+        push_u32_le(&mut out, 0);
+    }
+    // [2..15] remaining 14 data directories: zeroed
+    for _ in 0..14 {
+        push_u32_le(&mut out, 0);
+        push_u32_le(&mut out, 0);
+    }
+
+    // ===== Section Table =====
+    // .text section header (40 bytes)
+    out.extend_from_slice(b".text\0\0\0"); // Name (8 bytes)
+    push_u32_le(&mut out, text_virtual_size); // VirtualSize
+    push_u32_le(&mut out, text_rva); // VirtualAddress
+    push_u32_le(&mut out, text_raw_size); // SizeOfRawData
+    push_u32_le(&mut out, text_file_offset); // PointerToRawData
+    push_u32_le(&mut out, 0); // PointerToRelocations
+    push_u32_le(&mut out, 0); // PointerToLinenumbers
+    push_u16_le(&mut out, 0); // NumberOfRelocations
+    push_u16_le(&mut out, 0); // NumberOfLinenumbers
+    push_u32_le(&mut out, 0x60000020); // Characteristics: CODE | EXECUTE | READ
+
+    // .idata section header (40 bytes, if imports present)
+    if has_imports {
+        out.extend_from_slice(b".idata\0\0"); // Name (8 bytes)
+        push_u32_le(&mut out, idata_virtual_size); // VirtualSize
+        push_u32_le(&mut out, idata_rva); // VirtualAddress
+        push_u32_le(&mut out, idata_raw_size); // SizeOfRawData
+        push_u32_le(&mut out, idata_file_offset); // PointerToRawData
+        push_u32_le(&mut out, 0); // PointerToRelocations
+        push_u32_le(&mut out, 0); // PointerToLinenumbers
+        push_u16_le(&mut out, 0); // NumberOfRelocations
+        push_u16_le(&mut out, 0); // NumberOfLinenumbers
+        push_u32_le(&mut out, 0xC0000040); // Characteristics: INITIALIZED_DATA | READ | WRITE
+    }
+
+    // Pad headers to SizeOfHeaders
+    out.resize(size_of_headers as usize, 0);
+
+    // ===== .text section raw data =====
+    debug_assert_eq!(out.len(), text_file_offset as usize);
+    out.extend_from_slice(text_bytes);
+    out.resize((text_file_offset + text_raw_size) as usize, 0);
+
+    // ===== .idata section raw data =====
+    if has_imports {
+        debug_assert_eq!(out.len(), idata_file_offset as usize);
+        out.extend_from_slice(&idata_bytes);
+        out.resize((idata_file_offset + idata_raw_size) as usize, 0);
+    }
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
