@@ -228,6 +228,15 @@ pub enum KernelIntrinsic {
     Cpuid,
 }
 
+/// Width of a port I/O operation. x86_64 only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PortIoWidth {
+    Byte,  // 8-bit  — IN AL,DX  / OUT DX,AL
+    Word,  // 16-bit — IN AX,DX  / OUT DX,AX
+    Dword, // 32-bit — IN EAX,DX / OUT DX,EAX
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum KrirOp {
@@ -425,6 +434,24 @@ pub enum KrirOp {
     /// Produces self-contained machine code; does not use the UART MMIO buffer.
     PrintStdout {
         text: String,
+    },
+    /// Port I/O read: `dst = inb/inw/ind(port)`. x86_64 only; compile error on AArch64.
+    PortIn {
+        width: PortIoWidth,
+        port: MmioValueExpr,
+        dst: String,
+    },
+    /// Port I/O write: `outb/outw/outd(port, val)`. x86_64 only; compile error on AArch64.
+    PortOut {
+        width: PortIoWidth,
+        port: MmioValueExpr,
+        src: MmioValueExpr,
+    },
+    /// Generic syscall: `@syscall(nr, a0, a1, ...)`. Up to 6 args on Linux/macOS.
+    Syscall {
+        nr: MmioValueExpr,
+        args: Vec<MmioValueExpr>,
+        dst: Option<String>,
     },
 }
 
@@ -827,6 +854,24 @@ pub enum ExecutableOp {
     PrintStdout {
         text: String,
     },
+    /// Port I/O read. `port` → DX, result from AL/AX/EAX → stack slot at `dst_byte_offset`.
+    PortIn {
+        width: PortIoWidth,
+        port: ExecutableCallArg,
+        dst_byte_offset: u32,
+    },
+    /// Port I/O write. `port` → DX, `src` → AL/AX/EAX, then OUT.
+    PortOut {
+        width: PortIoWidth,
+        port: ExecutableCallArg,
+        src: ExecutableCallArg,
+    },
+    /// Generic syscall. nr → rax/x8/x16, args → SysV regs, result → stack slot.
+    Syscall {
+        nr: ExecutableCallArg,
+        args: Vec<ExecutableCallArg>,
+        dst_byte_offset: Option<u32>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1105,7 +1150,10 @@ impl ExecutableKrirModule {
                         | ExecutableOp::RawPtrStore { .. }
                         | ExecutableOp::InlineAsm(_)
                         | ExecutableOp::LoadStaticCstrAddr { .. }
-                        | ExecutableOp::PrintStdout { .. } => {}
+                        | ExecutableOp::PrintStdout { .. }
+                        | ExecutableOp::PortIn { .. }
+                        | ExecutableOp::PortOut { .. }
+                        | ExecutableOp::Syscall { .. } => {}
                     }
                 }
             }
@@ -2732,6 +2780,185 @@ pub fn lower_current_krir_to_executable_krir(
                         "float arithmetic requires SSE2 backend (Task 14): function '{}'",
                         function.name
                     ));
+                }
+                KrirOp::PortIn { width, port, dst } => {
+                    let exec_port = match port {
+                        MmioValueExpr::IntLiteral { value } => {
+                            match parse_integer_literal_u64(value) {
+                                Ok(v) => ExecutableCallArg::Imm { value: v },
+                                Err(reason) => {
+                                    errors.push(format!(
+                                        "canonical-exec: function '{}' port_in port '{}': {}",
+                                        function.name, value, reason
+                                    ));
+                                    continue;
+                                }
+                            }
+                        }
+                        MmioValueExpr::FloatLiteral { value } => {
+                            errors.push(format!(
+                                "canonical-exec: function '{}' port_in: float literal '{}' not supported",
+                                function.name, value
+                            ));
+                            continue;
+                        }
+                        MmioValueExpr::Ident { name } => {
+                            if let Some(&(slot_idx, _)) = cell_slot_map.get(name.as_str()) {
+                                ExecutableCallArg::Slot {
+                                    byte_offset: 8u32 * u32::from(slot_idx),
+                                }
+                            } else if let Some(&(param_idx, _)) = param_map.get(name.as_str()) {
+                                ExecutableCallArg::Slot {
+                                    byte_offset: 8u32 * u32::from(next_slot_idx)
+                                        + 8u32 * u32::from(param_idx),
+                                }
+                            } else {
+                                errors.push(format!(
+                                    "canonical-exec: function '{}' port_in port '{}': not a declared stack cell or param",
+                                    function.name, name
+                                ));
+                                continue;
+                            }
+                        }
+                    };
+                    let dst_byte_offset = match cell_slot_map.get(dst.as_str()) {
+                        Some(&(slot_idx, _)) => 8u32 * u32::from(slot_idx),
+                        None => {
+                            errors.push(format!(
+                                "canonical-exec: function '{}' port_in dst '{}': not a declared stack cell",
+                                function.name, dst
+                            ));
+                            continue;
+                        }
+                    };
+                    exec_ops.push(ExecutableOp::PortIn {
+                        width: *width,
+                        port: exec_port,
+                        dst_byte_offset,
+                    });
+                }
+                KrirOp::PortOut { width, port, src } => {
+                    let resolve_val = |val: &MmioValueExpr, label: &str| -> Result<ExecutableCallArg, String> {
+                        match val {
+                            MmioValueExpr::IntLiteral { value } => {
+                                parse_integer_literal_u64(value)
+                                    .map(|v| ExecutableCallArg::Imm { value: v })
+                                    .map_err(|reason| format!(
+                                        "canonical-exec: function '{}' port_out {} '{}': {}",
+                                        function.name, label, value, reason
+                                    ))
+                            }
+                            MmioValueExpr::FloatLiteral { value } => Err(format!(
+                                "canonical-exec: function '{}' port_out: float literal '{}' not supported",
+                                function.name, value
+                            )),
+                            MmioValueExpr::Ident { name } => {
+                                if let Some(&(slot_idx, _)) = cell_slot_map.get(name.as_str()) {
+                                    Ok(ExecutableCallArg::Slot {
+                                        byte_offset: 8u32 * u32::from(slot_idx),
+                                    })
+                                } else if let Some(&(param_idx, _)) = param_map.get(name.as_str()) {
+                                    Ok(ExecutableCallArg::Slot {
+                                        byte_offset: 8u32 * u32::from(next_slot_idx)
+                                            + 8u32 * u32::from(param_idx),
+                                    })
+                                } else {
+                                    Err(format!(
+                                        "canonical-exec: function '{}' port_out {} '{}': not a declared stack cell or param",
+                                        function.name, label, name
+                                    ))
+                                }
+                            }
+                        }
+                    };
+                    let exec_port = match resolve_val(port, "port") {
+                        Ok(v) => v,
+                        Err(e) => { errors.push(e); continue; }
+                    };
+                    let exec_src = match resolve_val(src, "src") {
+                        Ok(v) => v,
+                        Err(e) => { errors.push(e); continue; }
+                    };
+                    exec_ops.push(ExecutableOp::PortOut {
+                        width: *width,
+                        port: exec_port,
+                        src: exec_src,
+                    });
+                }
+                KrirOp::Syscall { nr, args, dst } => {
+                    if args.len() > 6 {
+                        errors.push(format!(
+                            "canonical-exec: function '{}' syscall with {} args; max 6 supported",
+                            function.name, args.len()
+                        ));
+                        continue;
+                    }
+                    let resolve_val = |val: &MmioValueExpr, label: &str| -> Result<ExecutableCallArg, String> {
+                        match val {
+                            MmioValueExpr::IntLiteral { value } => {
+                                parse_integer_literal_u64(value)
+                                    .map(|v| ExecutableCallArg::Imm { value: v })
+                                    .map_err(|reason| format!(
+                                        "canonical-exec: function '{}' syscall {} '{}': {}",
+                                        function.name, label, value, reason
+                                    ))
+                            }
+                            MmioValueExpr::FloatLiteral { value } => Err(format!(
+                                "canonical-exec: function '{}' syscall: float literal '{}' not supported",
+                                function.name, value
+                            )),
+                            MmioValueExpr::Ident { name } => {
+                                if let Some(&(slot_idx, _)) = cell_slot_map.get(name.as_str()) {
+                                    Ok(ExecutableCallArg::Slot {
+                                        byte_offset: 8u32 * u32::from(slot_idx),
+                                    })
+                                } else if let Some(&(param_idx, _)) = param_map.get(name.as_str()) {
+                                    Ok(ExecutableCallArg::Slot {
+                                        byte_offset: 8u32 * u32::from(next_slot_idx)
+                                            + 8u32 * u32::from(param_idx),
+                                    })
+                                } else if executable_slot_name.as_deref() == Some(name.as_str()) {
+                                    Ok(ExecutableCallArg::SavedValue)
+                                } else {
+                                    Err(format!(
+                                        "canonical-exec: function '{}' syscall {} '{}': not a declared stack cell, param, or captured slot",
+                                        function.name, label, name
+                                    ))
+                                }
+                            }
+                        }
+                    };
+                    let exec_nr = match resolve_val(nr, "nr") {
+                        Ok(v) => v,
+                        Err(e) => { errors.push(e); continue; }
+                    };
+                    let mut exec_args = Vec::with_capacity(args.len());
+                    let mut arg_ok = true;
+                    for (i, arg_val) in args.iter().enumerate() {
+                        match resolve_val(arg_val, &format!("arg{}", i)) {
+                            Ok(v) => exec_args.push(v),
+                            Err(e) => { errors.push(e); arg_ok = false; break; }
+                        }
+                    }
+                    if !arg_ok { continue; }
+                    let dst_byte_offset = match dst {
+                        Some(name) => match cell_slot_map.get(name.as_str()) {
+                            Some(&(slot_idx, _)) => Some(8u32 * u32::from(slot_idx)),
+                            None => {
+                                errors.push(format!(
+                                    "canonical-exec: function '{}' syscall dst '{}': not a declared stack cell",
+                                    function.name, name
+                                ));
+                                continue;
+                            }
+                        },
+                        None => None,
+                    };
+                    exec_ops.push(ExecutableOp::Syscall {
+                        nr: exec_nr,
+                        args: exec_args,
+                        dst_byte_offset,
+                    });
                 }
                 KrirOp::InlineAsm(intr) => {
                     exec_ops.push(ExecutableOp::InlineAsm(intr.clone()));
@@ -5018,6 +5245,11 @@ pub fn lower_executable_krir_to_x86_64_asm(
                             id,
                         });
                     }
+                    ExecutableOp::PortIn { .. }
+                    | ExecutableOp::PortOut { .. }
+                    | ExecutableOp::Syscall { .. } => {
+                        todo!("x86_64 ASM emit: PortIn/PortOut/Syscall (Task 5)")
+                    }
                 }
             }
 
@@ -5406,6 +5638,15 @@ pub fn lower_executable_krir_to_aarch64_asm(
                             "aarch64 ASM emit: PrintStdout not yet supported on aarch64 (function '{}')",
                             function.name
                         ));
+                    }
+                    ExecutableOp::PortIn { .. } | ExecutableOp::PortOut { .. } => {
+                        return Err(format!(
+                            "aarch64 ASM emit: PortIn/PortOut not supported on aarch64 (function '{}')",
+                            function.name
+                        ));
+                    }
+                    ExecutableOp::Syscall { .. } => {
+                        todo!("aarch64 ASM emit: Syscall (Task 7)")
                     }
                 }
             }
@@ -7173,6 +7414,12 @@ fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
         // movabs rbx(10) + mov rax,[rbx](3) + lea r8(5) + 5*n byte-writes + add rax,n(4) + mov [rbx],rax(3) = 5n+25
         // Restricted to n < 128 so each index fits in disp8 and n fits in imm8.
         ExecutableOp::PrintStdout { text } => 5 * text.len() as u64 + 25,
+        // Conservative: port→DX + IN + zero-extend + store result
+        ExecutableOp::PortIn { .. } => 20,
+        // Conservative: val→RAX + port→DX + OUT
+        ExecutableOp::PortOut { .. } => 20,
+        // Conservative: nr→RAX + args→regs + syscall + store result
+        ExecutableOp::Syscall { args, .. } => 10 + 10 * args.len() as u64,
     }
 }
 
@@ -9255,6 +9502,11 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         .1
                         .push(jcc_start + 2);
                     local_offset += 12;
+                }
+                ExecutableOp::PortIn { .. }
+                | ExecutableOp::PortOut { .. }
+                | ExecutableOp::Syscall { .. } => {
+                    todo!("x86_64 object emit: PortIn/PortOut/Syscall (Task 6)")
                 }
             }
         }
