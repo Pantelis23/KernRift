@@ -196,6 +196,10 @@ pub enum Expr {
         op: UnOpKind,
         operand: Box<Expr>,
     },
+    /// `@syscall(nr, arg0, arg1, ...)` — generic syscall intrinsic.
+    Syscall {
+        args: Vec<Expr>, // first element is nr, rest are syscall args (up to 6)
+    },
 }
 
 /// A register inside a `device` block.
@@ -464,6 +468,10 @@ pub enum Stmt {
     ExprStmt(Expr),
     /// `asm!(NAME)` — emit a named kernel intrinsic instruction. Only valid inside an unsafe block.
     InlineAsm(KernelIntrinsic),
+    /// `@syscall(nr, arg0, arg1, ...)` used as a statement (return value discarded).
+    SyscallStmt {
+        args: Vec<Expr>,
+    },
 }
 
 /// Named no-argument x86-64 kernel instructions that can be emitted with `asm!(NAME)`.
@@ -1381,6 +1389,60 @@ impl TokParser {
                     Expr::Ident(name)
                 }
             }
+            // @syscall(nr, arg0, arg1, ...) — syscall intrinsic in expression position
+            TokenKind::AtSign => {
+                // `@` already consumed; expect `syscall` `(` args... `)`
+                match self.peek().kind.clone() {
+                    TokenKind::Ident(ref id) if id == "syscall" => {
+                        self.advance(); // consume `syscall`
+                        self.expect_kind(&TokenKind::LParen)?;
+                        let mut args = Vec::new();
+                        while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+                            args.push(self.parse_expr(0)?);
+                            if self.at(&TokenKind::RParen) || self.at(&TokenKind::Eof) {
+                                break;
+                            }
+                            if !self.eat(&TokenKind::Comma) {
+                                let tok = self.peek();
+                                return Err(format_source_diagnostic(
+                                    &tok.source.clone(),
+                                    &format!(
+                                        "expected ',' or ')' after @syscall argument, got '{}'",
+                                        token_kind_to_str(&tok.kind.clone())
+                                    ),
+                                    Some("add a ',' between arguments"),
+                                ));
+                            }
+                        }
+                        self.expect_kind(&TokenKind::RParen)?;
+                        if args.is_empty() {
+                            return Err(format_source_diagnostic(
+                                &expr_src,
+                                "@syscall requires at least 1 argument (the syscall number)",
+                                None,
+                            ));
+                        }
+                        if args.len() > 7 {
+                            return Err(format_source_diagnostic(
+                                &expr_src,
+                                &format!(
+                                    "@syscall accepts at most 7 arguments (nr + 6 args), got {}",
+                                    args.len()
+                                ),
+                                None,
+                            ));
+                        }
+                        Expr::Syscall { args }
+                    }
+                    _ => {
+                        return Err(format_source_diagnostic(
+                            &expr_src,
+                            "expected 'syscall' after '@' in expression",
+                            Some("use @syscall(nr, ...) for syscall intrinsics"),
+                        ));
+                    }
+                }
+            }
             other => {
                 return Err(format_source_diagnostic(
                     &expr_src,
@@ -2189,6 +2251,60 @@ impl TokParser {
                         ),
                         None,
                     )),
+                }
+            }
+            // @syscall(nr, arg0, arg1, ...) — syscall intrinsic as statement
+            TokenKind::AtSign => {
+                // peek ahead: if `@` is followed by `syscall` `(`, parse as syscall stmt
+                if matches!(self.peek_at(1).kind, TokenKind::Ident(ref id) if id == "syscall")
+                    && matches!(self.peek_at(2).kind, TokenKind::LParen)
+                {
+                    self.advance(); // consume `@`
+                    self.advance(); // consume `syscall`
+                    self.advance(); // consume `(`
+                    let mut args = Vec::new();
+                    while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+                        args.push(self.parse_expr(0)?);
+                        if self.at(&TokenKind::RParen) || self.at(&TokenKind::Eof) {
+                            break;
+                        }
+                        if !self.eat(&TokenKind::Comma) {
+                            let tok = self.peek();
+                            return Err(format_source_diagnostic(
+                                &tok.source.clone(),
+                                &format!(
+                                    "expected ',' or ')' after @syscall argument, got '{}'",
+                                    token_kind_to_str(&tok.kind.clone())
+                                ),
+                                Some("add a ',' between arguments"),
+                            ));
+                        }
+                    }
+                    self.expect_kind(&TokenKind::RParen)?;
+                    if args.is_empty() {
+                        return Err(format_source_diagnostic(
+                            &note,
+                            "@syscall requires at least 1 argument (the syscall number)",
+                            None,
+                        ));
+                    }
+                    if args.len() > 7 {
+                        return Err(format_source_diagnostic(
+                            &note,
+                            &format!(
+                                "@syscall accepts at most 7 arguments (nr + 6 args), got {}",
+                                args.len()
+                            ),
+                            None,
+                        ));
+                    }
+                    Ok(Stmt::SyscallStmt { args })
+                } else {
+                    Err(format_source_diagnostic(
+                        &note,
+                        "unexpected '@' in statement position; only @syscall(...) is supported here",
+                        Some("use @syscall(nr, ...) for syscall intrinsics"),
+                    ))
                 }
             }
             // *(addr_var as TYPE) -> out_var   — PtrLoad
