@@ -2838,16 +2838,18 @@ pub fn lower_current_krir_to_executable_krir(
                     });
                 }
                 KrirOp::PortOut { width, port, src } => {
-                    let resolve_val = |val: &MmioValueExpr, label: &str| -> Result<ExecutableCallArg, String> {
+                    let resolve_val = |val: &MmioValueExpr,
+                                       label: &str|
+                     -> Result<ExecutableCallArg, String> {
                         match val {
-                            MmioValueExpr::IntLiteral { value } => {
-                                parse_integer_literal_u64(value)
-                                    .map(|v| ExecutableCallArg::Imm { value: v })
-                                    .map_err(|reason| format!(
+                            MmioValueExpr::IntLiteral { value } => parse_integer_literal_u64(value)
+                                .map(|v| ExecutableCallArg::Imm { value: v })
+                                .map_err(|reason| {
+                                    format!(
                                         "canonical-exec: function '{}' port_out {} '{}': {}",
                                         function.name, label, value, reason
-                                    ))
-                            }
+                                    )
+                                }),
                             MmioValueExpr::FloatLiteral { value } => Err(format!(
                                 "canonical-exec: function '{}' port_out: float literal '{}' not supported",
                                 function.name, value
@@ -2873,11 +2875,17 @@ pub fn lower_current_krir_to_executable_krir(
                     };
                     let exec_port = match resolve_val(port, "port") {
                         Ok(v) => v,
-                        Err(e) => { errors.push(e); continue; }
+                        Err(e) => {
+                            errors.push(e);
+                            continue;
+                        }
                     };
                     let exec_src = match resolve_val(src, "src") {
                         Ok(v) => v,
-                        Err(e) => { errors.push(e); continue; }
+                        Err(e) => {
+                            errors.push(e);
+                            continue;
+                        }
                     };
                     exec_ops.push(ExecutableOp::PortOut {
                         width: *width,
@@ -2889,20 +2897,23 @@ pub fn lower_current_krir_to_executable_krir(
                     if args.len() > 6 {
                         errors.push(format!(
                             "canonical-exec: function '{}' syscall with {} args; max 6 supported",
-                            function.name, args.len()
+                            function.name,
+                            args.len()
                         ));
                         continue;
                     }
-                    let resolve_val = |val: &MmioValueExpr, label: &str| -> Result<ExecutableCallArg, String> {
+                    let resolve_val = |val: &MmioValueExpr,
+                                       label: &str|
+                     -> Result<ExecutableCallArg, String> {
                         match val {
-                            MmioValueExpr::IntLiteral { value } => {
-                                parse_integer_literal_u64(value)
-                                    .map(|v| ExecutableCallArg::Imm { value: v })
-                                    .map_err(|reason| format!(
+                            MmioValueExpr::IntLiteral { value } => parse_integer_literal_u64(value)
+                                .map(|v| ExecutableCallArg::Imm { value: v })
+                                .map_err(|reason| {
+                                    format!(
                                         "canonical-exec: function '{}' syscall {} '{}': {}",
                                         function.name, label, value, reason
-                                    ))
-                            }
+                                    )
+                                }),
                             MmioValueExpr::FloatLiteral { value } => Err(format!(
                                 "canonical-exec: function '{}' syscall: float literal '{}' not supported",
                                 function.name, value
@@ -2930,17 +2941,26 @@ pub fn lower_current_krir_to_executable_krir(
                     };
                     let exec_nr = match resolve_val(nr, "nr") {
                         Ok(v) => v,
-                        Err(e) => { errors.push(e); continue; }
+                        Err(e) => {
+                            errors.push(e);
+                            continue;
+                        }
                     };
                     let mut exec_args = Vec::with_capacity(args.len());
                     let mut arg_ok = true;
                     for (i, arg_val) in args.iter().enumerate() {
                         match resolve_val(arg_val, &format!("arg{}", i)) {
                             Ok(v) => exec_args.push(v),
-                            Err(e) => { errors.push(e); arg_ok = false; break; }
+                            Err(e) => {
+                                errors.push(e);
+                                arg_ok = false;
+                                break;
+                            }
                         }
                     }
-                    if !arg_ok { continue; }
+                    if !arg_ok {
+                        continue;
+                    }
                     let dst_byte_offset = match dst {
                         Some(name) => match cell_slot_map.get(name.as_str()) {
                             Some(&(slot_idx, _)) => Some(8u32 * u32::from(slot_idx)),
@@ -7488,8 +7508,8 @@ fn call_arg_to_rax_len(arg: &ExecutableCallArg) -> u64 {
                 10 // 48 B8 imm64 (movabs rax, imm64)
             }
         }
-        ExecutableCallArg::Slot { .. } => 5,  // 48 8B 44 24 off (mov rax, [rsp+off])
-        ExecutableCallArg::SavedValue => 3,    // 48 89 D8 (mov rax, rbx)
+        ExecutableCallArg::Slot { .. } => 5, // 48 8B 44 24 off (mov rax, [rsp+off])
+        ExecutableCallArg::SavedValue => 3,  // 48 89 D8 (mov rax, rbx)
     }
 }
 
@@ -7522,9 +7542,9 @@ fn encode_call_arg_to_rax(out: &mut Vec<u8>, arg: &ExecutableCallArg) {
 /// Byte count for loading an `ExecutableCallArg` into DX (16-bit register).
 fn call_arg_to_dx_len(arg: &ExecutableCallArg) -> u64 {
     match arg {
-        ExecutableCallArg::Imm { .. } => 4,   // 66 BA imm16
-        ExecutableCallArg::Slot { .. } => 5,   // 66 8B 54 24 off
-        ExecutableCallArg::SavedValue => 3,    // 66 89 DA
+        ExecutableCallArg::Imm { .. } => 4,  // 66 BA imm16
+        ExecutableCallArg::Slot { .. } => 5, // 66 8B 54 24 off
+        ExecutableCallArg::SavedValue => 3,  // 66 89 DA
     }
 }
 
@@ -7565,7 +7585,11 @@ fn encode_store_rax_to_slot(out: &mut Vec<u8>, byte_offset: u32) {
 fn call_arg_to_gpr_len(arg: &ExecutableCallArg) -> u64 {
     match arg {
         ExecutableCallArg::Imm { value } => {
-            if *value <= 0x7FFF_FFFF { 7 } else { 10 }
+            if *value <= 0x7FFF_FFFF {
+                7
+            } else {
+                10
+            }
         }
         ExecutableCallArg::Slot { .. } => 5,
         ExecutableCallArg::SavedValue => 3,
@@ -7576,33 +7600,41 @@ fn call_arg_to_gpr_len(arg: &ExecutableCallArg) -> u64 {
 fn port_in_encoded_len(width: PortIoWidth, port: &ExecutableCallArg, _dst_byte_offset: u32) -> u64 {
     let dx_load = call_arg_to_dx_len(port);
     let in_bytes: u64 = match width {
-        PortIoWidth::Byte => 1,   // EC
-        PortIoWidth::Word => 2,   // 66 ED
-        PortIoWidth::Dword => 1,  // ED
+        PortIoWidth::Byte => 1,  // EC
+        PortIoWidth::Word => 2,  // 66 ED
+        PortIoWidth::Dword => 1, // ED
     };
     let zext_bytes: u64 = match width {
-        PortIoWidth::Byte => 3,   // 0F B6 C0
-        PortIoWidth::Word => 3,   // 0F B7 C0
-        PortIoWidth::Dword => 0,  // already in eax
+        PortIoWidth::Byte => 3,  // 0F B6 C0
+        PortIoWidth::Word => 3,  // 0F B7 C0
+        PortIoWidth::Dword => 0, // already in eax
     };
     let store = store_rax_to_slot_len();
     dx_load + in_bytes + zext_bytes + store
 }
 
 /// Byte count for a PortOut op in x86_64 object code.
-fn port_out_encoded_len(width: PortIoWidth, port: &ExecutableCallArg, src: &ExecutableCallArg) -> u64 {
+fn port_out_encoded_len(
+    width: PortIoWidth,
+    port: &ExecutableCallArg,
+    src: &ExecutableCallArg,
+) -> u64 {
     let val_load = call_arg_to_rax_len(src);
     let dx_load = call_arg_to_dx_len(port);
     let out_bytes: u64 = match width {
-        PortIoWidth::Byte => 1,   // EE
-        PortIoWidth::Word => 2,   // 66 EF
-        PortIoWidth::Dword => 1,  // EF
+        PortIoWidth::Byte => 1,  // EE
+        PortIoWidth::Word => 2,  // 66 EF
+        PortIoWidth::Dword => 1, // EF
     };
     val_load + dx_load + out_bytes
 }
 
 /// Byte count for a Syscall op in x86_64 object code.
-fn syscall_encoded_len(nr: &ExecutableCallArg, args: &[ExecutableCallArg], dst: &Option<u32>) -> u64 {
+fn syscall_encoded_len(
+    nr: &ExecutableCallArg,
+    args: &[ExecutableCallArg],
+    dst: &Option<u32>,
+) -> u64 {
     let mut total: u64 = 0;
     // Load args into registers first.
     for arg in args {
@@ -9925,12 +9957,12 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     encode_call_arg_to_dx(&mut code_bytes, port);
                     // 2. IN instruction.
                     match width {
-                        PortIoWidth::Byte => code_bytes.push(0xEC),        // in al, dx
+                        PortIoWidth::Byte => code_bytes.push(0xEC), // in al, dx
                         PortIoWidth::Word => {
                             code_bytes.push(0x66);
-                            code_bytes.push(0xED);  // in ax, dx (operand-size prefix)
+                            code_bytes.push(0xED); // in ax, dx (operand-size prefix)
                         }
-                        PortIoWidth::Dword => code_bytes.push(0xED),       // in eax, dx
+                        PortIoWidth::Dword => code_bytes.push(0xED), // in eax, dx
                     }
                     // 3. Zero-extend result.
                     match width {
@@ -9955,12 +9987,12 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     encode_call_arg_to_dx(&mut code_bytes, port);
                     // 3. OUT instruction.
                     match width {
-                        PortIoWidth::Byte => code_bytes.push(0xEE),        // out dx, al
+                        PortIoWidth::Byte => code_bytes.push(0xEE), // out dx, al
                         PortIoWidth::Word => {
                             code_bytes.push(0x66);
-                            code_bytes.push(0xEF);  // out dx, ax (operand-size prefix)
+                            code_bytes.push(0xEF); // out dx, ax (operand-size prefix)
                         }
-                        PortIoWidth::Dword => code_bytes.push(0xEF),       // out dx, eax
+                        PortIoWidth::Dword => code_bytes.push(0xEF), // out dx, eax
                     }
                     local_offset += port_out_encoded_len(*width, port, src);
                 }
@@ -11299,11 +11331,7 @@ pub fn emit_x86_64_object_bytes(object: &X86_64ElfRelocatableObject) -> Vec<u8> 
 /// The archive contains:
 /// 1. A `/` (symbol table) member with big-endian offsets
 /// 2. The object member itself
-pub fn emit_native_ar_archive(
-    member_name: &str,
-    object_bytes: &[u8],
-    symbols: &[&str],
-) -> Vec<u8> {
+pub fn emit_native_ar_archive(member_name: &str, object_bytes: &[u8], symbols: &[&str]) -> Vec<u8> {
     let mut out = Vec::new();
 
     // Archive magic
@@ -11495,9 +11523,15 @@ pub fn emit_compiler_owned_object_bytes(object: &CompilerOwnedObject) -> Vec<u8>
 ///   0x000000: ELF header (64 bytes)
 ///   0x000040: Program header (1 × 56 bytes)
 ///   0x000078: .text section (machine code)
+///            .symtab (symbol table, aligned to 8)
+///            .strtab (string table)
+///            .shstrtab (section name string table)
+///            section headers (5 entries, aligned to 8)
 ///
 /// Virtual base: 0x400000. Entry point: 0x400078 + entry_symbol.offset.
 /// p_align: 0x200000 (matches GNU ld/lld convention).
+/// The PT_LOAD segment covers only the ELF header + phdr + .text (not the
+/// symbol/string tables or section headers, which are tool metadata only).
 pub fn emit_x86_64_elf_executable(object: &X86_64ElfRelocatableObject) -> Result<Vec<u8>, String> {
     if !object.undefined_function_symbols.is_empty() {
         return Err(format!(
@@ -11525,7 +11559,10 @@ pub fn emit_x86_64_elf_executable(object: &X86_64ElfRelocatableObject) -> Result
             .get(reloc.target_symbol.as_str())
             .copied()
             .ok_or_else(|| {
-                format!("elfexe: relocation targets unknown symbol '{}'", reloc.target_symbol)
+                format!(
+                    "elfexe: relocation targets unknown symbol '{}'",
+                    reloc.target_symbol
+                )
             })?;
 
         match reloc.kind {
@@ -11535,7 +11572,11 @@ pub fn emit_x86_64_elf_executable(object: &X86_64ElfRelocatableObject) -> Result
                 let value_i32 = value as i32;
                 let off = reloc.offset as usize;
                 if off + 4 > text.len() {
-                    return Err(format!("elfexe: relocation offset {} out of .text bounds (len={})", off, text.len()));
+                    return Err(format!(
+                        "elfexe: relocation offset {} out of .text bounds (len={})",
+                        off,
+                        text.len()
+                    ));
                 }
                 text[off..off + 4].copy_from_slice(&value_i32.to_le_bytes());
             }
@@ -11546,49 +11587,181 @@ pub fn emit_x86_64_elf_executable(object: &X86_64ElfRelocatableObject) -> Result
     let base_vaddr: u64 = 0x400000;
     let ehdr_size: usize = 64;
     let phdr_size: usize = 56;
-    let text_file_offset = ehdr_size + phdr_size; // 0x78 = 120
+    let text_file_offset: usize = ehdr_size + phdr_size; // 0x78 = 120
     let text_len = text.len();
-    let total_file_size = text_file_offset + text_len;
+    // The PT_LOAD segment covers only header + phdr + .text (executable code).
+    // Symbol/string tables and section headers are metadata, not loaded at runtime.
+    let load_size = text_file_offset + text_len;
     let entry_vaddr = base_vaddr + text_file_offset as u64 + entry_offset;
 
-    let mut out = Vec::with_capacity(total_file_size);
+    // --- Build .strtab (symbol string table) ---
+    let mut strtab = vec![0u8]; // index 0: empty string
+    let mut strtab_offsets = std::collections::BTreeMap::new();
+    for sym in &object.function_symbols {
+        let off = strtab.len() as u32;
+        strtab.extend_from_slice(sym.name.as_bytes());
+        strtab.push(0);
+        strtab_offsets.insert(sym.name.clone(), off);
+    }
 
-    // --- ELF header (64 bytes) ---
-    out.extend_from_slice(&[0x7F, b'E', b'L', b'F']); // e_ident[0..4] magic
-    out.push(2);                // EI_CLASS: ELFCLASS64
-    out.push(1);                // EI_DATA: ELFDATA2LSB
-    out.push(1);                // EI_VERSION: EV_CURRENT
-    out.push(0);                // EI_OSABI: ELFOSABI_NONE
-    out.extend_from_slice(&[0u8; 8]); // EI_ABIVERSION + padding (8 bytes)
-    push_u16_le(&mut out, 2);   // e_type: ET_EXEC
+    // --- Build .symtab ---
+    let mut symtab = Vec::new();
+    push_elf64_sym(&mut symtab, 0, 0, 0, 0, 0, 0); // null entry
+    for sym in &object.function_symbols {
+        let name_off = *strtab_offsets.get(&sym.name).expect("strtab offset must exist");
+        let sym_vaddr = base_vaddr + text_file_offset as u64 + sym.offset;
+        push_elf64_sym(&mut symtab, name_off, 0x12, 0, 1, sym_vaddr, sym.size);
+    }
+
+    // --- Build .shstrtab (section name string table) ---
+    let mut shstrtab = vec![0u8];
+    let text_name_off = shstrtab.len() as u32;
+    shstrtab.extend_from_slice(b".text\0");
+    let symtab_name_off = shstrtab.len() as u32;
+    shstrtab.extend_from_slice(b".symtab\0");
+    let strtab_name_off = shstrtab.len() as u32;
+    shstrtab.extend_from_slice(b".strtab\0");
+    let shstrtab_name_off = shstrtab.len() as u32;
+    shstrtab.extend_from_slice(b".shstrtab\0");
+
+    // --- Compute section offsets (after .text) ---
+    // We build a temporary buffer starting from end-of-text to get aligned offsets.
+    // Sections are appended after the loadable region.
+    let mut meta = Vec::new();
+    let symtab_offset = load_size + append_with_alignment(&mut meta, &symtab, 8);
+    let strtab_offset = load_size + append_with_alignment(&mut meta, &strtab, 1);
+    let shstrtab_offset = load_size + append_with_alignment(&mut meta, &shstrtab, 1);
+    // Section headers must be 8-byte aligned.
+    let padding_to_shdr = (8 - (meta.len() % 8)) % 8;
+    let shoff = load_size + meta.len() + padding_to_shdr;
+
+    // Section header table indices:
+    //   0 = null
+    //   1 = .text
+    //   2 = .symtab
+    //   3 = .strtab
+    //   4 = .shstrtab
+    let e_shnum: u16 = 5;
+    let e_shstrndx: u16 = 4;
+
+    // --- Assemble output ---
+    let mut out = Vec::new();
+
+    // ELF header (64 bytes)
+    out.extend_from_slice(&[0x7F, b'E', b'L', b'F']); // e_ident magic
+    out.push(2); // EI_CLASS: ELFCLASS64
+    out.push(1); // EI_DATA: ELFDATA2LSB
+    out.push(1); // EI_VERSION: EV_CURRENT
+    out.push(0); // EI_OSABI: ELFOSABI_NONE
+    out.extend_from_slice(&[0u8; 8]); // EI_ABIVERSION + padding
+    push_u16_le(&mut out, 2); // e_type: ET_EXEC
     push_u16_le(&mut out, 0x3E); // e_machine: EM_X86_64
-    push_u32_le(&mut out, 1);   // e_version: EV_CURRENT
+    push_u32_le(&mut out, 1); // e_version: EV_CURRENT
     push_u64_le(&mut out, entry_vaddr); // e_entry
     push_u64_le(&mut out, ehdr_size as u64); // e_phoff
-    push_u64_le(&mut out, 0);   // e_shoff (no section headers needed for execution)
-    push_u32_le(&mut out, 0);   // e_flags
+    push_u64_le(&mut out, shoff as u64); // e_shoff
+    push_u32_le(&mut out, 0); // e_flags
     push_u16_le(&mut out, ehdr_size as u16); // e_ehsize
     push_u16_le(&mut out, phdr_size as u16); // e_phentsize
-    push_u16_le(&mut out, 1);   // e_phnum
-    push_u16_le(&mut out, 64);  // e_shentsize
-    push_u16_le(&mut out, 0);   // e_shnum
-    push_u16_le(&mut out, 0);   // e_shstrndx (SHN_UNDEF)
+    push_u16_le(&mut out, 1); // e_phnum
+    push_u16_le(&mut out, 64); // e_shentsize
+    push_u16_le(&mut out, e_shnum); // e_shnum
+    push_u16_le(&mut out, e_shstrndx); // e_shstrndx
     debug_assert_eq!(out.len(), ehdr_size);
 
-    // --- Program header (56 bytes): single PT_LOAD, read+execute ---
-    push_u32_le(&mut out, 1);   // p_type: PT_LOAD
-    push_u32_le(&mut out, 5);   // p_flags: PF_R | PF_X
-    push_u64_le(&mut out, 0);   // p_offset
+    // Program header (56 bytes): single PT_LOAD, read+execute, covers only .text
+    push_u32_le(&mut out, 1); // p_type: PT_LOAD
+    push_u32_le(&mut out, 5); // p_flags: PF_R | PF_X
+    push_u64_le(&mut out, 0); // p_offset
     push_u64_le(&mut out, base_vaddr); // p_vaddr
     push_u64_le(&mut out, base_vaddr); // p_paddr
-    push_u64_le(&mut out, total_file_size as u64); // p_filesz
-    push_u64_le(&mut out, total_file_size as u64); // p_memsz
+    push_u64_le(&mut out, load_size as u64); // p_filesz (header + .text only)
+    push_u64_le(&mut out, load_size as u64); // p_memsz
     push_u64_le(&mut out, 0x200000); // p_align
     debug_assert_eq!(out.len(), ehdr_size + phdr_size);
 
-    // --- .text section ---
+    // .text section
     out.extend_from_slice(&text);
-    debug_assert_eq!(out.len(), total_file_size);
+    debug_assert_eq!(out.len(), load_size);
+
+    // Metadata sections (.symtab, .strtab, .shstrtab) + section headers
+    out.extend_from_slice(&meta);
+    // Align to 8 for section header table
+    out.extend(std::iter::repeat_n(0u8, padding_to_shdr));
+    debug_assert_eq!(out.len(), shoff);
+
+    // Section headers (5 × 64 bytes)
+    // Helper closure to push one Elf64_Shdr (64 bytes)
+    let push_shdr = |out: &mut Vec<u8>,
+                     sh_name: u32,
+                     sh_type: u32,
+                     sh_flags: u64,
+                     sh_addr: u64,
+                     sh_offset: u64,
+                     sh_size: u64,
+                     sh_link: u32,
+                     sh_info: u32,
+                     sh_addralign: u64,
+                     sh_entsize: u64| {
+        push_u32_le(out, sh_name);
+        push_u32_le(out, sh_type);
+        push_u64_le(out, sh_flags);
+        push_u64_le(out, sh_addr);
+        push_u64_le(out, sh_offset);
+        push_u64_le(out, sh_size);
+        push_u32_le(out, sh_link);
+        push_u32_le(out, sh_info);
+        push_u64_le(out, sh_addralign);
+        push_u64_le(out, sh_entsize);
+    };
+
+    // SHT_NULL (index 0)
+    push_shdr(&mut out, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    // .text (index 1): SHT_PROGBITS, SHF_ALLOC|SHF_EXECINSTR
+    push_shdr(
+        &mut out,
+        text_name_off,
+        1,    // SHT_PROGBITS
+        0x06, // SHF_ALLOC | SHF_EXECINSTR
+        base_vaddr + text_file_offset as u64,
+        text_file_offset as u64,
+        text_len as u64,
+        0, 0, 16, 0,
+    );
+    // .symtab (index 2): SHT_SYMTAB, sh_link=.strtab(3), sh_info=first_global(1), entsize=24
+    push_shdr(
+        &mut out,
+        symtab_name_off,
+        2,  // SHT_SYMTAB
+        0,
+        0,
+        symtab_offset as u64,
+        symtab.len() as u64,
+        3, // sh_link: index of .strtab
+        1, // sh_info: index of first global symbol (null entry is local)
+        8,
+        24,
+    );
+    // .strtab (index 3): SHT_STRTAB
+    push_shdr(
+        &mut out,
+        strtab_name_off,
+        3,  // SHT_STRTAB
+        0, 0,
+        strtab_offset as u64,
+        strtab.len() as u64,
+        0, 0, 1, 0,
+    );
+    // .shstrtab (index 4): SHT_STRTAB
+    push_shdr(
+        &mut out,
+        shstrtab_name_off,
+        3,  // SHT_STRTAB
+        0, 0,
+        shstrtab_offset as u64,
+        shstrtab.len() as u64,
+        0, 0, 1, 0,
+    );
 
     Ok(out)
 }
@@ -11597,10 +11770,16 @@ pub fn emit_x86_64_elf_executable(object: &X86_64ElfRelocatableObject) -> Result
 /// entry offset.  This is the hostexe variant: it uses `PF_R|PF_W|PF_X`
 /// (flags=7) because the runtime blob contains writable data (envp, heap state).
 ///
-/// Layout (mirrors `emit_x86_64_elf_executable`):
+/// Layout:
 ///   [0x00 .. 0x40)  ELF header  (64 bytes)
 ///   [0x40 .. 0x78)  PT_LOAD phdr (56 bytes)
-///   [0x78 .. EOF)   text bytes
+///   [0x78 .. load)  text bytes
+///                   .symtab (aligned to 8)
+///                   .strtab
+///                   .shstrtab
+///                   section headers (5 entries, aligned to 8)
+///
+/// The PT_LOAD segment covers only the ELF header + phdr + .text.
 pub fn emit_x86_64_elf_executable_for_hostexe(
     text: &[u8],
     entry_offset: u32,
@@ -11608,48 +11787,157 @@ pub fn emit_x86_64_elf_executable_for_hostexe(
     let base_vaddr: u64 = 0x400000;
     let ehdr_size: usize = 64;
     let phdr_size: usize = 56;
-    let text_file_offset = ehdr_size + phdr_size;
-    let total_file_size = text_file_offset + text.len();
+    let text_file_offset: usize = ehdr_size + phdr_size;
+    let text_len = text.len();
+    let load_size = text_file_offset + text_len;
     let entry_vaddr = base_vaddr + text_file_offset as u64 + entry_offset as u64;
 
-    let mut out = Vec::with_capacity(total_file_size);
+    // --- Build .strtab with a single "entry" symbol ---
+    let mut strtab = vec![0u8]; // index 0: empty string
+    let entry_name_off = strtab.len() as u32;
+    strtab.extend_from_slice(b"entry\0");
 
-    // --- ELF header (64 bytes) ---
-    out.extend_from_slice(&[0x7F, b'E', b'L', b'F']); // e_ident[0..4] magic
-    out.push(2);                // EI_CLASS: ELFCLASS64
-    out.push(1);                // EI_DATA: ELFDATA2LSB
-    out.push(1);                // EI_VERSION: EV_CURRENT
-    out.push(0);                // EI_OSABI: ELFOSABI_NONE
-    out.extend_from_slice(&[0u8; 8]); // EI_ABIVERSION + padding (8 bytes)
-    push_u16_le(&mut out, 2);   // e_type: ET_EXEC
+    // --- Build .symtab: null entry + "entry" symbol ---
+    let mut symtab = Vec::new();
+    push_elf64_sym(&mut symtab, 0, 0, 0, 0, 0, 0); // null entry
+    let entry_sym_vaddr = base_vaddr + text_file_offset as u64 + entry_offset as u64;
+    push_elf64_sym(&mut symtab, entry_name_off, 0x12, 0, 1, entry_sym_vaddr, 0);
+
+    // --- Build .shstrtab ---
+    let mut shstrtab = vec![0u8];
+    let text_name_off = shstrtab.len() as u32;
+    shstrtab.extend_from_slice(b".text\0");
+    let symtab_name_off = shstrtab.len() as u32;
+    shstrtab.extend_from_slice(b".symtab\0");
+    let strtab_name_off = shstrtab.len() as u32;
+    shstrtab.extend_from_slice(b".strtab\0");
+    let shstrtab_name_off = shstrtab.len() as u32;
+    shstrtab.extend_from_slice(b".shstrtab\0");
+
+    // --- Compute metadata section offsets ---
+    let mut meta = Vec::new();
+    let symtab_offset = load_size + append_with_alignment(&mut meta, &symtab, 8);
+    let strtab_offset = load_size + append_with_alignment(&mut meta, &strtab, 1);
+    let shstrtab_offset = load_size + append_with_alignment(&mut meta, &shstrtab, 1);
+    let padding_to_shdr = (8 - (meta.len() % 8)) % 8;
+    let shoff = load_size + meta.len() + padding_to_shdr;
+
+    let e_shnum: u16 = 5;
+    let e_shstrndx: u16 = 4;
+
+    let mut out = Vec::new();
+
+    // ELF header (64 bytes)
+    out.extend_from_slice(&[0x7F, b'E', b'L', b'F']); // e_ident magic
+    out.push(2); // EI_CLASS: ELFCLASS64
+    out.push(1); // EI_DATA: ELFDATA2LSB
+    out.push(1); // EI_VERSION: EV_CURRENT
+    out.push(0); // EI_OSABI: ELFOSABI_NONE
+    out.extend_from_slice(&[0u8; 8]); // EI_ABIVERSION + padding
+    push_u16_le(&mut out, 2); // e_type: ET_EXEC
     push_u16_le(&mut out, 0x3E); // e_machine: EM_X86_64
-    push_u32_le(&mut out, 1);   // e_version: EV_CURRENT
+    push_u32_le(&mut out, 1); // e_version: EV_CURRENT
     push_u64_le(&mut out, entry_vaddr); // e_entry
     push_u64_le(&mut out, ehdr_size as u64); // e_phoff
-    push_u64_le(&mut out, 0);   // e_shoff (no section headers needed for execution)
-    push_u32_le(&mut out, 0);   // e_flags
+    push_u64_le(&mut out, shoff as u64); // e_shoff
+    push_u32_le(&mut out, 0); // e_flags
     push_u16_le(&mut out, ehdr_size as u16); // e_ehsize
     push_u16_le(&mut out, phdr_size as u16); // e_phentsize
-    push_u16_le(&mut out, 1);   // e_phnum
-    push_u16_le(&mut out, 64);  // e_shentsize
-    push_u16_le(&mut out, 0);   // e_shnum
-    push_u16_le(&mut out, 0);   // e_shstrndx (SHN_UNDEF)
+    push_u16_le(&mut out, 1); // e_phnum
+    push_u16_le(&mut out, 64); // e_shentsize
+    push_u16_le(&mut out, e_shnum); // e_shnum
+    push_u16_le(&mut out, e_shstrndx); // e_shstrndx
     debug_assert_eq!(out.len(), ehdr_size);
 
-    // --- Program header (56 bytes): single PT_LOAD, read+write+execute ---
-    push_u32_le(&mut out, 1);   // p_type: PT_LOAD
-    push_u32_le(&mut out, 7);   // p_flags: PF_R | PF_W | PF_X
-    push_u64_le(&mut out, 0);   // p_offset
+    // Program header (56 bytes): single PT_LOAD, read+write+execute, covers only .text
+    push_u32_le(&mut out, 1); // p_type: PT_LOAD
+    push_u32_le(&mut out, 7); // p_flags: PF_R | PF_W | PF_X
+    push_u64_le(&mut out, 0); // p_offset
     push_u64_le(&mut out, base_vaddr); // p_vaddr
     push_u64_le(&mut out, base_vaddr); // p_paddr
-    push_u64_le(&mut out, total_file_size as u64); // p_filesz
-    push_u64_le(&mut out, total_file_size as u64); // p_memsz
+    push_u64_le(&mut out, load_size as u64); // p_filesz (header + .text only)
+    push_u64_le(&mut out, load_size as u64); // p_memsz
     push_u64_le(&mut out, 0x200000); // p_align
     debug_assert_eq!(out.len(), ehdr_size + phdr_size);
 
-    // --- .text section ---
+    // .text section
     out.extend_from_slice(text);
-    debug_assert_eq!(out.len(), total_file_size);
+    debug_assert_eq!(out.len(), load_size);
+
+    // Metadata sections + section headers
+    out.extend_from_slice(&meta);
+    out.extend(std::iter::repeat_n(0u8, padding_to_shdr));
+    debug_assert_eq!(out.len(), shoff);
+
+    // Section headers (5 × 64 bytes)
+    let push_shdr = |out: &mut Vec<u8>,
+                     sh_name: u32,
+                     sh_type: u32,
+                     sh_flags: u64,
+                     sh_addr: u64,
+                     sh_offset: u64,
+                     sh_size: u64,
+                     sh_link: u32,
+                     sh_info: u32,
+                     sh_addralign: u64,
+                     sh_entsize: u64| {
+        push_u32_le(out, sh_name);
+        push_u32_le(out, sh_type);
+        push_u64_le(out, sh_flags);
+        push_u64_le(out, sh_addr);
+        push_u64_le(out, sh_offset);
+        push_u64_le(out, sh_size);
+        push_u32_le(out, sh_link);
+        push_u32_le(out, sh_info);
+        push_u64_le(out, sh_addralign);
+        push_u64_le(out, sh_entsize);
+    };
+
+    // SHT_NULL
+    push_shdr(&mut out, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    // .text
+    push_shdr(
+        &mut out,
+        text_name_off,
+        1,    // SHT_PROGBITS
+        0x06, // SHF_ALLOC | SHF_EXECINSTR
+        base_vaddr + text_file_offset as u64,
+        text_file_offset as u64,
+        text_len as u64,
+        0, 0, 16, 0,
+    );
+    // .symtab
+    push_shdr(
+        &mut out,
+        symtab_name_off,
+        2,  // SHT_SYMTAB
+        0, 0,
+        symtab_offset as u64,
+        symtab.len() as u64,
+        3, // sh_link: .strtab index
+        1, // sh_info: first global symbol index
+        8, 24,
+    );
+    // .strtab
+    push_shdr(
+        &mut out,
+        strtab_name_off,
+        3,  // SHT_STRTAB
+        0, 0,
+        strtab_offset as u64,
+        strtab.len() as u64,
+        0, 0, 1, 0,
+    );
+    // .shstrtab
+    push_shdr(
+        &mut out,
+        shstrtab_name_off,
+        3,  // SHT_STRTAB
+        0, 0,
+        shstrtab_offset as u64,
+        shstrtab.len() as u64,
+        0, 0, 1, 0,
+    );
 
     Ok(out)
 }
@@ -11674,30 +11962,30 @@ pub fn emit_aarch64_elf_executable_for_hostexe(
 
     // --- ELF header (64 bytes) ---
     out.extend_from_slice(&[0x7F, b'E', b'L', b'F']); // e_ident[0..4] magic
-    out.push(2);                // EI_CLASS: ELFCLASS64
-    out.push(1);                // EI_DATA: ELFDATA2LSB
-    out.push(1);                // EI_VERSION: EV_CURRENT
-    out.push(0);                // EI_OSABI: ELFOSABI_NONE
+    out.push(2); // EI_CLASS: ELFCLASS64
+    out.push(1); // EI_DATA: ELFDATA2LSB
+    out.push(1); // EI_VERSION: EV_CURRENT
+    out.push(0); // EI_OSABI: ELFOSABI_NONE
     out.extend_from_slice(&[0u8; 8]); // EI_ABIVERSION + padding (8 bytes)
-    push_u16_le(&mut out, 2);   // e_type: ET_EXEC
+    push_u16_le(&mut out, 2); // e_type: ET_EXEC
     push_u16_le(&mut out, 0xB7); // e_machine: EM_AARCH64
-    push_u32_le(&mut out, 1);   // e_version: EV_CURRENT
+    push_u32_le(&mut out, 1); // e_version: EV_CURRENT
     push_u64_le(&mut out, entry_vaddr); // e_entry
     push_u64_le(&mut out, ehdr_size as u64); // e_phoff
-    push_u64_le(&mut out, 0);   // e_shoff (no section headers needed for execution)
-    push_u32_le(&mut out, 0);   // e_flags
+    push_u64_le(&mut out, 0); // e_shoff (no section headers needed for execution)
+    push_u32_le(&mut out, 0); // e_flags
     push_u16_le(&mut out, ehdr_size as u16); // e_ehsize
     push_u16_le(&mut out, phdr_size as u16); // e_phentsize
-    push_u16_le(&mut out, 1);   // e_phnum
-    push_u16_le(&mut out, 64);  // e_shentsize
-    push_u16_le(&mut out, 0);   // e_shnum
-    push_u16_le(&mut out, 0);   // e_shstrndx (SHN_UNDEF)
+    push_u16_le(&mut out, 1); // e_phnum
+    push_u16_le(&mut out, 64); // e_shentsize
+    push_u16_le(&mut out, 0); // e_shnum
+    push_u16_le(&mut out, 0); // e_shstrndx (SHN_UNDEF)
     debug_assert_eq!(out.len(), ehdr_size);
 
     // --- Program header (56 bytes): single PT_LOAD, read+write+execute ---
-    push_u32_le(&mut out, 1);   // p_type: PT_LOAD
-    push_u32_le(&mut out, 7);   // p_flags: PF_R | PF_W | PF_X
-    push_u64_le(&mut out, 0);   // p_offset
+    push_u32_le(&mut out, 1); // p_type: PT_LOAD
+    push_u32_le(&mut out, 7); // p_flags: PF_R | PF_W | PF_X
+    push_u64_le(&mut out, 0); // p_offset
     push_u64_le(&mut out, base_vaddr); // p_vaddr
     push_u64_le(&mut out, base_vaddr); // p_paddr
     push_u64_le(&mut out, total_file_size as u64); // p_filesz
@@ -11837,9 +12125,7 @@ pub fn parse_krbo_header(bytes: &[u8]) -> Result<KrboHeader, String> {
 /// +32: runtime_offset   (u64 LE)  — byte offset to runtime blob (0 if none)
 /// +40: runtime_len      (u64 LE)  — byte length of runtime blob (0 if none)
 /// ```
-pub fn emit_krbofat_bytes_v2(
-    entries: &[(u32, Vec<u8>, Option<&[u8]>)],
-) -> Result<Vec<u8>, String> {
+pub fn emit_krbofat_bytes_v2(entries: &[(u32, Vec<u8>, Option<&[u8]>)]) -> Result<Vec<u8>, String> {
     use lz4_flex::frame::FrameEncoder;
     use std::io::Write as IoWrite;
 
@@ -11888,13 +12174,13 @@ pub fn emit_krbofat_bytes_v2(
     out.extend_from_slice(&arch_count.to_le_bytes());
 
     for (i, (arch_id, raw, _)) in entries.iter().enumerate() {
-        out.extend_from_slice(&arch_id.to_le_bytes());             // +0
+        out.extend_from_slice(&arch_id.to_le_bytes()); // +0
         out.extend_from_slice(&KRBO_FAT_COMPRESSION_LZ4.to_le_bytes()); // +4
-        out.extend_from_slice(&krbo_offsets[i].to_le_bytes());     // +8
+        out.extend_from_slice(&krbo_offsets[i].to_le_bytes()); // +8
         out.extend_from_slice(&(compressed[i].len() as u64).to_le_bytes()); // +16
-        out.extend_from_slice(&(raw.len() as u64).to_le_bytes());  // +24
-        out.extend_from_slice(&runtime_offsets[i].to_le_bytes());  // +32
-        out.extend_from_slice(&runtime_lens[i].to_le_bytes());     // +40
+        out.extend_from_slice(&(raw.len() as u64).to_le_bytes()); // +24
+        out.extend_from_slice(&runtime_offsets[i].to_le_bytes()); // +32
+        out.extend_from_slice(&runtime_lens[i].to_le_bytes()); // +40
     }
 
     out.extend(std::iter::repeat_n(0u8, padding));
@@ -12086,9 +12372,7 @@ fn encode_aa64_call_arg(out: &mut Vec<u8>, rd: u32, arg: &ExecutableCallArg) {
             // The frame has 16 bytes for saved x29/x30 at the base.
             let offset = 16 + *byte_offset;
             let imm12 = offset / 8; // scaled by 8 for LDR X
-            out.extend_from_slice(
-                &(0xF940_0000u32 | (imm12 << 10) | (29 << 5) | rd).to_le_bytes(),
-            );
+            out.extend_from_slice(&(0xF940_0000u32 | (imm12 << 10) | (29 << 5) | rd).to_le_bytes());
         }
         ExecutableCallArg::SavedValue => {
             // MOV Xrd, X0  (ORR Xrd, XZR, X0)
@@ -12996,30 +13280,30 @@ pub fn emit_aarch64_elf_executable_native(
 
     // --- ELF header (64 bytes) ---
     out.extend_from_slice(&[0x7F, b'E', b'L', b'F']); // e_ident[0..4] magic
-    out.push(2);                // EI_CLASS: ELFCLASS64
-    out.push(1);                // EI_DATA: ELFDATA2LSB
-    out.push(1);                // EI_VERSION: EV_CURRENT
-    out.push(0);                // EI_OSABI: ELFOSABI_NONE
+    out.push(2); // EI_CLASS: ELFCLASS64
+    out.push(1); // EI_DATA: ELFDATA2LSB
+    out.push(1); // EI_VERSION: EV_CURRENT
+    out.push(0); // EI_OSABI: ELFOSABI_NONE
     out.extend_from_slice(&[0u8; 8]); // EI_ABIVERSION + padding (8 bytes)
-    push_u16_le(&mut out, 2);   // e_type: ET_EXEC
+    push_u16_le(&mut out, 2); // e_type: ET_EXEC
     push_u16_le(&mut out, 0xB7); // e_machine: EM_AARCH64
-    push_u32_le(&mut out, 1);   // e_version: EV_CURRENT
+    push_u32_le(&mut out, 1); // e_version: EV_CURRENT
     push_u64_le(&mut out, entry_vaddr); // e_entry
     push_u64_le(&mut out, ehdr_size as u64); // e_phoff
-    push_u64_le(&mut out, 0);   // e_shoff (no section headers needed for execution)
-    push_u32_le(&mut out, 0);   // e_flags
+    push_u64_le(&mut out, 0); // e_shoff (no section headers needed for execution)
+    push_u32_le(&mut out, 0); // e_flags
     push_u16_le(&mut out, ehdr_size as u16); // e_ehsize
     push_u16_le(&mut out, phdr_size as u16); // e_phentsize
-    push_u16_le(&mut out, 1);   // e_phnum
-    push_u16_le(&mut out, 64);  // e_shentsize
-    push_u16_le(&mut out, 0);   // e_shnum
-    push_u16_le(&mut out, 0);   // e_shstrndx (SHN_UNDEF)
+    push_u16_le(&mut out, 1); // e_phnum
+    push_u16_le(&mut out, 64); // e_shentsize
+    push_u16_le(&mut out, 0); // e_shnum
+    push_u16_le(&mut out, 0); // e_shstrndx (SHN_UNDEF)
     debug_assert_eq!(out.len(), ehdr_size);
 
     // --- Program header (56 bytes): single PT_LOAD, read+execute ---
-    push_u32_le(&mut out, 1);   // p_type: PT_LOAD
-    push_u32_le(&mut out, 5);   // p_flags: PF_R | PF_X
-    push_u64_le(&mut out, 0);   // p_offset
+    push_u32_le(&mut out, 1); // p_type: PT_LOAD
+    push_u32_le(&mut out, 5); // p_flags: PF_R | PF_X
+    push_u64_le(&mut out, 0); // p_offset
     push_u64_le(&mut out, base_vaddr); // p_vaddr
     push_u64_le(&mut out, base_vaddr); // p_paddr
     push_u64_le(&mut out, total_file_size as u64); // p_filesz
@@ -13842,7 +14126,11 @@ pub fn emit_pe_executable_x86_64(
     push_u32_le(&mut out, 0); // PointerToLinenumbers
     push_u16_le(&mut out, 0); // NumberOfRelocations
     push_u16_le(&mut out, 0); // NumberOfLinenumbers
-    let text_chars: u32 = if writable_text { 0xE0000020 } else { 0x60000020 };
+    let text_chars: u32 = if writable_text {
+        0xE0000020
+    } else {
+        0x60000020
+    };
     push_u32_le(&mut out, text_chars); // Characteristics: CODE | EXECUTE | READ [| WRITE]
 
     // .idata section header (40 bytes, if imports present)
@@ -14183,7 +14471,11 @@ pub fn emit_pe_executable_aarch64(
     push_u32_le(&mut out, 0); // PointerToLinenumbers
     push_u16_le(&mut out, 0); // NumberOfRelocations
     push_u16_le(&mut out, 0); // NumberOfLinenumbers
-    let text_chars: u32 = if writable_text { 0xE0000020 } else { 0x60000020 };
+    let text_chars: u32 = if writable_text {
+        0xE0000020
+    } else {
+        0x60000020
+    };
     push_u32_le(&mut out, text_chars); // Characteristics: CODE | EXECUTE | READ [| WRITE]
 
     // .idata section header (40 bytes, if imports present)
