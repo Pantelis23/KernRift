@@ -4294,12 +4294,33 @@ pub enum X86_64AsmInstruction {
         text: String,
         id: String,
     },
+    /// Port I/O read: load port into DX, execute IN, zero-extend, store result.
+    PortIn {
+        width: PortIoWidth,
+        port: ExecutableCallArg,
+        dst_byte_offset: u32,
+    },
+    /// Port I/O write: load value into AL/AX/EAX, load port into DX, execute OUT.
+    PortOut {
+        width: PortIoWidth,
+        port: ExecutableCallArg,
+        src: ExecutableCallArg,
+    },
+    /// Generic syscall: load nr and up to 6 args into registers, execute `syscall`,
+    /// optionally store the return value.
+    Syscall {
+        nr: ExecutableCallArg,
+        args: Vec<ExecutableCallArg>,
+        dst_byte_offset: Option<u32>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AArch64AsmModule {
     pub section: &'static str,
     pub functions: Vec<AArch64AsmFunction>,
+    /// Target identity — needed to select Linux vs macOS syscall convention.
+    pub target_id: BackendTargetId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -4461,6 +4482,15 @@ pub enum AArch64AsmInstruction {
     },
     /// Emit a named kernel intrinsic instruction bytes directly.
     InlineAsm(KernelIntrinsic),
+    /// Generic syscall. Platform-aware: Linux uses x8 + `svc #0`,
+    /// macOS uses x16 + `svc #0x80`.
+    Syscall {
+        nr: ExecutableCallArg,
+        args: Vec<ExecutableCallArg>,
+        dst_byte_offset: Option<u32>,
+        /// If true, use macOS convention (x16 + svc #0x80); else Linux (x8 + svc #0).
+        is_macho: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -5245,10 +5275,34 @@ pub fn lower_executable_krir_to_x86_64_asm(
                             id,
                         });
                     }
-                    ExecutableOp::PortIn { .. }
-                    | ExecutableOp::PortOut { .. }
-                    | ExecutableOp::Syscall { .. } => {
-                        todo!("x86_64 ASM emit: PortIn/PortOut/Syscall (Task 5)")
+                    ExecutableOp::PortIn {
+                        width,
+                        port,
+                        dst_byte_offset,
+                    } => {
+                        instrs.push(X86_64AsmInstruction::PortIn {
+                            width: *width,
+                            port: port.clone(),
+                            dst_byte_offset: *dst_byte_offset,
+                        });
+                    }
+                    ExecutableOp::PortOut { width, port, src } => {
+                        instrs.push(X86_64AsmInstruction::PortOut {
+                            width: *width,
+                            port: port.clone(),
+                            src: src.clone(),
+                        });
+                    }
+                    ExecutableOp::Syscall {
+                        nr,
+                        args,
+                        dst_byte_offset,
+                    } => {
+                        instrs.push(X86_64AsmInstruction::Syscall {
+                            nr: nr.clone(),
+                            args: args.clone(),
+                            dst_byte_offset: *dst_byte_offset,
+                        });
                     }
                 }
             }
@@ -5645,8 +5699,21 @@ pub fn lower_executable_krir_to_aarch64_asm(
                             function.name
                         ));
                     }
-                    ExecutableOp::Syscall { .. } => {
-                        todo!("aarch64 ASM emit: Syscall (Task 7)")
+                    ExecutableOp::Syscall {
+                        nr,
+                        args,
+                        dst_byte_offset,
+                    } => {
+                        let is_macho = matches!(
+                            target.target_id,
+                            BackendTargetId::Aarch64MachO
+                        );
+                        instrs.push(AArch64AsmInstruction::Syscall {
+                            nr: nr.clone(),
+                            args: args.clone(),
+                            dst_byte_offset: *dst_byte_offset,
+                            is_macho,
+                        });
                     }
                 }
             }
@@ -5685,6 +5752,7 @@ pub fn lower_executable_krir_to_aarch64_asm(
     Ok(AArch64AsmModule {
         section: target.sections.text,
         functions,
+        target_id: target.target_id,
     })
 }
 
@@ -5785,6 +5853,48 @@ fn asm_aligned_frame_size(frame_size_raw: u32, uses_saved_value_slot: bool) -> u
             frame_size_raw + (8 - r)
         } else {
             frame_size_raw + (24 - r)
+        }
+    }
+}
+
+/// Emit a `mov` from an `ExecutableCallArg` into a named register for x86_64 ASM text.
+///
+/// `qword_reg` is the 64-bit name (e.g. `%rax`); `narrow_reg` is used for
+/// 16-bit `movw` when targeting `%dx`.  For most registers they are the same.
+fn emit_x86_64_asm_call_arg_to_reg(
+    out: &mut String,
+    arg: &ExecutableCallArg,
+    qword_reg: &str,
+    narrow_reg: &str,
+) {
+    let is_dx = narrow_reg == "%dx";
+    match arg {
+        ExecutableCallArg::Imm { value } => {
+            if is_dx {
+                out.push_str(&format!("    movw ${}, %dx\n", *value as u16));
+            } else {
+                out.push_str(&format!("    movq ${}, {}\n", value, qword_reg));
+            }
+        }
+        ExecutableCallArg::Slot { byte_offset } => {
+            if is_dx {
+                if *byte_offset == 0 {
+                    out.push_str("    movw (%rsp), %dx\n");
+                } else {
+                    out.push_str(&format!("    movw {}(%rsp), %dx\n", byte_offset));
+                }
+            } else if *byte_offset == 0 {
+                out.push_str(&format!("    movq (%rsp), {}\n", qword_reg));
+            } else {
+                out.push_str(&format!("    movq {}(%rsp), {}\n", byte_offset, qword_reg));
+            }
+        }
+        ExecutableCallArg::SavedValue => {
+            if is_dx {
+                out.push_str("    movw %bx, %dx\n");
+            } else {
+                out.push_str(&format!("    movq %rbx, {}\n", qword_reg));
+            }
         }
     }
 }
@@ -6681,6 +6791,75 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                         out.push_str("    mov %rax, (%rdi)\n");
                     }
                 }
+                X86_64AsmInstruction::PortIn {
+                    width,
+                    port,
+                    dst_byte_offset,
+                } => {
+                    // 1. Load port number into %dx.
+                    emit_x86_64_asm_call_arg_to_reg(&mut out, port, "%dx", "%dx");
+                    // 2. IN instruction (reads from port in DX).
+                    match width {
+                        PortIoWidth::Byte => out.push_str("    inb %dx, %al\n"),
+                        PortIoWidth::Word => out.push_str("    inw %dx, %ax\n"),
+                        PortIoWidth::Dword => out.push_str("    inl %dx, %eax\n"),
+                    }
+                    // 3. Zero-extend to full register width.
+                    match width {
+                        PortIoWidth::Byte => out.push_str("    movzbl %al, %eax\n"),
+                        PortIoWidth::Word => out.push_str("    movzwl %ax, %eax\n"),
+                        PortIoWidth::Dword => {} // already in %eax, upper bits zero
+                    }
+                    // 4. Store result to stack slot.
+                    if *dst_byte_offset == 0 {
+                        out.push_str("    movq %rax, (%rsp)\n");
+                    } else {
+                        out.push_str(&format!("    movq %rax, {}(%rsp)\n", dst_byte_offset));
+                    }
+                }
+                X86_64AsmInstruction::PortOut { width, port, src } => {
+                    // 1. Load value into %rax FIRST (before loading port into %dx).
+                    emit_x86_64_asm_call_arg_to_reg(&mut out, src, "%rax", "%rax");
+                    // 2. Load port number into %dx.
+                    emit_x86_64_asm_call_arg_to_reg(&mut out, port, "%dx", "%dx");
+                    // 3. OUT instruction.
+                    match width {
+                        PortIoWidth::Byte => out.push_str("    outb %al, %dx\n"),
+                        PortIoWidth::Word => out.push_str("    outw %ax, %dx\n"),
+                        PortIoWidth::Dword => out.push_str("    outl %eax, %dx\n"),
+                    }
+                }
+                X86_64AsmInstruction::Syscall {
+                    nr,
+                    args,
+                    dst_byte_offset,
+                } => {
+                    // SysV syscall convention: args in rdi, rsi, rdx, r10, r8, r9
+                    // (note: r10 instead of rcx because syscall clobbers rcx).
+                    let syscall_regs: &[&str] = &["%rdi", "%rsi", "%rdx", "%r10", "%r8", "%r9"];
+                    // Load args into their registers first (before loading nr into rax).
+                    for (i, arg) in args.iter().enumerate() {
+                        if i < syscall_regs.len() {
+                            emit_x86_64_asm_call_arg_to_reg(
+                                &mut out,
+                                arg,
+                                syscall_regs[i],
+                                syscall_regs[i],
+                            );
+                        }
+                    }
+                    // Load syscall number into %rax last.
+                    emit_x86_64_asm_call_arg_to_reg(&mut out, nr, "%rax", "%rax");
+                    out.push_str("    syscall\n");
+                    // Optionally store the return value.
+                    if let Some(off) = dst_byte_offset {
+                        if *off == 0 {
+                            out.push_str("    movq %rax, (%rsp)\n");
+                        } else {
+                            out.push_str(&format!("    movq %rax, {}(%rsp)\n", off));
+                        }
+                    }
+                }
             }
         }
     }
@@ -7097,11 +7276,62 @@ pub fn emit_aarch64_asm_text(module: &AArch64AsmModule) -> String {
                     };
                     out.push_str(&format!("    {}\n", mnem));
                 }
+                AArch64AsmInstruction::Syscall {
+                    nr,
+                    args,
+                    dst_byte_offset,
+                    is_macho,
+                } => {
+                    // Linux: nr → x8, svc #0. macOS: nr → x16, svc #0x80.
+                    let nr_reg = if *is_macho { "x16" } else { "x8" };
+                    // AArch64 syscall arg registers: x0-x5.
+                    let arg_regs: &[&str] = &["x0", "x1", "x2", "x3", "x4", "x5"];
+                    // Load args first, then nr (to avoid clobbering x0 if nr uses a slot).
+                    for (i, arg) in args.iter().enumerate() {
+                        if i < arg_regs.len() {
+                            emit_aarch64_asm_call_arg(&mut out, arg, arg_regs[i]);
+                        }
+                    }
+                    emit_aarch64_asm_call_arg(&mut out, nr, nr_reg);
+                    if *is_macho {
+                        out.push_str("    svc #0x80\n");
+                    } else {
+                        out.push_str("    svc #0\n");
+                    }
+                    // Optionally store return value (x0) to stack.
+                    if let Some(off) = dst_byte_offset {
+                        let slot_off = 16 + off; // frame offset: 16 for saved x29/x30
+                        out.push_str(&format!("    str x0, [x29, #{}]\n", slot_off));
+                    }
+                }
             }
         }
         out.push('\n');
     }
     out
+}
+
+/// Helper: emit a `mov`/`ldr` from an `ExecutableCallArg` into a named AArch64 register.
+fn emit_aarch64_asm_call_arg(out: &mut String, arg: &ExecutableCallArg, reg: &str) {
+    match arg {
+        ExecutableCallArg::Imm { value } => {
+            emit_aarch64_mov_imm64(out, reg, *value);
+        }
+        ExecutableCallArg::Slot { byte_offset } => {
+            // x29-relative: frame has 16 bytes of saved x29/x30 at the bottom.
+            let offset = 16 + byte_offset;
+            out.push_str(&format!("    ldr {}, [x29, #{}]\n", reg, offset));
+        }
+        ExecutableCallArg::SavedValue => {
+            // x19 is the AArch64 callee-saved value register (x0 is saved-value in
+            // this codebase but x19 is used for SavedValue in call args).
+            // Actually, in this codebase the "saved value" register is x0 (see
+            // ReturnSavedValue).  So SavedValue → mov xN, x0.
+            if reg != "x0" {
+                out.push_str(&format!("    mov {}, x0\n", reg));
+            }
+        }
+    }
 }
 
 fn decode_x86_64_mmio_instruction(
@@ -7246,6 +7476,147 @@ fn decode_x86_64_mmio_instruction(
 
 fn loadless_value_offset(cursor: usize, opcode_bytes: usize) -> usize {
     cursor + 10 + opcode_bytes
+}
+
+/// Byte count for loading an `ExecutableCallArg` into RAX (full 64-bit register).
+fn call_arg_to_rax_len(arg: &ExecutableCallArg) -> u64 {
+    match arg {
+        ExecutableCallArg::Imm { value } => {
+            if *value <= 0x7FFF_FFFF {
+                5 // B8 imm32 (mov eax, imm32 — zero-extends to rax)
+            } else {
+                10 // 48 B8 imm64 (movabs rax, imm64)
+            }
+        }
+        ExecutableCallArg::Slot { .. } => 5,  // 48 8B 44 24 off (mov rax, [rsp+off])
+        ExecutableCallArg::SavedValue => 3,    // 48 89 D8 (mov rax, rbx)
+    }
+}
+
+/// Encode loading an `ExecutableCallArg` into RAX.
+fn encode_call_arg_to_rax(out: &mut Vec<u8>, arg: &ExecutableCallArg) {
+    match arg {
+        ExecutableCallArg::Imm { value } => {
+            let v = *value;
+            if v <= 0x7FFF_FFFF {
+                // mov eax, imm32 — 5 bytes, zero-extends to rax
+                out.push(0xB8);
+                out.extend_from_slice(&(v as u32).to_le_bytes());
+            } else {
+                // movabs rax, imm64 — 10 bytes
+                out.extend_from_slice(&[0x48, 0xB8]);
+                out.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        ExecutableCallArg::Slot { byte_offset } => {
+            // mov rax, [rsp+off] — 48 8B 44 24 off (5 bytes)
+            out.extend_from_slice(&[0x48, 0x8B, 0x44, 0x24, *byte_offset as u8]);
+        }
+        ExecutableCallArg::SavedValue => {
+            // mov rax, rbx — 48 89 D8 (3 bytes)
+            out.extend_from_slice(&[0x48, 0x89, 0xD8]);
+        }
+    }
+}
+
+/// Byte count for loading an `ExecutableCallArg` into DX (16-bit register).
+fn call_arg_to_dx_len(arg: &ExecutableCallArg) -> u64 {
+    match arg {
+        ExecutableCallArg::Imm { .. } => 4,   // 66 BA imm16
+        ExecutableCallArg::Slot { .. } => 5,   // 66 8B 54 24 off
+        ExecutableCallArg::SavedValue => 3,    // 66 89 DA
+    }
+}
+
+/// Encode loading an `ExecutableCallArg` into DX (16-bit).
+fn encode_call_arg_to_dx(out: &mut Vec<u8>, arg: &ExecutableCallArg) {
+    match arg {
+        ExecutableCallArg::Imm { value } => {
+            // movw $imm16, %dx — 66 BA imm16 (4 bytes)
+            out.push(0x66);
+            out.push(0xBA);
+            out.extend_from_slice(&(*value as u16).to_le_bytes());
+        }
+        ExecutableCallArg::Slot { byte_offset } => {
+            // movw off(%rsp), %dx — 66 8B 54 24 off (5 bytes)
+            out.extend_from_slice(&[0x66, 0x8B, 0x54, 0x24, *byte_offset as u8]);
+        }
+        ExecutableCallArg::SavedValue => {
+            // movw %bx, %dx — 66 89 DA (3 bytes)
+            out.extend_from_slice(&[0x66, 0x89, 0xDA]);
+        }
+    }
+}
+
+/// Byte count for storing RAX to a stack slot: `mov [rsp+off], rax`.
+fn store_rax_to_slot_len() -> u64 {
+    5 // 48 89 44 24 off
+}
+
+/// Encode storing RAX to `[rsp+off]`.
+fn encode_store_rax_to_slot(out: &mut Vec<u8>, byte_offset: u32) {
+    // mov [rsp+off], rax — 48 89 44 24 off (5 bytes)
+    out.extend_from_slice(&[0x48, 0x89, 0x44, 0x24, byte_offset as u8]);
+}
+
+/// Byte count for loading an `ExecutableCallArg` into a specific GPR.
+///
+/// `reg_field` is the 3-bit register encoding, `is_ext` is true for r8-r15.
+fn call_arg_to_gpr_len(arg: &ExecutableCallArg) -> u64 {
+    match arg {
+        ExecutableCallArg::Imm { value } => {
+            if *value <= 0x7FFF_FFFF { 7 } else { 10 }
+        }
+        ExecutableCallArg::Slot { .. } => 5,
+        ExecutableCallArg::SavedValue => 3,
+    }
+}
+
+/// Byte count for a PortIn op in x86_64 object code.
+fn port_in_encoded_len(width: PortIoWidth, port: &ExecutableCallArg, _dst_byte_offset: u32) -> u64 {
+    let dx_load = call_arg_to_dx_len(port);
+    let in_bytes: u64 = match width {
+        PortIoWidth::Byte => 1,   // EC
+        PortIoWidth::Word => 2,   // 66 ED
+        PortIoWidth::Dword => 1,  // ED
+    };
+    let zext_bytes: u64 = match width {
+        PortIoWidth::Byte => 3,   // 0F B6 C0
+        PortIoWidth::Word => 3,   // 0F B7 C0
+        PortIoWidth::Dword => 0,  // already in eax
+    };
+    let store = store_rax_to_slot_len();
+    dx_load + in_bytes + zext_bytes + store
+}
+
+/// Byte count for a PortOut op in x86_64 object code.
+fn port_out_encoded_len(width: PortIoWidth, port: &ExecutableCallArg, src: &ExecutableCallArg) -> u64 {
+    let val_load = call_arg_to_rax_len(src);
+    let dx_load = call_arg_to_dx_len(port);
+    let out_bytes: u64 = match width {
+        PortIoWidth::Byte => 1,   // EE
+        PortIoWidth::Word => 2,   // 66 EF
+        PortIoWidth::Dword => 1,  // EF
+    };
+    val_load + dx_load + out_bytes
+}
+
+/// Byte count for a Syscall op in x86_64 object code.
+fn syscall_encoded_len(nr: &ExecutableCallArg, args: &[ExecutableCallArg], dst: &Option<u32>) -> u64 {
+    let mut total: u64 = 0;
+    // Load args into registers first.
+    for arg in args {
+        total += call_arg_to_gpr_len(arg);
+    }
+    // Load nr into rax last.
+    total += call_arg_to_rax_len(nr);
+    // syscall instruction: 2 bytes (0F 05).
+    total += 2;
+    // Optional store of return value.
+    if dst.is_some() {
+        total += store_rax_to_slot_len();
+    }
+    total
 }
 
 fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
@@ -7414,12 +7785,17 @@ fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
         // movabs rbx(10) + mov rax,[rbx](3) + lea r8(5) + 5*n byte-writes + add rax,n(4) + mov [rbx],rax(3) = 5n+25
         // Restricted to n < 128 so each index fits in disp8 and n fits in imm8.
         ExecutableOp::PrintStdout { text } => 5 * text.len() as u64 + 25,
-        // Conservative: port→DX + IN + zero-extend + store result
-        ExecutableOp::PortIn { .. } => 20,
-        // Conservative: val→RAX + port→DX + OUT
-        ExecutableOp::PortOut { .. } => 20,
-        // Conservative: nr→RAX + args→regs + syscall + store result
-        ExecutableOp::Syscall { args, .. } => 10 + 10 * args.len() as u64,
+        ExecutableOp::PortIn {
+            width,
+            port,
+            dst_byte_offset,
+        } => port_in_encoded_len(*width, port, *dst_byte_offset),
+        ExecutableOp::PortOut { width, port, src } => port_out_encoded_len(*width, port, src),
+        ExecutableOp::Syscall {
+            nr,
+            args,
+            dst_byte_offset,
+        } => syscall_encoded_len(nr, args, dst_byte_offset),
     }
 }
 
@@ -7981,6 +8357,43 @@ fn encode_call_arg_bytes(out: &mut Vec<u8>, arg_idx: u8, arg: &ExecutableCallArg
             // movq %rbx, %regN  (3 bytes)
             // MOV r/m64, r64 (0x89); src=%rbx(3) is REG, dest is R/M → REX.B for extended regs
             let rex = if is_ext { 0x49u8 } else { 0x48u8 }; // REX.W + REX.B
+            out.extend_from_slice(&[rex, 0x89, 0xC0 | (3 << 3) | reg_field]);
+        }
+    }
+}
+
+/// Encode loading an `ExecutableCallArg` into an arbitrary 64-bit GPR.
+///
+/// `reg_field` is the 3-bit register field (0-7), `is_ext` is true for r8-r15.
+/// Uses the same encoding as `encode_call_arg_bytes` but accepts reg/ext directly.
+fn encode_call_arg_to_gpr(out: &mut Vec<u8>, reg_field: u8, is_ext: bool, arg: &ExecutableCallArg) {
+    match arg {
+        ExecutableCallArg::Imm { value } => {
+            let v = *value;
+            if v <= 0x7FFF_FFFF {
+                // movq $imm32sext, %regN  (7 bytes)
+                let rex = if is_ext { 0x49u8 } else { 0x48u8 };
+                out.push(rex);
+                out.push(0xC7);
+                out.push(0xC0 | reg_field);
+                out.extend_from_slice(&(v as u32).to_le_bytes());
+            } else {
+                // movq $imm64, %regN  (10 bytes)
+                let rex = if is_ext { 0x49u8 } else { 0x48u8 };
+                out.push(rex);
+                out.push(0xB8 + reg_field);
+                out.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        ExecutableCallArg::Slot { byte_offset } => {
+            // movq byte_offset(%rsp), %regN  (5 bytes, disp8)
+            let rex = if is_ext { 0x4Cu8 } else { 0x48u8 };
+            let modrm = 0x40 | (reg_field << 3) | 4;
+            out.extend_from_slice(&[rex, 0x8B, modrm, 0x24, *byte_offset as u8]);
+        }
+        ExecutableCallArg::SavedValue => {
+            // movq %rbx, %regN  (3 bytes)
+            let rex = if is_ext { 0x49u8 } else { 0x48u8 };
             out.extend_from_slice(&[rex, 0x89, 0xC0 | (3 << 3) | reg_field]);
         }
     }
@@ -9503,10 +9916,85 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         .push(jcc_start + 2);
                     local_offset += 12;
                 }
-                ExecutableOp::PortIn { .. }
-                | ExecutableOp::PortOut { .. }
-                | ExecutableOp::Syscall { .. } => {
-                    todo!("x86_64 object emit: PortIn/PortOut/Syscall (Task 6)")
+                ExecutableOp::PortIn {
+                    width,
+                    port,
+                    dst_byte_offset,
+                } => {
+                    // 1. Load port into DX.
+                    encode_call_arg_to_dx(&mut code_bytes, port);
+                    // 2. IN instruction.
+                    match width {
+                        PortIoWidth::Byte => code_bytes.push(0xEC),        // in al, dx
+                        PortIoWidth::Word => {
+                            code_bytes.push(0x66);
+                            code_bytes.push(0xED);  // in ax, dx (operand-size prefix)
+                        }
+                        PortIoWidth::Dword => code_bytes.push(0xED),       // in eax, dx
+                    }
+                    // 3. Zero-extend result.
+                    match width {
+                        PortIoWidth::Byte => {
+                            // movzbl %al, %eax — 0F B6 C0
+                            code_bytes.extend_from_slice(&[0x0F, 0xB6, 0xC0]);
+                        }
+                        PortIoWidth::Word => {
+                            // movzwl %ax, %eax — 0F B7 C0
+                            code_bytes.extend_from_slice(&[0x0F, 0xB7, 0xC0]);
+                        }
+                        PortIoWidth::Dword => {} // already zero-extended in eax
+                    }
+                    // 4. Store rax to stack slot.
+                    encode_store_rax_to_slot(&mut code_bytes, *dst_byte_offset);
+                    local_offset += port_in_encoded_len(*width, port, *dst_byte_offset);
+                }
+                ExecutableOp::PortOut { width, port, src } => {
+                    // 1. Load value into RAX first (before loading port into DX).
+                    encode_call_arg_to_rax(&mut code_bytes, src);
+                    // 2. Load port into DX.
+                    encode_call_arg_to_dx(&mut code_bytes, port);
+                    // 3. OUT instruction.
+                    match width {
+                        PortIoWidth::Byte => code_bytes.push(0xEE),        // out dx, al
+                        PortIoWidth::Word => {
+                            code_bytes.push(0x66);
+                            code_bytes.push(0xEF);  // out dx, ax (operand-size prefix)
+                        }
+                        PortIoWidth::Dword => code_bytes.push(0xEF),       // out dx, eax
+                    }
+                    local_offset += port_out_encoded_len(*width, port, src);
+                }
+                ExecutableOp::Syscall {
+                    nr,
+                    args,
+                    dst_byte_offset,
+                } => {
+                    // Syscall arg registers: rdi(7,false), rsi(6,false), rdx(2,false),
+                    // r10(2,true), r8(0,true), r9(1,true)
+                    // Load args FIRST, then nr into rax last.
+                    let syscall_arg_regs: [(u8, bool); 6] = [
+                        (7, false), // rdi
+                        (6, false), // rsi
+                        (2, false), // rdx
+                        (2, true),  // r10
+                        (0, true),  // r8
+                        (1, true),  // r9
+                    ];
+                    for (i, arg) in args.iter().enumerate() {
+                        if i < syscall_arg_regs.len() {
+                            let (reg_field, is_ext) = syscall_arg_regs[i];
+                            encode_call_arg_to_gpr(&mut code_bytes, reg_field, is_ext, arg);
+                        }
+                    }
+                    // Load nr into rax.
+                    encode_call_arg_to_rax(&mut code_bytes, nr);
+                    // syscall instruction: 0F 05
+                    code_bytes.extend_from_slice(&[0x0F, 0x05]);
+                    // Optional: store return value.
+                    if let Some(off) = dst_byte_offset {
+                        encode_store_rax_to_slot(&mut code_bytes, *off);
+                    }
+                    local_offset += syscall_encoded_len(nr, args, dst_byte_offset);
                 }
             }
         }
@@ -11220,6 +11708,33 @@ fn emit_aa64_ldr_ty(out: &mut Vec<u8>, rt: u32, rn: u32, ty: MmioScalarType) {
     out.extend_from_slice(&(base | (rn << 5) | rt).to_le_bytes());
 }
 
+/// Encode loading an `ExecutableCallArg` into an AArch64 register `rd` (0-30).
+///
+/// Uses MOVZ/MOVK for immediates, LDR for stack slots, MOV for saved value.
+fn encode_aa64_call_arg(out: &mut Vec<u8>, rd: u32, arg: &ExecutableCallArg) {
+    match arg {
+        ExecutableCallArg::Imm { value } => {
+            emit_aa64_imm64(out, rd, *value);
+        }
+        ExecutableCallArg::Slot { byte_offset } => {
+            // LDR Xrd, [X29, #(16 + byte_offset)]
+            // The frame has 16 bytes for saved x29/x30 at the base.
+            let offset = 16 + *byte_offset;
+            let imm12 = offset / 8; // scaled by 8 for LDR X
+            out.extend_from_slice(
+                &(0xF940_0000u32 | (imm12 << 10) | (29 << 5) | rd).to_le_bytes(),
+            );
+        }
+        ExecutableCallArg::SavedValue => {
+            // MOV Xrd, X0  (ORR Xrd, XZR, X0)
+            // The "saved value" register in this codebase is x0.
+            if rd != 0 {
+                out.extend_from_slice(&(0xAA00_03E0u32 | (0u32 << 16) | rd).to_le_bytes());
+            }
+        }
+    }
+}
+
 // ── AArch64 function encoder ─────────────────────────────────────────────────
 
 /// Encode the prologue + body + epilogue of one AArch64 asm function into `out`.
@@ -11804,6 +12319,45 @@ fn encode_aarch64_function(
                     KernelIntrinsic::Wbinvd | KernelIntrinsic::Cpuid => 0xD503_201F, // NOP
                 };
                 out.extend_from_slice(&word.to_le_bytes());
+            }
+
+            // ── Syscall: load args → load nr → svc ───────────────────────────
+            AArch64AsmInstruction::Syscall {
+                nr,
+                args,
+                dst_byte_offset,
+                is_macho,
+            } => {
+                // AArch64 syscall arg registers: x0-x5.
+                let arg_regs: [u32; 6] = [0, 1, 2, 3, 4, 5];
+                // Load args into x0-x5 first.
+                for (i, arg) in args.iter().enumerate() {
+                    if i < arg_regs.len() {
+                        encode_aa64_call_arg(out, arg_regs[i], arg);
+                    }
+                }
+                // Load nr into nr_reg (x8 for Linux, x16 for macOS) last.
+                let nr_reg = if *is_macho { 16u32 } else { 8u32 };
+                encode_aa64_call_arg(out, nr_reg, nr);
+                // SVC instruction.
+                if *is_macho {
+                    // svc #0x80 → 0xD4001001
+                    out.extend_from_slice(&0xD400_1001u32.to_le_bytes());
+                } else {
+                    // svc #0 → 0xD4000001
+                    out.extend_from_slice(&0xD400_0001u32.to_le_bytes());
+                }
+                // Optionally store return value (x0) to stack slot.
+                if let Some(off) = dst_byte_offset {
+                    // STR X0, [X29, #(16 + off)]  — off is the byte_offset within the
+                    // stack cell area.  The frame has 16 bytes for saved x29/x30 at the
+                    // base, so the actual SP-relative offset is 16 + off.  We use the
+                    // frame-relative slot_str! encoding: imm12 = (16 + off) / 8.
+                    let imm12 = (16 + off) / 8;
+                    out.extend_from_slice(
+                        &(0xF900_0000u32 | (imm12 << 10) | (29 << 5) | 0).to_le_bytes(),
+                    );
+                }
             }
         }
     }
@@ -16211,6 +16765,7 @@ mod tests {
                     AArch64AsmInstruction::Ret,
                 ],
             }],
+            target_id: BackendTargetId::Aarch64Sysv,
         };
         let text = emit_aarch64_asm_text(&module);
         assert!(text.contains("entry:"), "missing label in:\n{}", text);
@@ -16246,6 +16801,7 @@ mod tests {
                     AArch64AsmInstruction::Ret,
                 ],
             }],
+            target_id: BackendTargetId::Aarch64Sysv,
         };
         let text = emit_aarch64_asm_text(&module);
         assert!(text.contains("ldrb w0,"), "missing ldrb/w0 in:\n{}", text);
