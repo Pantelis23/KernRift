@@ -11483,6 +11483,117 @@ pub fn emit_compiler_owned_object_bytes(object: &CompilerOwnedObject) -> Vec<u8>
 }
 
 // ---------------------------------------------------------------------------
+// ELF executable writer (ET_EXEC, x86_64)
+// ---------------------------------------------------------------------------
+
+/// Emit a statically-linked x86_64 ELF executable from a relocatable object.
+///
+/// Requires: no undefined (extern) symbols. All relocations must target symbols
+/// defined within the object's .text section.
+///
+/// Layout:
+///   0x000000: ELF header (64 bytes)
+///   0x000040: Program header (1 × 56 bytes)
+///   0x000078: .text section (machine code)
+///
+/// Virtual base: 0x400000. Entry point: 0x400078 + entry_symbol.offset.
+/// p_align: 0x200000 (matches GNU ld/lld convention).
+pub fn emit_x86_64_elf_executable(object: &X86_64ElfRelocatableObject) -> Result<Vec<u8>, String> {
+    if !object.undefined_function_symbols.is_empty() {
+        return Err(format!(
+            "elfexe: undefined symbols: {}",
+            object.undefined_function_symbols.join(", ")
+        ));
+    }
+
+    // Build symbol offset map
+    let mut sym_offsets: std::collections::BTreeMap<&str, u64> = std::collections::BTreeMap::new();
+    for sym in &object.function_symbols {
+        sym_offsets.insert(&sym.name, sym.offset);
+    }
+
+    // Find entry symbol
+    let entry_offset = sym_offsets
+        .get("entry")
+        .copied()
+        .ok_or_else(|| "elfexe: no 'entry' symbol found".to_string())?;
+
+    // Clone .text and resolve relocations in-place
+    let mut text = object.text_bytes.clone();
+    for reloc in &object.relocations {
+        let target_offset = sym_offsets
+            .get(reloc.target_symbol.as_str())
+            .copied()
+            .ok_or_else(|| {
+                format!("elfexe: relocation targets unknown symbol '{}'", reloc.target_symbol)
+            })?;
+
+        match reloc.kind {
+            X86_64ElfRelocationKind::X86_64Plt32 => {
+                // R_X86_64_PLT32: S + A - P (PC-relative 32-bit)
+                let value = target_offset as i64 - reloc.offset as i64 + reloc.addend;
+                let value_i32 = value as i32;
+                let off = reloc.offset as usize;
+                if off + 4 > text.len() {
+                    return Err(format!("elfexe: relocation offset {} out of .text bounds (len={})", off, text.len()));
+                }
+                text[off..off + 4].copy_from_slice(&value_i32.to_le_bytes());
+            }
+        }
+    }
+
+    // Constants
+    let base_vaddr: u64 = 0x400000;
+    let ehdr_size: usize = 64;
+    let phdr_size: usize = 56;
+    let text_file_offset = ehdr_size + phdr_size; // 0x78 = 120
+    let text_len = text.len();
+    let total_file_size = text_file_offset + text_len;
+    let entry_vaddr = base_vaddr + text_file_offset as u64 + entry_offset;
+
+    let mut out = Vec::with_capacity(total_file_size);
+
+    // --- ELF header (64 bytes) ---
+    out.extend_from_slice(&[0x7F, b'E', b'L', b'F']); // e_ident[0..4] magic
+    out.push(2);                // EI_CLASS: ELFCLASS64
+    out.push(1);                // EI_DATA: ELFDATA2LSB
+    out.push(1);                // EI_VERSION: EV_CURRENT
+    out.push(0);                // EI_OSABI: ELFOSABI_NONE
+    out.extend_from_slice(&[0u8; 8]); // EI_ABIVERSION + padding (8 bytes)
+    push_u16_le(&mut out, 2);   // e_type: ET_EXEC
+    push_u16_le(&mut out, 0x3E); // e_machine: EM_X86_64
+    push_u32_le(&mut out, 1);   // e_version: EV_CURRENT
+    push_u64_le(&mut out, entry_vaddr); // e_entry
+    push_u64_le(&mut out, ehdr_size as u64); // e_phoff
+    push_u64_le(&mut out, 0);   // e_shoff (no section headers needed for execution)
+    push_u32_le(&mut out, 0);   // e_flags
+    push_u16_le(&mut out, ehdr_size as u16); // e_ehsize
+    push_u16_le(&mut out, phdr_size as u16); // e_phentsize
+    push_u16_le(&mut out, 1);   // e_phnum
+    push_u16_le(&mut out, 64);  // e_shentsize
+    push_u16_le(&mut out, 0);   // e_shnum
+    push_u16_le(&mut out, 0);   // e_shstrndx (SHN_UNDEF)
+    debug_assert_eq!(out.len(), ehdr_size);
+
+    // --- Program header (56 bytes): single PT_LOAD, read+execute ---
+    push_u32_le(&mut out, 1);   // p_type: PT_LOAD
+    push_u32_le(&mut out, 5);   // p_flags: PF_R | PF_X
+    push_u64_le(&mut out, 0);   // p_offset
+    push_u64_le(&mut out, base_vaddr); // p_vaddr
+    push_u64_le(&mut out, base_vaddr); // p_paddr
+    push_u64_le(&mut out, total_file_size as u64); // p_filesz
+    push_u64_le(&mut out, total_file_size as u64); // p_memsz
+    push_u64_le(&mut out, 0x200000); // p_align
+    debug_assert_eq!(out.len(), ehdr_size + phdr_size);
+
+    // --- .text section ---
+    out.extend_from_slice(&text);
+    debug_assert_eq!(out.len(), total_file_size);
+
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
 // KRBO container format
 // ---------------------------------------------------------------------------
 
