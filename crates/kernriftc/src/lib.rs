@@ -677,7 +677,7 @@ fn emit_x86_64_elf_executable_bytes(
 /// it to a temp `.s` file, then use `cc -c` to assemble and `cc` to link.
 fn emit_x86_64_host_executable_bytes(
     executable: &krir::ExecutableKrirModule,
-    target: &BackendTargetContract,
+    #[cfg_attr(windows, allow(unused_variables))] target: &BackendTargetContract,
 ) -> Result<Vec<u8>, String> {
     let cc = find_host_tool(&["cc", "gcc", "clang"]).ok_or_else(|| {
         "hostexe emit requires a C compiler driver (cc, gcc, or clang); \
