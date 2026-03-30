@@ -1,11 +1,13 @@
 //! macOS x86_64 runtime blob — hand-assembled machine code.
 //! Implements `_start` and all `__kr_*` functions using macOS BSD syscalls.
 //!
-//! Layout (424 bytes total):
-//!   0x000 .. 0x182  executable code (11 functions)
+//! Layout (704 bytes total):
+//!   0x000 .. 0x182  executable code (11 original functions)
 //!   0x183 .. 0x18d  inline string data ("/bin/sh\0", "-c\0")
 //!   0x18e .. 0x18f  padding (2 bytes)
 //!   0x190 .. 0x1a7  data area: envp(8) + heap_ptr(8) + heap_remaining(8)
+//!   0x1a8 .. 0x1ce  executable code (5 file I/O functions)
+//!   0x1cf .. 0x2cf  executable code (3 string formatting functions)
 //!
 //! macOS x86_64 syscall convention:
 //!   syscall nr in rax (BSD layer 0x2000000), args in rdi, rsi, rdx, r10, r8, r9.
@@ -204,6 +206,154 @@ pub static BLOB: RuntimeBlob = RuntimeBlob {
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // heap_ptr (8 bytes)
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // heap_remaining (8 bytes)
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        // === __kr_file_open (offset 0x1a8) ===
+        // args: rdi=path, rsi=flags (0=rdonly, 1=wronly+creat+trunc, 2=rdwr)
+        // cmp esi, 1
+        0x83, 0xfe, 0x01, // jne .do_open (+5)
+        0x75, 0x05, // mov esi, 0x241               ; O_WRONLY|O_CREAT|O_TRUNC
+        0xbe, 0x41, 0x02, 0x00, 0x00,
+        // .do_open:
+        // mov edx, 0x1a4               ; mode = 0644
+        0xba, 0xa4, 0x01, 0x00, 0x00, // mov eax, 0x2000005           ; SYS_open
+        0xb8, 0x05, 0x00, 0x00, 0x02, // syscall
+        0x0f, 0x05, // ret
+        0xc3,
+        // === __kr_file_read (offset 0x1bf) ===
+        // args: rdi=fd, rsi=buf, rdx=count
+        // mov eax, 0x2000003           ; SYS_read
+        0xb8, 0x03, 0x00, 0x00, 0x02, // syscall
+        0x0f, 0x05, // ret
+        0xc3,
+        // === __kr_file_write (offset 0x1c7) ===
+        // args: rdi=fd, rsi=buf, rdx=count
+        // mov eax, 0x2000004           ; SYS_write
+        0xb8, 0x04, 0x00, 0x00, 0x02, // syscall
+        0x0f, 0x05, // ret
+        0xc3,
+        // === __kr_file_close (offset 0x1cf) ===
+        // args: rdi=fd
+        // mov eax, 0x2000006           ; SYS_close
+        0xb8, 0x06, 0x00, 0x00, 0x02, // syscall
+        0x0f, 0x05, // ret
+        0xc3,
+        // === __kr_file_size (offset 0x1d7) ===
+        // args: rdi=fd
+        // sub rsp, 144                 ; allocate struct stat on stack
+        0x48, 0x81, 0xec, 0x90, 0x00, 0x00, 0x00,
+        // mov rsi, rsp                 ; &stat_buf
+        0x48, 0x89, 0xe6, // mov eax, 0x2000153           ; SYS_fstat64
+        0xb8, 0x53, 0x01, 0x00, 0x02, // syscall
+        0x0f, 0x05, // mov rax, [rsp + 96]          ; st_size (offset 96 = 0x60 on macOS)
+        0x48, 0x8b, 0x44, 0x24, 0x60, // add rsp, 144
+        0x48, 0x81, 0xc4, 0x90, 0x00, 0x00, 0x00, // ret
+        0xc3,
+        // === __kr_fmt_uint (offset 0x1f5) ===
+        // Convert uint64 to decimal string. rdi=buf, rsi=value, returns length in rax.
+        // push rbx
+        0x53, // push r12
+        0x41, 0x54, // mov rbx, rdi                   ; save buf
+        0x48, 0x89, 0xfb, // mov rax, rsi                   ; value
+        0x48, 0x89, 0xf0, // mov r12, rdi                   ; save buf start
+        0x49, 0x89, 0xfc, // test rax, rax                  ; if value == 0
+        0x48, 0x85, 0xc0, // jne .div_loop (+0x0e)
+        0x75, 0x0e, // mov byte [rbx], '0'
+        0xc6, 0x03, 0x30, // mov rax, 1                     ; return 1
+        0x48, 0xc7, 0xc0, 0x01, 0x00, 0x00, 0x00, // pop r12
+        0x41, 0x5c, // pop rbx
+        0x5b, // ret
+        0xc3, // .div_loop:
+        // xor ecx, ecx                  ; digit count = 0
+        0x31, 0xc9, // .loop_body:
+        // test rax, rax
+        0x48, 0x85, 0xc0, // jz .reverse (+0x14)
+        0x74, 0x14, // xor edx, edx
+        0x31, 0xd2, // mov r8, 10
+        0x49, 0xc7, 0xc0, 0x0a, 0x00, 0x00, 0x00,
+        // div r8                         ; rax=quotient, rdx=remainder
+        0x49, 0xf7, 0xf0, // add dl, '0'
+        0x80, 0xc2, 0x30, // push rdx
+        0x52, // inc ecx
+        0xff, 0xc1, // jmp .loop_body (-0x19)
+        0xeb, 0xe7, // .reverse:
+        // mov rdi, r12
+        0x4c, 0x89, 0xe7, // .rev_loop:
+        // test ecx, ecx
+        0x85, 0xc9, // jz .done (+0x0a)
+        0x74, 0x0a, // pop rax
+        0x58, // mov [rdi], al
+        0x88, 0x07, // inc rdi
+        0x48, 0xff, 0xc7, // dec ecx
+        0xff, 0xc9, // jmp .rev_loop (-0x0e)
+        0xeb, 0xf2, // .done:
+        // mov rax, rdi
+        0x48, 0x89, 0xf8, // sub rax, r12                   ; length = end - start
+        0x4c, 0x29, 0xe0, // pop r12
+        0x41, 0x5c, // pop rbx
+        0x5b, // ret
+        0xc3,
+        // === __kr_fmt_int (offset 0x24a) ===
+        // Convert int32 to decimal string. rdi=buf, rsi=int32 value, returns length.
+        // test esi, esi
+        0x85, 0xf6, // js .negative (+0x02)
+        0x78, 0x02, // jmp __kr_fmt_uint (rel8 -0x5b)
+        0xeb, 0xa5, // .negative:
+        // mov byte [rdi], '-'
+        0xc6, 0x07, 0x2d, // neg esi
+        0xf7, 0xde, // mov esi, esi                   ; zero-extend to rsi
+        0x89, 0xf6, // inc rdi                        ; advance past '-'
+        0x48, 0xff, 0xc7, // call __kr_fmt_uint (rel32 = -0x6a)
+        0xe8, 0x96, 0xff, 0xff, 0xff, // inc rax                        ; +1 for '-'
+        0x48, 0xff, 0xc0, // ret
+        0xc3,
+        // === __kr_fmt_hex (offset 0x263) ===
+        // Convert uint64 to hex string (no 0x prefix). rdi=buf, rsi=value, returns length.
+        // push rbx
+        0x53, // push r12
+        0x41, 0x54, // mov rbx, rdi
+        0x48, 0x89, 0xfb, // mov rax, rsi
+        0x48, 0x89, 0xf0, // mov r12, rdi
+        0x49, 0x89, 0xfc, // test rax, rax
+        0x48, 0x85, 0xc0, // jne .hex_loop (+0x0e)
+        0x75, 0x0e, // mov byte [rbx], '0'
+        0xc6, 0x03, 0x30, // mov rax, 1
+        0x48, 0xc7, 0xc0, 0x01, 0x00, 0x00, 0x00, // pop r12
+        0x41, 0x5c, // pop rbx
+        0x5b, // ret
+        0xc3, // .hex_loop:
+        // xor ecx, ecx
+        0x31, 0xc9, // .hloop:
+        // test rax, rax
+        0x48, 0x85, 0xc0, // jz .hreverse (+0x1c)
+        0x74, 0x1c, // mov rdx, rax
+        0x48, 0x89, 0xc2, // and edx, 0xf
+        0x83, 0xe2, 0x0f, // shr rax, 4
+        0x48, 0xc1, 0xe8, 0x04, // cmp dl, 10
+        0x80, 0xfa, 0x0a, // jb .digit (+0x05)
+        0x72, 0x05, // add dl, 0x57                   ; 'a' - 10
+        0x80, 0xc2, 0x57, // jmp .hpush (+0x03)
+        0xeb, 0x03, // .digit:
+        // add dl, '0'
+        0x80, 0xc2, 0x30, // .hpush:
+        // push rdx
+        0x52, // inc ecx
+        0xff, 0xc1, // jmp .hloop (-0x21)
+        0xeb, 0xdf, // .hreverse:
+        // mov rdi, r12
+        0x4c, 0x89, 0xe7, // .hrev:
+        // test ecx, ecx
+        0x85, 0xc9, // jz .hdone (+0x0a)
+        0x74, 0x0a, // pop rax
+        0x58, // mov [rdi], al
+        0x88, 0x07, // inc rdi
+        0x48, 0xff, 0xc7, // dec ecx
+        0xff, 0xc9, // jmp .hrev (-0x0e)
+        0xeb, 0xf2, // .hdone:
+        // mov rax, rdi
+        0x48, 0x89, 0xf8, // sub rax, r12
+        0x4c, 0x29, 0xe0, // pop r12
+        0x41, 0x5c, // pop rbx
+        0x5b, // ret
+        0xc3,
     ],
     symbols: &[
         ("_start", 0x00),
@@ -217,6 +367,14 @@ pub static BLOB: RuntimeBlob = RuntimeBlob {
         ("__kr_str_copy", 0x13f),
         ("__kr_str_cat", 0x154),
         ("__kr_str_len", 0x173),
+        ("__kr_file_open", 0x1a8),
+        ("__kr_file_read", 0x1bf),
+        ("__kr_file_write", 0x1c7),
+        ("__kr_file_close", 0x1cf),
+        ("__kr_file_size", 0x1d7),
+        ("__kr_fmt_uint", 0x1f5),
+        ("__kr_fmt_int", 0x24a),
+        ("__kr_fmt_hex", 0x263),
     ],
     // `call main` at offset 0x07, rel32 at offset 0x08.
     main_call_fixup: 0x08,
@@ -229,12 +387,12 @@ mod tests {
 
     #[test]
     fn blob_size_is_correct() {
-        assert_eq!(BLOB.code.len(), 424);
+        assert_eq!(BLOB.code.len(), 704);
     }
 
     #[test]
     fn all_symbols_within_bounds() {
-        assert_eq!(BLOB.symbols.len(), 11);
+        assert_eq!(BLOB.symbols.len(), 19);
         for &(name, offset) in BLOB.symbols {
             assert!(
                 (offset as usize) < BLOB.code.len(),
@@ -269,8 +427,9 @@ mod tests {
 
     #[test]
     fn data_area_is_zeroed() {
-        let data_start = BLOB.code.len() - 24;
-        for i in data_start..BLOB.code.len() {
+        // Data area at 0x190, 24 bytes (no longer at end of blob)
+        let data_start = 0x190;
+        for i in data_start..data_start + 24 {
             assert_eq!(
                 BLOB.code[i], 0x00,
                 "data area byte at offset {i} is 0x{:02X}, expected 0x00",
@@ -310,6 +469,14 @@ mod tests {
             "__kr_str_copy",
             "__kr_str_cat",
             "__kr_str_len",
+            "__kr_file_open",
+            "__kr_file_read",
+            "__kr_file_write",
+            "__kr_file_close",
+            "__kr_file_size",
+            "__kr_fmt_uint",
+            "__kr_fmt_int",
+            "__kr_fmt_hex",
         ];
         for name in &expected {
             assert!(BLOB.symbol_offset(name).is_some(), "missing symbol: {name}");

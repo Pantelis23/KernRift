@@ -1,11 +1,13 @@
 //! Windows x86_64 runtime blob — hand-assembled machine code.
 //! Implements `_start` and all `__kr_*` functions using Win32 API via IAT.
 //!
-//! Layout (528 bytes total):
-//!   0x000 .. 0x1d7  executable code (11 functions)
-//!   0x1d8 .. 0x1ef  padding (24 bytes to align data)
-//!   0x1f0 .. 0x217  data area: envp(8) + heap_ptr(8) + heap_remaining(8)
+//! Layout (541 bytes total):
+//!   0x000 .. 0x113  executable code (11 original functions)
+//!   0x114 .. 0x117  padding (4 bytes)
+//!   0x118 .. 0x13f  data area: envp(8) + heap_ptr(8) + heap_remaining(8)
 //!                               + stdout_handle(8) + iat_base(8) = 40 bytes
+//!   0x140 .. 0x151  file I/O stubs (5 functions, returns error)
+//!   0x152 .. 0x21c  formatting functions (3 functions)
 //!
 //! Windows x86_64 calling convention (Microsoft x64):
 //!   Args: rcx, rdx, r8, r9, stack. Return in rax.
@@ -38,6 +40,15 @@ use super::RuntimeBlob;
 //   stdout_handle  = 0x208
 //   iat_base       = 0x210
 
+const OFF_FILE_OPEN: u32 = 0x140;
+const OFF_FILE_READ: u32 = 0x148;
+const OFF_FILE_WRITE: u32 = 0x14b;
+const OFF_FILE_CLOSE: u32 = 0x14e;
+const OFF_FILE_SIZE: u32 = 0x14f;
+const OFF_FMT_UINT: u32 = 0x152;
+const OFF_FMT_INT: u32 = 0x1a7;
+const OFF_FMT_HEX: u32 = 0x1c0;
+
 pub static BLOB: RuntimeBlob = RuntimeBlob {
     code: &CODE,
     symbols: &[
@@ -52,6 +63,14 @@ pub static BLOB: RuntimeBlob = RuntimeBlob {
         ("__kr_str_copy", OFF_STR_COPY),
         ("__kr_str_cat", OFF_STR_CAT),
         ("__kr_str_len", OFF_STR_LEN),
+        ("__kr_file_open", OFF_FILE_OPEN),
+        ("__kr_file_read", OFF_FILE_READ),
+        ("__kr_file_write", OFF_FILE_WRITE),
+        ("__kr_file_close", OFF_FILE_CLOSE),
+        ("__kr_file_size", OFF_FILE_SIZE),
+        ("__kr_fmt_uint", OFF_FMT_UINT),
+        ("__kr_fmt_int", OFF_FMT_INT),
+        ("__kr_fmt_hex", OFF_FMT_HEX),
     ],
     main_call_fixup: OFF_BL_MAIN,
     iat_base_data_offset: Some(0x138),
@@ -279,8 +298,8 @@ const OFF_STR_CAT: u32 = 0xe5;
 const OFF_STR_LEN: u32 = 0x104;
 const OFF_BL_MAIN: u32 = 0x1a; // offset of rel32 in call main
 
-const CODE: [u8; 320] = {
-    let mut c = [0u8; 320];
+const CODE: [u8; 541] = {
+    let mut c = [0u8; 541];
 
     // === _start at 0x00 ===
     // 0x00: sub rsp, 40 = 48 83 EC 28
@@ -718,6 +737,339 @@ const CODE: [u8; 320] = {
     // stdout_handle  (0x130-0x137): zero
     // iat_base       (0x138-0x13f): zero (patched by PE linker)
 
+    // === __kr_file_open at 0x140 (stub: returns -1) ===
+    // File I/O through Win32 API requires extending the PE import table.
+    // For now, return fd=-1 to signal error.
+    // mov rax, -1 = 48 C7 C0 FF FF FF FF
+    c[0x140] = 0x48;
+    c[0x141] = 0xC7;
+    c[0x142] = 0xC0;
+    c[0x143] = 0xFF;
+    c[0x144] = 0xFF;
+    c[0x145] = 0xFF;
+    c[0x146] = 0xFF;
+    // ret = C3
+    c[0x147] = 0xC3;
+
+    // === __kr_file_read at 0x148 (stub: returns 0) ===
+    // xor eax, eax = 31 C0
+    c[0x148] = 0x31;
+    c[0x149] = 0xC0;
+    // ret = C3
+    c[0x14A] = 0xC3;
+
+    // === __kr_file_write at 0x14b (stub: returns 0) ===
+    // xor eax, eax = 31 C0
+    c[0x14B] = 0x31;
+    c[0x14C] = 0xC0;
+    // ret = C3
+    c[0x14D] = 0xC3;
+
+    // === __kr_file_close at 0x14e (stub: no-op) ===
+    // ret = C3
+    c[0x14E] = 0xC3;
+
+    // === __kr_file_size at 0x14f (stub: returns 0) ===
+    // xor eax, eax = 31 C0
+    c[0x14F] = 0x31;
+    c[0x150] = 0xC0;
+    // ret = C3
+    c[0x151] = 0xC3;
+
+    // === __kr_fmt_uint at 0x152 ===
+    // Identical to Linux x86_64 (pure computation, no syscalls).
+    // push rbx
+    c[0x152] = 0x53;
+    // push r12
+    c[0x153] = 0x41;
+    c[0x154] = 0x54;
+    // mov rbx, rdi
+    c[0x155] = 0x48;
+    c[0x156] = 0x89;
+    c[0x157] = 0xFB;
+    // mov rax, rsi
+    c[0x158] = 0x48;
+    c[0x159] = 0x89;
+    c[0x15A] = 0xF0;
+    // mov r12, rdi
+    c[0x15B] = 0x49;
+    c[0x15C] = 0x89;
+    c[0x15D] = 0xFC;
+    // test rax, rax
+    c[0x15E] = 0x48;
+    c[0x15F] = 0x85;
+    c[0x160] = 0xC0;
+    // jne .div_loop (+0x0e)
+    c[0x161] = 0x75;
+    c[0x162] = 0x0E;
+    // mov byte [rbx], '0'
+    c[0x163] = 0xC6;
+    c[0x164] = 0x03;
+    c[0x165] = 0x30;
+    // mov rax, 1
+    c[0x166] = 0x48;
+    c[0x167] = 0xC7;
+    c[0x168] = 0xC0;
+    c[0x169] = 0x01;
+    c[0x16A] = 0x00;
+    c[0x16B] = 0x00;
+    c[0x16C] = 0x00;
+    // pop r12
+    c[0x16D] = 0x41;
+    c[0x16E] = 0x5C;
+    // pop rbx
+    c[0x16F] = 0x5B;
+    // ret
+    c[0x170] = 0xC3;
+    // .div_loop: xor ecx, ecx
+    c[0x171] = 0x31;
+    c[0x172] = 0xC9;
+    // .loop_body: test rax, rax
+    c[0x173] = 0x48;
+    c[0x174] = 0x85;
+    c[0x175] = 0xC0;
+    // jz .reverse (+0x14)
+    c[0x176] = 0x74;
+    c[0x177] = 0x14;
+    // xor edx, edx
+    c[0x178] = 0x31;
+    c[0x179] = 0xD2;
+    // mov r8, 10
+    c[0x17A] = 0x49;
+    c[0x17B] = 0xC7;
+    c[0x17C] = 0xC0;
+    c[0x17D] = 0x0A;
+    c[0x17E] = 0x00;
+    c[0x17F] = 0x00;
+    c[0x180] = 0x00;
+    // div r8
+    c[0x181] = 0x49;
+    c[0x182] = 0xF7;
+    c[0x183] = 0xF0;
+    // add dl, '0'
+    c[0x184] = 0x80;
+    c[0x185] = 0xC2;
+    c[0x186] = 0x30;
+    // push rdx
+    c[0x187] = 0x52;
+    // inc ecx
+    c[0x188] = 0xFF;
+    c[0x189] = 0xC1;
+    // jmp .loop_body (-0x19)
+    c[0x18A] = 0xEB;
+    c[0x18B] = 0xE7;
+    // .reverse: mov rdi, r12
+    c[0x18C] = 0x4C;
+    c[0x18D] = 0x89;
+    c[0x18E] = 0xE7;
+    // .rev_loop: test ecx, ecx
+    c[0x18F] = 0x85;
+    c[0x190] = 0xC9;
+    // jz .done (+0x0a)
+    c[0x191] = 0x74;
+    c[0x192] = 0x0A;
+    // pop rax
+    c[0x193] = 0x58;
+    // mov [rdi], al
+    c[0x194] = 0x88;
+    c[0x195] = 0x07;
+    // inc rdi
+    c[0x196] = 0x48;
+    c[0x197] = 0xFF;
+    c[0x198] = 0xC7;
+    // dec ecx
+    c[0x199] = 0xFF;
+    c[0x19A] = 0xC9;
+    // jmp .rev_loop (-0x0e)
+    c[0x19B] = 0xEB;
+    c[0x19C] = 0xF2;
+    // .done: mov rax, rdi
+    c[0x19D] = 0x48;
+    c[0x19E] = 0x89;
+    c[0x19F] = 0xF8;
+    // sub rax, r12
+    c[0x1A0] = 0x4C;
+    c[0x1A1] = 0x29;
+    c[0x1A2] = 0xE0;
+    // pop r12
+    c[0x1A3] = 0x41;
+    c[0x1A4] = 0x5C;
+    // pop rbx
+    c[0x1A5] = 0x5B;
+    // ret
+    c[0x1A6] = 0xC3;
+
+    // === __kr_fmt_int at 0x1a7 ===
+    // test esi, esi
+    c[0x1A7] = 0x85;
+    c[0x1A8] = 0xF6;
+    // js .negative (+0x02)
+    c[0x1A9] = 0x78;
+    c[0x1AA] = 0x02;
+    // jmp __kr_fmt_uint (rel8 -0x5b)
+    c[0x1AB] = 0xEB;
+    c[0x1AC] = 0xA5;
+    // .negative: mov byte [rdi], '-'
+    c[0x1AD] = 0xC6;
+    c[0x1AE] = 0x07;
+    c[0x1AF] = 0x2D;
+    // neg esi
+    c[0x1B0] = 0xF7;
+    c[0x1B1] = 0xDE;
+    // mov esi, esi (zero-extend)
+    c[0x1B2] = 0x89;
+    c[0x1B3] = 0xF6;
+    // inc rdi
+    c[0x1B4] = 0x48;
+    c[0x1B5] = 0xFF;
+    c[0x1B6] = 0xC7;
+    // call __kr_fmt_uint (rel32 = -0x6a)
+    c[0x1B7] = 0xE8;
+    c[0x1B8] = 0x96;
+    c[0x1B9] = 0xFF;
+    c[0x1BA] = 0xFF;
+    c[0x1BB] = 0xFF;
+    // inc rax
+    c[0x1BC] = 0x48;
+    c[0x1BD] = 0xFF;
+    c[0x1BE] = 0xC0;
+    // ret
+    c[0x1BF] = 0xC3;
+
+    // === __kr_fmt_hex at 0x1c0 ===
+    // push rbx
+    c[0x1C0] = 0x53;
+    // push r12
+    c[0x1C1] = 0x41;
+    c[0x1C2] = 0x54;
+    // mov rbx, rdi
+    c[0x1C3] = 0x48;
+    c[0x1C4] = 0x89;
+    c[0x1C5] = 0xFB;
+    // mov rax, rsi
+    c[0x1C6] = 0x48;
+    c[0x1C7] = 0x89;
+    c[0x1C8] = 0xF0;
+    // mov r12, rdi
+    c[0x1C9] = 0x49;
+    c[0x1CA] = 0x89;
+    c[0x1CB] = 0xFC;
+    // test rax, rax
+    c[0x1CC] = 0x48;
+    c[0x1CD] = 0x85;
+    c[0x1CE] = 0xC0;
+    // jne .hex_loop (+0x0e)
+    c[0x1CF] = 0x75;
+    c[0x1D0] = 0x0E;
+    // mov byte [rbx], '0'
+    c[0x1D1] = 0xC6;
+    c[0x1D2] = 0x03;
+    c[0x1D3] = 0x30;
+    // mov rax, 1
+    c[0x1D4] = 0x48;
+    c[0x1D5] = 0xC7;
+    c[0x1D6] = 0xC0;
+    c[0x1D7] = 0x01;
+    c[0x1D8] = 0x00;
+    c[0x1D9] = 0x00;
+    c[0x1DA] = 0x00;
+    // pop r12
+    c[0x1DB] = 0x41;
+    c[0x1DC] = 0x5C;
+    // pop rbx
+    c[0x1DD] = 0x5B;
+    // ret
+    c[0x1DE] = 0xC3;
+    // .hex_loop: xor ecx, ecx
+    c[0x1DF] = 0x31;
+    c[0x1E0] = 0xC9;
+    // .hloop: test rax, rax
+    c[0x1E1] = 0x48;
+    c[0x1E2] = 0x85;
+    c[0x1E3] = 0xC0;
+    // jz .hreverse (+0x1c)
+    c[0x1E4] = 0x74;
+    c[0x1E5] = 0x1C;
+    // mov rdx, rax
+    c[0x1E6] = 0x48;
+    c[0x1E7] = 0x89;
+    c[0x1E8] = 0xC2;
+    // and edx, 0xf
+    c[0x1E9] = 0x83;
+    c[0x1EA] = 0xE2;
+    c[0x1EB] = 0x0F;
+    // shr rax, 4
+    c[0x1EC] = 0x48;
+    c[0x1ED] = 0xC1;
+    c[0x1EE] = 0xE8;
+    c[0x1EF] = 0x04;
+    // cmp dl, 10
+    c[0x1F0] = 0x80;
+    c[0x1F1] = 0xFA;
+    c[0x1F2] = 0x0A;
+    // jb .digit (+0x05)
+    c[0x1F3] = 0x72;
+    c[0x1F4] = 0x05;
+    // add dl, 0x57
+    c[0x1F5] = 0x80;
+    c[0x1F6] = 0xC2;
+    c[0x1F7] = 0x57;
+    // jmp .hpush (+0x03)
+    c[0x1F8] = 0xEB;
+    c[0x1F9] = 0x03;
+    // .digit: add dl, '0'
+    c[0x1FA] = 0x80;
+    c[0x1FB] = 0xC2;
+    c[0x1FC] = 0x30;
+    // .hpush: push rdx
+    c[0x1FD] = 0x52;
+    // inc ecx
+    c[0x1FE] = 0xFF;
+    c[0x1FF] = 0xC1;
+    // jmp .hloop (-0x21)
+    c[0x200] = 0xEB;
+    c[0x201] = 0xDF;
+    // .hreverse: mov rdi, r12
+    c[0x202] = 0x4C;
+    c[0x203] = 0x89;
+    c[0x204] = 0xE7;
+    // .hrev: test ecx, ecx
+    c[0x205] = 0x85;
+    c[0x206] = 0xC9;
+    // jz .hdone (+0x0a)
+    c[0x207] = 0x74;
+    c[0x208] = 0x0A;
+    // pop rax
+    c[0x209] = 0x58;
+    // mov [rdi], al
+    c[0x20A] = 0x88;
+    c[0x20B] = 0x07;
+    // inc rdi
+    c[0x20C] = 0x48;
+    c[0x20D] = 0xFF;
+    c[0x20E] = 0xC7;
+    // dec ecx
+    c[0x20F] = 0xFF;
+    c[0x210] = 0xC9;
+    // jmp .hrev (-0x0e)
+    c[0x211] = 0xEB;
+    c[0x212] = 0xF2;
+    // .hdone: mov rax, rdi
+    c[0x213] = 0x48;
+    c[0x214] = 0x89;
+    c[0x215] = 0xF8;
+    // sub rax, r12
+    c[0x216] = 0x4C;
+    c[0x217] = 0x29;
+    c[0x218] = 0xE0;
+    // pop r12
+    c[0x219] = 0x41;
+    c[0x21A] = 0x5C;
+    // pop rbx
+    c[0x21B] = 0x5B;
+    // ret
+    c[0x21C] = 0xC3;
+
     c
 };
 
@@ -727,12 +1079,12 @@ mod tests {
 
     #[test]
     fn blob_size_is_correct() {
-        assert_eq!(BLOB.code.len(), 320);
+        assert_eq!(BLOB.code.len(), 541);
     }
 
     #[test]
     fn all_symbols_within_bounds() {
-        assert_eq!(BLOB.symbols.len(), 11);
+        assert_eq!(BLOB.symbols.len(), 19);
         for &(name, offset) in BLOB.symbols {
             assert!(
                 (offset as usize) < BLOB.code.len(),
@@ -755,9 +1107,9 @@ mod tests {
 
     #[test]
     fn data_area_is_zeroed() {
-        // 40-byte data area at end
-        let data_start = BLOB.code.len() - 40;
-        for i in data_start..BLOB.code.len() {
+        // 40-byte data area at 0x118 (no longer at end of blob)
+        let data_start = 0x118;
+        for i in data_start..data_start + 40 {
             assert_eq!(
                 BLOB.code[i], 0x00,
                 "data area byte at offset 0x{i:X} is 0x{:02X}",
@@ -795,6 +1147,14 @@ mod tests {
             "__kr_str_copy",
             "__kr_str_cat",
             "__kr_str_len",
+            "__kr_file_open",
+            "__kr_file_read",
+            "__kr_file_write",
+            "__kr_file_close",
+            "__kr_file_size",
+            "__kr_fmt_uint",
+            "__kr_fmt_int",
+            "__kr_fmt_hex",
         ];
         for name in &expected {
             assert!(BLOB.symbol_offset(name).is_some(), "missing symbol: {name}");
