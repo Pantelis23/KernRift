@@ -6069,13 +6069,30 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
         );
         if uses_frame {
             out.push_str(&format!("    sub ${}, %rsp\n", frame_size));
+            // Spill params to their local stack slots.
+            // Params 0-5 come from registers; params 6+ come from the caller's stack frame.
+            let caller_stack_base = frame_size
+                + if function.uses_saved_value_slot { 8u32 } else { 0u32 }
+                + 8; // return address
             for i in 0..function.n_params {
-                let offset = sc_bytes + 8u32 * i as u32;
-                out.push_str(&format!(
-                    "    movq {}, {}(%rsp)\n",
-                    abi_param_register(module.abi, i as u8),
-                    offset
-                ));
+                let local_offset = sc_bytes + 8u32 * i as u32;
+                if let Some(reg) = abi_param_register(module.abi, i as u8) {
+                    out.push_str(&format!(
+                        "    movq {}, {}(%rsp)\n",
+                        reg, local_offset
+                    ));
+                } else {
+                    // Param from caller's stack: load into rax, then store to local slot.
+                    let src_offset = caller_stack_base + (i as u32 - 6) * 8;
+                    out.push_str(&format!(
+                        "    movq {}(%rsp), %rax\n",
+                        src_offset
+                    ));
+                    out.push_str(&format!(
+                        "    movq %rax, {}(%rsp)\n",
+                        local_offset
+                    ));
+                }
             }
         }
         for instruction in &function.instructions {
@@ -6108,38 +6125,17 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                     if win64 {
                         out.push_str("    sub $32, %rsp\n");
                     }
-                    // Load args into parameter registers (SysV: rdi/rsi/rdx/rcx; Win64: rcx/rdx/r8/r9).
-                    for (i, arg) in args.iter().enumerate() {
-                        let reg = abi_param_register(module.abi, i as u8);
-                        match arg {
-                            ExecutableCallArg::Imm { value } => {
-                                out.push_str(&format!("    movq ${}, {}\n", value, reg));
-                            }
-                            ExecutableCallArg::Slot { byte_offset } => {
-                                let adjusted = if win64 {
-                                    byte_offset + 32
-                                } else {
-                                    *byte_offset
-                                };
-                                if adjusted == 0 {
-                                    out.push_str(&format!("    movq (%rsp), {}\n", reg));
-                                } else {
-                                    out.push_str(&format!(
-                                        "    movq {}(%rsp), {}\n",
-                                        adjusted, reg
-                                    ));
-                                }
-                            }
-                            ExecutableCallArg::SavedValue => {
-                                out.push_str(&format!("    movq %rbx, {}\n", reg));
-                            }
-                        }
-                    }
+                    let n_stack_args = emit_asm_text_call_args(
+                        &mut out, args, module.abi, win64,
+                    );
                     out.push_str("    call ");
                     out.push_str(symbol);
                     out.push('\n');
-                    if win64 {
-                        out.push_str("    add $32, %rsp\n");
+                    // Clean up stack args pushed before the call.
+                    let stack_cleanup = if win64 { 32 } else { 0 }
+                        + n_stack_args as u32 * 8;
+                    if stack_cleanup > 0 {
+                        out.push_str(&format!("    add ${}, %rsp\n", stack_cleanup));
                     }
                     // Store the return value from the accumulator to the stack slot.
                     let offset = 8u32 * u32::from(*slot_idx);
@@ -6187,28 +6183,10 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                 } => {
                     let else_label = format!(".L{}_branch_{}_else", function.symbol, branch_index);
                     let end_label = format!(".L{}_branch_{}_end", function.symbol, branch_index);
-                    // Load args into parameter registers before the conditional call.
-                    for (i, arg) in args.iter().enumerate() {
-                        let reg = abi_param_register(module.abi, i as u8);
-                        match arg {
-                            ExecutableCallArg::Imm { value } => {
-                                out.push_str(&format!("    movq ${}, {}\n", value, reg));
-                            }
-                            ExecutableCallArg::Slot { byte_offset } => {
-                                if *byte_offset == 0 {
-                                    out.push_str(&format!("    movq (%rsp), {}\n", reg));
-                                } else {
-                                    out.push_str(&format!(
-                                        "    movq {}(%rsp), {}\n",
-                                        byte_offset, reg
-                                    ));
-                                }
-                            }
-                            ExecutableCallArg::SavedValue => {
-                                out.push_str(&format!("    movq %rbx, {}\n", reg));
-                            }
-                        }
-                    }
+                    // Load args into parameter registers (and push stack args).
+                    let n_stack_args = emit_asm_text_call_args(
+                        &mut out, args, module.abi, false,
+                    );
                     out.push_str("    ");
                     out.push_str(mmio_saved_value_zero_test_mnemonic(*ty));
                     out.push('\n');
@@ -6218,6 +6196,9 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                     out.push_str("    call ");
                     out.push_str(then_symbol);
                     out.push('\n');
+                    if n_stack_args > 0 {
+                        out.push_str(&format!("    add ${}, %rsp\n", n_stack_args * 8));
+                    }
                     out.push_str("    jmp ");
                     out.push_str(&end_label);
                     out.push('\n');
@@ -6226,6 +6207,9 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                     out.push_str("    call ");
                     out.push_str(else_symbol);
                     out.push('\n');
+                    if n_stack_args > 0 {
+                        out.push_str(&format!("    add ${}, %rsp\n", n_stack_args * 8));
+                    }
                     out.push_str(&end_label);
                     out.push_str(":\n");
                     branch_index += 1;
@@ -6605,37 +6589,16 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                     if win64 {
                         out.push_str("    sub $32, %rsp\n");
                     }
-                    for (i, arg) in args.iter().enumerate() {
-                        let reg = abi_param_register(module.abi, i as u8);
-                        match arg {
-                            ExecutableCallArg::Imm { value } => {
-                                out.push_str(&format!("    movq ${}, {}\n", value, reg));
-                            }
-                            ExecutableCallArg::Slot { byte_offset } => {
-                                let adjusted = if win64 {
-                                    byte_offset + 32
-                                } else {
-                                    *byte_offset
-                                };
-                                if adjusted == 0 {
-                                    out.push_str(&format!("    movq (%rsp), {}\n", reg));
-                                } else {
-                                    out.push_str(&format!(
-                                        "    movq {}(%rsp), {}\n",
-                                        adjusted, reg
-                                    ));
-                                }
-                            }
-                            ExecutableCallArg::SavedValue => {
-                                out.push_str(&format!("    movq %rbx, {}\n", reg));
-                            }
-                        }
-                    }
+                    let n_stack_args = emit_asm_text_call_args(
+                        &mut out, args, module.abi, win64,
+                    );
                     out.push_str("    call ");
                     out.push_str(symbol);
                     out.push('\n');
-                    if win64 {
-                        out.push_str("    add $32, %rsp\n");
+                    let stack_cleanup = if win64 { 32 } else { 0 }
+                        + n_stack_args as u32 * 8;
+                    if stack_cleanup > 0 {
+                        out.push_str(&format!("    add ${}, %rsp\n", stack_cleanup));
                     }
                 }
                 X86_64AsmInstruction::ParamLoad { param_idx, ty } => {
@@ -6698,9 +6661,35 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                     out.push_str(", (%rax)\n");
                 }
                 X86_64AsmInstruction::TailCall { symbol, args } => {
-                    // Load args BEFORE frame teardown so stack slots are still valid.
-                    for (i, arg) in args.iter().enumerate() {
-                        let reg = abi_param_register(module.abi, i as u8);
+                    let reg_limit: usize = match module.abi {
+                        TargetAbi::Win64 => 4,
+                        _ => 6,
+                    };
+                    let n_stack_args = if args.len() > reg_limit {
+                        args.len() - reg_limit
+                    } else {
+                        0
+                    };
+                    // For stack args: write values to their final positions BEFORE
+                    // teardown while stack slots are still accessible. After
+                    // `add $frame_size, %rsp` + `pop %rbx`, rsp will point at the
+                    // return address. Callee stack arg j lives at
+                    //   [rsp_final + 8 + j*8]
+                    // = [rsp_now + frame_size + (rbx?8:0) + 8 + j*8].
+                    let rbx_bytes: u32 = if function.uses_saved_value_slot { 8 } else { 0 };
+                    for j in 0..n_stack_args {
+                        let dest = frame_size + rbx_bytes + 8 + (j as u32) * 8;
+                        emit_asm_text_load_arg_to_rax(
+                            &mut out, &args[reg_limit + j], false,
+                        );
+                        out.push_str(&format!(
+                            "    movq %rax, {}(%rsp)\n", dest
+                        ));
+                    }
+                    // Load register args (stack slots still valid).
+                    for (i, arg) in args.iter().enumerate().take(reg_limit) {
+                        let reg = abi_param_register(module.abi, i as u8)
+                            .expect("register args within limit always have a register");
                         match arg {
                             ExecutableCallArg::Imm { value } => {
                                 out.push_str(&format!("    movq ${}, {}\n", value, reg));
@@ -7798,14 +7787,16 @@ fn encode_call_arg_to_dx(out: &mut Vec<u8>, arg: &ExecutableCallArg) {
 }
 
 /// Byte count for storing RAX to a stack slot: `mov [rsp+off], rax`.
-fn store_rax_to_slot_len() -> u64 {
-    5 // 48 89 44 24 off
+fn store_rax_to_slot_len(byte_offset: u32) -> u64 {
+    // 48 89 + SIB disp (2 for no-disp, 3 for disp8, 6 for disp32)
+    if byte_offset == 0 { 4 } else if byte_offset <= 127 { 5 } else { 8 }
 }
 
 /// Encode storing RAX to `[rsp+off]`.
 fn encode_store_rax_to_slot(out: &mut Vec<u8>, byte_offset: u32) {
-    // mov [rsp+off], rax — 48 89 44 24 off (5 bytes)
-    out.extend_from_slice(&[0x48, 0x89, 0x44, 0x24, byte_offset as u8]);
+    // mov [rsp+off], rax
+    out.extend_from_slice(&[0x48, 0x89]);
+    emit_rsp_sib_disp(out, 0x44, byte_offset);
 }
 
 /// Byte count for loading an `ExecutableCallArg` into a specific GPR.
@@ -7826,7 +7817,7 @@ fn call_arg_to_gpr_len(arg: &ExecutableCallArg) -> u64 {
 }
 
 /// Byte count for a PortIn op in x86_64 object code.
-fn port_in_encoded_len(width: PortIoWidth, port: &ExecutableCallArg, _dst_byte_offset: u32) -> u64 {
+fn port_in_encoded_len(width: PortIoWidth, port: &ExecutableCallArg, dst_byte_offset: u32) -> u64 {
     let dx_load = call_arg_to_dx_len(port);
     let in_bytes: u64 = match width {
         PortIoWidth::Byte => 1,  // EC
@@ -7838,7 +7829,7 @@ fn port_in_encoded_len(width: PortIoWidth, port: &ExecutableCallArg, _dst_byte_o
         PortIoWidth::Word => 3,  // 0F B7 C0
         PortIoWidth::Dword => 0, // already in eax
     };
-    let store = store_rax_to_slot_len();
+    let store = store_rax_to_slot_len(dst_byte_offset);
     dx_load + in_bytes + zext_bytes + store
 }
 
@@ -7874,8 +7865,8 @@ fn syscall_encoded_len(
     // syscall instruction: 2 bytes (0F 05).
     total += 2;
     // Optional store of return value.
-    if dst.is_some() {
-        total += store_rax_to_slot_len();
+    if let Some(off) = dst {
+        total += store_rax_to_slot_len(*off);
     }
     total
 }
@@ -7887,8 +7878,13 @@ fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
         // Branch encoding: test_bytes + cond_jump(6) + call_then(5) + jmp_over(5) + call_else(5) = test_bytes + 21
         ExecutableOp::BranchIfZero { ty, .. } => mmio_saved_value_zero_test_bytes(*ty) + 21,
         // BranchIfZeroWithArgs: arg-load prefix + same branch structure as BranchIfZero
+        // Note: the object emitter's branch structure uses hardcoded jump offsets (21 bytes)
+        // and does NOT include stack cleanup for args 6+. Both branches tail-call
+        // into continuation functions that set up their own frames.
         ExecutableOp::BranchIfZeroWithArgs { ty, args, .. } => {
-            args.iter().map(call_arg_encoded_bytes).sum::<u64>()
+            let args_bytes: u64 = args.iter().enumerate()
+                .map(|(i, a)| call_arg_indexed_encoded_bytes(i, a)).sum();
+            args_bytes
                 + mmio_saved_value_zero_test_bytes(*ty)
                 + 21
         }
@@ -7985,13 +7981,30 @@ fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
         }
         ExecutableOp::MmioWriteValueParamAddr { ty, .. } => 5 + mmio_saved_value_store_bytes(*ty),
         ExecutableOp::CallWithArgs { args, .. } => {
-            args.iter().map(call_arg_encoded_bytes).sum::<u64>() + 5
+            let args_bytes: u64 = args.iter().enumerate()
+                .map(|(i, a)| call_arg_indexed_encoded_bytes(i, a)).sum();
+            let n_stack = if args.len() > 6 { args.len() - 6 } else { 0 };
+            let cleanup = if n_stack > 0 {
+                rsp_adj_encoded_len((n_stack * 8) as u32)
+            } else {
+                0
+            };
+            args_bytes + 5 + cleanup // 5 = call rel32
         }
         ExecutableOp::CallCaptureWithArgs {
             args, ty, slot_idx, ..
         } => {
-            args.iter().map(call_arg_encoded_bytes).sum::<u64>()
+            let args_bytes: u64 = args.iter().enumerate()
+                .map(|(i, a)| call_arg_indexed_encoded_bytes(i, a)).sum();
+            let n_stack = if args.len() > 6 { args.len() - 6 } else { 0 };
+            let cleanup = if n_stack > 0 {
+                rsp_adj_encoded_len((n_stack * 8) as u32)
+            } else {
+                0
+            };
+            args_bytes
                 + 5  // call rel32
+                + cleanup
                 + stack_cell_access_bytes(*ty, *slot_idx) // store acc -> slot
         }
         // Loop ops:
@@ -8065,17 +8078,35 @@ fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
     }
 }
 
-fn call_arg_encoded_bytes(arg: &ExecutableCallArg) -> u64 {
-    match arg {
-        ExecutableCallArg::Imm { value } => {
-            if *value <= 0x7FFF_FFFF {
-                7
-            } else {
-                10
+/// Byte length of encoding arg at position `arg_idx`.
+/// Args 0-5 go into registers; args 6+ are loaded into rax then pushed.
+fn call_arg_indexed_encoded_bytes(arg_idx: usize, arg: &ExecutableCallArg) -> u64 {
+    if arg_idx < 6 {
+        match arg {
+            ExecutableCallArg::Imm { value } => {
+                if *value <= 0x7FFF_FFFF {
+                    7
+                } else {
+                    10
+                }
             }
+            ExecutableCallArg::Slot { .. } => 5,
+            ExecutableCallArg::SavedValue => 3,
         }
-        ExecutableCallArg::Slot { .. } => 5,
-        ExecutableCallArg::SavedValue => 3,
+    } else {
+        // Load value into rax (variable size) + push rax (1 byte)
+        let load_len = match arg {
+            ExecutableCallArg::Imm { value } => {
+                if *value <= 0x7FFF_FFFF {
+                    5 // mov eax, imm32
+                } else {
+                    10 // movabs rax, imm64
+                }
+            }
+            ExecutableCallArg::Slot { .. } => 5, // mov rax, [rsp+disp8]
+            ExecutableCallArg::SavedValue => 3,  // mov rax, rbx
+        };
+        load_len + 1 // + push rax
     }
 }
 
@@ -8098,8 +8129,26 @@ fn executable_terminator_encoded_len(function: &ExecutableFunction) -> u64 {
             value: ExecutableValue::Unit,
         } => frame_bytes + pop_rbx + 1,
         ExecutableTerminator::TailCall { args, .. } => {
-            let args_bytes: u64 = args.iter().map(call_arg_encoded_bytes).sum();
-            frame_bytes + pop_rbx + args_bytes + 5 // 5 for jmp rel32
+            // Register args (0-5): same as call encoding.
+            let reg_args_bytes: u64 = args.iter().enumerate().take(6)
+                .map(|(i, a)| call_arg_indexed_encoded_bytes(i, a)).sum();
+            // Stack args (6+): load into rax + mov [rsp+dest], rax.
+            let uses_saved = executable_function_uses_saved_value_slot(function);
+            let rbx_adj: u32 = if uses_saved { 8 } else { 0 };
+            let frame_sz = executable_function_frame_size(function);
+            let stack_args_bytes: u64 = (6..args.len()).map(|j| {
+                let load_len: u64 = match &args[j] {
+                    ExecutableCallArg::Imm { value } => {
+                        if *value <= 0x7FFF_FFFF { 5 } else { 10 }
+                    }
+                    ExecutableCallArg::Slot { .. } => 5,
+                    ExecutableCallArg::SavedValue => 3,
+                };
+                let dest_disp = frame_sz + rbx_adj + 8 + ((j - 6) as u32) * 8;
+                let store_len: u64 = if dest_disp <= 127 { 5 } else { 8 };
+                load_len + store_len
+            }).sum();
+            reg_args_bytes + stack_args_bytes + frame_bytes + pop_rbx + 5 // 5 for jmp rel32
         }
     }
 }
@@ -8153,49 +8202,48 @@ fn encode_mmio_write_saved_value_bytes(out: &mut Vec<u8>, ty: MmioScalarType, ad
     }
 }
 
+/// Emit the SIB-based `[rsp + disp]` addressing suffix for a stack cell access.
+/// `modrm_disp8` is the ModRM byte for mod=01 (disp8), e.g., 0x5C for reg=3 rm=4.
+/// This function emits: ModRM + SIB(0x24) + displacement (0, 1, or 4 bytes).
+fn emit_rsp_sib_disp(out: &mut Vec<u8>, modrm_disp8: u8, offset: u32) {
+    let modrm_no_disp = modrm_disp8 & 0x38 | 0x04; // mod=00, keep reg, rm=4
+    let modrm_disp32 = modrm_disp8 | 0x40;          // mod=10 (01→10: add 0x40)
+    if offset == 0 {
+        out.extend_from_slice(&[modrm_no_disp, 0x24]);
+    } else if offset <= 127 {
+        out.extend_from_slice(&[modrm_disp8, 0x24, offset as u8]);
+    } else {
+        let b = offset.to_le_bytes();
+        out.extend_from_slice(&[modrm_disp32, 0x24, b[0], b[1], b[2], b[3]]);
+    }
+}
+
 fn encode_stack_cell_store_imm_slot_bytes(
     out: &mut Vec<u8>,
     ty: MmioScalarType,
     value: u64,
     slot_idx: u8,
 ) {
-    let offset = 8u8 * slot_idx;
+    let offset = 8u32 * slot_idx as u32;
     push_mov_imm_to_value_register(out, ty, value);
-    if offset == 0 {
-        match ty {
-            MmioScalarType::U8 | MmioScalarType::I8 => out.extend_from_slice(&[0x88, 0x0C, 0x24]),
-            MmioScalarType::U16 | MmioScalarType::I16 => {
-                out.extend_from_slice(&[0x66, 0x89, 0x0C, 0x24])
-            }
-            MmioScalarType::U32 | MmioScalarType::I32 => out.extend_from_slice(&[0x89, 0x0C, 0x24]),
-            MmioScalarType::U64 | MmioScalarType::I64 => {
-                out.extend_from_slice(&[0x48, 0x89, 0x0C, 0x24])
-            }
-            MmioScalarType::F32 | MmioScalarType::F64 => {
-                unreachable!(
-                    "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
-                )
-            }
+    // Store %cl/%cx/%ecx/%rcx (reg=1) to [rsp + offset].
+    match ty {
+        MmioScalarType::U8 | MmioScalarType::I8 => {
+            out.push(0x88); emit_rsp_sib_disp(out, 0x4C, offset);
         }
-    } else {
-        match ty {
-            MmioScalarType::U8 | MmioScalarType::I8 => {
-                out.extend_from_slice(&[0x88, 0x4C, 0x24, offset])
-            }
-            MmioScalarType::U16 | MmioScalarType::I16 => {
-                out.extend_from_slice(&[0x66, 0x89, 0x4C, 0x24, offset])
-            }
-            MmioScalarType::U32 | MmioScalarType::I32 => {
-                out.extend_from_slice(&[0x89, 0x4C, 0x24, offset])
-            }
-            MmioScalarType::U64 | MmioScalarType::I64 => {
-                out.extend_from_slice(&[0x48, 0x89, 0x4C, 0x24, offset])
-            }
-            MmioScalarType::F32 | MmioScalarType::F64 => {
-                unreachable!(
-                    "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
-                )
-            }
+        MmioScalarType::U16 | MmioScalarType::I16 => {
+            out.extend_from_slice(&[0x66, 0x89]); emit_rsp_sib_disp(out, 0x4C, offset);
+        }
+        MmioScalarType::U32 | MmioScalarType::I32 => {
+            out.push(0x89); emit_rsp_sib_disp(out, 0x4C, offset);
+        }
+        MmioScalarType::U64 | MmioScalarType::I64 => {
+            out.extend_from_slice(&[0x48, 0x89]); emit_rsp_sib_disp(out, 0x4C, offset);
+        }
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
 }
@@ -8205,167 +8253,97 @@ fn encode_stack_cell_store_saved_value_slot_bytes(
     ty: MmioScalarType,
     slot_idx: u8,
 ) {
-    let offset = 8u8 * slot_idx;
-    if offset == 0 {
-        match ty {
-            MmioScalarType::U8 | MmioScalarType::I8 => out.extend_from_slice(&[0x88, 0x1C, 0x24]),
-            MmioScalarType::U16 | MmioScalarType::I16 => {
-                out.extend_from_slice(&[0x66, 0x89, 0x1C, 0x24])
-            }
-            MmioScalarType::U32 | MmioScalarType::I32 => out.extend_from_slice(&[0x89, 0x1C, 0x24]),
-            MmioScalarType::U64 | MmioScalarType::I64 => {
-                out.extend_from_slice(&[0x48, 0x89, 0x1C, 0x24])
-            }
-            MmioScalarType::F32 | MmioScalarType::F64 => {
-                unreachable!(
-                    "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
-                )
-            }
+    let offset = 8u32 * slot_idx as u32;
+    // Store %bl/%bx/%ebx/%rbx (reg=3) to [rsp + offset].
+    match ty {
+        MmioScalarType::U8 | MmioScalarType::I8 => {
+            out.push(0x88); emit_rsp_sib_disp(out, 0x5C, offset);
         }
-    } else {
-        match ty {
-            MmioScalarType::U8 | MmioScalarType::I8 => {
-                out.extend_from_slice(&[0x88, 0x5C, 0x24, offset])
-            }
-            MmioScalarType::U16 | MmioScalarType::I16 => {
-                out.extend_from_slice(&[0x66, 0x89, 0x5C, 0x24, offset])
-            }
-            MmioScalarType::U32 | MmioScalarType::I32 => {
-                out.extend_from_slice(&[0x89, 0x5C, 0x24, offset])
-            }
-            MmioScalarType::U64 | MmioScalarType::I64 => {
-                out.extend_from_slice(&[0x48, 0x89, 0x5C, 0x24, offset])
-            }
-            MmioScalarType::F32 | MmioScalarType::F64 => {
-                unreachable!(
-                    "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
-                )
-            }
+        MmioScalarType::U16 | MmioScalarType::I16 => {
+            out.extend_from_slice(&[0x66, 0x89]); emit_rsp_sib_disp(out, 0x5C, offset);
+        }
+        MmioScalarType::U32 | MmioScalarType::I32 => {
+            out.push(0x89); emit_rsp_sib_disp(out, 0x5C, offset);
+        }
+        MmioScalarType::U64 | MmioScalarType::I64 => {
+            out.extend_from_slice(&[0x48, 0x89]); emit_rsp_sib_disp(out, 0x5C, offset);
+        }
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
 }
 
 fn encode_stack_cell_load_slot_bytes(out: &mut Vec<u8>, ty: MmioScalarType, slot_idx: u8) {
-    let offset = 8u8 * slot_idx;
-    if offset == 0 {
-        match ty {
-            MmioScalarType::U8 | MmioScalarType::I8 => out.extend_from_slice(&[0x8A, 0x1C, 0x24]),
-            MmioScalarType::U16 | MmioScalarType::I16 => {
-                out.extend_from_slice(&[0x66, 0x8B, 0x1C, 0x24])
-            }
-            MmioScalarType::U32 | MmioScalarType::I32 => out.extend_from_slice(&[0x8B, 0x1C, 0x24]),
-            MmioScalarType::U64 | MmioScalarType::I64 => {
-                out.extend_from_slice(&[0x48, 0x8B, 0x1C, 0x24])
-            }
-            MmioScalarType::F32 | MmioScalarType::F64 => {
-                unreachable!(
-                    "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
-                )
-            }
+    let offset = 8u32 * slot_idx as u32;
+    // Load [rsp + offset] into %bl/%bx/%ebx/%rbx (reg=3).
+    match ty {
+        MmioScalarType::U8 | MmioScalarType::I8 => {
+            out.push(0x8A); emit_rsp_sib_disp(out, 0x5C, offset);
         }
-    } else {
-        match ty {
-            MmioScalarType::U8 | MmioScalarType::I8 => {
-                out.extend_from_slice(&[0x8A, 0x5C, 0x24, offset])
-            }
-            MmioScalarType::U16 | MmioScalarType::I16 => {
-                out.extend_from_slice(&[0x66, 0x8B, 0x5C, 0x24, offset])
-            }
-            MmioScalarType::U32 | MmioScalarType::I32 => {
-                out.extend_from_slice(&[0x8B, 0x5C, 0x24, offset])
-            }
-            MmioScalarType::U64 | MmioScalarType::I64 => {
-                out.extend_from_slice(&[0x48, 0x8B, 0x5C, 0x24, offset])
-            }
-            MmioScalarType::F32 | MmioScalarType::F64 => {
-                unreachable!(
-                    "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
-                )
-            }
+        MmioScalarType::U16 | MmioScalarType::I16 => {
+            out.extend_from_slice(&[0x66, 0x8B]); emit_rsp_sib_disp(out, 0x5C, offset);
+        }
+        MmioScalarType::U32 | MmioScalarType::I32 => {
+            out.push(0x8B); emit_rsp_sib_disp(out, 0x5C, offset);
+        }
+        MmioScalarType::U64 | MmioScalarType::I64 => {
+            out.extend_from_slice(&[0x48, 0x8B]); emit_rsp_sib_disp(out, 0x5C, offset);
+        }
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
 }
 
 /// Load a stack slot into `%al/%ax/%eax/%rax` (scratch, reg field = 0).
 fn encode_stack_cell_load_slot_bytes_into_rax(out: &mut Vec<u8>, ty: MmioScalarType, slot_idx: u8) {
-    let offset = 8u8 * slot_idx;
-    if offset == 0 {
-        match ty {
-            MmioScalarType::U8 | MmioScalarType::I8 => out.extend_from_slice(&[0x8A, 0x04, 0x24]),
-            MmioScalarType::U16 | MmioScalarType::I16 => {
-                out.extend_from_slice(&[0x66, 0x8B, 0x04, 0x24])
-            }
-            MmioScalarType::U32 | MmioScalarType::I32 => out.extend_from_slice(&[0x8B, 0x04, 0x24]),
-            MmioScalarType::U64 | MmioScalarType::I64 => {
-                out.extend_from_slice(&[0x48, 0x8B, 0x04, 0x24])
-            }
-            MmioScalarType::F32 | MmioScalarType::F64 => {
-                unreachable!(
-                    "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
-                )
-            }
+    let offset = 8u32 * slot_idx as u32;
+    match ty {
+        MmioScalarType::U8 | MmioScalarType::I8 => {
+            out.push(0x8A); emit_rsp_sib_disp(out, 0x44, offset);
         }
-    } else {
-        match ty {
-            MmioScalarType::U8 | MmioScalarType::I8 => {
-                out.extend_from_slice(&[0x8A, 0x44, 0x24, offset])
-            }
-            MmioScalarType::U16 | MmioScalarType::I16 => {
-                out.extend_from_slice(&[0x66, 0x8B, 0x44, 0x24, offset])
-            }
-            MmioScalarType::U32 | MmioScalarType::I32 => {
-                out.extend_from_slice(&[0x8B, 0x44, 0x24, offset])
-            }
-            MmioScalarType::U64 | MmioScalarType::I64 => {
-                out.extend_from_slice(&[0x48, 0x8B, 0x44, 0x24, offset])
-            }
-            MmioScalarType::F32 | MmioScalarType::F64 => {
-                unreachable!(
-                    "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
-                )
-            }
+        MmioScalarType::U16 | MmioScalarType::I16 => {
+            out.extend_from_slice(&[0x66, 0x8B]); emit_rsp_sib_disp(out, 0x44, offset);
+        }
+        MmioScalarType::U32 | MmioScalarType::I32 => {
+            out.push(0x8B); emit_rsp_sib_disp(out, 0x44, offset);
+        }
+        MmioScalarType::U64 | MmioScalarType::I64 => {
+            out.extend_from_slice(&[0x48, 0x8B]); emit_rsp_sib_disp(out, 0x44, offset);
+        }
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
 }
 
 /// Load a stack slot into `%cl/%cx/%ecx/%rcx` (shift-count register, reg field = 1).
 fn encode_stack_cell_load_slot_bytes_into_rcx(out: &mut Vec<u8>, ty: MmioScalarType, slot_idx: u8) {
-    let offset = 8u8 * slot_idx;
-    if offset == 0 {
-        match ty {
-            MmioScalarType::U8 | MmioScalarType::I8 => out.extend_from_slice(&[0x8A, 0x0C, 0x24]),
-            MmioScalarType::U16 | MmioScalarType::I16 => {
-                out.extend_from_slice(&[0x66, 0x8B, 0x0C, 0x24])
-            }
-            MmioScalarType::U32 | MmioScalarType::I32 => out.extend_from_slice(&[0x8B, 0x0C, 0x24]),
-            MmioScalarType::U64 | MmioScalarType::I64 => {
-                out.extend_from_slice(&[0x48, 0x8B, 0x0C, 0x24])
-            }
-            MmioScalarType::F32 | MmioScalarType::F64 => {
-                unreachable!(
-                    "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
-                )
-            }
+    let offset = 8u32 * slot_idx as u32;
+    match ty {
+        MmioScalarType::U8 | MmioScalarType::I8 => {
+            out.push(0x8A); emit_rsp_sib_disp(out, 0x4C, offset);
         }
-    } else {
-        match ty {
-            MmioScalarType::U8 | MmioScalarType::I8 => {
-                out.extend_from_slice(&[0x8A, 0x4C, 0x24, offset])
-            }
-            MmioScalarType::U16 | MmioScalarType::I16 => {
-                out.extend_from_slice(&[0x66, 0x8B, 0x4C, 0x24, offset])
-            }
-            MmioScalarType::U32 | MmioScalarType::I32 => {
-                out.extend_from_slice(&[0x8B, 0x4C, 0x24, offset])
-            }
-            MmioScalarType::U64 | MmioScalarType::I64 => {
-                out.extend_from_slice(&[0x48, 0x8B, 0x4C, 0x24, offset])
-            }
-            MmioScalarType::F32 | MmioScalarType::F64 => {
-                unreachable!(
-                    "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
-                )
-            }
+        MmioScalarType::U16 | MmioScalarType::I16 => {
+            out.extend_from_slice(&[0x66, 0x8B]); emit_rsp_sib_disp(out, 0x4C, offset);
+        }
+        MmioScalarType::U32 | MmioScalarType::I32 => {
+            out.push(0x8B); emit_rsp_sib_disp(out, 0x4C, offset);
+        }
+        MmioScalarType::U64 | MmioScalarType::I64 => {
+            out.extend_from_slice(&[0x48, 0x8B]); emit_rsp_sib_disp(out, 0x4C, offset);
+        }
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!(
+                "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
 }
@@ -8473,14 +8451,10 @@ fn encode_slot_arith_slot_op_bytes(
     op: ArithOp,
     dst_slot_idx: u8,
 ) {
-    let offset = 8u8 * dst_slot_idx;
-    // SIB byte for [rsp]: scale=00, index=100(none), base=100(rsp) = 0x24.
-    // ModRM for [rsp], no disp: mod=00, rm=100(SIB) → 0b00_rrr_100.
-    // ModRM for [rsp+disp8]:    mod=01, rm=100(SIB) → 0b01_rrr_100.
+    let offset = 8u32 * dst_slot_idx as u32;
     match op {
         ArithOp::Add | ArithOp::Sub | ArithOp::And | ArithOp::Or | ArithOp::Xor => {
-            // `op r/m, r` family: U8 opcode X (/r), 16/32/64-bit opcode X+1 (/r).
-            // reg field = 0 (%rax family). ModRM base: 0b??_000_100.
+            // `op r/m, r` family: reg=0 (%rax family). modrm_disp8 = 0x44.
             let opcode8: u8 = match op {
                 ArithOp::Add => 0x00,
                 ArithOp::Sub => 0x28,
@@ -8489,100 +8463,50 @@ fn encode_slot_arith_slot_op_bytes(
                 ArithOp::Xor => 0x30,
                 _ => unreachable!(),
             };
-            let (modrm_no, modrm_d8) = if offset == 0 {
-                (0x04u8, 0x04u8)
-            } else {
-                (0x04u8, 0x44u8)
-            };
-            if offset == 0 {
-                match ty {
-                    MmioScalarType::U8 | MmioScalarType::I8 => {
-                        out.extend_from_slice(&[opcode8, modrm_no, 0x24])
-                    }
-                    MmioScalarType::U16 | MmioScalarType::I16 => {
-                        out.extend_from_slice(&[0x66, opcode8 + 1, modrm_no, 0x24])
-                    }
-                    MmioScalarType::U32 | MmioScalarType::I32 => {
-                        out.extend_from_slice(&[opcode8 + 1, modrm_no, 0x24])
-                    }
-                    MmioScalarType::U64 | MmioScalarType::I64 => {
-                        out.extend_from_slice(&[0x48, opcode8 + 1, modrm_no, 0x24])
-                    }
-                    MmioScalarType::F32 | MmioScalarType::F64 => {
-                        unreachable!(
-                            "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
-                        )
-                    }
+            match ty {
+                MmioScalarType::U8 | MmioScalarType::I8 => {
+                    out.push(opcode8); emit_rsp_sib_disp(out, 0x44, offset);
                 }
-            } else {
-                match ty {
-                    MmioScalarType::U8 | MmioScalarType::I8 => {
-                        out.extend_from_slice(&[opcode8, modrm_d8, 0x24, offset])
-                    }
-                    MmioScalarType::U16 | MmioScalarType::I16 => {
-                        out.extend_from_slice(&[0x66, opcode8 + 1, modrm_d8, 0x24, offset])
-                    }
-                    MmioScalarType::U32 | MmioScalarType::I32 => {
-                        out.extend_from_slice(&[opcode8 + 1, modrm_d8, 0x24, offset])
-                    }
-                    MmioScalarType::U64 | MmioScalarType::I64 => {
-                        out.extend_from_slice(&[0x48, opcode8 + 1, modrm_d8, 0x24, offset])
-                    }
-                    MmioScalarType::F32 | MmioScalarType::F64 => {
-                        unreachable!(
-                            "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
-                        )
-                    }
+                MmioScalarType::U16 | MmioScalarType::I16 => {
+                    out.extend_from_slice(&[0x66, opcode8 + 1]); emit_rsp_sib_disp(out, 0x44, offset);
+                }
+                MmioScalarType::U32 | MmioScalarType::I32 => {
+                    out.push(opcode8 + 1); emit_rsp_sib_disp(out, 0x44, offset);
+                }
+                MmioScalarType::U64 | MmioScalarType::I64 => {
+                    out.extend_from_slice(&[0x48, opcode8 + 1]); emit_rsp_sib_disp(out, 0x44, offset);
+                }
+                MmioScalarType::F32 | MmioScalarType::F64 => {
+                    unreachable!(
+                        "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+                    )
                 }
             }
         }
         ArithOp::Shl | ArithOp::Shr => {
-            // `shl/shr r/m, CL`: U8 opcode D2, others D3; /4 for SHL, /5 for SHR.
-            // ModRM: mod=00/01, reg=/4=4 or /5=5, rm=100(SIB).
-            let (modrm_no, modrm_d8) = match op {
-                ArithOp::Shl => (0x24u8, 0x64u8), // mod=00/01, reg=4, rm=4
-                ArithOp::Shr => (0x2Cu8, 0x6Cu8), // mod=00/01, reg=5, rm=4
+            // modrm_disp8: SHL reg=4 → 0x64, SHR reg=5 → 0x6C.
+            let modrm_d8: u8 = match op {
+                ArithOp::Shl => 0x64,
+                ArithOp::Shr => 0x6C,
                 _ => unreachable!(),
             };
-            if offset == 0 {
-                match ty {
-                    MmioScalarType::U8 | MmioScalarType::I8 => {
-                        out.extend_from_slice(&[0xD2, modrm_no, 0x24])
-                    }
-                    MmioScalarType::U16 | MmioScalarType::I16 => {
-                        out.extend_from_slice(&[0x66, 0xD3, modrm_no, 0x24])
-                    }
-                    MmioScalarType::U32 | MmioScalarType::I32 => {
-                        out.extend_from_slice(&[0xD3, modrm_no, 0x24])
-                    }
-                    MmioScalarType::U64 | MmioScalarType::I64 => {
-                        out.extend_from_slice(&[0x48, 0xD3, modrm_no, 0x24])
-                    }
-                    MmioScalarType::F32 | MmioScalarType::F64 => {
-                        unreachable!(
-                            "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
-                        )
-                    }
+            match ty {
+                MmioScalarType::U8 | MmioScalarType::I8 => {
+                    out.push(0xD2); emit_rsp_sib_disp(out, modrm_d8, offset);
                 }
-            } else {
-                match ty {
-                    MmioScalarType::U8 | MmioScalarType::I8 => {
-                        out.extend_from_slice(&[0xD2, modrm_d8, 0x24, offset])
-                    }
-                    MmioScalarType::U16 | MmioScalarType::I16 => {
-                        out.extend_from_slice(&[0x66, 0xD3, modrm_d8, 0x24, offset])
-                    }
-                    MmioScalarType::U32 | MmioScalarType::I32 => {
-                        out.extend_from_slice(&[0xD3, modrm_d8, 0x24, offset])
-                    }
-                    MmioScalarType::U64 | MmioScalarType::I64 => {
-                        out.extend_from_slice(&[0x48, 0xD3, modrm_d8, 0x24, offset])
-                    }
-                    MmioScalarType::F32 | MmioScalarType::F64 => {
-                        unreachable!(
-                            "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
-                        )
-                    }
+                MmioScalarType::U16 | MmioScalarType::I16 => {
+                    out.extend_from_slice(&[0x66, 0xD3]); emit_rsp_sib_disp(out, modrm_d8, offset);
+                }
+                MmioScalarType::U32 | MmioScalarType::I32 => {
+                    out.push(0xD3); emit_rsp_sib_disp(out, modrm_d8, offset);
+                }
+                MmioScalarType::U64 | MmioScalarType::I64 => {
+                    out.extend_from_slice(&[0x48, 0xD3]); emit_rsp_sib_disp(out, modrm_d8, offset);
+                }
+                MmioScalarType::F32 | MmioScalarType::F64 => {
+                    unreachable!(
+                        "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+                    )
                 }
             }
         }
@@ -8670,23 +8594,71 @@ fn executable_function_frame_size(function: &ExecutableFunction) -> u32 {
         + 8u32 * function.signature.params.len() as u32
 }
 
-fn emit_param_spill(out: &mut Vec<u8>, param_idx: usize, offset: u8) {
-    let (rex, modrm): (u8, u8) = match param_idx {
-        0 => (0x48, 0x7C), // rdi  (reg=7)
-        1 => (0x48, 0x74), // rsi  (reg=6)
-        2 => (0x48, 0x54), // rdx  (reg=2)
-        3 => (0x48, 0x4C), // rcx  (reg=1)
-        4 => (0x4C, 0x44), // r8   (REX.R, reg=0)
-        5 => (0x4C, 0x4C), // r9   (REX.R, reg=1)
-        _ => panic!("SysV ABI supports at most 6 integer register params"),
-    };
-    out.extend_from_slice(&[rex, 0x89, modrm, 0x24, offset]);
+fn emit_param_spill(out: &mut Vec<u8>, param_idx: usize, offset: u8, caller_stack_disp: u32) {
+    if param_idx < 6 {
+        // Params 0-5: spill from register to stack slot.
+        let (rex, modrm): (u8, u8) = match param_idx {
+            0 => (0x48, 0x7C), // rdi  (reg=7)
+            1 => (0x48, 0x74), // rsi  (reg=6)
+            2 => (0x48, 0x54), // rdx  (reg=2)
+            3 => (0x48, 0x4C), // rcx  (reg=1)
+            4 => (0x4C, 0x44), // r8   (REX.R, reg=0)
+            5 => (0x4C, 0x4C), // r9   (REX.R, reg=1)
+            _ => unreachable!(),
+        };
+        out.extend_from_slice(&[rex, 0x89, modrm, 0x24, offset]);
+    } else {
+        // Params 6+: load from caller's stack frame into rax, then store to local slot.
+        // SysV ABI: param N (N>=6) is at [rsp + caller_stack_disp + (N-6)*8].
+        // caller_stack_disp accounts for frame_size + pushed regs + return address.
+        let src_disp = caller_stack_disp + (param_idx as u32 - 6) * 8;
+        // mov rax, [rsp + src_disp]
+        emit_mov_rax_rsp_disp(out, src_disp);
+        // mov [rsp + offset], rax
+        out.extend_from_slice(&[0x48, 0x89, 0x44, 0x24, offset]);
+    }
+}
+
+/// Emit `mov rax, [rsp + disp]`. Uses disp8 when disp ≤ 127, disp32 otherwise.
+fn emit_mov_rax_rsp_disp(out: &mut Vec<u8>, disp: u32) {
+    if disp <= 127 {
+        // 48 8B 44 24 disp8 — 5 bytes
+        out.extend_from_slice(&[0x48, 0x8B, 0x44, 0x24, disp as u8]);
+    } else {
+        // 48 8B 84 24 disp32 — 8 bytes
+        let b = disp.to_le_bytes();
+        out.extend_from_slice(&[0x48, 0x8B, 0x84, 0x24, b[0], b[1], b[2], b[3]]);
+    }
+}
+
+/// Byte length of `mov rax, [rsp + disp]`.
+fn mov_rax_rsp_disp_len(disp: u32) -> u64 {
+    if disp <= 127 { 5 } else { 8 }
+}
+
+/// Encoded byte length of a single param spill (register or stack).
+fn param_spill_encoded_len(param_idx: usize, caller_stack_disp: u32) -> u64 {
+    if param_idx < 6 {
+        5 // mov [rsp+off], regN
+    } else {
+        let src_disp = caller_stack_disp + (param_idx as u32 - 6) * 8;
+        // mov rax, [rsp+src_disp] + mov [rsp+off], rax
+        mov_rax_rsp_disp_len(src_disp) + 5
+    }
 }
 
 /// Encode one call-with-args argument into the corresponding SysV integer arg register.
 /// Registers by index: 0→%rdi, 1→%rsi, 2→%rdx, 3→%rcx, 4→%r8, 5→%r9.
 /// Sizes: Imm(≤0x7FFFFFFF)→7B, Imm(>0x7FFFFFFF)→10B, Slot→5B (disp8), SavedValue→3B.
 fn encode_call_arg_bytes(out: &mut Vec<u8>, arg_idx: u8, arg: &ExecutableCallArg) {
+    // Args 6+ go on the stack: push rax after loading the value into rax.
+    if arg_idx >= 6 {
+        // Load value into rax first
+        encode_call_arg_to_rax(out, arg);
+        // push rax (0x50)
+        out.push(0x50);
+        return;
+    }
     // (reg_field in ModRM/opcode, is_extended: register number ≥ 8)
     let (reg_field, is_ext): (u8, bool) = match arg_idx {
         0 => (7, false), // %rdi
@@ -8695,7 +8667,7 @@ fn encode_call_arg_bytes(out: &mut Vec<u8>, arg_idx: u8, arg: &ExecutableCallArg
         3 => (1, false), // %rcx
         4 => (0, true),  // %r8
         5 => (1, true),  // %r9
-        _ => panic!("SysV ABI supports at most 6 integer register args"),
+        _ => unreachable!(),
     };
     match arg {
         ExecutableCallArg::Imm { value } => {
@@ -8872,42 +8844,25 @@ fn encode_stack_cell_store_accumulator_slot_bytes(
     ty: MmioScalarType,
     slot_idx: u8,
 ) {
-    let offset = 8u8 * slot_idx;
-    if offset == 0 {
-        match ty {
-            MmioScalarType::U8 | MmioScalarType::I8 => out.extend_from_slice(&[0x88, 0x04, 0x24]),
-            MmioScalarType::U16 | MmioScalarType::I16 => {
-                out.extend_from_slice(&[0x66, 0x89, 0x04, 0x24])
-            }
-            MmioScalarType::U32 | MmioScalarType::I32 => out.extend_from_slice(&[0x89, 0x04, 0x24]),
-            MmioScalarType::U64 | MmioScalarType::I64 => {
-                out.extend_from_slice(&[0x48, 0x89, 0x04, 0x24])
-            }
-            MmioScalarType::F32 | MmioScalarType::F64 => {
-                unreachable!(
-                    "float RawPtrLoad reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
-                )
-            }
+    let offset = 8u32 * slot_idx as u32;
+    // Store %al/%ax/%eax/%rax (reg=0) to [rsp + offset].
+    match ty {
+        MmioScalarType::U8 | MmioScalarType::I8 => {
+            out.push(0x88); emit_rsp_sib_disp(out, 0x44, offset);
         }
-    } else {
-        match ty {
-            MmioScalarType::U8 | MmioScalarType::I8 => {
-                out.extend_from_slice(&[0x88, 0x44, 0x24, offset])
-            }
-            MmioScalarType::U16 | MmioScalarType::I16 => {
-                out.extend_from_slice(&[0x66, 0x89, 0x44, 0x24, offset])
-            }
-            MmioScalarType::U32 | MmioScalarType::I32 => {
-                out.extend_from_slice(&[0x89, 0x44, 0x24, offset])
-            }
-            MmioScalarType::U64 | MmioScalarType::I64 => {
-                out.extend_from_slice(&[0x48, 0x89, 0x44, 0x24, offset])
-            }
-            MmioScalarType::F32 | MmioScalarType::F64 => {
-                unreachable!(
-                    "float RawPtrLoad reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
-                )
-            }
+        MmioScalarType::U16 | MmioScalarType::I16 => {
+            out.extend_from_slice(&[0x66, 0x89]); emit_rsp_sib_disp(out, 0x44, offset);
+        }
+        MmioScalarType::U32 | MmioScalarType::I32 => {
+            out.push(0x89); emit_rsp_sib_disp(out, 0x44, offset);
+        }
+        MmioScalarType::U64 | MmioScalarType::I64 => {
+            out.extend_from_slice(&[0x48, 0x89]); emit_rsp_sib_disp(out, 0x44, offset);
+        }
+        MmioScalarType::F32 | MmioScalarType::F64 => {
+            unreachable!(
+                "float RawPtrLoad reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+            )
         }
     }
 }
@@ -9257,6 +9212,7 @@ fn mmio_saved_value_store_bytes(ty: MmioScalarType) -> u64 {
 /// slot_idx=0 uses the no-displacement SIB form (3/4 bytes);
 /// slot_idx>0 uses the disp8 SIB form (4/5 bytes).
 fn stack_cell_access_bytes(ty: MmioScalarType, slot_idx: u8) -> u64 {
+    let offset = 8u32 * slot_idx as u32;
     let base: u64 = match ty {
         MmioScalarType::U8 | MmioScalarType::I8 | MmioScalarType::U32 | MmioScalarType::I32 => 3,
         MmioScalarType::U16 | MmioScalarType::I16 | MmioScalarType::U64 | MmioScalarType::I64 => 4,
@@ -9266,7 +9222,13 @@ fn stack_cell_access_bytes(ty: MmioScalarType, slot_idx: u8) -> u64 {
             )
         }
     };
-    base + if slot_idx > 0 { 1 } else { 0 }
+    if offset == 0 {
+        base
+    } else if offset <= 127 {
+        base + 1 // disp8
+    } else {
+        base + 4 // disp32
+    }
 }
 
 /// Byte count of the arithmetic instruction on %rbx for `SlotArithImm`.
@@ -9363,15 +9325,15 @@ fn mmio_value_register(ty: MmioScalarType) -> &'static str {
     }
 }
 
-fn asm_param_register(param_idx: u8) -> &'static str {
+fn asm_param_register(param_idx: u8) -> Option<&'static str> {
     match param_idx {
-        0 => "%rdi",
-        1 => "%rsi",
-        2 => "%rdx",
-        3 => "%rcx",
-        4 => "%r8",
-        5 => "%r9",
-        _ => panic!("SysV ABI supports at most 6 integer register params"),
+        0 => Some("%rdi"),
+        1 => Some("%rsi"),
+        2 => Some("%rdx"),
+        3 => Some("%rcx"),
+        4 => Some("%r8"),
+        5 => Some("%r9"),
+        _ => None, // params 6+ come from the stack, not registers
     }
 }
 
@@ -9385,11 +9347,89 @@ fn win64_param_register(param_idx: u8) -> &'static str {
     }
 }
 
-fn abi_param_register(abi: TargetAbi, param_idx: u8) -> &'static str {
+fn abi_param_register(abi: TargetAbi, param_idx: u8) -> Option<&'static str> {
     match abi {
-        TargetAbi::Win64 => win64_param_register(param_idx),
+        TargetAbi::Win64 => {
+            if param_idx < 4 {
+                Some(win64_param_register(param_idx))
+            } else {
+                None
+            }
+        }
         _ => asm_param_register(param_idx),
     }
+}
+
+/// Emit ASM text to load a single `ExecutableCallArg` value into `%rax`.
+fn emit_asm_text_load_arg_to_rax(
+    out: &mut String,
+    arg: &ExecutableCallArg,
+    win64: bool,
+) {
+    match arg {
+        ExecutableCallArg::Imm { value } => {
+            out.push_str(&format!("    movq ${}, %rax\n", value));
+        }
+        ExecutableCallArg::Slot { byte_offset } => {
+            let adjusted = if win64 { byte_offset + 32 } else { *byte_offset };
+            if adjusted == 0 {
+                out.push_str("    movq (%rsp), %rax\n");
+            } else {
+                out.push_str(&format!("    movq {}(%rsp), %rax\n", adjusted));
+            }
+        }
+        ExecutableCallArg::SavedValue => {
+            out.push_str("    movq %rbx, %rax\n");
+        }
+    }
+}
+
+/// Emit ASM text to set up call arguments, including stack-passing for args 6+.
+/// Stack args are pushed in right-to-left order (SysV ABI).
+/// Returns the number of stack-passed args (for post-call cleanup).
+fn emit_asm_text_call_args(
+    out: &mut String,
+    args: &[ExecutableCallArg],
+    abi: TargetAbi,
+    win64: bool,
+) -> usize {
+    let reg_limit: usize = if win64 { 4 } else { 6 };
+    let n_stack_args = if args.len() > reg_limit {
+        args.len() - reg_limit
+    } else {
+        0
+    };
+    // Push stack args in reverse order (last arg first) per SysV ABI.
+    for i in (reg_limit..args.len()).rev() {
+        emit_asm_text_load_arg_to_rax(out, &args[i], win64);
+        out.push_str("    push %rax\n");
+    }
+    // Load register args.
+    for (i, arg) in args.iter().enumerate().take(reg_limit) {
+        let reg = abi_param_register(abi, i as u8)
+            .expect("register args within limit always have a register");
+        match arg {
+            ExecutableCallArg::Imm { value } => {
+                out.push_str(&format!("    movq ${}, {}\n", value, reg));
+            }
+            ExecutableCallArg::Slot { byte_offset } => {
+                let adjusted = if win64 {
+                    byte_offset + 32 + (n_stack_args as u32 * 8) // account for pushed stack args
+                } else {
+                    *byte_offset + (n_stack_args as u32 * 8) // account for pushed stack args
+                };
+                if adjusted == 0 {
+                    out.push_str(&format!("    movq (%rsp), {}\n", reg));
+                } else {
+                    out.push_str(&format!("    movq {}(%rsp), {}\n", adjusted, reg));
+                }
+            }
+            ExecutableCallArg::SavedValue => {
+                out.push_str(&format!("    movq %rbx, {}\n", reg));
+            }
+        }
+    }
+    n_stack_args
 }
 
 fn mmio_saved_value_register(ty: MmioScalarType) -> &'static str {
@@ -9551,13 +9591,21 @@ pub fn lower_executable_krir_to_compiler_owned_object(
         let block = &function.blocks[0];
         let n_params = function.signature.params.len() as u64;
         let uses_frame = executable_function_uses_frame(function);
-        let size = (if executable_function_uses_saved_value_slot(function) {
+        let uses_saved_value_slot = executable_function_uses_saved_value_slot(function);
+        let frame_sz = executable_function_frame_size(function);
+        let caller_stack_disp_for_size = frame_sz
+            + if uses_saved_value_slot { 8u32 } else { 0u32 }
+            + 8; // return address
+        let param_spill_total: u64 = (0..n_params as usize)
+            .map(|i| param_spill_encoded_len(i, caller_stack_disp_for_size))
+            .sum();
+        let size = (if uses_saved_value_slot {
             1
         } else {
             0
         }) + if uses_frame {
-            // SUB RSP, frame_size + one 5-byte MOV per param spill
-            rsp_adj_encoded_len(executable_function_frame_size(function)) + 5 * n_params
+            // SUB RSP, frame_size + param spills (variable size for stack params)
+            rsp_adj_encoded_len(frame_sz) + param_spill_total
         } else {
             0
         } + block.ops.iter().map(executable_op_encoded_len).sum::<u64>()
@@ -9611,11 +9659,16 @@ pub fn lower_executable_krir_to_compiler_owned_object(
             let frame_size = sc_bytes + 8u32 * n_params as u32;
             emit_sub_rsp(&mut code_bytes, frame_size);
             local_offset += rsp_adj_encoded_len(frame_size);
-            // Spill SysV integer param registers to their stack slots
+            // Spill params to their stack slots.
+            // Params 0-5 come from registers; params 6+ come from the caller's
+            // stack frame at [rsp + frame_size + (8 if rbx pushed) + 8 + (N-6)*8].
+            let caller_stack_disp = frame_size
+                + if uses_saved_value_slot { 8u32 } else { 0u32 }
+                + 8; // return address
             for i in 0..n_params {
                 let offset = (sc_bytes + 8u32 * i as u32) as u8;
-                emit_param_spill(&mut code_bytes, i, offset);
-                local_offset += 5;
+                emit_param_spill(&mut code_bytes, i, offset, caller_stack_disp);
+                local_offset += param_spill_encoded_len(i, caller_stack_disp);
             }
         }
         // Loop stack for intra-function branch relocation.
@@ -9721,8 +9774,13 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         }
                     }
                     // Emit arg-loading prefix, then the same test/jne/call/jmp/call structure.
-                    let args_len: u64 = args.iter().map(call_arg_encoded_bytes).sum();
-                    for (i, arg) in args.iter().enumerate() {
+                    let args_len: u64 = args.iter().enumerate().map(|(i, a)| call_arg_indexed_encoded_bytes(i, a)).sum();
+                    // Push stack args (6+) in reverse order per SysV ABI.
+                    for i in (6..args.len()).rev() {
+                        encode_call_arg_bytes(&mut code_bytes, i as u8, &args[i]);
+                    }
+                    // Load register args (0-5).
+                    for (i, arg) in args.iter().enumerate().take(6) {
                         encode_call_arg_bytes(&mut code_bytes, i as u8, arg);
                     }
                     let test_bytes = mmio_saved_value_zero_test_bytes(*ty);
@@ -9890,13 +9948,10 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                                 );
                             } else {
                                 // store %rdx (remainder) to slot
-                                // movq %rdx, offset(%rsp): REX.W 0x89 /2 ModRM SIB [disp8]
-                                let offset = 8u8 * slot_idx;
-                                if offset == 0 {
-                                    code_bytes.extend_from_slice(&[0x48, 0x89, 0x14, 0x24]);
-                                } else {
-                                    code_bytes.extend_from_slice(&[0x48, 0x89, 0x54, 0x24, offset]);
-                                }
+                                // movq %rdx, offset(%rsp): REX.W 0x89 /2 ModRM SIB disp
+                                let offset = 8u32 * *slot_idx as u32;
+                                code_bytes.extend_from_slice(&[0x48, 0x89]);
+                                emit_rsp_sib_disp(&mut code_bytes, 0x54, offset);
                             }
                         }
                         _ => {
@@ -9962,12 +10017,9 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                                 );
                             } else {
                                 // store %rdx (remainder) to dst slot
-                                let offset = 8u8 * dst_slot_idx;
-                                if offset == 0 {
-                                    code_bytes.extend_from_slice(&[0x48, 0x89, 0x14, 0x24]);
-                                } else {
-                                    code_bytes.extend_from_slice(&[0x48, 0x89, 0x54, 0x24, offset]);
-                                }
+                                let offset = 8u32 * *dst_slot_idx as u32;
+                                code_bytes.extend_from_slice(&[0x48, 0x89]);
+                                emit_rsp_sib_disp(&mut code_bytes, 0x54, offset);
                             }
                         }
                         ArithOp::Shl | ArithOp::Shr => {
@@ -10041,14 +10093,18 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         }
                         unresolved_targets.insert(callee.clone());
                     }
-                    // Emit per-arg movq instructions then a call rel32.
-                    for (i, arg) in args.iter().enumerate() {
+                    // Push stack args (6+) in reverse order per SysV ABI.
+                    for i in (6..args.len()).rev() {
+                        encode_call_arg_bytes(&mut code_bytes, i as u8, &args[i]);
+                    }
+                    // Load register args (0-5).
+                    for (i, arg) in args.iter().enumerate().take(6) {
                         encode_call_arg_bytes(&mut code_bytes, i as u8, arg);
                     }
                     code_bytes.push(0xE8);
                     code_bytes.extend_from_slice(&[0, 0, 0, 0]);
                     // Displacement field is after the per-arg bytes and the E8 opcode.
-                    let args_len: u64 = args.iter().map(call_arg_encoded_bytes).sum();
+                    let args_len: u64 = args.iter().enumerate().map(|(i, a)| call_arg_indexed_encoded_bytes(i, a)).sum();
                     fixups.push(CompilerOwnedObjectFixup {
                         source_symbol: function.name.clone(),
                         patch_offset: function_offset + local_offset + args_len + 1,
@@ -10056,6 +10112,11 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         target_symbol: callee.clone(),
                         width_bytes: 4,
                     });
+                    // Clean up stack args after call.
+                    let n_stack = if args.len() > 6 { args.len() - 6 } else { 0 };
+                    if n_stack > 0 {
+                        emit_add_rsp(&mut code_bytes, (n_stack * 8) as u32);
+                    }
                     local_offset += executable_op_encoded_len(op);
                 }
                 ExecutableOp::CallCaptureWithArgs {
@@ -10073,11 +10134,15 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         }
                         unresolved_targets.insert(callee.clone());
                     }
-                    // Emit per-arg instructions.
-                    for (i, arg) in args.iter().enumerate() {
+                    // Push stack args (6+) in reverse order per SysV ABI.
+                    for i in (6..args.len()).rev() {
+                        encode_call_arg_bytes(&mut code_bytes, i as u8, &args[i]);
+                    }
+                    // Load register args (0-5).
+                    for (i, arg) in args.iter().enumerate().take(6) {
                         encode_call_arg_bytes(&mut code_bytes, i as u8, arg);
                     }
-                    let args_len: u64 = args.iter().map(call_arg_encoded_bytes).sum();
+                    let args_len: u64 = args.iter().enumerate().map(|(i, a)| call_arg_indexed_encoded_bytes(i, a)).sum();
                     // Emit call rel32.
                     code_bytes.push(0xE8);
                     code_bytes.extend_from_slice(&[0, 0, 0, 0]);
@@ -10088,6 +10153,11 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         target_symbol: callee.clone(),
                         width_bytes: 4,
                     });
+                    // Clean up stack args after call.
+                    let n_stack = if args.len() > 6 { args.len() - 6 } else { 0 };
+                    if n_stack > 0 {
+                        emit_add_rsp(&mut code_bytes, (n_stack * 8) as u32);
+                    }
                     // Store accumulator to capture slot.
                     encode_stack_cell_store_accumulator_slot_bytes(&mut code_bytes, *ty, *slot_idx);
                     local_offset += executable_op_encoded_len(op);
@@ -10429,8 +10499,26 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     }
                     unresolved_targets.insert(callee.clone());
                 }
-                // Load args into SysV registers BEFORE frame teardown (stack slots still valid).
-                for (i, arg) in args.iter().enumerate() {
+                // For stack args (6+): write to final positions in caller's
+                // outgoing arg area before teardown. After teardown, rsp will
+                // point at the return address; callee arg j goes at
+                // [rsp_final + 8 + j*8] = [rsp_now + frame_size + (rbx?8:0) + 8 + j*8].
+                let rbx_adj: u32 = if uses_saved_value_slot { 8 } else { 0 };
+                let frame_size_tc = 8u32 * u32::from(n_stack_cells) + 8u32 * n_params as u32;
+                for j in 6..args.len() {
+                    let dest_disp = frame_size_tc + rbx_adj + 8 + ((j - 6) as u32) * 8;
+                    // Load arg value into rax.
+                    encode_call_arg_to_rax(&mut code_bytes, &args[j]);
+                    // mov [rsp + dest_disp], rax
+                    if dest_disp <= 127 {
+                        code_bytes.extend_from_slice(&[0x48, 0x89, 0x44, 0x24, dest_disp as u8]);
+                    } else {
+                        let b = dest_disp.to_le_bytes();
+                        code_bytes.extend_from_slice(&[0x48, 0x89, 0x84, 0x24, b[0], b[1], b[2], b[3]]);
+                    }
+                }
+                // Load register args (0-5) into SysV registers before frame teardown.
+                for (i, arg) in args.iter().enumerate().take(6) {
                     encode_call_arg_bytes(&mut code_bytes, i as u8, arg);
                 }
                 let frame_size = 8u32 * u32::from(n_stack_cells) + 8u32 * n_params as u32;
@@ -10446,7 +10534,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                 if uses_saved_value_slot {
                     code_bytes.push(0x5B);
                 }
-                let args_bytes: u64 = args.iter().map(call_arg_encoded_bytes).sum();
+                let args_bytes: u64 = args.iter().enumerate().map(|(i, a)| call_arg_indexed_encoded_bytes(i, a)).sum();
                 // jmp rel32 = 0xE9 + 4-byte displacement
                 code_bytes.push(0xE9);
                 code_bytes.extend_from_slice(&[0, 0, 0, 0]);
