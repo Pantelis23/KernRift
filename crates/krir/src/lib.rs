@@ -1768,10 +1768,12 @@ pub fn lower_current_krir_to_executable_krir(
                                 } else if executable_slot_name.as_deref() == Some(name.as_str()) {
                                     ExecutableCallArg::SavedValue
                                 } else {
-                                    errors.push(format!(
-                                        "canonical-exec: function '{}' call_capture_with_args arg '{}': not a declared stack cell, param, or captured slot",
-                                        function.name, name
-                                    ));
+                                    if !new_syntax {
+                                        errors.push(format!(
+                                            "canonical-exec: function '{}' call_capture_with_args arg '{}': not a declared stack cell, param, or captured slot",
+                                            function.name, name
+                                        ));
+                                    }
                                     arg_ok = false;
                                     break;
                                 }
