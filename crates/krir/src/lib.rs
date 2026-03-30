@@ -117,6 +117,14 @@ pub struct PercpuDecl {
     pub ty: MmioScalarType,
 }
 
+/// Module-level mutable static variable: `static TYPE NAME = LITERAL`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StaticVarDecl {
+    pub name: String,
+    pub ty: MmioScalarType,
+    pub init_value: u64,
+}
+
 /// A resolved argument value for `CallWithArgs` — either an immediate, a
 /// stack-frame slot (by byte offset from %rsp), or the current saved-value
 /// register (%rbx).
@@ -319,6 +327,18 @@ pub enum KrirOp {
         ty: MmioScalarType,
         cell: String,
         slot: String,
+    },
+    /// Load a module-level static variable into a stack slot.
+    StaticLoad {
+        ty: MmioScalarType,
+        name: String,
+        slot: String,
+    },
+    /// Store a value into a module-level static variable.
+    StaticStore {
+        ty: MmioScalarType,
+        name: String,
+        value: MmioValueExpr,
     },
     CellArithImm {
         ty: MmioScalarType,
@@ -614,6 +634,9 @@ pub struct KrirModule {
     /// Declared per-cpu variables: `percpu NAME: T;`
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub percpu_vars: Vec<PercpuDecl>,
+    /// Module-level mutable static variables: `static TYPE NAME = LITERAL`
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub static_vars: Vec<StaticVarDecl>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mmio_bases: Vec<MmioBaseDecl>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -787,6 +810,22 @@ pub enum ExecutableOp {
         ty: MmioScalarType,
         slot_idx: u8,
     },
+    /// Load a module-level static variable into %rbx (the saved-value register).
+    StaticLoad {
+        ty: MmioScalarType,
+        static_idx: u8,
+    },
+    /// Store %rbx (the saved-value register) into a module-level static variable.
+    StaticStoreValue {
+        ty: MmioScalarType,
+        static_idx: u8,
+    },
+    /// Store an immediate into a module-level static variable.
+    StaticStoreImm {
+        ty: MmioScalarType,
+        static_idx: u8,
+        value: u64,
+    },
     SlotArithImm {
         ty: MmioScalarType,
         slot_idx: u8,
@@ -942,6 +981,9 @@ pub struct ExecutableKrirModule {
     /// Index N corresponds to `LoadStaticCstrAddr { str_idx: N, .. }`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub static_strings: Vec<String>,
+    /// Module-level mutable static variables.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub static_vars: Vec<StaticVarDecl>,
 }
 
 impl ExecutableKrirModule {
@@ -1166,7 +1208,10 @@ impl ExecutableKrirModule {
                         | ExecutableOp::PrintStdout { .. }
                         | ExecutableOp::PortIn { .. }
                         | ExecutableOp::PortOut { .. }
-                        | ExecutableOp::Syscall { .. } => {}
+                        | ExecutableOp::Syscall { .. }
+                        | ExecutableOp::StaticLoad { .. }
+                        | ExecutableOp::StaticStoreValue { .. }
+                        | ExecutableOp::StaticStoreImm { .. } => {}
                     }
                 }
             }
@@ -1381,12 +1426,20 @@ pub fn lower_current_krir_to_executable_krir(
         }
     }
 
+    // Build static var index map for StaticLoad/StaticStore resolution.
+    let mut static_var_indices: BTreeMap<String, u8> = BTreeMap::new();
+    for (i, sv) in module.static_vars.iter().enumerate() {
+        let idx = u8::try_from(i).unwrap_or_else(|_| panic!("too many static vars (max 256)"));
+        static_var_indices.insert(sv.name.clone(), idx);
+    }
+
     let mut lowered = ExecutableKrirModule {
         module_caps: module.module_caps.clone(),
         functions: Vec::new(),
         extern_declarations: Vec::new(),
         call_edges: module.call_edges.clone(),
         static_strings,
+        static_vars: module.static_vars.clone(),
     };
     let mut errors = Vec::new();
 
@@ -2294,6 +2347,57 @@ pub fn lower_current_krir_to_executable_krir(
                         ty: *ty,
                         source: ExecutableCapturedValueSource::SavedSlot,
                     });
+                }
+                KrirOp::StaticLoad { ty, name, slot } => {
+                    let static_idx = match static_var_indices.get(name.as_str()) {
+                        Some(&idx) => idx,
+                        None => {
+                            errors.push(format!(
+                                "canonical-exec: function '{}' references unknown static variable '{}'",
+                                function.name, name
+                            ));
+                            continue;
+                        }
+                    };
+                    exec_ops.push(ExecutableOp::StaticLoad {
+                        ty: *ty,
+                        static_idx,
+                    });
+                    executable_slot_name = Some(slot.clone());
+                    last_value = Some(ExecutableCapturedValue {
+                        slot: slot.clone(),
+                        ty: *ty,
+                        source: ExecutableCapturedValueSource::SavedSlot,
+                    });
+                }
+                KrirOp::StaticStore { ty, name, value } => {
+                    let static_idx = match static_var_indices.get(name.as_str()) {
+                        Some(&idx) => idx,
+                        None => {
+                            errors.push(format!(
+                                "canonical-exec: function '{}' references unknown static variable '{}'",
+                                function.name, name
+                            ));
+                            continue;
+                        }
+                    };
+                    match value {
+                        MmioValueExpr::IntLiteral { value: lit } => {
+                            let parsed = lit.parse::<u64>().unwrap_or(0);
+                            exec_ops.push(ExecutableOp::StaticStoreImm {
+                                ty: *ty,
+                                static_idx,
+                                value: parsed,
+                            });
+                        }
+                        MmioValueExpr::Ident { .. } | MmioValueExpr::FloatLiteral { .. } => {
+                            // Value is already in %rbx from a prior StackLoad/StaticLoad
+                            exec_ops.push(ExecutableOp::StaticStoreValue {
+                                ty: *ty,
+                                static_idx,
+                            });
+                        }
+                    }
                 }
                 KrirOp::CellArithImm {
                     ty,
@@ -4354,6 +4458,19 @@ pub enum X86_64AsmInstruction {
         ty: MmioScalarType,
         slot_idx: u8,
     },
+    StaticLoad {
+        ty: MmioScalarType,
+        static_idx: u8,
+    },
+    StaticStoreValue {
+        ty: MmioScalarType,
+        static_idx: u8,
+    },
+    StaticStoreImm {
+        ty: MmioScalarType,
+        static_idx: u8,
+        value: u64,
+    },
     SlotArithImm {
         ty: MmioScalarType,
         slot_idx: u8,
@@ -4553,6 +4670,19 @@ pub enum AArch64AsmInstruction {
     StackLoad {
         ty: MmioScalarType,
         slot_idx: u8,
+    },
+    StaticLoad {
+        ty: MmioScalarType,
+        static_idx: u8,
+    },
+    StaticStoreValue {
+        ty: MmioScalarType,
+        static_idx: u8,
+    },
+    StaticStoreImm {
+        ty: MmioScalarType,
+        static_idx: u8,
+        value: u64,
     },
     SlotArithImm {
         ty: MmioScalarType,
@@ -5228,6 +5358,29 @@ pub fn lower_executable_krir_to_x86_64_asm(
                             slot_idx: *slot_idx,
                         });
                     }
+                    ExecutableOp::StaticLoad { ty, static_idx } => {
+                        instrs.push(X86_64AsmInstruction::StaticLoad {
+                            ty: *ty,
+                            static_idx: *static_idx,
+                        });
+                    }
+                    ExecutableOp::StaticStoreValue { ty, static_idx } => {
+                        instrs.push(X86_64AsmInstruction::StaticStoreValue {
+                            ty: *ty,
+                            static_idx: *static_idx,
+                        });
+                    }
+                    ExecutableOp::StaticStoreImm {
+                        ty,
+                        static_idx,
+                        value,
+                    } => {
+                        instrs.push(X86_64AsmInstruction::StaticStoreImm {
+                            ty: *ty,
+                            static_idx: *static_idx,
+                            value: *value,
+                        });
+                    }
                     ExecutableOp::SlotArithImm {
                         ty,
                         slot_idx,
@@ -5649,6 +5802,29 @@ pub fn lower_executable_krir_to_aarch64_asm(
                             slot_idx: *slot_idx,
                         });
                     }
+                    ExecutableOp::StaticLoad { ty, static_idx } => {
+                        instrs.push(AArch64AsmInstruction::StaticLoad {
+                            ty: *ty,
+                            static_idx: *static_idx,
+                        });
+                    }
+                    ExecutableOp::StaticStoreValue { ty, static_idx } => {
+                        instrs.push(AArch64AsmInstruction::StaticStoreValue {
+                            ty: *ty,
+                            static_idx: *static_idx,
+                        });
+                    }
+                    ExecutableOp::StaticStoreImm {
+                        ty,
+                        static_idx,
+                        value,
+                    } => {
+                        instrs.push(AArch64AsmInstruction::StaticStoreImm {
+                            ty: *ty,
+                            static_idx: *static_idx,
+                            value: *value,
+                        });
+                    }
                     ExecutableOp::SlotArithImm {
                         ty,
                         slot_idx,
@@ -5926,6 +6102,8 @@ fn executable_function_uses_saved_value_slot(function: &ExecutableFunction) -> b
                     | ExecutableOp::ParamLoad { .. }
                     | ExecutableOp::MmioWriteValueParamAddr { .. }
                     | ExecutableOp::LoadStaticCstrAddr { .. }
+                    | ExecutableOp::StaticLoad { .. }
+                    | ExecutableOp::StaticStoreValue { .. }
                     | ExecutableOp::MmioRead {
                         capture_value: true,
                         ..
@@ -7034,6 +7212,25 @@ pub fn emit_x86_64_asm_text(module: &X86_64AsmModule) -> String {
                         }
                     }
                 }
+                X86_64AsmInstruction::StaticLoad { static_idx, .. } => {
+                    out.push_str(&format!("    movq __static_{}(%rip), %rbx\n", static_idx));
+                }
+                X86_64AsmInstruction::StaticStoreValue { static_idx, .. } => {
+                    out.push_str(&format!("    movq %rbx, __static_{}(%rip)\n", static_idx));
+                }
+                X86_64AsmInstruction::StaticStoreImm {
+                    static_idx, value, ..
+                } => {
+                    if *value <= 0x7FFF_FFFF {
+                        out.push_str(&format!(
+                            "    movq ${}, __static_{}(%rip)\n",
+                            value, static_idx
+                        ));
+                    } else {
+                        out.push_str(&format!("    movabsq ${}, %rax\n", value));
+                        out.push_str(&format!("    movq %rax, __static_{}(%rip)\n", static_idx));
+                    }
+                }
             }
         }
     }
@@ -7524,6 +7721,27 @@ pub fn emit_aarch64_asm_text(module: &AArch64AsmModule) -> String {
                         let slot_off = 16 + off; // frame offset: 16 for saved x29/x30
                         out.push_str(&format!("    str x0, [x29, #{}]\n", slot_off));
                     }
+                }
+                AArch64AsmInstruction::StaticLoad { static_idx, .. } => {
+                    out.push_str(&format!(
+                        "    adrp x0, __static_{}\n    ldr x0, [x0, :lo12:__static_{}]\n",
+                        static_idx, static_idx
+                    ));
+                }
+                AArch64AsmInstruction::StaticStoreValue { static_idx, .. } => {
+                    out.push_str(&format!(
+                        "    adrp x1, __static_{}\n    str x0, [x1, :lo12:__static_{}]\n",
+                        static_idx, static_idx
+                    ));
+                }
+                AArch64AsmInstruction::StaticStoreImm {
+                    static_idx, value, ..
+                } => {
+                    emit_aarch64_mov_imm64(&mut out, "x0", *value);
+                    out.push_str(&format!(
+                        "    adrp x1, __static_{}\n    str x0, [x1, :lo12:__static_{}]\n",
+                        static_idx, static_idx
+                    ));
                 }
             }
         }
@@ -8071,6 +8289,20 @@ fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
             args,
             dst_byte_offset,
         } => syscall_encoded_len(nr, args, dst_byte_offset),
+        // StaticLoad: mov rbx, [rip + disp32] — 7 bytes (REX.W + 0x8B + ModRM + rel32)
+        ExecutableOp::StaticLoad { .. } => 7,
+        // StaticStoreValue: mov [rip + disp32], rbx — 7 bytes (REX.W + 0x89 + ModRM + rel32)
+        ExecutableOp::StaticStoreValue { .. } => 7,
+        // StaticStoreImm: mov rax, imm64 (10) + mov [rip + disp32], rax (7) = 17 bytes
+        // For values that fit in 32 bits: mov QWORD PTR [rip+disp32], imm32 (11 bytes)
+        // Use the worst-case 17 for simplicity.
+        ExecutableOp::StaticStoreImm { value, .. } => {
+            if *value <= 0x7FFF_FFFF {
+                11 // mov QWORD PTR [rip+disp32], imm32
+            } else {
+                17 // movabs rax, imm64 (10) + mov [rip+disp32], rax (7)
+            }
+        }
     }
 }
 
@@ -9661,6 +9893,30 @@ pub fn lower_executable_krir_to_compiler_owned_object(
         }
     }
 
+    // Compute total string data size.
+    let strings_total: u64 = canonical
+        .static_strings
+        .iter()
+        .map(|s| s.len() as u64 + 1)
+        .sum();
+
+    // Third pass setup: compute where each static var will land (after strings).
+    let statics_base = strings_base + strings_total;
+    let mut static_var_offsets: Vec<u64> = Vec::with_capacity(canonical.static_vars.len());
+    {
+        let mut sv_cursor = statics_base;
+        for sv in &canonical.static_vars {
+            let align = sv.ty.byte_width() as u64;
+            // Align to natural type alignment
+            let misalign = sv_cursor % align;
+            if misalign != 0 {
+                sv_cursor += align - misalign;
+            }
+            static_var_offsets.push(sv_cursor);
+            sv_cursor += sv.ty.byte_width() as u64;
+        }
+    }
+
     let mut code_bytes = Vec::with_capacity(cursor as usize);
     let mut symbols = Vec::with_capacity(canonical.functions.len());
     let mut fixups = Vec::new();
@@ -10503,6 +10759,57 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     }
                     local_offset += syscall_encoded_len(nr, args, dst_byte_offset);
                 }
+                ExecutableOp::StaticLoad { ty: _, static_idx } => {
+                    let idx = *static_idx as usize;
+                    let var_abs = static_var_offsets[idx];
+                    // mov rbx, [rip + disp32] — 48 8B 1D [disp32 LE]
+                    let next_ip = function_offset + local_offset + 7;
+                    let disp = var_abs as i64 - next_ip as i64;
+                    let disp32 = i32::try_from(disp).expect("static var offset must fit rel32");
+                    code_bytes.extend_from_slice(&[0x48, 0x8B, 0x1D]);
+                    code_bytes.extend_from_slice(&disp32.to_le_bytes());
+                    local_offset += 7;
+                }
+                ExecutableOp::StaticStoreValue { ty: _, static_idx } => {
+                    let idx = *static_idx as usize;
+                    let var_abs = static_var_offsets[idx];
+                    // mov [rip + disp32], rbx — 48 89 1D [disp32 LE]
+                    let next_ip = function_offset + local_offset + 7;
+                    let disp = var_abs as i64 - next_ip as i64;
+                    let disp32 = i32::try_from(disp).expect("static var offset must fit rel32");
+                    code_bytes.extend_from_slice(&[0x48, 0x89, 0x1D]);
+                    code_bytes.extend_from_slice(&disp32.to_le_bytes());
+                    local_offset += 7;
+                }
+                ExecutableOp::StaticStoreImm {
+                    ty: _,
+                    static_idx,
+                    value,
+                } => {
+                    let idx = *static_idx as usize;
+                    let var_abs = static_var_offsets[idx];
+                    if *value <= 0x7FFF_FFFF {
+                        // mov QWORD PTR [rip + disp32], imm32 — 48 C7 05 [disp32 LE] [imm32 LE]
+                        let next_ip = function_offset + local_offset + 11;
+                        let disp = var_abs as i64 - next_ip as i64;
+                        let disp32 = i32::try_from(disp).expect("static var offset must fit rel32");
+                        code_bytes.extend_from_slice(&[0x48, 0xC7, 0x05]);
+                        code_bytes.extend_from_slice(&disp32.to_le_bytes());
+                        code_bytes.extend_from_slice(&(*value as u32).to_le_bytes());
+                        local_offset += 11;
+                    } else {
+                        // movabs rax, imm64 — 48 B8 [imm64 LE]  (10 bytes)
+                        code_bytes.extend_from_slice(&[0x48, 0xB8]);
+                        code_bytes.extend_from_slice(&value.to_le_bytes());
+                        // mov [rip + disp32], rax — 48 89 05 [disp32 LE]  (7 bytes)
+                        let next_ip = function_offset + local_offset + 17;
+                        let disp = var_abs as i64 - next_ip as i64;
+                        let disp32 = i32::try_from(disp).expect("static var offset must fit rel32");
+                        code_bytes.extend_from_slice(&[0x48, 0x89, 0x05]);
+                        code_bytes.extend_from_slice(&disp32.to_le_bytes());
+                        local_offset += 17;
+                    }
+                }
             }
         }
         match &function.blocks[0].terminator {
@@ -10621,6 +10928,22 @@ pub fn lower_executable_krir_to_compiler_owned_object(
         code_bytes.push(0); // NUL terminator
     }
 
+    // Append static variable data (initialized) after strings.
+    for (i, sv) in canonical.static_vars.iter().enumerate() {
+        let target_offset = static_var_offsets[i] as usize;
+        // Pad to alignment
+        while code_bytes.len() < target_offset {
+            code_bytes.push(0);
+        }
+        match sv.ty.byte_width() {
+            1 => code_bytes.push(sv.init_value as u8),
+            2 => code_bytes.extend_from_slice(&(sv.init_value as u16).to_le_bytes()),
+            4 => code_bytes.extend_from_slice(&(sv.init_value as u32).to_le_bytes()),
+            8 => code_bytes.extend_from_slice(&sv.init_value.to_le_bytes()),
+            _ => unreachable!("unsupported byte size for static variable"),
+        }
+    }
+
     for unresolved in unresolved_targets {
         symbols.push(CompilerOwnedObjectSymbol {
             name: unresolved,
@@ -10662,6 +10985,10 @@ pub struct X86_64ElfRelocatableObject {
     pub function_symbols: Vec<X86_64ElfFunctionSymbol>,
     pub undefined_function_symbols: Vec<String>,
     pub relocations: Vec<X86_64ElfRelocation>,
+    /// Initialized data for module-level static variables (.data section).
+    pub data_bytes: Vec<u8>,
+    /// Symbols in the .data section (one per static variable).
+    pub data_symbols: Vec<X86_64ElfFunctionSymbol>,
 }
 
 impl X86_64ElfRelocatableObject {
@@ -11028,6 +11355,8 @@ pub fn export_compiler_owned_object_to_x86_64_elf(
         function_symbols,
         undefined_function_symbols,
         relocations,
+        data_bytes: Vec::new(),
+        data_symbols: Vec::new(),
     };
     elf.validate()?;
     Ok(elf)
@@ -11039,7 +11368,38 @@ pub fn lower_executable_krir_to_x86_64_object(
 ) -> Result<X86_64ElfRelocatableObject, String> {
     validate_x86_64_object_linear_subset(module, target)?;
     let object = lower_executable_krir_to_compiler_owned_object(module, target)?;
-    export_compiler_owned_object_to_x86_64_elf(&object, target)
+    let mut elf = export_compiler_owned_object_to_x86_64_elf(&object, target)?;
+
+    // Populate .data section from static variables.
+    if !module.static_vars.is_empty() {
+        let mut data_bytes = Vec::new();
+        let mut data_symbols = Vec::new();
+        for sv in &module.static_vars {
+            let bw = sv.ty.byte_width();
+            // Align to natural type alignment.
+            let misalign = data_bytes.len() % bw;
+            if misalign != 0 {
+                data_bytes.resize(data_bytes.len() + (bw - misalign), 0);
+            }
+            let offset = data_bytes.len() as u64;
+            match bw {
+                1 => data_bytes.push(sv.init_value as u8),
+                2 => data_bytes.extend_from_slice(&(sv.init_value as u16).to_le_bytes()),
+                4 => data_bytes.extend_from_slice(&(sv.init_value as u32).to_le_bytes()),
+                8 => data_bytes.extend_from_slice(&sv.init_value.to_le_bytes()),
+                _ => unreachable!("unsupported byte width for static variable"),
+            }
+            data_symbols.push(X86_64ElfFunctionSymbol {
+                name: sv.name.clone(),
+                offset,
+                size: bw as u64,
+            });
+        }
+        elf.data_bytes = data_bytes;
+        elf.data_symbols = data_symbols;
+    }
+
+    Ok(elf)
 }
 
 pub fn validate_compiler_owned_object_for_x86_64_macho_export(
@@ -11625,10 +11985,23 @@ pub fn emit_x86_64_object_bytes(object: &X86_64ElfRelocatableObject) -> Vec<u8> 
         strtab.push(0);
         name_offsets.insert(symbol.clone(), offset);
     }
+    for symbol in &object.data_symbols {
+        let offset = strtab.len() as u32;
+        strtab.extend_from_slice(symbol.name.as_bytes());
+        strtab.push(0);
+        name_offsets.insert(symbol.name.clone(), offset);
+    }
+
+    let has_data = !object.data_bytes.is_empty();
 
     let mut symtab = Vec::new();
     push_elf64_sym(&mut symtab, 0, 0, 0, 0, 0, 0);
+    // Section symbol for .text (section index 1)
     push_elf64_sym(&mut symtab, 0, 0x03, 0, 1, 0, 0);
+    // Section symbol for .data (section index 2) if present
+    if has_data {
+        push_elf64_sym(&mut symtab, 0, 0x03, 0, 2, 0, 0);
+    }
     for symbol in &object.function_symbols {
         push_elf64_sym(
             &mut symtab,
@@ -11638,6 +12011,21 @@ pub fn emit_x86_64_object_bytes(object: &X86_64ElfRelocatableObject) -> Vec<u8> 
             0x12,
             0,
             1,
+            symbol.offset,
+            symbol.size,
+        );
+    }
+    // Data symbols: STT_OBJECT (0x11 = GLOBAL | OBJECT), section index 2 (.data)
+    let data_section_index: u16 = if has_data { 2 } else { 0 };
+    for symbol in &object.data_symbols {
+        push_elf64_sym(
+            &mut symtab,
+            *name_offsets
+                .get(&symbol.name)
+                .expect("data symbol name offset must exist"),
+            0x11, // STB_GLOBAL (1) << 4 | STT_OBJECT (1)
+            0,
+            data_section_index,
             symbol.offset,
             symbol.size,
         );
@@ -11657,7 +12045,9 @@ pub fn emit_x86_64_object_bytes(object: &X86_64ElfRelocatableObject) -> Vec<u8> 
     }
 
     let mut symbol_indices = BTreeMap::new();
-    let mut next_symbol_index = 2u32;
+    // First global symbol index: 2 if no .data section, 3 if .data is present
+    // (because we add one extra section symbol for .data).
+    let mut next_symbol_index = if has_data { 3u32 } else { 2u32 };
     for symbol in &object.function_symbols {
         symbol_indices.insert(symbol.name.clone(), next_symbol_index);
         next_symbol_index += 1;
@@ -11682,6 +12072,13 @@ pub fn emit_x86_64_object_bytes(object: &X86_64ElfRelocatableObject) -> Vec<u8> 
     let text_name = shstrtab.len() as u32;
     shstrtab.extend_from_slice(object.text_section.as_bytes());
     shstrtab.push(0);
+    let data_name = if has_data {
+        let offset = shstrtab.len() as u32;
+        shstrtab.extend_from_slice(b".data\0");
+        Some(offset)
+    } else {
+        None
+    };
     let rela_text_name = if object.relocations.is_empty() {
         None
     } else {
@@ -11698,6 +12095,11 @@ pub fn emit_x86_64_object_bytes(object: &X86_64ElfRelocatableObject) -> Vec<u8> 
 
     let mut bytes = vec![0u8; 64];
     let text_offset = append_with_alignment(&mut bytes, &object.text_bytes, 16) as u64;
+    let data_offset = if has_data {
+        Some(append_with_alignment(&mut bytes, &object.data_bytes, 8) as u64)
+    } else {
+        None
+    };
     let rela_text_offset = if rela_text.is_empty() {
         None
     } else {
@@ -11731,10 +12133,11 @@ pub fn emit_x86_64_object_bytes(object: &X86_64ElfRelocatableObject) -> Vec<u8> 
         push_u64_le(&mut shdrs, entsize);
     };
 
+    // Section 1: .text
     push_shdr(
         text_name,
-        1,
-        0x6,
+        1,   // SHT_PROGBITS
+        0x6, // SHF_ALLOC | SHF_EXECINSTR
         0,
         text_offset,
         object.text_bytes.len() as u64,
@@ -11743,7 +12146,23 @@ pub fn emit_x86_64_object_bytes(object: &X86_64ElfRelocatableObject) -> Vec<u8> 
         16,
         0,
     );
-    let symtab_index = if rela_text.is_empty() { 2u32 } else { 3u32 };
+    // Section 2 (optional): .data
+    if let (Some(dn), Some(doff)) = (data_name, data_offset) {
+        push_shdr(
+            dn,
+            1,   // SHT_PROGBITS
+            0x3, // SHF_WRITE | SHF_ALLOC
+            0,
+            doff,
+            object.data_bytes.len() as u64,
+            0,
+            0,
+            8,
+            0,
+        );
+    }
+    let extra_sections = u32::from(has_data);
+    let symtab_index = 2 + extra_sections + if rela_text.is_empty() { 0u32 } else { 1u32 };
     let strtab_index = symtab_index + 1;
     let text_index = 1u32;
     if let (Some(name), Some(offset)) = (rela_text_name, rela_text_offset) {
@@ -11768,7 +12187,7 @@ pub fn emit_x86_64_object_bytes(object: &X86_64ElfRelocatableObject) -> Vec<u8> 
         symtab_offset,
         symtab.len() as u64,
         strtab_index,
-        2,
+        if has_data { 3u32 } else { 2u32 }, // first global symbol index
         8,
         24,
     );
@@ -11814,8 +12233,12 @@ pub fn emit_x86_64_object_bytes(object: &X86_64ElfRelocatableObject) -> Vec<u8> 
     push_u16_into(&mut bytes[54..56], 0);
     push_u16_into(&mut bytes[56..58], 0);
     push_u16_into(&mut bytes[58..60], 64);
-    push_u16_into(&mut bytes[60..62], if rela_text.is_empty() { 5 } else { 6 });
-    push_u16_into(&mut bytes[62..64], if rela_text.is_empty() { 4 } else { 5 });
+    let base_sections: u16 = 5; // null + .text + .symtab + .strtab + .shstrtab
+    let extra: u16 = u16::from(has_data) + if rela_text.is_empty() { 0 } else { 1 };
+    let e_shnum = base_sections + extra;
+    let e_shstrndx = e_shnum - 1;
+    push_u16_into(&mut bytes[60..62], e_shnum);
+    push_u16_into(&mut bytes[62..64], e_shstrndx);
 
     bytes
 }
@@ -13533,6 +13956,14 @@ fn encode_aarch64_function(
                         &(0xF900_0000u32 | (imm12 << 10) | (29 << 5)).to_le_bytes(),
                     );
                 }
+            }
+            AArch64AsmInstruction::StaticLoad { .. }
+            | AArch64AsmInstruction::StaticStoreValue { .. }
+            | AArch64AsmInstruction::StaticStoreImm { .. } => {
+                return Err(
+                    "aarch64 binary emit: static variables not yet supported in object emission"
+                        .to_string(),
+                );
             }
         }
     }
@@ -16034,6 +16465,7 @@ mod tests {
                 },
             ],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
         module.canonicalize();
         module.validate().expect("valid executable KRIR");
@@ -16099,6 +16531,7 @@ mod tests {
             extern_declarations: vec![],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         assert_eq!(
@@ -16136,6 +16569,7 @@ mod tests {
             extern_declarations: vec![],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         assert_eq!(module.validate(), Ok(()));
@@ -16167,6 +16601,7 @@ mod tests {
             extern_declarations: vec![],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         module.canonicalize();
@@ -16195,6 +16630,7 @@ mod tests {
             extern_declarations: vec![],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         module.canonicalize();
@@ -16349,6 +16785,7 @@ mod tests {
             extern_declarations: vec![],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
         module.canonicalize();
 
@@ -16397,6 +16834,7 @@ mod tests {
             extern_declarations: vec![],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         let asm =
@@ -16417,6 +16855,7 @@ mod tests {
             extern_declarations: vec![],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         let asm =
@@ -16458,6 +16897,7 @@ mod tests {
             extern_declarations: vec![],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         assert_eq!(
@@ -16488,6 +16928,7 @@ mod tests {
             extern_declarations: vec![executable_extern_decl("missing")],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         let target = BackendTargetContract::x86_64_sysv();
@@ -16545,6 +16986,7 @@ mod tests {
             extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         let target = BackendTargetContract::x86_64_sysv();
@@ -16580,6 +17022,7 @@ mod tests {
             extern_declarations: vec![],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         assert_eq!(
@@ -16614,6 +17057,7 @@ mod tests {
             extern_declarations: vec![],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         let target = BackendTargetContract::x86_64_sysv();
@@ -16705,6 +17149,7 @@ mod tests {
             extern_declarations: vec![],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         let object = lower_executable_krir_to_compiler_owned_object(
@@ -16765,6 +17210,7 @@ mod tests {
             extern_declarations: vec![],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         let object = lower_executable_krir_to_compiler_owned_object(
@@ -16828,6 +17274,7 @@ mod tests {
             extern_declarations: vec![],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         let object = lower_executable_krir_to_compiler_owned_object(
@@ -16911,6 +17358,7 @@ mod tests {
             extern_declarations: vec![],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         assert_eq!(
@@ -16944,6 +17392,7 @@ mod tests {
             extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         let object = lower_executable_krir_to_compiler_owned_object(
@@ -16991,6 +17440,7 @@ mod tests {
             extern_declarations: vec![],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         let object =
@@ -17132,6 +17582,7 @@ mod tests {
             extern_declarations: vec![],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         let object =
@@ -17211,6 +17662,7 @@ mod tests {
             extern_declarations: vec![],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         let object =
@@ -17253,6 +17705,7 @@ mod tests {
             extern_declarations: vec![],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         let target = BackendTargetContract::x86_64_sysv();
@@ -17297,6 +17750,7 @@ mod tests {
             extern_declarations: vec![],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         assert_eq!(
@@ -17326,6 +17780,7 @@ mod tests {
             extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         let object =
@@ -17447,6 +17902,7 @@ mod tests {
             ],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         let object =
@@ -17599,6 +18055,7 @@ mod tests {
             extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         let object =
@@ -17698,6 +18155,7 @@ mod tests {
             extern_declarations: vec![],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         let object =
@@ -17740,6 +18198,7 @@ mod tests {
             extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         let object =
@@ -17795,6 +18254,7 @@ mod tests {
             ],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         let object =
@@ -17857,6 +18317,7 @@ mod tests {
             extern_declarations: vec![],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         let object =
@@ -17910,6 +18371,7 @@ mod tests {
             extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
         let resolver = ExecutableKrirModule {
             module_caps: vec![],
@@ -17917,6 +18379,7 @@ mod tests {
             extern_declarations: vec![],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         let unresolved_obj = lower_executable_krir_to_x86_64_object(
@@ -18006,6 +18469,7 @@ mod tests {
             extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
         let resolver = ExecutableKrirModule {
             module_caps: vec![],
@@ -18013,6 +18477,7 @@ mod tests {
             extern_declarations: vec![],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         let mixed_obj =
@@ -18090,6 +18555,7 @@ mod tests {
             extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         let unresolved_obj = lower_executable_krir_to_x86_64_object(
@@ -18157,6 +18623,7 @@ mod tests {
             extern_declarations: vec![],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         let startup = compile_asm_source_to_object(
@@ -18222,6 +18689,7 @@ mod tests {
             extern_declarations: vec![],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         let startup = compile_asm_source_to_object(
@@ -18293,6 +18761,7 @@ mod tests {
             extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         let startup = compile_asm_source_to_object(
@@ -18362,6 +18831,7 @@ mod tests {
             extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         let startup = compile_asm_source_to_object(
@@ -18454,6 +18924,7 @@ mod tests {
             extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         let startup = compile_asm_source_to_object(
@@ -18530,6 +19001,7 @@ mod tests {
             extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         let startup = compile_asm_source_to_object(
@@ -18607,6 +19079,7 @@ mod tests {
             extern_declarations: vec![executable_extern_decl("ext")],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
 
         let startup = compile_asm_source_to_object(
@@ -18658,6 +19131,8 @@ mod tests {
             }],
             undefined_function_symbols: vec!["ext".to_string()],
             relocations: vec![],
+            data_bytes: Vec::new(),
+            data_symbols: Vec::new(),
         };
 
         assert_eq!(
@@ -18684,6 +19159,8 @@ mod tests {
                 target_symbol: "entry".to_string(),
                 addend: -4,
             }],
+            data_bytes: Vec::new(),
+            data_symbols: Vec::new(),
         };
 
         assert_eq!(
@@ -18721,6 +19198,8 @@ mod tests {
                     addend: -4,
                 },
             ],
+            data_bytes: Vec::new(),
+            data_symbols: Vec::new(),
         };
 
         assert_eq!(
@@ -19062,6 +19541,7 @@ mod tests {
             }],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         };
         let target = BackendTargetContract::aarch64_sysv();
         let result = lower_executable_krir_to_aarch64_asm(&module, &target);
@@ -19100,6 +19580,7 @@ mod tests {
             extern_declarations: vec![],
             call_edges: vec![],
             static_strings: Vec::new(),
+            static_vars: Vec::new(),
         }
     }
 
@@ -19238,6 +19719,7 @@ mod tests {
             extern_declarations: vec![],
             call_edges: vec![],
             static_strings: vec![],
+            static_vars: vec![],
             functions: vec![ExecutableFunction {
                 name: "bad_float".to_string(),
                 is_extern: false,

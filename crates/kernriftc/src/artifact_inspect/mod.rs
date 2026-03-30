@@ -231,6 +231,8 @@ mod tests {
                 target_symbol: "ext".to_string(),
                 addend: -4,
             }],
+            data_bytes: Vec::new(),
+            data_symbols: Vec::new(),
         })
     }
 

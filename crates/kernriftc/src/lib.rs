@@ -1761,6 +1761,8 @@ fn telemetry_op_discriminant(op: &KrirOp) -> String {
         KrirOp::PortIn { .. } => "port_in",
         KrirOp::PortOut { .. } => "port_out",
         KrirOp::Syscall { .. } => "syscall",
+        KrirOp::StaticLoad { .. } => "static_load",
+        KrirOp::StaticStore { .. } => "static_store",
     }
     .to_string()
 }

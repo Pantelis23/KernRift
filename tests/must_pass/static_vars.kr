@@ -1,0 +1,17 @@
+static uint64 counter = 0
+static int32 value = 42
+
+@ctx(boot)
+fn increment() {
+    counter = counter + 1
+}
+
+@ctx(boot)
+fn get_counter() -> uint64 {
+    return counter
+}
+
+@ctx(boot)
+fn get_value() -> int32 {
+    return value
+}

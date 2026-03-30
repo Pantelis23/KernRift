@@ -1543,6 +1543,7 @@ fn simple_loop() {
         extern_declarations: vec![],
         call_edges: vec![],
         static_strings: Vec::new(),
+        static_vars: Vec::new(),
     };
 
     // Verify ExecutableOp variants are present
@@ -1659,6 +1660,7 @@ fn hotpath_function_is_16_byte_aligned_in_object() {
         extern_declarations: vec![],
         call_edges: vec![],
         static_strings: Vec::new(),
+        static_vars: Vec::new(),
     };
 
     let target = BackendTargetContract::x86_64_sysv();

@@ -623,6 +623,14 @@ pub struct PercpuDecl {
     pub ty: MmioScalarType,
 }
 
+/// Module-level mutable static variable: `static TYPE NAME = LITERAL`
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaticVarDecl {
+    pub name: String,
+    pub ty: MmioScalarType,
+    pub init_value: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ModuleAst {
     pub module_caps: Vec<String>,
@@ -636,6 +644,8 @@ pub struct ModuleAst {
     pub locks: Vec<String>, // RENAMED from spinlocks
     /// Per-cpu variable declarations: `percpu NAME: T;`
     pub percpu_vars: Vec<PercpuDecl>,
+    /// Static (module-level mutable) variable declarations: `static TYPE NAME = LITERAL`
+    pub static_vars: Vec<StaticVarDecl>,
     pub items: Vec<FnAst>,
     /// Optional per-file profile declaration: `#lang stable` or `#lang experimental`.
     /// `None` means no directive present; the caller's default profile applies.
@@ -780,6 +790,7 @@ pub enum TokenKind {
     At,
     Lock,
     Percpu,
+    Static,
     Acquire,
     Release,
     Critical,
@@ -1234,6 +1245,7 @@ impl<'a> Lexer<'a> {
                     "at" => TokenKind::At,
                     "lock" => TokenKind::Lock,
                     "percpu" => TokenKind::Percpu,
+                    "static" => TokenKind::Static,
                     "acquire" => TokenKind::Acquire,
                     "release" => TokenKind::Release,
                     "critical" => TokenKind::Critical,
@@ -1649,6 +1661,17 @@ impl TokParser {
                     self.advance();
                     match self.parse_percpu_tok() {
                         Ok(p) => module.percpu_vars.push(p),
+                        Err(e) => {
+                            errors.push(e);
+                            self.skip_to_next_item();
+                        }
+                    }
+                }
+                // static TYPE NAME = LITERAL
+                TokenKind::Static => {
+                    self.advance();
+                    match self.parse_static_var_tok() {
+                        Ok(s) => module.static_vars.push(s),
                         Err(e) => {
                             errors.push(e);
                             self.skip_to_next_item();
@@ -2628,6 +2651,47 @@ impl TokParser {
         Ok(PercpuDecl { name, ty })
     }
 
+    /// Parse `static TYPE NAME = LITERAL` — `static` keyword already consumed.
+    fn parse_static_var_tok(&mut self) -> Result<StaticVarDecl, String> {
+        let ty = match self.peek().kind.clone() {
+            TokenKind::TypeKw(t) => {
+                self.advance();
+                t
+            }
+            other => {
+                return Err(format!(
+                    "expected type after 'static', got '{}'",
+                    token_kind_to_str(&other)
+                ));
+            }
+        };
+        let name = match self.advance().kind.clone() {
+            TokenKind::Ident(n) => n,
+            other => {
+                return Err(format!(
+                    "expected static variable name, got '{}'",
+                    token_kind_to_str(&other)
+                ));
+            }
+        };
+        self.expect_kind(&TokenKind::Eq)?;
+        let init_value = match self.advance().kind.clone() {
+            TokenKind::IntLit(n) => n,
+            other => {
+                return Err(format!(
+                    "expected integer literal for static initializer, got '{}'",
+                    token_kind_to_str(&other)
+                ));
+            }
+        };
+        self.eat(&TokenKind::Semicolon);
+        Ok(StaticVarDecl {
+            name,
+            ty,
+            init_value,
+        })
+    }
+
     /// Skip to the next top-level item on error.
     fn skip_to_next_item(&mut self) {
         while !self.at(&TokenKind::Eof) {
@@ -2637,6 +2701,7 @@ impl TokParser {
                 | TokenKind::Lock
                 | TokenKind::Const
                 | TokenKind::Percpu
+                | TokenKind::Static
                 | TokenKind::Extern
                 | TokenKind::AtSign => break,
                 _ => {
@@ -2739,6 +2804,7 @@ fn token_kind_to_str(kind: &TokenKind) -> String {
         TokenKind::At => "at".into(),
         TokenKind::Lock => "lock".into(),
         TokenKind::Percpu => "percpu".into(),
+        TokenKind::Static => "static".into(),
         TokenKind::Acquire => "acquire".into(),
         TokenKind::Release => "release".into(),
         TokenKind::Critical => "critical".into(),
@@ -2977,6 +3043,18 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
+            if self.consume_keyword("static") {
+                self.skip_ws_comments();
+                match self.parse_static_var_decl() {
+                    Ok(decl) => module.static_vars.push(decl),
+                    Err(msg) => {
+                        self.error_here(&msg);
+                        self.recover_to_next_module_item();
+                    }
+                }
+                continue;
+            }
+
             let mut attrs = Vec::new();
             let mut is_extern = false;
 
@@ -3028,7 +3106,7 @@ impl<'a> Parser<'a> {
 
             if !self.consume_keyword("fn") {
                 self.error_here(
-                    "expected 'fn', 'mmio', 'mmio_reg', 'const', 'enum', 'struct', 'spinlock', 'percpu', or @module_caps(...) at item boundary",
+                    "expected 'fn', 'mmio', 'mmio_reg', 'const', 'enum', 'struct', 'spinlock', 'percpu', 'static', or @module_caps(...) at item boundary",
                 );
                 self.recover_to_next_module_item();
                 continue;
@@ -3495,6 +3573,56 @@ impl<'a> Parser<'a> {
             ));
         }
         Ok(PercpuDecl { name, ty })
+    }
+
+    /// Parse `static TYPE NAME = LITERAL` — `static` keyword already consumed.
+    fn parse_static_var_decl(&mut self) -> Result<StaticVarDecl, String> {
+        let Some(ty_raw) = self.parse_ident() else {
+            return Err("expected type after 'static'".to_string());
+        };
+        let ty = MmioScalarType::parse(&ty_raw)
+            .map_err(|_| format!("unsupported static variable type '{}'", ty_raw))?;
+        self.skip_ws_comments();
+        let Some(name) = self.parse_ident() else {
+            return Err("expected static variable name".to_string());
+        };
+        self.skip_ws_comments();
+        if !self.consume_char('=') {
+            return Err(format!(
+                "expected '=' after static variable name '{}'",
+                name
+            ));
+        }
+        self.skip_ws_comments();
+        // Parse a decimal integer literal
+        let start = self.pos;
+        while self
+            .peek_char()
+            .map(|c| c.is_ascii_digit())
+            .unwrap_or(false)
+        {
+            self.pos += 1;
+        }
+        if self.pos == start {
+            return Err(format!(
+                "expected integer literal for static variable '{}' initializer",
+                name
+            ));
+        }
+        let lit_str = &self.src[start..self.pos];
+        let init_value: u64 = lit_str.parse().map_err(|_| {
+            format!(
+                "invalid integer literal '{}' for static variable '{}'",
+                lit_str, name
+            )
+        })?;
+        self.skip_ws_comments();
+        let _ = self.consume_char(';');
+        Ok(StaticVarDecl {
+            name,
+            ty,
+            init_value,
+        })
     }
 
     fn parse_body(&mut self) -> Vec<Stmt> {

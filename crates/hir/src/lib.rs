@@ -9,7 +9,7 @@ use krir::{
     MmioAddrExpr as KrirMmioAddrExpr, MmioBaseDecl as KrirMmioBaseDecl,
     MmioRegAccess as KrirMmioRegAccess, MmioRegisterDecl as KrirMmioRegisterDecl,
     MmioScalarType as KrirMmioScalarType, MmioValueExpr as KrirMmioValueExpr,
-    PercpuDecl as KrirPercpuDecl, PortIoWidth, SchedHook,
+    PercpuDecl as KrirPercpuDecl, PortIoWidth, SchedHook, StaticVarDecl as KrirStaticVarDecl,
 };
 use parser::{
     ArithOp as ParserArithOp, AssignTarget as ParserAssignTarget, BinOpKind as ParserBinOpKind,
@@ -1276,6 +1276,7 @@ pub fn lower_canonical_executable_to_krir(
             .collect(),
         call_edges,
         static_strings: Vec::new(),
+        static_vars: Vec::new(),
     };
     lowered.canonicalize();
     lowered
@@ -1450,6 +1451,13 @@ pub fn lower_to_krir_with_surface(
         }
     }
 
+    // Build static variable name → type map for resolving references in functions.
+    let static_var_map: BTreeMap<String, KrirMmioScalarType> = ast
+        .static_vars
+        .iter()
+        .map(|sv| (sv.name.clone(), lower_mmio_scalar_type(sv.ty)))
+        .collect();
+
     let mut module_fn_counter: u32 = 0;
     for item in &ast.items {
         match lower_function(
@@ -1458,6 +1466,7 @@ pub fn lower_to_krir_with_surface(
             &const_map,
             &device_regs,
             &mut module_fn_counter,
+            &static_var_map,
         ) {
             Ok(fns) => functions.extend(fns),
             Err(errs) => errors.extend(errs),
@@ -1663,10 +1672,21 @@ pub fn lower_to_krir_with_surface(
         });
     }
 
+    let krir_static_vars: Vec<KrirStaticVarDecl> = ast
+        .static_vars
+        .iter()
+        .map(|sv| KrirStaticVarDecl {
+            name: sv.name.clone(),
+            ty: lower_mmio_scalar_type(sv.ty),
+            init_value: sv.init_value,
+        })
+        .collect();
+
     let mut module = KrirModule {
         module_caps: ast.module_caps.clone(),
         lock_classes,
         percpu_vars,
+        static_vars: krir_static_vars,
         mmio_bases,
         mmio_registers,
         functions,
@@ -1693,6 +1713,7 @@ fn lower_function(
     const_map: &std::collections::BTreeMap<String, String>,
     device_regs: &DeviceRegMap,
     fn_counter: &mut u32,
+    static_var_map: &BTreeMap<String, KrirMmioScalarType>,
 ) -> Result<Vec<Function>, Vec<String>> {
     let facts = normalize_function_facts(item, surface_profile)?;
 
@@ -1796,6 +1817,7 @@ fn lower_function(
                 &mut pending_fns,
                 &mut slot_types,
                 &slice_elem_types,
+                static_var_map,
             );
         }
         // Append continuation call (for synthesized branches).
@@ -2891,6 +2913,7 @@ fn lower_expr(
     slot_types: &BTreeMap<String, KrirMmioScalarType>,
     const_map: &std::collections::BTreeMap<String, String>,
     slice_elem_types: &BTreeMap<String, KrirMmioScalarType>,
+    static_var_map: &BTreeMap<String, KrirMmioScalarType>,
 ) -> Result<String, String> {
     match expr {
         ParserExpr::IntLiteral(n) => {
@@ -2957,6 +2980,26 @@ fn lower_expr(
                     },
                 });
                 Ok(slot)
+            } else if let Some(&sty) = static_var_map.get(name.as_str()) {
+                // Static variable read: emit StaticLoad into a fresh slot.
+                let slot = fresh_slot(slot_counter);
+                ops.push(KrirOp::StackCell {
+                    ty: sty,
+                    cell: slot.clone(),
+                });
+                ops.push(KrirOp::StaticLoad {
+                    ty: sty,
+                    name: name.clone(),
+                    slot: slot.clone(),
+                });
+                // The StaticLoad puts the value into %rbx, so also store it
+                // into the slot for downstream use.
+                ops.push(KrirOp::StackStore {
+                    ty: sty,
+                    cell: slot.clone(),
+                    value: KrirMmioValueExpr::Ident { name: slot.clone() },
+                });
+                Ok(slot)
             } else {
                 Ok(name.clone())
             }
@@ -2995,6 +3038,7 @@ fn lower_expr(
                 slot_types,
                 const_map,
                 slice_elem_types,
+                static_var_map,
             )?;
             if is_float {
                 let r = lower_expr(
@@ -3006,6 +3050,7 @@ fn lower_expr(
                     slot_types,
                     const_map,
                     slice_elem_types,
+                    static_var_map,
                 )?;
                 let fop = binop_to_krir_farith(*op)
                     .ok_or_else(|| format!("unsupported float operator {:?}", op))?;
@@ -3036,6 +3081,7 @@ fn lower_expr(
                     slot_types,
                     const_map,
                     slice_elem_types,
+                    static_var_map,
                 )?;
                 let out = fresh_slot(slot_counter);
                 ops.push(KrirOp::StackCell {
@@ -3076,6 +3122,7 @@ fn lower_expr(
                 slot_types,
                 const_map,
                 slice_elem_types,
+                static_var_map,
             )?;
             ops.push(KrirOp::SlotArith {
                 ty: arith_ty,
@@ -3121,6 +3168,7 @@ fn lower_expr(
                     slot_types,
                     const_map,
                     slice_elem_types,
+                    static_var_map,
                 )?;
                 let dst = fresh_slot(slot_counter);
                 ops.push(KrirOp::StackCell {
@@ -3159,6 +3207,7 @@ fn lower_expr(
                         slot_types,
                         const_map,
                         slice_elem_types,
+                        static_var_map,
                     ) {
                         Ok(s) => krir_args.push(KrirMmioValueExpr::Ident { name: s }),
                         Err(e) => return Err(e),
@@ -3194,6 +3243,7 @@ fn lower_expr(
                         slot_types,
                         const_map,
                         slice_elem_types,
+                        static_var_map,
                     ) {
                         Ok(s) => krir_args.push(KrirMmioValueExpr::Ident { name: s }),
                         Err(e) => return Err(e),
@@ -3223,6 +3273,7 @@ fn lower_expr(
                     slot_types,
                     const_map,
                     slice_elem_types,
+                    static_var_map,
                 )?);
             }
             let nr_slot = lowered.remove(0);
@@ -3283,6 +3334,7 @@ fn lower_expr(
                 slot_types,
                 const_map,
                 slice_elem_types,
+                static_var_map,
             )?;
 
             // 3. Compute byte address: ptr + index * byte_width
@@ -3409,6 +3461,7 @@ fn lower_stmt(
     pending_fns: &mut Vec<PendingFn>,
     slot_types: &mut BTreeMap<String, KrirMmioScalarType>,
     slice_elem_types: &BTreeMap<String, KrirMmioScalarType>,
+    static_var_map: &BTreeMap<String, KrirMmioScalarType>,
 ) {
     match stmt {
         Stmt::Call(callee) => ops.push(KrirOp::Call {
@@ -3434,6 +3487,7 @@ fn lower_stmt(
                     pending_fns,
                     slot_types,
                     slice_elem_types,
+                    static_var_map,
                 );
             }
             ops.push(KrirOp::CriticalExit);
@@ -3454,6 +3508,7 @@ fn lower_stmt(
                     pending_fns,
                     slot_types,
                     slice_elem_types,
+                    static_var_map,
                 );
             }
             ops.push(KrirOp::UnsafeExit);
@@ -3669,6 +3724,7 @@ fn lower_stmt(
                             slot_types,
                             const_map,
                             slice_elem_types,
+                            static_var_map,
                         ) {
                             Ok(s) => lowered_args.push(s),
                             Err(e) => {
@@ -3709,6 +3765,7 @@ fn lower_stmt(
                         slot_types,
                         const_map,
                         slice_elem_types,
+                        static_var_map,
                     ) {
                         Ok(port_slot) => {
                             let dst = fresh_slot(slot_counter);
@@ -3748,6 +3805,7 @@ fn lower_stmt(
                             slot_types,
                             const_map,
                             slice_elem_types,
+                            static_var_map,
                         ) {
                             Ok(slot) => krir_args.push(KrirMmioValueExpr::Ident { name: slot }),
                             Err(e) => {
@@ -3787,6 +3845,7 @@ fn lower_stmt(
                         slot_types,
                         const_map,
                         slice_elem_types,
+                        static_var_map,
                     ) {
                         Ok(slot) => krir_args.push(KrirMmioValueExpr::Ident { name: slot }),
                         Err(e) => {
@@ -3812,6 +3871,7 @@ fn lower_stmt(
                     slot_types,
                     const_map,
                     slice_elem_types,
+                    static_var_map,
                 ) {
                     errors.push(e);
                 }
@@ -3859,6 +3919,7 @@ fn lower_stmt(
                                 slot_types,
                                 const_map,
                                 slice_elem_types,
+                                static_var_map,
                             ) {
                                 Ok(port_slot) => {
                                     ops.push(KrirOp::PortIn {
@@ -3898,6 +3959,7 @@ fn lower_stmt(
                                 slot_types,
                                 const_map,
                                 slice_elem_types,
+                                static_var_map,
                             ) {
                                 Ok(slot) => krir_args.push(KrirMmioValueExpr::Ident { name: slot }),
                                 Err(e) => {
@@ -3935,6 +3997,7 @@ fn lower_stmt(
                                 slot_types,
                                 const_map,
                                 slice_elem_types,
+                                static_var_map,
                             ) {
                                 Ok(slot) => krir_args.push(KrirMmioValueExpr::Ident { name: slot }),
                                 Err(e) => {
@@ -3969,6 +4032,7 @@ fn lower_stmt(
                         slot_types,
                         const_map,
                         slice_elem_types,
+                        static_var_map,
                     ) {
                         Ok(src) => ops.push(KrirOp::StackStore {
                             ty: lower_mmio_scalar_type(*ty),
@@ -3982,6 +4046,40 @@ fn lower_stmt(
         }
         Stmt::Assign { target, value } => match target {
             ParserAssignTarget::Ident(name) => {
+                // Check if the assignment target is a static variable.
+                if let Some(&sty) = static_var_map.get(name.as_str()) {
+                    if let ParserExpr::IntLiteral(n) = value {
+                        ops.push(KrirOp::StaticStore {
+                            ty: sty,
+                            name: name.clone(),
+                            value: KrirMmioValueExpr::IntLiteral {
+                                value: n.to_string(),
+                            },
+                        });
+                    } else {
+                        match lower_expr(
+                            value,
+                            ops,
+                            slot_counter,
+                            device_regs,
+                            eff_used,
+                            slot_types,
+                            const_map,
+                            slice_elem_types,
+                            static_var_map,
+                        ) {
+                            Ok(src) => {
+                                ops.push(KrirOp::StaticStore {
+                                    ty: sty,
+                                    name: name.clone(),
+                                    value: KrirMmioValueExpr::Ident { name: src },
+                                });
+                            }
+                            Err(e) => errors.push(e),
+                        }
+                    }
+                    return;
+                }
                 let store_ty = slot_types
                     .get(name)
                     .copied()
@@ -4014,6 +4112,7 @@ fn lower_stmt(
                         slot_types,
                         const_map,
                         slice_elem_types,
+                        static_var_map,
                     ) {
                         Ok(src) => {
                             // If src == name, the value was already updated in place
@@ -4051,6 +4150,7 @@ fn lower_stmt(
                     slot_types,
                     const_map,
                     slice_elem_types,
+                    static_var_map,
                 ) {
                     Ok(src) => {
                         ops.push(KrirOp::MmioWrite {
@@ -4082,6 +4182,7 @@ fn lower_stmt(
                     slot_types,
                     const_map,
                     slice_elem_types,
+                    static_var_map,
                 ) {
                     Ok(rhs) => match binop_to_krir_arith(*op) {
                         Some(arith_op) => ops.push(KrirOp::SlotArith {
@@ -4120,6 +4221,7 @@ fn lower_stmt(
                 slot_types,
                 const_map,
                 slice_elem_types,
+                static_var_map,
             ) {
                 Ok(s) => s,
                 Err(e) => {
@@ -4193,6 +4295,7 @@ fn lower_stmt(
                 slot_types,
                 const_map,
                 slice_elem_types,
+                static_var_map,
             ) {
                 Ok(cond_slot) => ops.push(KrirOp::BranchIfZeroLoopBreak { slot: cond_slot }),
                 Err(e) => {
@@ -4214,6 +4317,7 @@ fn lower_stmt(
                     pending_fns,
                     slot_types,
                     slice_elem_types,
+                    static_var_map,
                 );
             }
             ops.push(KrirOp::LoopEnd);
@@ -4239,6 +4343,7 @@ fn lower_stmt(
                 slot_types,
                 const_map,
                 slice_elem_types,
+                static_var_map,
             ) {
                 Ok(start_slot) => ops.push(KrirOp::StackStore {
                     ty: KrirMmioScalarType::U32,
@@ -4261,6 +4366,7 @@ fn lower_stmt(
                 slot_types,
                 const_map,
                 slice_elem_types,
+                static_var_map,
             ) {
                 Ok(s) => s,
                 Err(e) => {
@@ -4300,6 +4406,7 @@ fn lower_stmt(
                     pending_fns,
                     slot_types,
                     slice_elem_types,
+                    static_var_map,
                 );
             }
             // Increment: var += 1.
@@ -4347,6 +4454,7 @@ fn lower_stmt(
             slot_types,
             const_map,
             slice_elem_types,
+            static_var_map,
         ) {
             Ok(src) => ops.push(KrirOp::RawPtrStore {
                 ty: lower_mmio_scalar_type(*ty),
@@ -4367,6 +4475,7 @@ fn lower_stmt(
                 slot_types,
                 const_map,
                 slice_elem_types,
+                static_var_map,
             ) {
                 Ok(slot) => ops.push(KrirOp::ReturnSlot { slot }),
                 Err(e) => errors.push(e),
@@ -4395,6 +4504,7 @@ fn lower_stmt(
                     slot_types,
                     const_map,
                     slice_elem_types,
+                    static_var_map,
                 ) {
                     Ok(s) => lowered.push(s),
                     Err(e) => {
@@ -4451,6 +4561,7 @@ fn lower_stmt(
                 slot_types,
                 const_map,
                 slice_elem_types,
+                static_var_map,
             ) {
                 Ok(s) => s,
                 Err(e) => {
@@ -4505,6 +4616,7 @@ fn lower_stmt(
                 slot_types,
                 const_map,
                 slice_elem_types,
+                static_var_map,
             ) {
                 Ok(s) => s,
                 Err(e) => {
