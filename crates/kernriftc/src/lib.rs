@@ -835,6 +835,9 @@ fn emit_native_hostexe_linux_x86_64(
     let rt_len = RT.code.len();
 
     // 2. Combine user code + runtime blob
+    // NOTE: Static variables are already embedded at the end of text_bytes
+    // (the compiler-owned object format places them after strings in .text).
+    // Do NOT append data_bytes separately — that would duplicate them.
     let mut text = Vec::with_capacity(user_len + rt_len);
     text.extend_from_slice(&object.text_bytes);
     text.extend_from_slice(RT.code);
