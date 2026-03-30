@@ -7946,8 +7946,8 @@ fn call_arg_to_rax_len(arg: &ExecutableCallArg) -> u64 {
                 10 // 48 B8 imm64 (movabs rax, imm64)
             }
         }
-        ExecutableCallArg::Slot { .. } => 5, // 48 8B 44 24 off (mov rax, [rsp+off])
-        ExecutableCallArg::SavedValue => 3,  // 48 89 D8 (mov rax, rbx)
+        ExecutableCallArg::Slot { byte_offset } => 2 + rsp_sib_disp_len(*byte_offset), // REX.W 8B + SIB disp
+        ExecutableCallArg::SavedValue => 3, // 48 89 D8 (mov rax, rbx)
     }
 }
 
@@ -7967,8 +7967,9 @@ fn encode_call_arg_to_rax(out: &mut Vec<u8>, arg: &ExecutableCallArg) {
             }
         }
         ExecutableCallArg::Slot { byte_offset } => {
-            // mov rax, [rsp+off] — 48 8B 44 24 off (5 bytes)
-            out.extend_from_slice(&[0x48, 0x8B, 0x44, 0x24, *byte_offset as u8]);
+            // mov rax, [rsp+off] — REX.W 8B + SIB disp
+            out.extend_from_slice(&[0x48, 0x8B]);
+            emit_rsp_sib_disp(out, 0x44, *byte_offset);
         }
         ExecutableCallArg::SavedValue => {
             // mov rax, rbx — 48 89 D8 (3 bytes)
@@ -7980,9 +7981,9 @@ fn encode_call_arg_to_rax(out: &mut Vec<u8>, arg: &ExecutableCallArg) {
 /// Byte count for loading an `ExecutableCallArg` into DX (16-bit register).
 fn call_arg_to_dx_len(arg: &ExecutableCallArg) -> u64 {
     match arg {
-        ExecutableCallArg::Imm { .. } => 4,  // 66 BA imm16
-        ExecutableCallArg::Slot { .. } => 5, // 66 8B 54 24 off
-        ExecutableCallArg::SavedValue => 3,  // 66 89 DA
+        ExecutableCallArg::Imm { .. } => 4, // 66 BA imm16
+        ExecutableCallArg::Slot { byte_offset } => 2 + rsp_sib_disp_len(*byte_offset), // 66 8B + SIB disp
+        ExecutableCallArg::SavedValue => 3,                                            // 66 89 DA
     }
 }
 
@@ -7996,8 +7997,9 @@ fn encode_call_arg_to_dx(out: &mut Vec<u8>, arg: &ExecutableCallArg) {
             out.extend_from_slice(&(*value as u16).to_le_bytes());
         }
         ExecutableCallArg::Slot { byte_offset } => {
-            // movw off(%rsp), %dx — 66 8B 54 24 off (5 bytes)
-            out.extend_from_slice(&[0x66, 0x8B, 0x54, 0x24, *byte_offset as u8]);
+            // movw off(%rsp), %dx — 66 8B + SIB disp (reg=2, modrm_disp8=0x54)
+            out.extend_from_slice(&[0x66, 0x8B]);
+            emit_rsp_sib_disp(out, 0x54, *byte_offset);
         }
         ExecutableCallArg::SavedValue => {
             // movw %bx, %dx — 66 89 DA (3 bytes)
@@ -8037,7 +8039,7 @@ fn call_arg_to_gpr_len(arg: &ExecutableCallArg) -> u64 {
                 10
             }
         }
-        ExecutableCallArg::Slot { .. } => 5,
+        ExecutableCallArg::Slot { byte_offset } => 2 + rsp_sib_disp_len(*byte_offset), // REX 8B + SIB disp
         ExecutableCallArg::SavedValue => 3,
     }
 }
@@ -8097,7 +8099,7 @@ fn syscall_encoded_len(
     total
 }
 
-fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
+fn executable_op_encoded_len(op: &ExecutableOp, n_stack_cells: u8) -> u64 {
     match op {
         ExecutableOp::Call { .. } => 5,
         ExecutableOp::CallCapture { ty, .. } => 5 + mmio_saved_value_copy_bytes(*ty),
@@ -8177,36 +8179,50 @@ fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
                     + stack_cell_access_bytes(*ty, *dst_slot_idx)
             }
         },
-        // ParamLoad: movb/movw/movl/movq disp8(%rsp), %bl/%bx/%ebx/%rbx
-        ExecutableOp::ParamLoad { ty, .. } => match ty {
-            MmioScalarType::U8 | MmioScalarType::I8 | MmioScalarType::U32 | MmioScalarType::I32 => {
-                4
-            }
-            MmioScalarType::U16
-            | MmioScalarType::I16
-            | MmioScalarType::U64
-            | MmioScalarType::I64 => 5,
-            MmioScalarType::F32 | MmioScalarType::F64 => {
-                unreachable!(
-                    "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
-                )
-            }
-        },
-        // Param-addr MMIO: load addr from stack (5 bytes) then same as constant-addr variant minus movabs (10 bytes).
+        // ParamLoad: movb/movw/movl/movq off(%rsp), %bl/%bx/%ebx/%rbx
+        ExecutableOp::ParamLoad { ty, param_idx } => {
+            let offset = 8u32 * u32::from(n_stack_cells) + 8u32 * u32::from(*param_idx);
+            let prefix: u64 = match ty {
+                MmioScalarType::U8
+                | MmioScalarType::I8
+                | MmioScalarType::U32
+                | MmioScalarType::I32 => 1, // opcode only
+                MmioScalarType::U16 | MmioScalarType::I16 => 2, // 0x66 + opcode
+                MmioScalarType::U64 | MmioScalarType::I64 => 2, // REX.W + opcode
+                MmioScalarType::F32 | MmioScalarType::F64 => {
+                    unreachable!(
+                        "float type reached x86_64 codegen; should be caught by validate_executable_krir_linear_structure"
+                    )
+                }
+            };
+            prefix + rsp_sib_disp_len(offset)
+        }
+        // Param-addr MMIO: load addr from stack then same as constant-addr variant minus movabs (10 bytes).
         ExecutableOp::MmioReadParamAddr {
-            ty, capture_value, ..
+            param_idx,
+            ty,
+            capture_value,
         } => {
-            5 + mmio_load_bytes(*ty)
+            let offset = 8u32 * u32::from(n_stack_cells) + 8u32 * u32::from(*param_idx);
+            let load_addr = 2 + rsp_sib_disp_len(offset); // REX.W 8B + SIB disp
+            load_addr
+                + mmio_load_bytes(*ty)
                 + if *capture_value {
                     mmio_saved_value_copy_bytes(*ty)
                 } else {
                     0
                 }
         }
-        ExecutableOp::MmioWriteImmParamAddr { ty, .. } => {
-            5 + mmio_value_load_immediate_bytes(*ty) + mmio_store_bytes(*ty)
+        ExecutableOp::MmioWriteImmParamAddr { param_idx, ty, .. } => {
+            let offset = 8u32 * u32::from(n_stack_cells) + 8u32 * u32::from(*param_idx);
+            let load_addr = 2 + rsp_sib_disp_len(offset);
+            load_addr + mmio_value_load_immediate_bytes(*ty) + mmio_store_bytes(*ty)
         }
-        ExecutableOp::MmioWriteValueParamAddr { ty, .. } => 5 + mmio_saved_value_store_bytes(*ty),
+        ExecutableOp::MmioWriteValueParamAddr { param_idx, ty } => {
+            let offset = 8u32 * u32::from(n_stack_cells) + 8u32 * u32::from(*param_idx);
+            let load_addr = 2 + rsp_sib_disp_len(offset);
+            load_addr + mmio_saved_value_store_bytes(*ty)
+        }
         ExecutableOp::CallWithArgs { args, .. } => {
             let args_bytes: u64 = args
                 .iter()
@@ -8245,11 +8261,28 @@ fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
         ExecutableOp::LoopEnd => 5,      // jmp rel32
         ExecutableOp::LoopBreak => 5,    // jmp rel32
         ExecutableOp::LoopContinue => 5, // jmp rel32
-        // movzx eax, byte ptr [rsp+disp8] (4 bytes) + test eax, eax (2 bytes) + jz rel32 (6 bytes) = 12
-        ExecutableOp::BranchIfZeroLoopBreak { .. } => 12,
-        ExecutableOp::BranchIfNonZeroLoopBreak { .. } => 12,
-        // movq [rsp+disp8], rax (5) + cmpq [rsp+disp8], rax (5) + setCC al (3) + movzx eax,al (3) + movl eax,[rsp+disp8] (5) = 21
-        ExecutableOp::CompareIntoSlot { .. } => 21,
+        // movzx eax, byte ptr [rsp+off] + test eax, eax (2 bytes) + jz/jnz rel32 (6 bytes)
+        ExecutableOp::BranchIfZeroLoopBreak { slot_idx } => {
+            let offset = 8u32 * *slot_idx as u32;
+            1 + rsp_sib_disp_len(offset) + 2 + 6 // 8A + SIB disp + test + jz
+        }
+        ExecutableOp::BranchIfNonZeroLoopBreak { slot_idx } => {
+            let offset = 8u32 * *slot_idx as u32;
+            1 + rsp_sib_disp_len(offset) + 2 + 6 // 8A + SIB disp + test + jnz
+        }
+        // load lhs + cmp rhs + setCC al (3) + movzx eax,al (3) + store out
+        ExecutableOp::CompareIntoSlot {
+            ty,
+            lhs_idx,
+            rhs_idx,
+            out_idx,
+            ..
+        } => {
+            let lhs_off = 8u32 * *lhs_idx as u32;
+            let rhs_off = 8u32 * *rhs_idx as u32;
+            let out_off = 8u32 * *out_idx as u32;
+            compare_into_slot_encoded_len(*ty, lhs_off, rhs_off, out_off)
+        }
         // RawPtrLoad: load addr (u64) from addr_slot into %rax, then indirect load [%rax] into %al/etc,
         // then store result into out_slot.
         ExecutableOp::RawPtrLoad {
@@ -8329,31 +8362,10 @@ fn executable_op_encoded_len(op: &ExecutableOp) -> u64 {
 /// Args 0-5 go into registers; args 6+ are loaded into rax then pushed.
 fn call_arg_indexed_encoded_bytes(arg_idx: usize, arg: &ExecutableCallArg) -> u64 {
     if arg_idx < 6 {
-        match arg {
-            ExecutableCallArg::Imm { value } => {
-                if *value <= 0x7FFF_FFFF {
-                    7
-                } else {
-                    10
-                }
-            }
-            ExecutableCallArg::Slot { .. } => 5,
-            ExecutableCallArg::SavedValue => 3,
-        }
+        call_arg_to_gpr_len(arg)
     } else {
         // Load value into rax (variable size) + push rax (1 byte)
-        let load_len = match arg {
-            ExecutableCallArg::Imm { value } => {
-                if *value <= 0x7FFF_FFFF {
-                    5 // mov eax, imm32
-                } else {
-                    10 // movabs rax, imm64
-                }
-            }
-            ExecutableCallArg::Slot { .. } => 5, // mov rax, [rsp+disp8]
-            ExecutableCallArg::SavedValue => 3,  // mov rax, rbx
-        };
-        load_len + 1 // + push rax
+        call_arg_to_rax_len(arg) + 1
     }
 }
 
@@ -8464,7 +8476,7 @@ fn encode_mmio_write_saved_value_bytes(out: &mut Vec<u8>, ty: MmioScalarType, ad
 /// This function emits: ModRM + SIB(0x24) + displacement (0, 1, or 4 bytes).
 fn emit_rsp_sib_disp(out: &mut Vec<u8>, modrm_disp8: u8, offset: u32) {
     let modrm_no_disp = modrm_disp8 & 0x38 | 0x04; // mod=00, keep reg, rm=4
-    let modrm_disp32 = modrm_disp8 | 0x40; // mod=10 (01→10: add 0x40)
+    let modrm_disp32 = (modrm_disp8 & 0x3F) | 0x80; // mod=10: clear mod bits, set bit 7
     if offset == 0 {
         out.extend_from_slice(&[modrm_no_disp, 0x24]);
     } else if offset <= 127 {
@@ -8472,6 +8484,17 @@ fn emit_rsp_sib_disp(out: &mut Vec<u8>, modrm_disp8: u8, offset: u32) {
     } else {
         let b = offset.to_le_bytes();
         out.extend_from_slice(&[modrm_disp32, 0x24, b[0], b[1], b[2], b[3]]);
+    }
+}
+
+/// Byte length of the SIB-based `[rsp + disp]` addressing suffix emitted by `emit_rsp_sib_disp`.
+fn rsp_sib_disp_len(offset: u32) -> u64 {
+    if offset == 0 {
+        2 // ModRM + SIB
+    } else if offset <= 127 {
+        3 // ModRM + SIB + disp8
+    } else {
+        6 // ModRM + SIB + disp32
     }
 }
 
@@ -8625,15 +8648,31 @@ fn encode_stack_cell_load_slot_bytes_into_rcx(out: &mut Vec<u8>, ty: MmioScalarT
     }
 }
 
-/// Emit 21 bytes for `CompareIntoSlot { ty, cmp_op, lhs_idx, rhs_idx, out_idx }`.
+/// Compute the encoded byte length of a `CompareIntoSlot` operation.
+fn compare_into_slot_encoded_len(
+    ty: MmioScalarType,
+    lhs_off: u32,
+    rhs_off: u32,
+    out_off: u32,
+) -> u64 {
+    let (load_prefix, cmp_prefix): (u64, u64) = match ty {
+        MmioScalarType::U8 | MmioScalarType::I8 => (2, 1), // 0F B6 + SIB, 3A + SIB
+        MmioScalarType::U16 | MmioScalarType::I16 => (2, 2), // 0F B7 + SIB, 66 3B + SIB
+        MmioScalarType::U32 | MmioScalarType::I32 => (1, 1), // 8B + SIB, 3B + SIB
+        _ => (2, 2),                                       // U64: 48 8B + SIB, 48 3B + SIB
+    };
+    let load_lhs = load_prefix + rsp_sib_disp_len(lhs_off);
+    let cmp_rhs = cmp_prefix + rsp_sib_disp_len(rhs_off);
+    let setcc = 3u64; // 0F XX C0
+    let movzbl = 3u64; // 0F B6 C0
+    let store_out = 2 + rsp_sib_disp_len(out_off); // 48 89 + SIB disp
+    load_lhs + cmp_rhs + setcc + movzbl + store_out
+}
+
+/// Emit bytes for `CompareIntoSlot { ty, cmp_op, lhs_idx, rhs_idx, out_idx }`.
 ///
 /// Uses zero-extending loads to avoid reading garbage from sub-U64 slots (each slot is 8 bytes
-/// but smaller types only write 1/2/4 bytes). All encodings produce exactly 21 bytes.
-///
-/// U8  (5+4+1+3+3+5 = 21):  movzbl lhs(%rsp),%eax | cmpb rhs(%rsp),%al | nop | setCC | movzbl | movq
-/// U16 (5+5+3+3+5   = 21):  movzwl lhs(%rsp),%eax | cmpw rhs(%rsp),%ax  | setCC | movzbl | movq
-/// U32 (4+4+2+3+3+5 = 21):  movl lhs(%rsp),%eax   | cmpl rhs(%rsp),%eax | 2*nop | setCC | movzbl | movq
-/// U64 (5+5+3+3+5   = 21):  movq lhs(%rsp),%rax   | cmpq rhs(%rsp),%rax | setCC | movzbl | movq  (unchanged)
+/// but smaller types only write 1/2/4 bytes).
 fn encode_compare_into_slot_bytes(
     out: &mut Vec<u8>,
     ty: MmioScalarType,
@@ -8642,38 +8681,43 @@ fn encode_compare_into_slot_bytes(
     rhs_idx: u8,
     out_idx: u8,
 ) {
-    let lhs_off = lhs_idx.wrapping_mul(8);
-    let rhs_off = rhs_idx.wrapping_mul(8);
-    // Steps 1+2: type-appropriate zero-extending load of lhs, then compare with rhs.
-    // All branches emit exactly 10 bytes for steps 1+2, with padding NOPs as needed.
+    let lhs_off = 8u32 * lhs_idx as u32;
+    let rhs_off = 8u32 * rhs_idx as u32;
+    let out_off = 8u32 * out_idx as u32;
+    // Step 1: type-appropriate zero-extending load of lhs into %eax/%rax.
+    // Step 2: compare with rhs.
     match ty {
         MmioScalarType::U8 | MmioScalarType::I8 => {
-            // movzbl lhs_off(%rsp), %eax  [0F B6 44 24 off]  (5 bytes)
-            out.extend_from_slice(&[0x0F, 0xB6, 0x44, 0x24, lhs_off]);
-            // cmpb rhs_off(%rsp), %al     [3A 44 24 off]     (4 bytes)
-            out.extend_from_slice(&[0x3A, 0x44, 0x24, rhs_off]);
-            // nop (1 byte pad to reach 10 total)
-            out.push(0x90);
+            // movzbl lhs_off(%rsp), %eax  [0F B6 + SIB disp]
+            out.extend_from_slice(&[0x0F, 0xB6]);
+            emit_rsp_sib_disp(out, 0x44, lhs_off);
+            // cmpb rhs_off(%rsp), %al     [3A + SIB disp]
+            out.push(0x3A);
+            emit_rsp_sib_disp(out, 0x44, rhs_off);
         }
         MmioScalarType::U16 | MmioScalarType::I16 => {
-            // movzwl lhs_off(%rsp), %eax  [0F B7 44 24 off]  (5 bytes)
-            out.extend_from_slice(&[0x0F, 0xB7, 0x44, 0x24, lhs_off]);
-            // cmpw rhs_off(%rsp), %ax     [66 3B 44 24 off]  (5 bytes)
-            out.extend_from_slice(&[0x66, 0x3B, 0x44, 0x24, rhs_off]);
+            // movzwl lhs_off(%rsp), %eax  [0F B7 + SIB disp]
+            out.extend_from_slice(&[0x0F, 0xB7]);
+            emit_rsp_sib_disp(out, 0x44, lhs_off);
+            // cmpw rhs_off(%rsp), %ax     [66 3B + SIB disp]
+            out.extend_from_slice(&[0x66, 0x3B]);
+            emit_rsp_sib_disp(out, 0x44, rhs_off);
         }
         MmioScalarType::U32 | MmioScalarType::I32 => {
-            // movl lhs_off(%rsp), %eax    [8B 44 24 off]     (4 bytes)
-            out.extend_from_slice(&[0x8B, 0x44, 0x24, lhs_off]);
-            // cmpl rhs_off(%rsp), %eax    [3B 44 24 off]     (4 bytes)
-            out.extend_from_slice(&[0x3B, 0x44, 0x24, rhs_off]);
-            // 2-byte nop [66 90] to pad to 10 bytes
-            out.extend_from_slice(&[0x66, 0x90]);
+            // movl lhs_off(%rsp), %eax    [8B + SIB disp]
+            out.push(0x8B);
+            emit_rsp_sib_disp(out, 0x44, lhs_off);
+            // cmpl rhs_off(%rsp), %eax    [3B + SIB disp]
+            out.push(0x3B);
+            emit_rsp_sib_disp(out, 0x44, rhs_off);
         }
         _ => {
-            // U64: movq lhs_off(%rsp), %rax  [48 8B 44 24 off]  (5 bytes)
-            out.extend_from_slice(&[0x48, 0x8B, 0x44, 0x24, lhs_off]);
-            // cmpq rhs_off(%rsp), %rax       [48 3B 44 24 off]  (5 bytes)
-            out.extend_from_slice(&[0x48, 0x3B, 0x44, 0x24, rhs_off]);
+            // U64: movq lhs_off(%rsp), %rax  [48 8B + SIB disp]
+            out.extend_from_slice(&[0x48, 0x8B]);
+            emit_rsp_sib_disp(out, 0x44, lhs_off);
+            // cmpq rhs_off(%rsp), %rax       [48 3B + SIB disp]
+            out.extend_from_slice(&[0x48, 0x3B]);
+            emit_rsp_sib_disp(out, 0x44, rhs_off);
         }
     }
     // Step 3: setCC %al  [0F XX C0]  (3 bytes)
@@ -8715,8 +8759,9 @@ fn encode_compare_into_slot_bytes(
     out.extend_from_slice(&[0x0F, setcc_byte, 0xC0]);
     // Step 4: movzbl %al, %eax  [0F B6 C0]  (3 bytes)
     out.extend_from_slice(&[0x0F, 0xB6, 0xC0]);
-    // Step 5: movq %rax, out*8(%rsp)  [48 89 44 24 off]  (5 bytes)
-    out.extend_from_slice(&[0x48, 0x89, 0x44, 0x24, out_idx.wrapping_mul(8)]);
+    // Step 5: movq %rax, out_off(%rsp)  [48 89 + SIB disp]
+    out.extend_from_slice(&[0x48, 0x89]);
+    emit_rsp_sib_disp(out, 0x44, out_off);
 }
 
 /// Emit a typed `op reg, dst_off(%rsp)` for `SlotArithSlot`.
@@ -8879,7 +8924,7 @@ fn executable_function_frame_size(function: &ExecutableFunction) -> u32 {
         + 8u32 * function.signature.params.len() as u32
 }
 
-fn emit_param_spill(out: &mut Vec<u8>, param_idx: usize, offset: u8, caller_stack_disp: u32) {
+fn emit_param_spill(out: &mut Vec<u8>, param_idx: usize, offset: u32, caller_stack_disp: u32) {
     if param_idx < 6 {
         // Params 0-5: spill from register to stack slot.
         let (rex, modrm): (u8, u8) = match param_idx {
@@ -8891,7 +8936,8 @@ fn emit_param_spill(out: &mut Vec<u8>, param_idx: usize, offset: u8, caller_stac
             5 => (0x4C, 0x4C), // r9   (REX.R, reg=1)
             _ => unreachable!(),
         };
-        out.extend_from_slice(&[rex, 0x89, modrm, 0x24, offset]);
+        out.extend_from_slice(&[rex, 0x89]);
+        emit_rsp_sib_disp(out, modrm, offset);
     } else {
         // Params 6+: load from caller's stack frame into rax, then store to local slot.
         // SysV ABI: param N (N>=6) is at [rsp + caller_stack_disp + (N-6)*8].
@@ -8900,7 +8946,8 @@ fn emit_param_spill(out: &mut Vec<u8>, param_idx: usize, offset: u8, caller_stac
         // mov rax, [rsp + src_disp]
         emit_mov_rax_rsp_disp(out, src_disp);
         // mov [rsp + offset], rax
-        out.extend_from_slice(&[0x48, 0x89, 0x44, 0x24, offset]);
+        out.extend_from_slice(&[0x48, 0x89]);
+        emit_rsp_sib_disp(out, 0x44, offset);
     }
 }
 
@@ -8922,13 +8969,13 @@ fn mov_rax_rsp_disp_len(disp: u32) -> u64 {
 }
 
 /// Encoded byte length of a single param spill (register or stack).
-fn param_spill_encoded_len(param_idx: usize, caller_stack_disp: u32) -> u64 {
+fn param_spill_encoded_len(param_idx: usize, offset: u32, caller_stack_disp: u32) -> u64 {
     if param_idx < 6 {
-        5 // mov [rsp+off], regN
+        2 + rsp_sib_disp_len(offset) // REX 89 + SIB disp
     } else {
         let src_disp = caller_stack_disp + (param_idx as u32 - 6) * 8;
         // mov rax, [rsp+src_disp] + mov [rsp+off], rax
-        mov_rax_rsp_disp_len(src_disp) + 5
+        mov_rax_rsp_disp_len(src_disp) + 2 + rsp_sib_disp_len(offset)
     }
 }
 
@@ -8975,11 +9022,12 @@ fn encode_call_arg_bytes(out: &mut Vec<u8>, arg_idx: u8, arg: &ExecutableCallArg
             }
         }
         ExecutableCallArg::Slot { byte_offset } => {
-            // movq byte_offset(%rsp), %regN  (5 bytes, disp8)
+            // movq byte_offset(%rsp), %regN — REX 8B + SIB disp
             // MOV r64, r/m64 (0x8B); dest is REG → REX.R for extended regs
             let rex = if is_ext { 0x4Cu8 } else { 0x48u8 }; // REX.W + REX.R
-            let modrm = 0x40 | (reg_field << 3) | 4; // mod=01, reg=dest, rm=4 (SIB follows)
-            out.extend_from_slice(&[rex, 0x8B, modrm, 0x24, *byte_offset as u8]);
+            let modrm_disp8 = 0x40 | (reg_field << 3) | 4; // mod=01, reg=dest, rm=4 (SIB follows)
+            out.extend_from_slice(&[rex, 0x8B]);
+            emit_rsp_sib_disp(out, modrm_disp8, *byte_offset);
         }
         ExecutableCallArg::SavedValue => {
             // movq %rbx, %regN  (3 bytes)
@@ -9014,10 +9062,11 @@ fn encode_call_arg_to_gpr(out: &mut Vec<u8>, reg_field: u8, is_ext: bool, arg: &
             }
         }
         ExecutableCallArg::Slot { byte_offset } => {
-            // movq byte_offset(%rsp), %regN  (5 bytes, disp8)
+            // movq byte_offset(%rsp), %regN — REX 8B + SIB disp
             let rex = if is_ext { 0x4Cu8 } else { 0x48u8 };
-            let modrm = 0x40 | (reg_field << 3) | 4;
-            out.extend_from_slice(&[rex, 0x8B, modrm, 0x24, *byte_offset as u8]);
+            let modrm_disp8 = 0x40 | (reg_field << 3) | 4;
+            out.extend_from_slice(&[rex, 0x8B]);
+            emit_rsp_sib_disp(out, modrm_disp8, *byte_offset);
         }
         ExecutableCallArg::SavedValue => {
             // movq %rbx, %regN  (3 bytes)
@@ -9028,23 +9077,27 @@ fn encode_call_arg_to_gpr(out: &mut Vec<u8>, reg_field: u8, is_ext: bool, arg: &
 }
 
 // Emit `MOV ty-sized [rsp+offset] -> %rbx` (load param into saved-value register).
-fn encode_param_load_bytes(out: &mut Vec<u8>, ty: MmioScalarType, offset: u8) {
+fn encode_param_load_bytes(out: &mut Vec<u8>, ty: MmioScalarType, offset: u32) {
     match ty {
-        // movb  disp8(%rsp), %bl  — 0x8A /r  ModRM=0x5C SIB=0x24
+        // movb  off(%rsp), %bl  — 0x8A + SIB disp (reg=3, modrm_disp8=0x5C)
         MmioScalarType::U8 | MmioScalarType::I8 => {
-            out.extend_from_slice(&[0x8A, 0x5C, 0x24, offset])
+            out.push(0x8A);
+            emit_rsp_sib_disp(out, 0x5C, offset);
         }
-        // movw  disp8(%rsp), %bx  — 0x66 0x8B /r
+        // movw  off(%rsp), %bx  — 0x66 0x8B + SIB disp
         MmioScalarType::U16 | MmioScalarType::I16 => {
-            out.extend_from_slice(&[0x66, 0x8B, 0x5C, 0x24, offset])
+            out.extend_from_slice(&[0x66, 0x8B]);
+            emit_rsp_sib_disp(out, 0x5C, offset);
         }
-        // movl  disp8(%rsp), %ebx — 0x8B /r  (zero-extends to rbx)
+        // movl  off(%rsp), %ebx — 0x8B + SIB disp (zero-extends to rbx)
         MmioScalarType::U32 | MmioScalarType::I32 => {
-            out.extend_from_slice(&[0x8B, 0x5C, 0x24, offset])
+            out.push(0x8B);
+            emit_rsp_sib_disp(out, 0x5C, offset);
         }
-        // movq  disp8(%rsp), %rbx — REX.W 0x8B /r
+        // movq  off(%rsp), %rbx — REX.W 0x8B + SIB disp
         MmioScalarType::U64 | MmioScalarType::I64 => {
-            out.extend_from_slice(&[0x48, 0x8B, 0x5C, 0x24, offset])
+            out.extend_from_slice(&[0x48, 0x8B]);
+            emit_rsp_sib_disp(out, 0x5C, offset);
         }
         MmioScalarType::F32 | MmioScalarType::F64 => {
             unreachable!(
@@ -9054,16 +9107,16 @@ fn encode_param_load_bytes(out: &mut Vec<u8>, ty: MmioScalarType, offset: u8) {
     }
 }
 
-// Emit `mov disp8(%rsp), %rax` — loads a u64 param (spilled to stack) into %rax for MMIO addressing.
-// Encoding: REX.W (0x48) + MOV r64,r/m64 (0x8B) + ModRM[mod=01,reg=rax(0),rm=4] (0x44) + SIB[0x24] + disp8
-fn push_load_param_addr_to_rax(out: &mut Vec<u8>, offset: u8) {
-    out.extend_from_slice(&[0x48, 0x8B, 0x44, 0x24, offset]);
+// Emit `mov off(%rsp), %rax` — loads a u64 param (spilled to stack) into %rax for MMIO addressing.
+fn push_load_param_addr_to_rax(out: &mut Vec<u8>, offset: u32) {
+    out.extend_from_slice(&[0x48, 0x8B]);
+    emit_rsp_sib_disp(out, 0x44, offset);
 }
 
 fn encode_mmio_read_param_addr_bytes(
     out: &mut Vec<u8>,
     ty: MmioScalarType,
-    offset: u8,
+    offset: u32,
     capture_value: bool,
 ) {
     push_load_param_addr_to_rax(out, offset);
@@ -9086,7 +9139,7 @@ fn encode_mmio_read_param_addr_bytes(
 fn encode_mmio_write_imm_param_addr_bytes(
     out: &mut Vec<u8>,
     ty: MmioScalarType,
-    offset: u8,
+    offset: u32,
     value: u64,
 ) {
     push_load_param_addr_to_rax(out, offset);
@@ -9107,7 +9160,7 @@ fn encode_mmio_write_imm_param_addr_bytes(
 fn encode_mmio_write_saved_value_param_addr_bytes(
     out: &mut Vec<u8>,
     ty: MmioScalarType,
-    offset: u8,
+    offset: u32,
 ) {
     push_load_param_addr_to_rax(out, offset);
     match ty {
@@ -9884,8 +9937,12 @@ pub fn lower_executable_krir_to_compiler_owned_object(
         let frame_sz = executable_function_frame_size(function);
         let caller_stack_disp_for_size =
             frame_sz + if uses_saved_value_slot { 8u32 } else { 0u32 } + 8; // return address
+        let sc_bytes_for_size = 8u32 * u32::from(executable_function_n_stack_cells(function));
         let param_spill_total: u64 = (0..n_params as usize)
-            .map(|i| param_spill_encoded_len(i, caller_stack_disp_for_size))
+            .map(|i| {
+                let off = sc_bytes_for_size + 8u32 * i as u32;
+                param_spill_encoded_len(i, off, caller_stack_disp_for_size)
+            })
             .sum();
         let size = (if uses_saved_value_slot { 1 } else { 0 })
             + if uses_frame {
@@ -9894,7 +9951,13 @@ pub fn lower_executable_krir_to_compiler_owned_object(
             } else {
                 0
             }
-            + block.ops.iter().map(executable_op_encoded_len).sum::<u64>()
+            + block
+                .ops
+                .iter()
+                .map(|op| {
+                    executable_op_encoded_len(op, executable_function_n_stack_cells(function))
+                })
+                .sum::<u64>()
             + executable_terminator_encoded_len(function);
         function_offsets.insert(function.name.clone(), cursor);
         function_sizes.insert(function.name.clone(), size);
@@ -9975,9 +10038,9 @@ pub fn lower_executable_krir_to_compiler_owned_object(
             let caller_stack_disp =
                 frame_size + if uses_saved_value_slot { 8u32 } else { 0u32 } + 8; // return address
             for i in 0..n_params {
-                let offset = (sc_bytes + 8u32 * i as u32) as u8;
+                let offset = sc_bytes + 8u32 * i as u32;
                 emit_param_spill(&mut code_bytes, i, offset, caller_stack_disp);
-                local_offset += param_spill_encoded_len(i, caller_stack_disp);
+                local_offset += param_spill_encoded_len(i, offset, caller_stack_disp);
             }
         }
         // Loop stack for intra-function branch relocation.
@@ -10029,7 +10092,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         target_symbol: callee.clone(),
                         width_bytes: 4,
                     });
-                    local_offset += executable_op_encoded_len(op);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells);
                 }
                 ExecutableOp::BranchIfZero {
                     ty,
@@ -10063,7 +10126,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         target_symbol: else_callee.clone(),
                         width_bytes: 4,
                     });
-                    local_offset += executable_op_encoded_len(op);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells);
                 }
                 ExecutableOp::BranchIfZeroWithArgs {
                     ty,
@@ -10112,7 +10175,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         target_symbol: else_callee.clone(),
                         width_bytes: 4,
                     });
-                    local_offset += executable_op_encoded_len(op);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells);
                 }
                 ExecutableOp::BranchIfEqImm {
                     ty,
@@ -10147,7 +10210,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         target_symbol: else_callee.clone(),
                         width_bytes: 4,
                     });
-                    local_offset += executable_op_encoded_len(op);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells);
                 }
                 ExecutableOp::BranchIfMaskNonZeroImm {
                     ty,
@@ -10182,7 +10245,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         target_symbol: else_callee.clone(),
                         width_bytes: 4,
                     });
-                    local_offset += executable_op_encoded_len(op);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells);
                 }
                 ExecutableOp::MmioRead {
                     ty,
@@ -10190,15 +10253,15 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     capture_value,
                 } => {
                     encode_mmio_read_bytes(&mut code_bytes, *ty, *addr, *capture_value);
-                    local_offset += executable_op_encoded_len(op);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells);
                 }
                 ExecutableOp::MmioWriteImm { ty, addr, value } => {
                     encode_mmio_write_imm_bytes(&mut code_bytes, *ty, *addr, *value);
-                    local_offset += executable_op_encoded_len(op);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells);
                 }
                 ExecutableOp::MmioWriteValue { ty, addr } => {
                     encode_mmio_write_saved_value_bytes(&mut code_bytes, *ty, *addr);
-                    local_offset += executable_op_encoded_len(op);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells);
                 }
                 ExecutableOp::StackStoreImm {
                     ty,
@@ -10206,15 +10269,15 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     slot_idx,
                 } => {
                     encode_stack_cell_store_imm_slot_bytes(&mut code_bytes, *ty, *value, *slot_idx);
-                    local_offset += executable_op_encoded_len(op);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells);
                 }
                 ExecutableOp::StackStoreValue { ty, slot_idx } => {
                     encode_stack_cell_store_saved_value_slot_bytes(&mut code_bytes, *ty, *slot_idx);
-                    local_offset += executable_op_encoded_len(op);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells);
                 }
                 ExecutableOp::StackLoad { ty, slot_idx } => {
                     encode_stack_cell_load_slot_bytes(&mut code_bytes, *ty, *slot_idx);
-                    local_offset += executable_op_encoded_len(op);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells);
                 }
                 ExecutableOp::SlotArithImm {
                     ty,
@@ -10277,7 +10340,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                             );
                         }
                     }
-                    local_offset += executable_op_encoded_len(op);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells);
                 }
                 ExecutableOp::SlotArithSlot {
                     ty,
@@ -10362,39 +10425,35 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                             );
                         }
                     }
-                    local_offset += executable_op_encoded_len(op);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells);
                 }
                 ExecutableOp::ParamLoad { param_idx, ty } => {
-                    let offset =
-                        (8u32 * u32::from(n_stack_cells) + 8u32 * u32::from(*param_idx)) as u8;
+                    let offset = 8u32 * u32::from(n_stack_cells) + 8u32 * u32::from(*param_idx);
                     encode_param_load_bytes(&mut code_bytes, *ty, offset);
-                    local_offset += executable_op_encoded_len(op);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells);
                 }
                 ExecutableOp::MmioReadParamAddr {
                     param_idx,
                     ty,
                     capture_value,
                 } => {
-                    let offset =
-                        (8u32 * u32::from(n_stack_cells) + 8u32 * u32::from(*param_idx)) as u8;
+                    let offset = 8u32 * u32::from(n_stack_cells) + 8u32 * u32::from(*param_idx);
                     encode_mmio_read_param_addr_bytes(&mut code_bytes, *ty, offset, *capture_value);
-                    local_offset += executable_op_encoded_len(op);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells);
                 }
                 ExecutableOp::MmioWriteImmParamAddr {
                     param_idx,
                     ty,
                     value,
                 } => {
-                    let offset =
-                        (8u32 * u32::from(n_stack_cells) + 8u32 * u32::from(*param_idx)) as u8;
+                    let offset = 8u32 * u32::from(n_stack_cells) + 8u32 * u32::from(*param_idx);
                     encode_mmio_write_imm_param_addr_bytes(&mut code_bytes, *ty, offset, *value);
-                    local_offset += executable_op_encoded_len(op);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells);
                 }
                 ExecutableOp::MmioWriteValueParamAddr { param_idx, ty } => {
-                    let offset =
-                        (8u32 * u32::from(n_stack_cells) + 8u32 * u32::from(*param_idx)) as u8;
+                    let offset = 8u32 * u32::from(n_stack_cells) + 8u32 * u32::from(*param_idx);
                     encode_mmio_write_saved_value_param_addr_bytes(&mut code_bytes, *ty, offset);
-                    local_offset += executable_op_encoded_len(op);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells);
                 }
                 ExecutableOp::CallWithArgs { callee, args } => {
                     if !function_offsets.contains_key(callee) {
@@ -10434,7 +10493,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     if n_stack > 0 {
                         emit_add_rsp(&mut code_bytes, (n_stack * 8) as u32);
                     }
-                    local_offset += executable_op_encoded_len(op);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells);
                 }
                 ExecutableOp::CallCaptureWithArgs {
                     callee,
@@ -10481,7 +10540,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     }
                     // Store accumulator to capture slot.
                     encode_stack_cell_store_accumulator_slot_bytes(&mut code_bytes, *ty, *slot_idx);
-                    local_offset += executable_op_encoded_len(op);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells);
                 }
                 ExecutableOp::RawPtrLoad {
                     ty,
@@ -10489,7 +10548,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     out_slot_idx,
                 } => {
                     encode_raw_ptr_load_bytes(&mut code_bytes, *ty, *addr_slot_idx, *out_slot_idx);
-                    local_offset += executable_op_encoded_len(op);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells);
                 }
                 ExecutableOp::RawPtrStore {
                     ty,
@@ -10513,7 +10572,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                                 ));
                             }
                         }
-                        local_offset += executable_op_encoded_len(op);
+                        local_offset += executable_op_encoded_len(op, n_stack_cells);
                     }
                     MmioValueExpr::Ident { .. } => {
                         encode_raw_ptr_store_saved_value_bytes(
@@ -10521,7 +10580,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                             *ty,
                             *addr_slot_idx,
                         );
-                        local_offset += executable_op_encoded_len(op);
+                        local_offset += executable_op_encoded_len(op, n_stack_cells);
                     }
                     MmioValueExpr::FloatLiteral { .. } => {
                         return Err(format!(
@@ -10557,7 +10616,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         MmioScalarType::U64,
                         *slot_idx,
                     );
-                    local_offset += executable_op_encoded_len(op);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells);
                 }
                 ExecutableOp::InlineAsm(intr) => {
                     let bytes: &[u8] = match intr {
@@ -10574,7 +10633,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         KernelIntrinsic::Cpuid => &[0x0F, 0xA2],
                     };
                     code_bytes.extend_from_slice(bytes);
-                    local_offset += executable_op_encoded_len(op);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells);
                 }
                 ExecutableOp::CompareIntoSlot {
                     ty,
@@ -10591,7 +10650,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         *rhs_idx,
                         *out_idx,
                     );
-                    local_offset += executable_op_encoded_len(op);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells);
                 }
                 ExecutableOp::PrintStdout { text } => {
                     let n = text.len();
@@ -10618,7 +10677,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     code_bytes.extend_from_slice(&[0x48, 0x83, 0xC0, n as u8]);
                     // mov [rdi], rax                ; 48 89 07
                     code_bytes.extend_from_slice(&[0x48, 0x89, 0x07]);
-                    local_offset += executable_op_encoded_len(op);
+                    local_offset += executable_op_encoded_len(op, n_stack_cells);
                 }
                 ExecutableOp::LoopBegin => {
                     // No bytes emitted — just record the loop head position.
@@ -10669,8 +10728,10 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     local_offset += 5;
                 }
                 ExecutableOp::BranchIfZeroLoopBreak { slot_idx } => {
-                    // mov al, [rsp + 8*slot_idx]  : 8A 44 24 disp8  (4 bytes)
-                    code_bytes.extend_from_slice(&[0x8A, 0x44, 0x24, 8 * slot_idx]);
+                    // mov al, [rsp + off]  : 8A + SIB disp
+                    let off = 8u32 * *slot_idx as u32;
+                    code_bytes.push(0x8A);
+                    emit_rsp_sib_disp(&mut code_bytes, 0x44, off);
                     // test eax, eax               : 85 C0            (2 bytes)
                     code_bytes.extend_from_slice(&[0x85, 0xC0]);
                     // JZ rel32                    : 0F 84 xx xx xx xx (6 bytes)
@@ -10681,11 +10742,13 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         .expect("BranchIfZeroLoopBreak outside loop")
                         .1
                         .push(jcc_start + 2);
-                    local_offset += 12;
+                    local_offset += executable_op_encoded_len(op, n_stack_cells);
                 }
                 ExecutableOp::BranchIfNonZeroLoopBreak { slot_idx } => {
-                    // mov al, [rsp + 8*slot_idx]  : 8A 44 24 disp8  (4 bytes)
-                    code_bytes.extend_from_slice(&[0x8A, 0x44, 0x24, 8 * slot_idx]);
+                    // mov al, [rsp + off]  : 8A + SIB disp
+                    let off = 8u32 * *slot_idx as u32;
+                    code_bytes.push(0x8A);
+                    emit_rsp_sib_disp(&mut code_bytes, 0x44, off);
                     // test eax, eax               : 85 C0            (2 bytes)
                     code_bytes.extend_from_slice(&[0x85, 0xC0]);
                     // JNZ rel32                   : 0F 85 xx xx xx xx (6 bytes)
@@ -10696,7 +10759,7 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         .expect("BranchIfNonZeroLoopBreak outside loop")
                         .1
                         .push(jcc_start + 2);
-                    local_offset += 12;
+                    local_offset += executable_op_encoded_len(op, n_stack_cells);
                 }
                 ExecutableOp::PortIn {
                     width,

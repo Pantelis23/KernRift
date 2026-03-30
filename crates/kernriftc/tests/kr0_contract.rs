@@ -1041,9 +1041,9 @@ fn slice_params_compile_to_correct_abi_in_x86_64_elf_object() {
     );
 
     // Spill rdi (ptr, ABI slot 0) to [rsp+0]:
-    // REX.W 0x89 ModRM(mod=01,reg=rdi=7,rm=rsp=4) SIB(0x24) disp8=0
+    // REX.W 0x89 ModRM(mod=00,reg=rdi=7,rm=4=SIB) SIB(0x24) — no displacement for offset 0
     assert!(
-        text.windows(5).any(|w| w == [0x48, 0x89, 0x7C, 0x24, 0x00]),
+        text.windows(4).any(|w| w == [0x48, 0x89, 0x3C, 0x24]),
         "ptr (rdi) must be spilled to [rsp+0] in slice param prologue"
     );
 
@@ -1054,10 +1054,10 @@ fn slice_params_compile_to_correct_abi_in_x86_64_elf_object() {
         "len (rsi) must be spilled to [rsp+8] in slice param prologue"
     );
 
-    // slice_ptr → ParamLoad { param_idx: 0, ty: U64 } → `movq 0(%rsp), %rbx`
-    // REX.W (0x48) + MOV r64,r/m64 (0x8B) + ModRM(mod=01,reg=rbx=3,rm=4) (0x5C) + SIB(0x24) + disp8=0
+    // slice_ptr → ParamLoad { param_idx: 0, ty: U64 } → `movq (%rsp), %rbx`
+    // REX.W (0x48) + MOV r64,r/m64 (0x8B) + ModRM(mod=00,reg=rbx=3,rm=4=SIB) (0x1C) + SIB(0x24)
     assert!(
-        text.windows(5).any(|w| w == [0x48, 0x8B, 0x5C, 0x24, 0x00]),
+        text.windows(4).any(|w| w == [0x48, 0x8B, 0x1C, 0x24]),
         "slice_ptr must load from [rsp+0] (ptr slot, ABI idx 0)"
     );
 
