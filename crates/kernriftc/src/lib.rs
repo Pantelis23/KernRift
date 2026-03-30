@@ -130,7 +130,119 @@ pub fn compile_file_with_surface(
 ) -> Result<KrirModule, Vec<String>> {
     let src = std::fs::read_to_string(path)
         .map_err(|e| vec![format!("failed to read '{}': {}", path.display(), e)])?;
-    compile_source_with_surface(&src, surface_profile)
+    let mut ast = parse_module(&src)?;
+    resolve_imports(&mut ast, path)?;
+    lower_to_krir_with_surface(&ast, surface_profile)
+}
+
+/// Resolve `import "path.kr"` declarations.  For each import, the referenced
+/// file is read and parsed; every `@export fn` signature found in it is
+/// injected into `ast` as an `extern fn` declaration so that later HIR/KRIR
+/// lowering treats it as an ordinary extern symbol.
+fn resolve_imports(ast: &mut parser::ModuleAst, main_path: &Path) -> Result<(), Vec<String>> {
+    if ast.imports.is_empty() {
+        return Ok(());
+    }
+
+    let base_dir = main_path.parent().unwrap_or_else(|| Path::new("."));
+
+    let mut errors: Vec<String> = Vec::new();
+
+    for import_path_str in &ast.imports {
+        let resolved = base_dir.join(import_path_str);
+        let imported_src = match std::fs::read_to_string(&resolved) {
+            Ok(s) => s,
+            Err(e) => {
+                errors.push(format!(
+                    "failed to read imported file '{}' (resolved to '{}'): {}",
+                    import_path_str,
+                    resolved.display(),
+                    e
+                ));
+                continue;
+            }
+        };
+
+        let imported_ast = match parse_module(&imported_src) {
+            Ok(a) => a,
+            Err(errs) => {
+                for e in errs {
+                    errors.push(format!("in imported file '{}': {}", import_path_str, e));
+                }
+                continue;
+            }
+        };
+
+        // Extract @export fn signatures and add them as extern declarations.
+        for item in &imported_ast.items {
+            if item.is_extern {
+                continue; // skip extern declarations in the imported file
+            }
+            let is_export = item.attrs.iter().any(|a| a.name == "export");
+            if !is_export {
+                continue;
+            }
+
+            // Build the extern attrs from the source function's annotations.
+            // If the source lacks @ctx/@eff/@caps we supply the same defaults
+            // that regular (non-extern) functions receive, so the HIR contract
+            // checker is satisfied.
+            let dummy_source = item.source.clone();
+            let mut extern_attrs: Vec<parser::RawAttr> = Vec::new();
+
+            let has = |name: &str| item.attrs.iter().any(|a| a.name == name);
+
+            if has("ctx") {
+                extern_attrs.push(item.attrs.iter().find(|a| a.name == "ctx").unwrap().clone());
+            } else {
+                extern_attrs.push(parser::RawAttr {
+                    name: "ctx".into(),
+                    args: Some("thread, boot".into()),
+                    source: dummy_source.clone(),
+                });
+            }
+            if has("eff") {
+                extern_attrs.push(item.attrs.iter().find(|a| a.name == "eff").unwrap().clone());
+            } else {
+                extern_attrs.push(parser::RawAttr {
+                    name: "eff".into(),
+                    args: Some(String::new()),
+                    source: dummy_source.clone(),
+                });
+            }
+            if has("caps") {
+                extern_attrs.push(
+                    item.attrs
+                        .iter()
+                        .find(|a| a.name == "caps")
+                        .unwrap()
+                        .clone(),
+                );
+            } else {
+                extern_attrs.push(parser::RawAttr {
+                    name: "caps".into(),
+                    args: Some(String::new()),
+                    source: dummy_source,
+                });
+            }
+
+            ast.items.push(parser::FnAst {
+                name: item.name.clone(),
+                is_extern: true,
+                params: item.params.clone(),
+                return_ty: item.return_ty,
+                attrs: extern_attrs,
+                body: Vec::new(),
+                source: item.source.clone(),
+            });
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
 }
 
 pub fn emit_backend_artifact_file_with_surface_and_target(

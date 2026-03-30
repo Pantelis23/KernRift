@@ -1,0 +1,6 @@
+import "import_lib.kr"
+
+fn use_add() -> uint64 {
+    uint64 result = add_numbers(10, 20)
+    return result
+}

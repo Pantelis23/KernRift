@@ -682,6 +682,8 @@ pub struct ModuleAst {
     /// Static (module-level mutable) variable declarations: `static TYPE NAME = LITERAL`
     pub static_vars: Vec<StaticVarDecl>,
     pub items: Vec<FnAst>,
+    /// Module import paths: `import "path.kr"`
+    pub imports: Vec<String>,
     /// Optional per-file profile declaration: `#lang stable` or `#lang experimental`.
     /// `None` means no directive present; the caller's default profile applies.
     pub lang_profile: Option<String>,
@@ -826,6 +828,7 @@ pub enum TokenKind {
     Lock,
     Percpu,
     Static,
+    Import,
     Acquire,
     Release,
     Critical,
@@ -1281,6 +1284,7 @@ impl<'a> Lexer<'a> {
                     "lock" => TokenKind::Lock,
                     "percpu" => TokenKind::Percpu,
                     "static" => TokenKind::Static,
+                    "import" => TokenKind::Import,
                     "acquire" => TokenKind::Acquire,
                     "release" => TokenKind::Release,
                     "critical" => TokenKind::Critical,
@@ -1646,6 +1650,25 @@ impl TokParser {
                         self.skip_to_next_item();
                     }
                 },
+                // import "path.kr"
+                TokenKind::Import => {
+                    let import_src = self.peek().source.clone();
+                    self.advance(); // consume `import`
+                    match self.peek().kind.clone() {
+                        TokenKind::StrLit(path) => {
+                            self.advance(); // consume the string literal
+                            module.imports.push(path);
+                        }
+                        _ => {
+                            errors.push(format_source_diagnostic(
+                                &import_src,
+                                "expected string literal after 'import', e.g. import \"other.kr\"",
+                                None,
+                            ));
+                            self.skip_to_next_item();
+                        }
+                    }
+                }
                 // fn
                 TokenKind::Fn => {
                     self.advance();
@@ -2976,6 +2999,7 @@ impl TokParser {
                 | TokenKind::Struct
                 | TokenKind::Enum
                 | TokenKind::Extern
+                | TokenKind::Import
                 | TokenKind::AtSign => break,
                 _ => {
                     self.advance();
@@ -3078,6 +3102,7 @@ fn token_kind_to_str(kind: &TokenKind) -> String {
         TokenKind::Lock => "lock".into(),
         TokenKind::Percpu => "percpu".into(),
         TokenKind::Static => "static".into(),
+        TokenKind::Import => "import".into(),
         TokenKind::Acquire => "acquire".into(),
         TokenKind::Release => "release".into(),
         TokenKind::Critical => "critical".into(),
@@ -3203,6 +3228,25 @@ impl<'a> Parser<'a> {
                 break;
             }
             let item_start = self.pos;
+
+            if self.consume_keyword("import") {
+                self.skip_ws_comments();
+                if self.peek_char() == Some('"') {
+                    match self.parse_string_literal() {
+                        Some(path) => module.imports.push(path),
+                        None => {
+                            self.error_here("invalid string literal after 'import'");
+                            self.recover_to_next_module_item();
+                        }
+                    }
+                } else {
+                    self.error_here(
+                        "expected string literal after 'import', e.g. import \"other.kr\"",
+                    );
+                    self.recover_to_next_module_item();
+                }
+                continue;
+            }
 
             if self.consume_keyword("mmio") {
                 match self.parse_mmio_base_decl() {
@@ -4265,6 +4309,7 @@ impl<'a> Parser<'a> {
             };
             if at_word_boundary("mmio_reg")
                 || at_word_boundary("mmio")
+                || at_word_boundary("import")
                 || at_word_boundary("extern")
                 || at_word_boundary("fn")
             {
@@ -4288,6 +4333,30 @@ impl<'a> Parser<'a> {
 
     fn source_note(&self, byte_offset: usize) -> SourceNote {
         SourceNote::from_source(self.src, byte_offset)
+    }
+
+    /// Parse a `"..."` string literal at the current position. Returns the
+    /// content between the quotes, or `None` if the opening `"` is missing or
+    /// the string is unterminated.
+    fn parse_string_literal(&mut self) -> Option<String> {
+        if self.peek_char() != Some('"') {
+            return None;
+        }
+        self.pos += 1; // skip opening '"'
+        let start = self.pos;
+        while self.pos < self.src.len() {
+            let ch = self.src.as_bytes()[self.pos];
+            if ch == b'"' {
+                let content = self.src[start..self.pos].to_string();
+                self.pos += 1; // skip closing '"'
+                return Some(content);
+            }
+            if ch == b'\\' {
+                self.pos += 1; // skip escaped char
+            }
+            self.pos += 1;
+        }
+        None // unterminated
     }
 
     fn eof(&self) -> bool {
