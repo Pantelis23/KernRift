@@ -1355,7 +1355,9 @@ fn emit_native_hostexe_windows_aarch64(
     // 7. Build PE imports for kernel32.dll
     //    IAT order must match the blob's expectations:
     //    [0] GetStdHandle, [1] WriteFile, [2] ExitProcess, [3] VirtualAlloc,
-    //    [4] CloseHandle, [5] CreateFileA, [6] ReadFile, [7] GetFileSize
+    //    [4] CloseHandle, [5] CreateFileA, [6] ReadFile, [7] GetFileSize,
+    //    [8] GetEnvironmentVariableA, [9] CreateProcessA,
+    //    [10] WaitForSingleObject, [11] GetExitCodeProcess
     let imports = vec![krir::PeImport {
         dll_name: "kernel32.dll".to_string(),
         functions: vec![
@@ -1367,6 +1369,10 @@ fn emit_native_hostexe_windows_aarch64(
             "CreateFileA".to_string(),
             "ReadFile".to_string(),
             "GetFileSize".to_string(),
+            "GetEnvironmentVariableA".to_string(),
+            "CreateProcessA".to_string(),
+            "WaitForSingleObject".to_string(),
+            "GetExitCodeProcess".to_string(),
         ],
     }];
 
