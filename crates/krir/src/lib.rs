@@ -2334,23 +2334,34 @@ pub fn lower_current_krir_to_executable_krir(
                         ),
                         MmioValueExpr::Ident { name } => {
                             if new_syntax {
-                                // New-syntax: reload from the named cell/param.
-                                // Cell shadows param UNLESS the cell is the
-                                // DESTINATION of this store (self-copy is useless).
-                                if executable_slot_name.as_deref() == Some(name.as_str()) {
-                                    // rbx already holds this value.
-                                } else if cell == name && param_map.contains_key(name.as_str()) {
+                                // New-syntax: eliminate stale-rbx bugs by always
+                                // emitting explicit loads for cross-variable stores.
+                                // Self-stores (cell == name) still use the
+                                // executable_slot_name check because they handle
+                                // StaticLoad/CallCapture captures where the cell
+                                // hasn't been written yet and rbx holds the only
+                                // copy of the value.
+                                let is_self_store = cell == name;
+                                if is_self_store && param_map.contains_key(name.as_str()) {
                                     // Self-copy: cell name == source name == param name.
                                     // The cell is the uninitialized destination — use param instead.
-                                    let &(param_idx, param_ty) = param_map.get(name.as_str()).unwrap();
+                                    let &(param_idx, param_ty) =
+                                        param_map.get(name.as_str()).unwrap();
                                     exec_ops.push(ExecutableOp::ParamLoad {
                                         param_idx,
                                         ty: param_ty,
                                     });
+                                } else if is_self_store
+                                    && executable_slot_name.as_deref() == Some(name.as_str())
+                                {
+                                    // Self-store and rbx was just loaded with this
+                                    // value (e.g. by StaticLoad or CallCapture).
+                                    // The cell may be uninitialized — use rbx as-is.
                                 } else if let Some(&(src_idx, src_ty)) =
                                     cell_slot_map.get(name.as_str())
                                 {
-                                    // Cell exists — use it (has latest value).
+                                    // Cell exists — always reload (never trust rbx
+                                    // for cross-variable stores).
                                     exec_ops.push(ExecutableOp::StackLoad {
                                         ty: src_ty,
                                         slot_idx: src_idx,
@@ -2511,9 +2522,21 @@ pub fn lower_current_krir_to_executable_krir(
                                     param_idx,
                                     ty: param_ty,
                                 });
+                            } else if new_syntax {
+                                // New-syntax: ALWAYS emit an explicit load.
+                                // Never rely on executable_slot_name / SavedValue
+                                // shortcut — it is the source of all stale-rbx bugs.
+                                if let Some(&(slot_idx, cell_ty)) =
+                                    cell_slot_map.get(ident.as_str())
+                                {
+                                    exec_ops.push(ExecutableOp::StackLoad {
+                                        ty: cell_ty,
+                                        slot_idx,
+                                    });
+                                }
                             } else if executable_slot_name.as_deref() != Some(ident.as_str()) {
-                                // rbx does NOT hold this value — reload from its
-                                // stack slot first.
+                                // Old-syntax: rbx does NOT hold this value — reload from
+                                // its stack slot first.
                                 if let Some(&(slot_idx, cell_ty)) =
                                     cell_slot_map.get(ident.as_str())
                                 {
@@ -2766,14 +2789,10 @@ pub fn lower_current_krir_to_executable_krir(
                         ),
                         MmioValueExpr::Ident { name } => {
                             if new_syntax {
-                                // New-syntax: reload from the named cell/param.
-                                // Cell shadows param UNLESS the cell is the
-                                // DESTINATION of this store (self-copy is useless).
-                                if executable_slot_name.as_deref() == Some(name.as_str()) {
-                                    // rbx already holds this value.
-                                } else if let Some(&(src_idx, src_ty)) =
-                                    cell_slot_map.get(name.as_str())
-                                {
+                                // New-syntax: ALWAYS emit an explicit load.
+                                // Never rely on executable_slot_name / SavedValue
+                                // shortcut — it is the source of all stale-rbx bugs.
+                                if let Some(&(src_idx, src_ty)) = cell_slot_map.get(name.as_str()) {
                                     // Cell exists — use it (has latest value).
                                     exec_ops.push(ExecutableOp::StackLoad {
                                         ty: src_ty,
@@ -3139,14 +3158,10 @@ pub fn lower_current_krir_to_executable_krir(
                         ),
                         MmioValueExpr::Ident { name } => {
                             if new_syntax {
-                                // New-syntax: reload from the named cell/param.
-                                // Cell shadows param UNLESS the cell is the
-                                // DESTINATION of this store (self-copy is useless).
-                                if executable_slot_name.as_deref() == Some(name.as_str()) {
-                                    // rbx already holds this value.
-                                } else if let Some(&(src_idx, src_ty)) =
-                                    cell_slot_map.get(name.as_str())
-                                {
+                                // New-syntax: ALWAYS emit an explicit load.
+                                // Never rely on executable_slot_name / SavedValue
+                                // shortcut — it is the source of all stale-rbx bugs.
+                                if let Some(&(src_idx, src_ty)) = cell_slot_map.get(name.as_str()) {
                                     // Cell exists — use it (has latest value).
                                     exec_ops.push(ExecutableOp::StackLoad {
                                         ty: src_ty,
