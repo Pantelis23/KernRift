@@ -8211,10 +8211,15 @@ fn executable_op_encoded_len(op: &ExecutableOp, n_stack_cells: u8, outgoing_byte
         }
         ExecutableOp::MmioWriteValue { ty, .. } => 10 + mmio_saved_value_store_bytes(*ty),
         ExecutableOp::StackStoreImm { ty, slot_idx, .. } => {
-            mmio_value_load_immediate_bytes(*ty) + stack_cell_access_bytes(*ty, *slot_idx, outgoing_bytes)
+            mmio_value_load_immediate_bytes(*ty)
+                + stack_cell_access_bytes(*ty, *slot_idx, outgoing_bytes)
         }
-        ExecutableOp::StackStoreValue { ty, slot_idx } => stack_cell_access_bytes(*ty, *slot_idx, outgoing_bytes),
-        ExecutableOp::StackLoad { ty, slot_idx } => stack_cell_access_bytes(*ty, *slot_idx, outgoing_bytes),
+        ExecutableOp::StackStoreValue { ty, slot_idx } => {
+            stack_cell_access_bytes(*ty, *slot_idx, outgoing_bytes)
+        }
+        ExecutableOp::StackLoad { ty, slot_idx } => {
+            stack_cell_access_bytes(*ty, *slot_idx, outgoing_bytes)
+        }
         ExecutableOp::SlotArithImm {
             ty,
             slot_idx,
@@ -8377,7 +8382,8 @@ fn executable_op_encoded_len(op: &ExecutableOp, n_stack_cells: u8, outgoing_byte
                     )
                 }
             };
-            stack_cell_access_bytes(MmioScalarType::U64, *addr_slot_idx, outgoing_bytes) + value_bytes
+            stack_cell_access_bytes(MmioScalarType::U64, *addr_slot_idx, outgoing_bytes)
+                + value_bytes
         }
         ExecutableOp::InlineAsm(intr) => match intr {
             KernelIntrinsic::Cli
