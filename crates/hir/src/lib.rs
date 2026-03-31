@@ -2026,13 +2026,6 @@ struct PendingFn {
     inherited_cells: Vec<(String, KrirMmioScalarType)>,
 }
 
-/// Allocate a fresh synthesized function name.
-fn fresh_fn_name(prefix: &str, counter: &mut u32) -> String {
-    let n = *counter;
-    *counter += 1;
-    format!("{}__{}", prefix, n)
-}
-
 fn collect_mmio_bases(
     bases: &[ParserMmioBaseDecl],
 ) -> (Vec<KrirMmioBaseDecl>, BTreeSet<String>, Vec<String>) {
@@ -3777,7 +3770,7 @@ fn expr_is_float(expr: &ParserExpr) -> bool {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::only_used_in_recursion)]
 fn lower_stmt(
     stmt: &Stmt,
     ops: &mut Vec<KrirOp>,
@@ -4668,60 +4661,61 @@ fn lower_stmt(
                     return;
                 }
             };
-            let then_name = fresh_fn_name("__if_then", fn_counter);
-            let end_name = fresh_fn_name("__if_end", fn_counter);
-            let else_name = if else_body.is_empty() {
-                end_name.clone()
-            } else {
-                fresh_fn_name("__if_else", fn_counter)
-            };
-            // Collect user-visible cells to pass as args to synthesized functions
-            // (canonical-exec requires values be in scope). Exclude compiler temp
-            // slots (__tN) — they are not meaningful across function boundaries.
-            let inherited: Vec<(String, KrirMmioScalarType)> = slot_types
-                .iter()
-                .filter(|(k, _)| !k.starts_with("__t"))
-                .map(|(k, v)| (k.clone(), *v))
-                .collect();
-            // BranchIfZero: slot==0 → false → else/end; slot!=0 → true → then
-            if inherited.is_empty() {
-                ops.push(KrirOp::BranchIfZero {
-                    slot: cond_slot,
-                    then_callee: else_name.clone(), // zero = false
-                    else_callee: then_name.clone(), // nonzero = true
-                });
-            } else {
-                let arg_names: Vec<String> = inherited.iter().map(|(k, _)| k.clone()).collect();
-                ops.push(KrirOp::BranchIfZeroWithArgs {
-                    slot: cond_slot,
-                    then_callee: else_name.clone(), // zero = false
-                    else_callee: then_name.clone(), // nonzero = true
-                    args: arg_names,
-                });
+
+            // Inline if-block: emit conditional jumps within the same function
+            // body so that variable mutations inside if/else blocks are visible
+            // in the enclosing scope (no continuation function calls).
+            ops.push(KrirOp::IfBegin);
+            ops.push(KrirOp::BranchIfZeroSkipToElse { slot: cond_slot });
+
+            // Emit then-block ops inline.
+            for s in then_body {
+                lower_stmt(
+                    s,
+                    ops,
+                    eff_used,
+                    const_map,
+                    surface_profile,
+                    errors,
+                    slot_counter,
+                    device_regs,
+                    fn_counter,
+                    pending_fns,
+                    slot_types,
+                    slice_elem_types,
+                    static_var_map,
+                    struct_decls,
+                    struct_locals,
+                    local_arrays,
+                );
             }
-            pending_fns.push(PendingFn {
-                name: then_name,
-                body: then_body.clone(),
-                continuation: end_name.clone(),
-                slot_types: slot_types.clone(),
-                inherited_cells: inherited.clone(),
-            });
+
             if !else_body.is_empty() {
-                pending_fns.push(PendingFn {
-                    name: else_name,
-                    body: else_body.clone(),
-                    continuation: end_name.clone(),
-                    slot_types: slot_types.clone(),
-                    inherited_cells: inherited.clone(),
-                });
+                ops.push(KrirOp::JumpToEndIf);
+                ops.push(KrirOp::ElseBegin);
+                for s in else_body {
+                    lower_stmt(
+                        s,
+                        ops,
+                        eff_used,
+                        const_map,
+                        surface_profile,
+                        errors,
+                        slot_counter,
+                        device_regs,
+                        fn_counter,
+                        pending_fns,
+                        slot_types,
+                        slice_elem_types,
+                        static_var_map,
+                        struct_decls,
+                        struct_locals,
+                        local_arrays,
+                    );
+                }
             }
-            pending_fns.push(PendingFn {
-                name: end_name,
-                body: vec![],
-                continuation: String::new(),
-                slot_types: slot_types.clone(),
-                inherited_cells: inherited,
-            });
+
+            ops.push(KrirOp::IfEnd);
         }
         Stmt::While { cond, body } => {
             ops.push(KrirOp::LoopBegin);

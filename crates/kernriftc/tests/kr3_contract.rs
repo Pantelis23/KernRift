@@ -1249,9 +1249,9 @@ fn helper() {}
 }
 
 #[test]
-fn if_else_synthesizes_continuation_functions() {
-    // if/else should compile cleanly; synthesized __if_then/__if_else/__if_end functions
-    // must appear in the KrirModule and pass undefined-symbol checks.
+fn if_else_emits_inline_if_block_ops() {
+    // if/else should compile cleanly using inline if-block ops (no continuation functions).
+    use krir::KrirOp;
     let src = r#"
 @ctx(thread)
 fn classify(uint32 val) {
@@ -1263,12 +1263,20 @@ fn classify(uint32 val) {
 }
 "#;
     let module = compile_source(src).unwrap();
-    // Main fn + 3 synthesized fns (then, else, end)
-    assert!(
-        module.functions.len() >= 4,
-        "expected ≥4 functions, got {}",
+    // Only one function (the main fn); no synthesized continuation functions.
+    assert_eq!(
+        module.functions.len(),
+        1,
+        "expected 1 function (no continuations), got {}",
         module.functions.len()
     );
+    let main_fn = &module.functions[0];
+    let has_if_begin = main_fn.ops.iter().any(|op| matches!(op, KrirOp::IfBegin));
+    let has_if_end = main_fn.ops.iter().any(|op| matches!(op, KrirOp::IfEnd));
+    let has_else = main_fn.ops.iter().any(|op| matches!(op, KrirOp::ElseBegin));
+    assert!(has_if_begin, "expected IfBegin in classify ops");
+    assert!(has_if_end, "expected IfEnd in classify ops");
+    assert!(has_else, "expected ElseBegin in classify ops");
 }
 
 #[test]

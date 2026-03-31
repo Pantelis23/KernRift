@@ -451,6 +451,18 @@ pub enum KrirOp {
     BranchIfNonZeroLoopBreak {
         slot: String,
     },
+    /// Opens an if-block scope.  Pairs with `IfEnd`.
+    IfBegin,
+    /// If `slot == 0` (condition false), skip the then-block and jump to the else/end label.
+    BranchIfZeroSkipToElse {
+        slot: String,
+    },
+    /// Unconditional jump from the end of the then-block to past `IfEnd`.
+    JumpToEndIf,
+    /// Marks the start of the else-block; patches the `BranchIfZeroSkipToElse` forward reference.
+    ElseBegin,
+    /// Closes the if-block scope; patches the `JumpToEndIf` forward reference (if any).
+    IfEnd,
     /// Floating-point arithmetic: `dst = dst op src` (SSE2 scalar). Requires Task 11 backend.
     FloatArith {
         ty: MmioScalarType,
@@ -892,6 +904,18 @@ pub enum ExecutableOp {
     BranchIfNonZeroLoopBreak {
         slot_idx: u8,
     },
+    /// Opens an inline if-block scope.  Pairs with `IfEnd`.
+    IfBegin,
+    /// If slot_idx == 0 (condition false), jump forward to the else/end label.
+    BranchIfZeroSkipToElse {
+        slot_idx: u8,
+    },
+    /// Unconditional jump from end of then-block to past `IfEnd`.
+    JumpToEndIf,
+    /// Marks the start of the else-block (patches `BranchIfZeroSkipToElse` forward ref).
+    ElseBegin,
+    /// Closes the if-block scope (patches `JumpToEndIf` forward ref).
+    IfEnd,
     /// Compare lhs_idx op rhs_idx and store 0 or 1 in out_idx.
     CompareIntoSlot {
         ty: MmioScalarType,
@@ -1219,6 +1243,11 @@ impl ExecutableKrirModule {
                         | ExecutableOp::LoopContinue
                         | ExecutableOp::BranchIfZeroLoopBreak { .. }
                         | ExecutableOp::BranchIfNonZeroLoopBreak { .. }
+                        | ExecutableOp::IfBegin
+                        | ExecutableOp::BranchIfZeroSkipToElse { .. }
+                        | ExecutableOp::JumpToEndIf
+                        | ExecutableOp::ElseBegin
+                        | ExecutableOp::IfEnd
                         | ExecutableOp::CompareIntoSlot { .. }
                         | ExecutableOp::RawPtrLoad { .. }
                         | ExecutableOp::RawPtrStore { .. }
@@ -2972,6 +3001,26 @@ pub fn lower_current_krir_to_executable_krir(
                         exec_ops.push(ExecutableOp::BranchIfNonZeroLoopBreak { slot_idx: idx });
                     }
                 }
+                KrirOp::IfBegin => exec_ops.push(ExecutableOp::IfBegin),
+                KrirOp::BranchIfZeroSkipToElse { slot } => {
+                    let slot_idx = if let Some(&(idx, _)) = cell_slot_map.get(slot.as_str()) {
+                        Some(idx)
+                    } else if let Some(&(pidx, _)) = param_map.get(slot.as_str()) {
+                        Some(n_real_stack_cells + pidx)
+                    } else {
+                        errors.push(format!(
+                            "canonical-exec: function '{}' branch_if_zero_skip_to_else: '{}' not a declared stack cell or param",
+                            function.name, slot
+                        ));
+                        None
+                    };
+                    if let Some(idx) = slot_idx {
+                        exec_ops.push(ExecutableOp::BranchIfZeroSkipToElse { slot_idx: idx });
+                    }
+                }
+                KrirOp::JumpToEndIf => exec_ops.push(ExecutableOp::JumpToEndIf),
+                KrirOp::ElseBegin => exec_ops.push(ExecutableOp::ElseBegin),
+                KrirOp::IfEnd => exec_ops.push(ExecutableOp::IfEnd),
                 KrirOp::RawPtrLoad {
                     ty,
                     addr_slot,
@@ -3080,20 +3129,19 @@ pub fn lower_current_krir_to_executable_krir(
                             });
                         }
                         Err(reason) if reason == "__needs_reload__" => {
-                            if let MmioValueExpr::Ident { name: src_name } = value {
-                                if let Some(&(src_idx, src_ty)) =
+                            if let MmioValueExpr::Ident { name: src_name } = value
+                                && let Some(&(src_idx, src_ty)) =
                                     cell_slot_map.get(src_name.as_str())
-                                {
-                                    exec_ops.push(ExecutableOp::StackLoad {
-                                        ty: src_ty,
-                                        slot_idx: src_idx,
-                                    });
-                                    exec_ops.push(ExecutableOp::RawPtrStore {
-                                        ty: *ty,
-                                        addr_slot_idx: addr_idx,
-                                        value: value.clone(),
-                                    });
-                                }
+                            {
+                                exec_ops.push(ExecutableOp::StackLoad {
+                                    ty: src_ty,
+                                    slot_idx: src_idx,
+                                });
+                                exec_ops.push(ExecutableOp::RawPtrStore {
+                                    ty: *ty,
+                                    addr_slot_idx: addr_idx,
+                                    value: value.clone(),
+                                });
                             }
                         }
                         Err(reason) => {
@@ -5353,6 +5401,11 @@ pub fn lower_executable_krir_to_x86_64_asm(
         head_label: String,
         end_label: String,
     }
+    struct IfFrame {
+        else_label: String,
+        end_label: String,
+        has_else: bool,
+    }
 
     let functions = canonical
         .functions
@@ -5361,6 +5414,8 @@ pub fn lower_executable_krir_to_x86_64_asm(
             let mut instrs: Vec<X86_64AsmInstruction> = Vec::new();
             let mut loop_stack: Vec<LoopFrame> = Vec::new();
             let mut loop_counter = 0usize;
+            let mut if_stack: Vec<IfFrame> = Vec::new();
+            let mut if_counter = 0usize;
             let mut print_counter = 0usize;
 
             for op in &function.blocks[0].ops {
@@ -5631,6 +5686,43 @@ pub fn lower_executable_krir_to_x86_64_asm(
                         instrs.push(X86_64AsmInstruction::TestEaxEax);
                         instrs.push(X86_64AsmInstruction::JmpIfNonZeroLabel(end));
                     }
+                    ExecutableOp::IfBegin => {
+                        let else_lbl = format!("{}__if_{}_else", function.name, if_counter);
+                        let end_lbl = format!("{}__if_{}_end", function.name, if_counter);
+                        if_counter += 1;
+                        if_stack.push(IfFrame {
+                            else_label: else_lbl,
+                            end_label: end_lbl,
+                            has_else: false,
+                        });
+                    }
+                    ExecutableOp::BranchIfZeroSkipToElse { slot_idx } => {
+                        let frame = if_stack.last().expect("BranchIfZeroSkipToElse outside if");
+                        let target = frame.else_label.clone();
+                        instrs.push(X86_64AsmInstruction::LoadSlotU8ToEax {
+                            slot_idx: *slot_idx,
+                        });
+                        instrs.push(X86_64AsmInstruction::TestEaxEax);
+                        instrs.push(X86_64AsmInstruction::JmpIfZeroLabel(target));
+                    }
+                    ExecutableOp::JumpToEndIf => {
+                        let frame = if_stack.last().expect("JumpToEndIf outside if");
+                        instrs.push(X86_64AsmInstruction::JmpLabel(frame.end_label.clone()));
+                    }
+                    ExecutableOp::ElseBegin => {
+                        let frame = if_stack.last_mut().expect("ElseBegin outside if");
+                        frame.has_else = true;
+                        instrs.push(X86_64AsmInstruction::Label(frame.else_label.clone()));
+                    }
+                    ExecutableOp::IfEnd => {
+                        let frame = if_stack.pop().expect("IfEnd without matching IfBegin");
+                        if !frame.has_else {
+                            // No else block — the BranchIfZeroSkipToElse targets the
+                            // else label which is placed here at IfEnd.
+                            instrs.push(X86_64AsmInstruction::Label(frame.else_label));
+                        }
+                        instrs.push(X86_64AsmInstruction::Label(frame.end_label));
+                    }
                     ExecutableOp::CompareIntoSlot {
                         ty,
                         cmp_op,
@@ -5798,6 +5890,11 @@ pub fn lower_executable_krir_to_aarch64_asm(
         head_label: String,
         end_label: String,
     }
+    struct IfFrame {
+        else_label: String,
+        end_label: String,
+        has_else: bool,
+    }
 
     let functions = canonical
         .functions
@@ -5806,6 +5903,8 @@ pub fn lower_executable_krir_to_aarch64_asm(
             let mut instrs: Vec<AArch64AsmInstruction> = Vec::new();
             let mut loop_stack: Vec<LoopFrame> = Vec::new();
             let mut loop_counter = 0usize;
+            let mut if_stack: Vec<IfFrame> = Vec::new();
+            let mut if_counter = 0usize;
 
             for op in &function.blocks[0].ops {
                 match op {
@@ -6074,6 +6173,43 @@ pub fn lower_executable_krir_to_aarch64_asm(
                         });
                         instrs.push(AArch64AsmInstruction::TestX9);
                         instrs.push(AArch64AsmInstruction::JmpIfNonZeroLabel(end));
+                    }
+                    ExecutableOp::IfBegin => {
+                        let else_lbl =
+                            format!("{}__if_{}_else", function.name, if_counter);
+                        let end_lbl =
+                            format!("{}__if_{}_end", function.name, if_counter);
+                        if_counter += 1;
+                        if_stack.push(IfFrame {
+                            else_label: else_lbl,
+                            end_label: end_lbl,
+                            has_else: false,
+                        });
+                    }
+                    ExecutableOp::BranchIfZeroSkipToElse { slot_idx } => {
+                        let frame = if_stack.last().expect("BranchIfZeroSkipToElse outside if");
+                        let target = frame.else_label.clone();
+                        instrs.push(AArch64AsmInstruction::LoadSlotU8ToX9 {
+                            slot_idx: *slot_idx,
+                        });
+                        instrs.push(AArch64AsmInstruction::TestX9);
+                        instrs.push(AArch64AsmInstruction::JmpIfZeroLabel(target));
+                    }
+                    ExecutableOp::JumpToEndIf => {
+                        let frame = if_stack.last().expect("JumpToEndIf outside if");
+                        instrs.push(AArch64AsmInstruction::JmpLabel(frame.end_label.clone()));
+                    }
+                    ExecutableOp::ElseBegin => {
+                        let frame = if_stack.last_mut().expect("ElseBegin outside if");
+                        frame.has_else = true;
+                        instrs.push(AArch64AsmInstruction::Label(frame.else_label.clone()));
+                    }
+                    ExecutableOp::IfEnd => {
+                        let frame = if_stack.pop().expect("IfEnd without matching IfBegin");
+                        if !frame.has_else {
+                            instrs.push(AArch64AsmInstruction::Label(frame.else_label));
+                        }
+                        instrs.push(AArch64AsmInstruction::Label(frame.end_label));
                     }
                     ExecutableOp::CompareIntoSlot {
                         ty,
@@ -8417,6 +8553,15 @@ fn executable_op_encoded_len(op: &ExecutableOp, n_stack_cells: u8, outgoing_byte
             let offset = outgoing_bytes + 8u32 * *slot_idx as u32;
             1 + rsp_sib_disp_len(offset) + 2 + 6 // 8A + SIB disp + test + jnz
         }
+        // If-block ops (inline conditional jumps, same frame):
+        ExecutableOp::IfBegin => 0, // label only, no bytes
+        ExecutableOp::BranchIfZeroSkipToElse { slot_idx } => {
+            let offset = outgoing_bytes + 8u32 * *slot_idx as u32;
+            1 + rsp_sib_disp_len(offset) + 2 + 6 // 8A + SIB disp + test + jz rel32
+        }
+        ExecutableOp::JumpToEndIf => 5, // jmp rel32
+        ExecutableOp::ElseBegin => 0,   // label only, no bytes
+        ExecutableOp::IfEnd => 0,       // label only, no bytes
         // load lhs + cmp rhs + setCC al (3) + movzx eax,al (3) + store out
         ExecutableOp::CompareIntoSlot {
             ty,
@@ -10236,6 +10381,16 @@ pub fn lower_executable_krir_to_compiler_owned_object(
         //   instruction that targets the loop's exit.
         let mut loop_stack: Vec<(usize, Vec<usize>)> = Vec::new();
 
+        // If-block stack for intra-function conditional jump relocation.
+        // Each entry: (jz_patch_offset, jmp_endif_patch_offset)
+        //   jz_patch_offset:      index into code_bytes of the rel32 in the BranchIfZeroSkipToElse jz.
+        //   jmp_endif_patch_offset: index into code_bytes of the rel32 in the JumpToEndIf jmp (None until seen).
+        struct IfPatch {
+            jz_patch: usize,                // rel32 offset for BranchIfZeroSkipToElse
+            jmp_endif_patch: Option<usize>, // rel32 offset for JumpToEndIf (None if no else)
+        }
+        let mut if_stack: Vec<IfPatch> = Vec::new();
+
         for op in &block.ops {
             match op {
                 ExecutableOp::Call { callee } => {
@@ -11020,6 +11175,67 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         .1
                         .push(jcc_start + 2);
                     local_offset += executable_op_encoded_len(op, n_stack_cells, outgoing_bytes);
+                }
+                ExecutableOp::IfBegin => {
+                    // No bytes emitted — push a frame for patching.
+                    if_stack.push(IfPatch {
+                        jz_patch: 0, // will be set by BranchIfZeroSkipToElse
+                        jmp_endif_patch: None,
+                    });
+                }
+                ExecutableOp::BranchIfZeroSkipToElse { slot_idx } => {
+                    // mov al, [rsp + off]  : 8A + SIB disp
+                    let off = outgoing_bytes + 8u32 * *slot_idx as u32;
+                    code_bytes.push(0x8A);
+                    emit_rsp_sib_disp(&mut code_bytes, 0x44, off);
+                    // test eax, eax               : 85 C0            (2 bytes)
+                    code_bytes.extend_from_slice(&[0x85, 0xC0]);
+                    // JZ rel32                    : 0F 84 xx xx xx xx (6 bytes)
+                    let jcc_start = code_bytes.len();
+                    code_bytes.extend_from_slice(&[0x0F, 0x84, 0x00, 0x00, 0x00, 0x00]);
+                    if_stack
+                        .last_mut()
+                        .expect("BranchIfZeroSkipToElse outside if")
+                        .jz_patch = jcc_start + 2;
+                    local_offset += executable_op_encoded_len(op, n_stack_cells, outgoing_bytes);
+                }
+                ExecutableOp::JumpToEndIf => {
+                    // Emit JMP rel32 forward (placeholder).
+                    let jmp_start = code_bytes.len();
+                    code_bytes.push(0xE9);
+                    code_bytes.extend_from_slice(&[0u8; 4]);
+                    if_stack
+                        .last_mut()
+                        .expect("JumpToEndIf outside if")
+                        .jmp_endif_patch = Some(jmp_start + 1);
+                    local_offset += 5;
+                }
+                ExecutableOp::ElseBegin => {
+                    // Patch BranchIfZeroSkipToElse to jump here (start of else).
+                    let frame = if_stack.last().expect("ElseBegin outside if");
+                    let target = code_bytes.len();
+                    let patch = frame.jz_patch;
+                    let after_jz = patch + 4;
+                    let rel32 = (target as i64 - after_jz as i64) as i32;
+                    code_bytes[patch..patch + 4].copy_from_slice(&rel32.to_le_bytes());
+                    // No bytes emitted for ElseBegin itself.
+                }
+                ExecutableOp::IfEnd => {
+                    let frame = if_stack.pop().expect("IfEnd without matching IfBegin");
+                    let target = code_bytes.len();
+                    if let Some(jmp_patch) = frame.jmp_endif_patch {
+                        // Patch JumpToEndIf to jump here.
+                        let after_jmp = jmp_patch + 4;
+                        let rel32 = (target as i64 - after_jmp as i64) as i32;
+                        code_bytes[jmp_patch..jmp_patch + 4].copy_from_slice(&rel32.to_le_bytes());
+                    } else {
+                        // No else block — patch BranchIfZeroSkipToElse to jump here.
+                        let patch = frame.jz_patch;
+                        let after_jz = patch + 4;
+                        let rel32 = (target as i64 - after_jz as i64) as i32;
+                        code_bytes[patch..patch + 4].copy_from_slice(&rel32.to_le_bytes());
+                    }
+                    // No bytes emitted for IfEnd itself.
                 }
                 ExecutableOp::PortIn {
                     width,
