@@ -4936,7 +4936,9 @@ fn lower_stmt(
             }
         }
         Stmt::Return(None) => {
-            // void return — function falls off its end
+            // Void return — jump to function epilogue so that `return`
+            // inside an if-block exits the function immediately.
+            ops.push(KrirOp::JumpToEpilogue);
         }
         Stmt::InlineAsm(intr) => {
             ops.push(KrirOp::InlineAsm(lower_kernel_intrinsic(intr)));

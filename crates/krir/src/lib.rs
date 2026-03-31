@@ -463,6 +463,9 @@ pub enum KrirOp {
     ElseBegin,
     /// Closes the if-block scope; patches the `JumpToEndIf` forward reference (if any).
     IfEnd,
+    /// Unconditional jump to the function epilogue.  Emitted for `return`
+    /// (void) statements inside if-blocks or before the function's end.
+    JumpToEpilogue,
     /// Floating-point arithmetic: `dst = dst op src` (SSE2 scalar). Requires Task 11 backend.
     FloatArith {
         ty: MmioScalarType,
@@ -916,6 +919,9 @@ pub enum ExecutableOp {
     ElseBegin,
     /// Closes the if-block scope (patches `JumpToEndIf` forward ref).
     IfEnd,
+    /// Unconditional jump to the function epilogue.  Emitted for `return`
+    /// statements that are not the final terminator (e.g. inside if-blocks).
+    JumpToEpilogue,
     /// Compare lhs_idx op rhs_idx and store 0 or 1 in out_idx.
     CompareIntoSlot {
         ty: MmioScalarType,
@@ -1248,6 +1254,7 @@ impl ExecutableKrirModule {
                         | ExecutableOp::JumpToEndIf
                         | ExecutableOp::ElseBegin
                         | ExecutableOp::IfEnd
+                        | ExecutableOp::JumpToEpilogue
                         | ExecutableOp::CompareIntoSlot { .. }
                         | ExecutableOp::RawPtrLoad { .. }
                         | ExecutableOp::RawPtrStore { .. }
@@ -2260,7 +2267,27 @@ pub fn lower_current_krir_to_executable_krir(
                     "canonical-exec: function '{}' contains unsupported release({})",
                     function.name, lock_class
                 )),
-                KrirOp::ReturnSlot { .. } => {}
+                KrirOp::ReturnSlot { slot } => {
+                    // Resolve the return slot to a stack cell or parameter index.
+                    if let Some(&(slot_idx, slot_ty)) = cell_slot_map.get(slot.as_str()) {
+                        exec_ops.push(ExecutableOp::StackLoad {
+                            ty: slot_ty,
+                            slot_idx,
+                        });
+                        exec_ops.push(ExecutableOp::JumpToEpilogue);
+                    } else if let Some(&(param_idx, param_ty)) = param_map.get(slot.as_str()) {
+                        exec_ops.push(ExecutableOp::ParamLoad {
+                            param_idx,
+                            ty: param_ty,
+                        });
+                        exec_ops.push(ExecutableOp::JumpToEpilogue);
+                    }
+                    // else: old-syntax functions where the return slot names the
+                    // executable capture slot — value is already in rbx from a
+                    // prior capture_value mmio read.  No load needed, and no
+                    // JumpToEpilogue because old-syntax guarantees ReturnSlot is
+                    // the final op (terminator follows immediately).
+                }
                 KrirOp::StackCell { ty, cell } => {
                     let invocation = format_stack_cell_invocation(*ty, cell);
                     if let Some(&(_, existing_ty)) = cell_slot_map.get(cell.as_str()) {
@@ -3021,6 +3048,7 @@ pub fn lower_current_krir_to_executable_krir(
                 KrirOp::JumpToEndIf => exec_ops.push(ExecutableOp::JumpToEndIf),
                 KrirOp::ElseBegin => exec_ops.push(ExecutableOp::ElseBegin),
                 KrirOp::IfEnd => exec_ops.push(ExecutableOp::IfEnd),
+                KrirOp::JumpToEpilogue => exec_ops.push(ExecutableOp::JumpToEpilogue),
                 KrirOp::RawPtrLoad {
                     ty,
                     addr_slot,
@@ -5417,9 +5445,15 @@ pub fn lower_executable_krir_to_x86_64_asm(
             let mut if_stack: Vec<IfFrame> = Vec::new();
             let mut if_counter = 0usize;
             let mut print_counter = 0usize;
+            let epilogue_label = format!("{}__epilogue", function.name);
+            let mut has_early_return = false;
 
             for op in &function.blocks[0].ops {
                 match op {
+                    ExecutableOp::JumpToEpilogue => {
+                        has_early_return = true;
+                        instrs.push(X86_64AsmInstruction::JmpLabel(epilogue_label.clone()));
+                    }
                     ExecutableOp::Call { callee } => {
                         instrs.push(X86_64AsmInstruction::Call {
                             symbol: callee.clone(),
@@ -5827,6 +5861,11 @@ pub fn lower_executable_krir_to_x86_64_asm(
                 }
             }
 
+            // Epilogue label — early returns jump here.
+            if has_early_return {
+                instrs.push(X86_64AsmInstruction::Label(epilogue_label));
+            }
+
             // Terminator
             match function.blocks[0].terminator.clone() {
                 ExecutableTerminator::Return {
@@ -5905,9 +5944,15 @@ pub fn lower_executable_krir_to_aarch64_asm(
             let mut loop_counter = 0usize;
             let mut if_stack: Vec<IfFrame> = Vec::new();
             let mut if_counter = 0usize;
+            let epilogue_label = format!("{}__epilogue", function.name);
+            let mut has_early_return = false;
 
             for op in &function.blocks[0].ops {
                 match op {
+                    ExecutableOp::JumpToEpilogue => {
+                        has_early_return = true;
+                        instrs.push(AArch64AsmInstruction::JmpLabel(epilogue_label.clone()));
+                    }
                     ExecutableOp::Call { callee } => {
                         instrs.push(AArch64AsmInstruction::Call {
                             symbol: callee.clone(),
@@ -6303,6 +6348,11 @@ pub fn lower_executable_krir_to_aarch64_asm(
                         });
                     }
                 }
+            }
+
+            // Epilogue label — early returns jump here.
+            if has_early_return {
+                instrs.push(AArch64AsmInstruction::Label(epilogue_label));
             }
 
             // Terminator
@@ -8562,6 +8612,7 @@ fn executable_op_encoded_len(op: &ExecutableOp, n_stack_cells: u8, outgoing_byte
         ExecutableOp::JumpToEndIf => 5, // jmp rel32
         ExecutableOp::ElseBegin => 0,   // label only, no bytes
         ExecutableOp::IfEnd => 0,       // label only, no bytes
+        ExecutableOp::JumpToEpilogue => 5, // jmp rel32
         // load lhs + cmp rhs + setCC al (3) + movzx eax,al (3) + store out
         ExecutableOp::CompareIntoSlot {
             ty,
@@ -10391,6 +10442,11 @@ pub fn lower_executable_krir_to_compiler_owned_object(
         }
         let mut if_stack: Vec<IfPatch> = Vec::new();
 
+        // Early-return patches: indices into code_bytes of the 4-byte rel32
+        // field of JumpToEpilogue jmp instructions.  Backfilled after all ops
+        // are emitted (right before the terminator/epilogue code).
+        let mut early_return_patches: Vec<usize> = Vec::new();
+
         for op in &block.ops {
             match op {
                 ExecutableOp::Call { callee } => {
@@ -11237,6 +11293,14 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                     }
                     // No bytes emitted for IfEnd itself.
                 }
+                ExecutableOp::JumpToEpilogue => {
+                    // Emit JMP rel32 forward (placeholder); record for backfilling.
+                    let jmp_start = code_bytes.len();
+                    code_bytes.push(0xE9);
+                    code_bytes.extend_from_slice(&[0u8; 4]);
+                    early_return_patches.push(jmp_start + 1);
+                    local_offset += 5;
+                }
                 ExecutableOp::PortIn {
                     width,
                     port,
@@ -11368,6 +11432,16 @@ pub fn lower_executable_krir_to_compiler_owned_object(
                         local_offset += 17;
                     }
                 }
+            }
+        }
+        // Backfill JumpToEpilogue patches — they all jump to here (the
+        // start of the function epilogue / terminator code).
+        {
+            let epilogue_target = code_bytes.len();
+            for patch in &early_return_patches {
+                let after_jmp = patch + 4;
+                let rel32 = (epilogue_target as i64 - after_jmp as i64) as i32;
+                code_bytes[*patch..*patch + 4].copy_from_slice(&rel32.to_le_bytes());
             }
         }
         match &function.blocks[0].terminator {

@@ -1890,6 +1890,7 @@ fn telemetry_op_discriminant(op: &KrirOp) -> String {
         KrirOp::JumpToEndIf => "jump_to_end_if",
         KrirOp::ElseBegin => "else_begin",
         KrirOp::IfEnd => "if_end",
+        KrirOp::JumpToEpilogue => "jump_to_epilogue",
         KrirOp::FloatArith { .. } => "float_arith",
         KrirOp::InlineAsm(_) => "inline_asm",
         KrirOp::LoadStaticCstrAddr { .. } => "load_static_cstr_addr",
