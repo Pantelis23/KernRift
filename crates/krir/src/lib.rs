@@ -2334,25 +2334,36 @@ pub fn lower_current_krir_to_executable_krir(
                         ),
                         MmioValueExpr::Ident { name } => {
                             if new_syntax {
-                                // New-syntax: reload from the named cell when rbx
-                                // does not already hold the right value.
-                                if let Some(&(param_idx, param_ty)) = param_map.get(name.as_str()) {
+                                // New-syntax: reload from the named cell/param.
+                                // Cell shadows param UNLESS the cell is the
+                                // DESTINATION of this store (self-copy is useless).
+                                if executable_slot_name.as_deref() == Some(name.as_str()) {
+                                    // rbx already holds this value.
+                                } else if cell == name && param_map.contains_key(name.as_str()) {
+                                    // Self-copy: cell name == source name == param name.
+                                    // The cell is the uninitialized destination — use param instead.
+                                    let &(param_idx, param_ty) = param_map.get(name.as_str()).unwrap();
                                     exec_ops.push(ExecutableOp::ParamLoad {
                                         param_idx,
                                         ty: param_ty,
                                     });
-                                } else if executable_slot_name.as_deref() != Some(name.as_str()) {
-                                    // rbx does NOT hold this value — reload.
-                                    if let Some(&(src_idx, src_ty)) =
-                                        cell_slot_map.get(name.as_str())
-                                    {
-                                        exec_ops.push(ExecutableOp::StackLoad {
-                                            ty: src_ty,
-                                            slot_idx: src_idx,
-                                        });
-                                    }
+                                } else if let Some(&(src_idx, src_ty)) =
+                                    cell_slot_map.get(name.as_str())
+                                {
+                                    // Cell exists — use it (has latest value).
+                                    exec_ops.push(ExecutableOp::StackLoad {
+                                        ty: src_ty,
+                                        slot_idx: src_idx,
+                                    });
+                                } else if let Some(&(param_idx, param_ty)) =
+                                    param_map.get(name.as_str())
+                                {
+                                    // No cell — load from param.
+                                    exec_ops.push(ExecutableOp::ParamLoad {
+                                        param_idx,
+                                        ty: param_ty,
+                                    });
                                 }
-                                // else: executable_slot_name matches — rbx is valid.
                                 Ok(ExecutableMmioWriteValue::SavedValue)
                             } else {
                                 // Old-syntax: existing complex resolution (unchanged).
@@ -2755,25 +2766,28 @@ pub fn lower_current_krir_to_executable_krir(
                         ),
                         MmioValueExpr::Ident { name } => {
                             if new_syntax {
-                                // New-syntax: reload from the named cell when rbx
-                                // does not already hold the right value.
-                                if let Some(&(param_idx, param_ty)) = param_map.get(name.as_str()) {
+                                // New-syntax: reload from the named cell/param.
+                                // Cell shadows param UNLESS the cell is the
+                                // DESTINATION of this store (self-copy is useless).
+                                if executable_slot_name.as_deref() == Some(name.as_str()) {
+                                    // rbx already holds this value.
+                                } else if let Some(&(src_idx, src_ty)) =
+                                    cell_slot_map.get(name.as_str())
+                                {
+                                    // Cell exists — use it (has latest value).
+                                    exec_ops.push(ExecutableOp::StackLoad {
+                                        ty: src_ty,
+                                        slot_idx: src_idx,
+                                    });
+                                } else if let Some(&(param_idx, param_ty)) =
+                                    param_map.get(name.as_str())
+                                {
+                                    // No cell — load from param.
                                     exec_ops.push(ExecutableOp::ParamLoad {
                                         param_idx,
                                         ty: param_ty,
                                     });
-                                } else if executable_slot_name.as_deref() != Some(name.as_str()) {
-                                    // rbx does NOT hold this value — reload.
-                                    if let Some(&(src_idx, src_ty)) =
-                                        cell_slot_map.get(name.as_str())
-                                    {
-                                        exec_ops.push(ExecutableOp::StackLoad {
-                                            ty: src_ty,
-                                            slot_idx: src_idx,
-                                        });
-                                    }
                                 }
-                                // else: executable_slot_name matches — rbx is valid.
                                 Ok(ExecutableMmioWriteValue::SavedValue)
                             } else {
                                 // Old-syntax: existing complex resolution (unchanged).
@@ -3125,25 +3139,28 @@ pub fn lower_current_krir_to_executable_krir(
                         ),
                         MmioValueExpr::Ident { name } => {
                             if new_syntax {
-                                // New-syntax: reload from the named cell when rbx
-                                // does not already hold the right value.
-                                if let Some(&(param_idx, param_ty)) = param_map.get(name.as_str()) {
+                                // New-syntax: reload from the named cell/param.
+                                // Cell shadows param UNLESS the cell is the
+                                // DESTINATION of this store (self-copy is useless).
+                                if executable_slot_name.as_deref() == Some(name.as_str()) {
+                                    // rbx already holds this value.
+                                } else if let Some(&(src_idx, src_ty)) =
+                                    cell_slot_map.get(name.as_str())
+                                {
+                                    // Cell exists — use it (has latest value).
+                                    exec_ops.push(ExecutableOp::StackLoad {
+                                        ty: src_ty,
+                                        slot_idx: src_idx,
+                                    });
+                                } else if let Some(&(param_idx, param_ty)) =
+                                    param_map.get(name.as_str())
+                                {
+                                    // No cell — load from param.
                                     exec_ops.push(ExecutableOp::ParamLoad {
                                         param_idx,
                                         ty: param_ty,
                                     });
-                                } else if executable_slot_name.as_deref() != Some(name.as_str()) {
-                                    // rbx does NOT hold this value — reload.
-                                    if let Some(&(src_idx, src_ty)) =
-                                        cell_slot_map.get(name.as_str())
-                                    {
-                                        exec_ops.push(ExecutableOp::StackLoad {
-                                            ty: src_ty,
-                                            slot_idx: src_idx,
-                                        });
-                                    }
                                 }
-                                // else: executable_slot_name matches — rbx is valid.
                                 Ok(ExecutableMmioWriteValue::SavedValue)
                             } else {
                                 // Old-syntax: existing complex resolution (unchanged).
@@ -3190,6 +3207,21 @@ pub fn lower_current_krir_to_executable_krir(
                                 addr_slot_idx: addr_idx,
                                 value: value.clone(),
                             });
+                            // After the store, %rbx still holds the value register.
+                            // Update tracking so downstream StackStores see the
+                            // correct rbx content and don't stale-skip a needed load.
+                            if new_syntax {
+                                match value {
+                                    MmioValueExpr::Ident { name: val_name } => {
+                                        executable_slot_name = Some(val_name.clone());
+                                    }
+                                    _ => {
+                                        // IntLiteral or FloatLiteral put a non-named
+                                        // value in rbx; no named slot tracks it.
+                                        executable_slot_name = None;
+                                    }
+                                }
+                            }
                         }
                         Err(reason) => {
                             errors.push(format!(

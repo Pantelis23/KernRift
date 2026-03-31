@@ -3311,6 +3311,25 @@ fn lower_expr(
                 .get(&l)
                 .copied()
                 .unwrap_or(KrirMmioScalarType::U64);
+            // If `l` is a user-named cell (not a compiler-synthesized `__t*` slot),
+            // copy it into a fresh temp so that CellArithImm / SlotArith do not
+            // mutate the original variable.  E.g. `uint64 p = buf + 4` must not
+            // overwrite `buf` with `buf+4`.
+            let l = if !l.starts_with("__t") {
+                let tmp = fresh_slot(slot_counter);
+                ops.push(KrirOp::StackCell {
+                    ty: arith_ty,
+                    cell: tmp.clone(),
+                });
+                ops.push(KrirOp::StackStore {
+                    ty: arith_ty,
+                    cell: tmp.clone(),
+                    value: KrirMmioValueExpr::Ident { name: l },
+                });
+                tmp
+            } else {
+                l
+            };
             // Integer literal rhs: use immediate form to avoid type mismatch on temp slot.
             if let ParserExpr::IntLiteral(n) = rhs.as_ref() {
                 ops.push(KrirOp::CellArithImm {
