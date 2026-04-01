@@ -111,24 +111,31 @@ jobs:
           name: cross-compiled
           path: /tmp/bins
 
-      - name: Build reference binary and compare
+      - name: Build and run reference binary
         run: |
-          # Build a real macOS binary with clang for comparison
-          cat > /tmp/ref.c << 'CEOF'
-          void _start() { __asm__("mov x0, #42\n mov x16, #1\n svc #0x80"); }
-          CEOF
-          clang -arch arm64 -nostdlib -e _start -o /tmp/ref_arm64 /tmp/ref.c 2>&1 || echo "clang failed"
-          echo "=== Reference binary structure ==="
-          otool -l /tmp/ref_arm64 2>&1 | head -100
-          echo "=== KernRift binary structure ==="
-          otool -l /tmp/bins/cross-macos-arm 2>&1 | head -100
+          # Test if raw syscall even works on this macOS runner
+          cat > /tmp/ref.s << 'SEOF'
+          .global _main
+          .align 4
+          _main:
+            mov x0, #42
+            mov x16, #1
+            svc #0x80
+          SEOF
+          as -o /tmp/ref.o /tmp/ref.s
+          ld -o /tmp/ref_arm64 /tmp/ref.o -lSystem -syslibroot $(xcrun --show-sdk-path) -e _main -arch arm64
+          codesign -s - /tmp/ref_arm64
+          /tmp/ref_arm64; echo "Reference exit: $?"
 
       - name: Run macOS ARM64 binary
         run: |
           chmod +x /tmp/bins/cross-macos-arm
           codesign --force -s - /tmp/bins/cross-macos-arm -v 2>&1 || true
-          /tmp/bins/cross-macos-arm; EXIT_CODE=$?
+          # Try with detailed crash report
+          /tmp/bins/cross-macos-arm 2>&1; EXIT_CODE=$?
           echo "Exit code: $EXIT_CODE"
+          # Check system log for crash reason
+          log show --predicate 'process == "cross-macos-arm"' --last 10s 2>&1 | tail -5 || true
           [ "$EXIT_CODE" -eq 42 ] && echo "PASS: macOS ARM64 exit(42)" || { echo "FAIL: expected 42, got $EXIT_CODE"; exit 1; }
 
       - name: Run macOS x86_64 binary (via Rosetta 2)
