@@ -151,25 +151,21 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
         while codegen_output_len() < text_aligned { emit_byte(0) }
 
         // __DATA: re-emit statics here (in writable segment)
+        // Always allocate at least one page for __DATA to avoid vmaddr overlap
         uint64 data_file_off = codegen_output_len()
         uint64 data_va = 0x100000000 + data_file_off
         // Emit static data into __DATA
         emit_static_data()
         uint64 data_raw_end = codegen_output_len()
         uint64 data_raw_size = data_raw_end - data_file_off
-        // Page-align __DATA
-        uint64 data_aligned_size = 0
-        if data_raw_size > 0 {
+        // Always page-align __DATA (even if empty, reserve one page)
+        uint64 data_aligned_size = page_size
+        if data_raw_size > page_size {
             data_aligned_size = (data_raw_size + page_size - 1) & ~(page_size - 1)
-            while codegen_output_len() < data_file_off + data_aligned_size { emit_byte(0) }
         }
+        while codegen_output_len() < data_file_off + data_aligned_size { emit_byte(0) }
 
-        // Re-resolve static fixups to point into __DATA instead of __TEXT
-        // The statics were already emitted once in __TEXT (by the earlier emit_static_data).
-        // The fixups point to the __TEXT copy. We need them to point to __DATA copy.
-        // data_start (from earlier) pointed to statics in __TEXT at offset data_start.
-        // New statics are at data_file_off. Difference = data_file_off - data_start.
-        // Re-resolve: target = data_file_off + data_off (not data_start + data_off)
+        // Re-resolve static fixups to point into __DATA
         if data_raw_size > 0 {
             if arch == 0 {
                 resolve_static_fixups(data_file_off)
