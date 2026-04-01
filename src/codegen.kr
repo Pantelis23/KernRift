@@ -1457,7 +1457,7 @@ fn gen_expr(uint64 node) {
                 // r9 = 4 (PAGE_READWRITE)
                 emit_mov_r9_imm(4)
                 emit_win_alloc_stack(0x20)
-                emit_win_call_iat(3)
+                emit_win_call_iat(6)
                 emit_win_free_stack(0x20)
             } else {
                 // rax = size -> rsi (length)
@@ -1507,44 +1507,39 @@ fn gen_expr(uint64 node) {
             gen_expr(wa2)
             emit_store_rax_to_stack(temp_slot_1)
             if target_os == 2 {
-                // Windows: CreateFileA(path, access, share, NULL, disposition, flags, NULL)
-                // If flags==0 (read): GENERIC_READ, OPEN_EXISTING
-                // If flags==1 (write): GENERIC_WRITE, CREATE_ALWAYS
+                // Windows: CreateFileA(path, access, share, NULL, disp, attrs, NULL)
+                // Simplified: always use GENERIC_READ|GENERIC_WRITE and OPEN_ALWAYS
+                // for read (flags=0), CREATE_ALWAYS for write (flags=1)
+                // rcx = path
                 emit_load_rax_from_stack(temp_slot_0)
                 emit_mov_rcx_rax()
-                emit_load_rax_from_stack(temp_slot_1)
-                // Check if write mode
-                // mov rcx_saved, rax (flags)
-                emit_store_rax_to_stack(var_frame_size)
-                // Default: GENERIC_READ = 0x80000000
-                emit_mov_rax_imm(0x80000000)
+                // rdx = GENERIC_READ|GENERIC_WRITE = 0xC0000000
+                emit_mov_rax_imm(0xC0000000)
                 emit_mov_rdx_rax()
-                // r8 = FILE_SHARE_READ = 1
-                emit_mov_rax_imm(1)
+                // r8 = FILE_SHARE_READ|WRITE = 3
+                emit_mov_rax_imm(3)
                 emit_mov_r8_rax()
                 // r9 = NULL (security)
                 emit_mov_r9_imm(0)
-                // path into rcx
-                emit_load_rax_from_stack(temp_slot_0)
-                emit_mov_rcx_rax()
                 emit_win_alloc_stack(0x40)
-                // [rsp+32] = disposition: OPEN_EXISTING=3
-                emit_win_stack_arg5(3)
-                // [rsp+40] = flags: FILE_ATTRIBUTE_NORMAL=0x80
-                emit_byte(0x48)
-                emit_byte(0xC7)
-                emit_byte(0x44)
-                emit_byte(0x24)
-                emit_byte(0x28)
-                emit_u32_le(0x80)
+                // [rsp+32] = disposition: use flags as index
+                // flags=0 → OPEN_EXISTING(3), flags=1 → CREATE_ALWAYS(2)
+                // Simply: disposition = 3 - flags
+                emit_load_rax_from_stack(temp_slot_1 + 0x40) // flags (stack shifted by 0x40)
+                // neg rax: 0→0, 1→-1
+                emit_neg_rax()
+                // add rax, 3: 0→3 (OPEN_EXISTING), -1→2 (CREATE_ALWAYS)
+                emit_byte(0x48); emit_byte(0x83); emit_byte(0xC0); emit_byte(3)
+                emit_win_stack_arg5(0)
+                // mov [rsp+0x20], eax (override the stack arg5 with computed value)
+                emit_byte(0x48); emit_byte(0x89); emit_byte(0x44); emit_byte(0x24); emit_byte(0x20)
+                // [rsp+40] = FILE_ATTRIBUTE_NORMAL=0x80
+                emit_byte(0x48); emit_byte(0xC7); emit_byte(0x44)
+                emit_byte(0x24); emit_byte(0x28); emit_u32_le(0x80)
                 // [rsp+48] = NULL (template)
-                emit_byte(0x48)
-                emit_byte(0xC7)
-                emit_byte(0x44)
-                emit_byte(0x24)
-                emit_byte(0x30)
-                emit_u32_le(0)
-                emit_win_call_iat(4)
+                emit_byte(0x48); emit_byte(0xC7); emit_byte(0x44)
+                emit_byte(0x24); emit_byte(0x30); emit_u32_le(0)
+                emit_win_call_iat(3)
                 emit_win_free_stack(0x40)
             } else {
                 emit_load_rax_from_stack(temp_slot_0)
@@ -1602,7 +1597,7 @@ fn gen_expr(uint64 node) {
                 emit_mov_r9_imm(0)
                 emit_win_alloc_stack(0x30)
                 emit_win_stack_arg5(0)
-                emit_win_call_iat(5)
+                emit_win_call_iat(4)
                 emit_win_free_stack(0x30)
             } else {
                 emit_mov_rdx_rax()
@@ -1667,7 +1662,7 @@ fn gen_expr(uint64 node) {
                 // Windows: CloseHandle(handle)
                 emit_mov_rcx_rax()
                 emit_win_alloc_stack(0x20)
-                emit_win_call_iat(6)
+                emit_win_call_iat(5)
                 emit_win_free_stack(0x20)
             } else {
                 emit_mov_rdi_rax()

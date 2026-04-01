@@ -804,7 +804,7 @@ fn gen_expr_a64(uint64 node) {
                 emit_a64_mov_imm(0, 0)
                 emit_a64_mov_imm(2, 0x3000)
                 emit_a64_mov_imm(3, 4)
-                emit_a64_win_call_iat(3)
+                emit_a64_win_call_iat(6)
             } else {
                 emit_a64_mov(1, 0)
                 emit_a64_mov_imm(0, 0)
@@ -849,7 +849,7 @@ fn gen_expr_a64(uint64 node) {
                 emit_a64_mov_imm(5, 0x80)
                 // x6 = NULL (template)
                 emit_a64_mov_imm(6, 0)
-                emit_a64_win_call_iat(4)
+                emit_a64_win_call_iat(3)
             } else if target_os == 1 {
                 // macOS ARM64: open(path, flags, mode) — no AT_FDCWD
                 // x0 = flags. If 1, use O_WRONLY|O_CREAT|O_TRUNC = 0x601 (macOS)
@@ -910,7 +910,7 @@ fn gen_expr_a64(uint64 node) {
                 emit_a64_load_x0(temp_slot_1)
                 emit_a64_mov(1, 0)
                 emit_a64_load_x0(temp_slot_0)
-                emit_a64_win_call_iat(5)
+                emit_a64_win_call_iat(4)
             } else {
                 emit_a64_mov(2, 0)
                 emit_a64_load_x0(temp_slot_1)
@@ -968,7 +968,7 @@ fn gen_expr_a64(uint64 node) {
             if target_os == 2 {
                 // Windows ARM64: CloseHandle(handle)
                 // x0 = handle (already in place)
-                emit_a64_win_call_iat(6)
+                emit_a64_win_call_iat(5)
             } else {
                 if target_os == 1 { emit_a64_syscall_nr(6) } else { emit_a64_syscall_nr(57) }
                 emit_a64_svc()
