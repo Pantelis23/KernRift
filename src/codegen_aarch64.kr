@@ -320,35 +320,29 @@ fn a64_win_fixup_add(uint64 patch_off, uint64 slot) {
 }
 
 // Emit an indirect call through IAT on ARM64 Windows
-// Sequence (24 bytes = 6 instructions):
-//   MOVZ X16, #imm16         ; low 16 bits of IAT slot VA (placeholder)
-//   MOVK X16, #imm16, LSL#16 ; bits 16-31 (placeholder)
-//   MOVK X16, #imm16, LSL#32 ; bits 32-47 (placeholder)
-//   MOVK X16, #imm16, LSL#48 ; bits 48-63 (placeholder)
-//   LDR  X16, [X16]          ; dereference: X16 = *IAT_slot = function pointer
-//   BLR  X16                  ; call through function pointer
+// Position-independent sequence (12 bytes = 3 instructions):
+//   ADRP X16, #page_delta    ; load page of IAT slot (PC-relative)
+//   LDR  X16, [X16, #lo12]   ; load function pointer from IAT slot
+//   BLR  X16                  ; call
 fn emit_a64_win_call_iat(uint64 slot) {
     uint64 patch_off = out_len
-    // Placeholder MOVZ/MOVK sequence (will be patched by resolve_a64_win_iat_fixups)
-    emit_a64_movz(16, 0)
-    emit_a64_movk(16, 0, 16)
-    emit_a64_movk(16, 0, 32)
-    emit_a64_movk(16, 0, 48)
-    // LDR X16, [X16] — dereference the IAT slot pointer
-    emit_a64_ldr(16, 16, 0)
-    // BLR X16 — call the function
+    // Placeholder ADRP (will be patched)
+    emit_a64(0x90000010)          // ADRP X16, #0 (placeholder)
+    // Placeholder LDR with offset (will be patched)
+    emit_a64(0xF9400210)          // LDR X16, [X16, #0] (placeholder)
+    // BLR X16
     emit_a64_blr(16)
     // Record fixup
     a64_win_fixup_add(patch_off, slot)
 }
 
 // Resolve ARM64 Windows IAT fixups
-// Patches the MOVZ/MOVK sequence with the actual IAT slot VA
+// Patches ADRP + LDR with PC-relative offsets to IAT slots
 // text_start: file offset where .text begins, iat_rva: RVA of IAT in .idata
 @export
 fn resolve_a64_win_iat_fixups(uint64 text_start, uint64 iat_rva) {
-    // PE image base = 0x140000000
-    // IAT slot N has VA = 0x140000000 + iat_rva + N * 8
+    // Code at file offset X has RVA = 0x1000 + (X - text_start)
+    // Target IAT slot RVA = iat_rva + slot * 8
     uint64 i = 0
     while i < a64_win_iat_fixup_count {
         uint64 entry = a64_win_iat_fixups + i * 8
@@ -359,19 +353,24 @@ fn resolve_a64_win_iat_fixups(uint64 text_start, uint64 iat_rva) {
         unsafe { *(e4 as uint32) -> slot }
         uint64 wpatch = patch_off
         uint64 wslot = slot
-        uint64 target_va = 0x140000000 + iat_rva + wslot * 8
-        uint64 lo16 = target_va & 0xFFFF
-        uint64 hi16 = (target_va >> 16) & 0xFFFF
-        uint64 hi32 = (target_va >> 32) & 0xFFFF
-        uint64 hi48 = (target_va >> 48) & 0xFFFF
-        // Patch MOVZ X16, #lo16
-        patch_u32(wpatch, 0xD2800010 | (lo16 << 5))
-        // Patch MOVK X16, #hi16, LSL#16
-        patch_u32(wpatch + 4, 0xF2A00010 | (hi16 << 5))
-        // Patch MOVK X16, #hi32, LSL#32
-        patch_u32(wpatch + 8, 0xF2C00010 | (hi32 << 5))
-        // Patch MOVK X16, #hi48, LSL#48
-        patch_u32(wpatch + 12, 0xF2E00010 | (hi48 << 5))
+        // ADRP is at wpatch (file offset), its RVA = 0x1000 + (wpatch - text_start)
+        uint64 adrp_rva = 0x1000 + wpatch - text_start
+        uint64 target_rva = iat_rva + wslot * 8
+        // ADRP: page delta = (target_rva >> 12) - (adrp_rva >> 12)
+        uint64 target_page = target_rva >> 12
+        uint64 adrp_page = adrp_rva >> 12
+        uint64 page_delta = target_page - adrp_page
+        // ADRP encoding: immhi (bits 23:5) = page_delta[20:2], immlo (bits 30:29) = page_delta[1:0]
+        uint64 immlo = page_delta & 3
+        uint64 immhi = (page_delta >> 2) & 0x7FFFF
+        uint64 adrp_insn = 0x90000010 | (immlo << 29) | (immhi << 5)
+        patch_u32(wpatch, adrp_insn)
+        // LDR X16, [X16, #offset]: offset = (target_rva & 0xFFF) for uint64 load
+        // LDR (unsigned offset) encoding: imm12 = byte_offset / 8 (for 64-bit load)
+        uint64 page_off = target_rva & 0xFFF
+        uint64 imm12 = page_off >> 3
+        uint64 ldr_insn = 0xF9400210 | (imm12 << 10)
+        patch_u32(wpatch + 4, ldr_insn)
         i = i + 1
     }
 }
