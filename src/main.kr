@@ -210,10 +210,11 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
         patch_u32(296, page_size & 0xFFFFFFFF)
         patch_u32(300, 0)
 
-        // Patch LC_MAIN entryoff at 328
+        // Patch LC_MAIN entryoff at 352
+        // (32 header + 72*4 segments + 24 LC_BUILD_VERSION + 8 cmd+cmdsize = 352)
         uint64 main_off_macho = find_main_offset()
-        patch_u32(328, main_off_macho & 0xFFFFFFFF)
-        patch_u32(332, (main_off_macho >> 32) & 0xFFFFFFFF)
+        patch_u32(352, main_off_macho & 0xFFFFFFFF)
+        patch_u32(356, (main_off_macho >> 32) & 0xFFFFFFFF)
     } else if emit_mode == 2 {
         // PE: patch entry point to main function
         uint64 main_off = find_main_offset()

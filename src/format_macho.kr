@@ -21,8 +21,8 @@ fn emit_macho_headers_x64(uint64 code_size) -> uint64 {
     emit_u32_le(0x01000007)       // cputype (X86_64)
     emit_u32_le(0x00000003)       // cpusubtype
     emit_u32_le(0x00000002)       // filetype (MH_EXECUTE)
-    emit_u32_le(5)                // ncmds
-    emit_u32_le(312)              // sizeofcmds (4*72 + 24)
+    emit_u32_le(6)                // ncmds (4 segments + LC_BUILD_VERSION + LC_MAIN)
+    emit_u32_le(336)              // sizeofcmds (4*72 + 24 + 24)
     emit_u32_le(0x00200085)       // flags (NOUNDEFS|DYLDLINK|PIE|NO_HEAP_EXEC)
     emit_u32_le(0)                // reserved
 
@@ -91,6 +91,14 @@ fn emit_macho_headers_x64(uint64 code_size) -> uint64 {
     emit_u32_le(0)
     emit_u32_le(0)
 
+    // LC_BUILD_VERSION (24 bytes) — required by modern macOS
+    emit_u32_le(0x32)             // cmd = LC_BUILD_VERSION
+    emit_u32_le(24)               // cmdsize
+    emit_u32_le(1)                // platform = MACOS
+    emit_u32_le(0x000E0000)       // minos = 14.0.0
+    emit_u32_le(0x000F0000)       // sdk = 15.0.0
+    emit_u32_le(0)                // ntools
+
     // LC_MAIN (24 bytes)
     emit_u32_le(0x80000028)
     emit_u32_le(24)
@@ -112,8 +120,8 @@ fn emit_macho_headers_a64(uint64 code_size) -> uint64 {
     emit_u32_le(0x0100000C)       // ARM64
     emit_u32_le(0x00000000)
     emit_u32_le(0x00000002)
-    emit_u32_le(5)                // ncmds
-    emit_u32_le(312)              // sizeofcmds
+    emit_u32_le(6)                // ncmds (4 segments + LC_BUILD_VERSION + LC_MAIN)
+    emit_u32_le(336)              // sizeofcmds (4*72 + 24 + 24)
     emit_u32_le(0x00200085)
     emit_u32_le(0)
 
@@ -156,6 +164,13 @@ fn emit_macho_headers_a64(uint64 code_size) -> uint64 {
     emit_u64_le(0); emit_u64_le(0)
     emit_u64_le(0); emit_u64_le(0)
     emit_u32_le(1); emit_u32_le(1); emit_u32_le(0); emit_u32_le(0)
+
+    // LC_BUILD_VERSION
+    emit_u32_le(0x32); emit_u32_le(24)
+    emit_u32_le(1)                // platform = MACOS
+    emit_u32_le(0x000E0000)       // minos = 14.0.0
+    emit_u32_le(0x000F0000)       // sdk = 15.0.0
+    emit_u32_le(0)                // ntools
 
     // LC_MAIN
     emit_u32_le(0x80000028); emit_u32_le(24)
