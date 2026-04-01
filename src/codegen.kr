@@ -2351,8 +2351,26 @@ fn gen_function(uint64 fn_node) {
     fn_register(name_tok, out_len)
 
     // For main function: emit _start trampoline that stores argc/argv to statics
-    // Only on Linux ELF — macOS LC_MAIN and PE entry don't have argc/argv on stack
     uint64 wnt = name_tok
+    if tok_matches(wnt, "main", 4) != 0 && target_os == 2 {
+        // Windows: call GetCommandLineA, store raw pointer in cli_argv static.
+        // Set cli_argc to 0 as a signal for main() to parse later.
+        // The actual parsing is done in KernRift code (win_init_args in main.kr).
+        emit_win_alloc_stack(0x20)
+        emit_win_call_iat(7)          // GetCommandLineA → rax = cmdline ptr
+        emit_win_free_stack(0x20)
+        // Store raw cmdline pointer as cli_argv (will be parsed by win_init_args)
+        uint64 argv_off_w = static_lookup_by_name("cli_argv", 8)
+        if argv_off_w != 0xFFFFFFFF {
+            emit_static_store(argv_off_w)
+        }
+        // Set cli_argc = 0xFFFFFFFF as "needs parsing" sentinel
+        emit_mov_rax_imm(0xFFFFFFFF)
+        uint64 argc_off_w = static_lookup_by_name("cli_argc", 8)
+        if argc_off_w != 0xFFFFFFFF {
+            emit_static_store(argc_off_w)
+        }
+    }
     if tok_matches(wnt, "main", 4) != 0 && target_os == 0 {
         // mov rax, [rsp]       ; rax = argc
         emit_byte(0x48); emit_byte(0x8B); emit_byte(0x04); emit_byte(0x24)

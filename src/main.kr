@@ -1,5 +1,43 @@
 // KernRift self-hosted compiler — main
 
+// Windows command line parser: called from main() when cli_argc == 0xFFFFFFFF
+// cli_argv contains the raw GetCommandLineA pointer; parse it into proper argc/argv
+fn win_init_args() {
+    uint64 cmdline = cli_argv
+    // Allocate argv buffer (up to 64 pointers = 512 bytes)
+    uint64 argv_buf = alloc(512)
+    uint64 argc = 0
+    uint64 pos = cmdline
+    uint64 ch = 0
+    unsafe { *(pos as uint8) -> ch }
+    while ch != 0 {
+        // Skip spaces
+        while ch == 32 {
+            pos = pos + 1
+            unsafe { *(pos as uint8) -> ch }
+        }
+        if ch == 0 { break }
+        // Store start of this arg
+        uint64 slot = argv_buf + argc * 8
+        unsafe { *(slot as uint64) = pos }
+        argc = argc + 1
+        // Advance to next space or null
+        while ch != 0 && ch != 32 {
+            pos = pos + 1
+            unsafe { *(pos as uint8) -> ch }
+        }
+        // Null-terminate this arg (replace space with 0)
+        if ch == 32 {
+            uint8 z = 0
+            unsafe { *(pos as uint8) = z }
+            pos = pos + 1
+            unsafe { *(pos as uint8) -> ch }
+        }
+    }
+    cli_argc = argc
+    cli_argv = argv_buf
+}
+
 fn str_len(uint64 s) -> uint64 {
     uint64 i = 0
     uint64 p = s + i
@@ -175,8 +213,9 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
         while codegen_output_len() < header_size + text_aligned {
             emit_byte(0)
         }
-        // Emit .idata section
-        uint64 idata_rva = 0x2000
+        // Emit .idata section — RVA must be after .text
+        uint64 text_va_size = (text_size + 0xFFF) & ~0xFFF
+        uint64 idata_rva = 0x1000 + text_va_size
         uint64 iat_rva_val = emit_pe_idata(idata_rva)
         pe_iat_rva = iat_rva_val
         // Patch .text section header: VirtualSize and RawSize
@@ -186,18 +225,18 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
         uint64 text_hdr = 0x148
         patch_u32(text_hdr + 8, text_size)
         patch_u32(text_hdr + 16, text_aligned)
-        // .idata RawOffset at 0x170+20
+        // .idata section header: VirtualAddress and RawOffset
         uint64 idata_hdr = 0x170
+        patch_u32(idata_hdr + 12, idata_rva)              // VirtualAddress
         uint64 idata_file_off = header_size + text_aligned
-        patch_u32(idata_hdr + 20, idata_file_off)
-        // Patch SizeOfCode in optional header (offset 0x68+4=0x6C... actually 0x44+4)
-        // Optional header starts at 0x58 (64+4+20=88=0x58)
-        // SizeOfCode at 0x58+4 = 0x5C
+        patch_u32(idata_hdr + 20, idata_file_off)         // PointerToRawData
+        // Import directory in data directories (offset 0xD0 = opt_hdr + 0x78 + 8)
+        // Data directory[1] = import: RVA at 0xD0, size at 0xD4
+        patch_u32(0xD0, idata_rva)
+        // SizeOfCode
         patch_u32(0x5C, text_aligned)
-        // Patch ImageSize at offset 0x90 (optional header offset 0x38)
-        // ImageSize = 0x1000 (headers) + aligned(.text) + aligned(.idata) = 0x3000
-        uint64 text_va_aligned = (text_size + 0xFFF) & ~0xFFF
-        uint64 image_size = 0x1000 + text_va_aligned + 0x1000
+        // ImageSize = headers + text_va + idata_va (each section-aligned to 0x1000)
+        uint64 image_size = 0x1000 + text_va_size + 0x1000
         patch_u32(0x90, image_size)
         // Resolve Windows IAT fixups
         if target_os == 2 {
@@ -450,6 +489,11 @@ fn parse_uint_arg(uint64 s) -> uint64 {
 
 @export
 fn main() {
+    // Windows: parse raw GetCommandLineA result into argc/argv
+    if cli_argc == 0xFFFFFFFF {
+        win_init_args()
+    }
+
     uint64 input_path = 0
     uint64 output_path = "a.krbo"
     uint64 mode = 0
