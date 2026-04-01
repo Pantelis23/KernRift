@@ -1443,9 +1443,9 @@ fn gen_function_a64(uint64 fn_node) {
     fn_register(name_tok, out_len)
 
     // For main: emit _start trampoline to store argc/argv to statics
-    // Skip on Windows — PE entry point receives no args on stack
+    // Only on Linux ELF — macOS LC_MAIN and PE entry don't have argc/argv on stack
     uint64 wnt_a64 = name_tok
-    if tok_matches(wnt_a64, "main", 4) != 0 && target_os != 2 {
+    if tok_matches(wnt_a64, "main", 4) != 0 && target_os == 0 {
         // ldr x0, [sp]        ; x0 = argc
         emit_a64_ldr(0, 31, 0)
         // Store to cli_argc static

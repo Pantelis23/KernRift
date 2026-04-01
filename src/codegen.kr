@@ -2351,9 +2351,9 @@ fn gen_function(uint64 fn_node) {
     fn_register(name_tok, out_len)
 
     // For main function: emit _start trampoline that stores argc/argv to statics
-    // Skip on Windows — PE entry point receives no args on stack
+    // Only on Linux ELF — macOS LC_MAIN and PE entry don't have argc/argv on stack
     uint64 wnt = name_tok
-    if tok_matches(wnt, "main", 4) != 0 && target_os != 2 {
+    if tok_matches(wnt, "main", 4) != 0 && target_os == 0 {
         // mov rax, [rsp]       ; rax = argc
         emit_byte(0x48); emit_byte(0x8B); emit_byte(0x04); emit_byte(0x24)
         // Store to cli_argc static

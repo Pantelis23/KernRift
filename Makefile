@@ -20,24 +20,29 @@ SRCS = src/lexer.kr src/ast.kr src/parser.kr src/codegen.kr \
 
 all: build
 
-# Concatenate sources and compile with Rust kernriftc
-build: build/krc build/krc2
+# Build from the self-hosted compiler (no Rust needed)
+build: build/krc2
 
 build/krc.kr: $(SRCS)
 	@mkdir -p build
 	cat $(SRCS) > build/krc.kr
 
-build/krc: build/krc.kr
-	$(KERNRIFTC) --emit=hostexe build/krc.kr -o build/krc
-	chmod +x build/krc
-
-# Self-compile: krc → krc2 (Rust runtime always produces single-arch ELF)
-build/krc2: build/krc build/krc.kr
-	cp build/krc.kr test_input.kr
-	./build/krc 2>/dev/null
-	mv a.krbo build/krc2 2>/dev/null || mv a.out build/krc2 2>/dev/null
-	chmod +x build/krc2
-	rm -f test_input.kr a.krbo a.out
+# Use the pre-built self-hosted compiler to self-compile
+build/krc2: build/krc.kr
+	@if [ -f build/krc2 ]; then \
+		./build/krc2 --arch=x86_64 build/krc.kr -o build/krc2.new && \
+		mv build/krc2.new build/krc2 && chmod +x build/krc2; \
+	elif [ -f $(DIST_DIR)/krc-linux-x86_64 ]; then \
+		cp $(DIST_DIR)/krc-linux-x86_64 build/krc2 && chmod +x build/krc2 && \
+		./build/krc2 --arch=x86_64 build/krc.kr -o build/krc2.new && \
+		mv build/krc2.new build/krc2; \
+	else \
+		echo "No self-hosted compiler found. Bootstrap from Rust:"; \
+		echo "  cargo install --git https://github.com/Pantelis23/KernRift-bootstrap kernriftc"; \
+		echo "  $(KERNRIFTC) --emit=hostexe build/krc.kr -o build/krc"; \
+		echo "  cp build/krc.kr test_input.kr && ./build/krc && mv a.out build/krc2"; \
+		exit 1; \
+	fi
 
 # Run test suite
 test: build/krc2

@@ -16,14 +16,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Rust (for bootstrap)
-        uses: dtolnay/rust-toolchain@stable
+      - name: Download self-hosted compiler
+        run: |
+          mkdir -p build
+          curl -sL -o build/krc-bootstrap \
+            https://github.com/Pantelis23/KernRift/releases/latest/download/krc-linux-x86_64
+          chmod +x build/krc-bootstrap
 
-      - name: Install bootstrap compiler
-        run: cargo install --git https://github.com/Pantelis23/KernRift-bootstrap kernriftc --locked
-
-      - name: Build self-hosted compiler
-        run: make build
+      - name: Build (self-compile)
+        run: |
+          cat src/lexer.kr src/ast.kr src/parser.kr src/codegen.kr src/codegen_aarch64.kr \
+              src/format_macho.kr src/format_pe.kr src/format_archive.kr src/analysis.kr \
+              src/living.kr src/runtime.kr src/main.kr > build/krc.kr
+          ./build/krc-bootstrap --arch=x86_64 build/krc.kr -o build/krc2
+          chmod +x build/krc2
 
       - name: Compile test programs for all platforms
         run: |
@@ -71,7 +77,7 @@ jobs:
   test-macos-x64:
     name: macOS x86_64
     needs: build
-    runs-on: macos-13
+    runs-on: macos-14
     steps:
       - name: Download binaries
         uses: actions/download-artifact@v4
