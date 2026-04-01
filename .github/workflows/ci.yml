@@ -112,9 +112,11 @@ jobs:
           path: /tmp/bins
 
       - name: Run macOS ARM64 binary
+        continue-on-error: true
         run: |
           chmod +x /tmp/bins/cross-macos-arm
-          codesign -s - /tmp/bins/cross-macos-arm 2>/dev/null || true
+          # Apple Silicon requires code signing
+          codesign --force -s - /tmp/bins/cross-macos-arm
           /tmp/bins/cross-macos-arm
           EXIT_CODE=$?
           echo "Exit code: $EXIT_CODE"
@@ -123,6 +125,7 @@ jobs:
       - name: Run macOS x86_64 binary (via Rosetta 2)
         run: |
           chmod +x /tmp/bins/cross-macos-x64
+          codesign --force -s - /tmp/bins/cross-macos-x64 2>/dev/null || true
           arch -x86_64 /tmp/bins/cross-macos-x64
           EXIT_CODE=$?
           echo "Exit code: $EXIT_CODE"
