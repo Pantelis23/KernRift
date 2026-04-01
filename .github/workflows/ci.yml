@@ -111,16 +111,22 @@ jobs:
           name: cross-compiled
           path: /tmp/bins
 
+      - name: Build reference binary and compare
+        run: |
+          # Build a real macOS binary with clang for comparison
+          cat > /tmp/ref.c << 'CEOF'
+          void _start() { __asm__("mov x0, #42\n mov x16, #1\n svc #0x80"); }
+          CEOF
+          clang -arch arm64 -nostdlib -e _start -o /tmp/ref_arm64 /tmp/ref.c 2>&1 || echo "clang failed"
+          echo "=== Reference binary structure ==="
+          otool -l /tmp/ref_arm64 2>&1 | head -100
+          echo "=== KernRift binary structure ==="
+          otool -l /tmp/bins/cross-macos-arm 2>&1 | head -100
+
       - name: Run macOS ARM64 binary
         run: |
           chmod +x /tmp/bins/cross-macos-arm
-          echo "=== Binary structure ==="
-          file /tmp/bins/cross-macos-arm
-          otool -l /tmp/bins/cross-macos-arm 2>&1 | head -80
-          echo "=== Codesign ==="
-          codesign --force -s - /tmp/bins/cross-macos-arm -v 2>&1 || echo "codesign exit: $?"
-          codesign -d --verbose=4 /tmp/bins/cross-macos-arm 2>&1 || true
-          echo "=== Run ==="
+          codesign --force -s - /tmp/bins/cross-macos-arm -v 2>&1 || true
           /tmp/bins/cross-macos-arm; EXIT_CODE=$?
           echo "Exit code: $EXIT_CODE"
           [ "$EXIT_CODE" -eq 42 ] && echo "PASS: macOS ARM64 exit(42)" || { echo "FAIL: expected 42, got $EXIT_CODE"; exit 1; }
