@@ -1,0 +1,154 @@
+// KernRift .krbo runner — extracts and executes fat binaries
+// Usage: krc-run program.krbo [args...]
+// Detects host arch, extracts the matching slice, writes to temp, executes it.
+
+fn str_len_r(uint64 s) -> uint64 {
+    uint64 i = 0
+    uint64 p = s + i
+    uint64 c = 0
+    unsafe { *(p as uint8) -> c }
+    while c != 0 {
+        i = i + 1
+        p = s + i
+        unsafe { *(p as uint8) -> c }
+    }
+    return i
+}
+
+fn lz4_decompress_frame_r(uint64 input, uint64 input_len, uint64 output) -> uint64 {
+    uint64 pos = 7
+    uint64 out_pos = 0
+    while pos < input_len {
+        uint64 bp = input + pos
+        uint32 block_size_raw = 0
+        unsafe { *(bp as uint32) -> block_size_raw }
+        uint64 bs = block_size_raw
+        pos = pos + 4
+        if bs == 0 { break }
+        if (bs & 0x80000000) != 0 {
+            uint64 data_len = bs & 0x7FFFFFFF
+            uint64 i = 0
+            while i < data_len {
+                uint64 sp = input + pos + i
+                uint64 dp = output + out_pos + i
+                uint64 b = 0
+                unsafe { *(sp as uint8) -> b }
+                uint8 bb = b
+                unsafe { *(dp as uint8) = bb }
+                i = i + 1
+            }
+            out_pos = out_pos + data_len
+            pos = pos + data_len
+        } else {
+            pos = pos + bs
+        }
+    }
+    return out_pos
+}
+
+fn detect_arch_r() -> uint64 {
+    uint64 fd = file_open("/proc/self/exe", 0)
+    if fd < 0 { return 0 }
+    uint8[20] hdr
+    file_read(fd, hdr, 20)
+    file_close(fd)
+    uint64 machine = hdr[18]
+    if machine == 0x3E { return 1 }
+    if machine == 0xB7 { return 2 }
+    return 0
+}
+
+static uint64 cli_argc = 0
+static uint64 cli_argv = 0
+
+@export
+fn main() {
+    if cli_argc < 2 {
+        uint64 msg = "usage: krc-run program.krbo [args...]\n"
+        write(2, msg, 38)
+        exit(1)
+    }
+
+    uint64 arg1_ptr = cli_argv + 8
+    uint64 krbo_path = 0
+    unsafe { *(arg1_ptr as uint64) -> krbo_path }
+
+    uint64 fd = file_open(krbo_path, 0)
+    uint64 fsize = file_size(fd)
+    uint64 data = alloc(fsize)
+    file_read(fd, data, fsize)
+    file_close(fd)
+
+    // Check magic
+    uint64 is_fat = 0
+    uint32 m0 = 0
+    uint32 m4 = 0
+    unsafe { *(data as uint32) -> m0 }
+    uint64 dp4 = data + 4
+    unsafe { *(dp4 as uint32) -> m4 }
+    uint64 wm0 = m0
+    uint64 wm4 = m4
+    if wm0 == 0x4F42524B && wm4 == 0x00544146 {
+        is_fat = 1
+    }
+
+    uint64 host_arch = detect_arch_r()
+
+    if is_fat == 0 {
+        // Not fat — write as-is (probably a raw ELF)
+        uint64 tmp = "/tmp/.krc-run-exec"
+        uint64 tfd = file_open(tmp, 1)
+        file_write(tfd, data, fsize)
+        file_close(tfd)
+        exit(0)
+    }
+
+    // Parse fat header
+    uint64 dp12 = data + 12
+    uint32 arch_count = 0
+    unsafe { *(dp12 as uint32) -> arch_count }
+    uint64 wac = arch_count
+
+    uint64 slice_offset = 0
+    uint64 slice_comp_size = 0
+    uint64 slice_uncomp_size = 0
+    uint64 found = 0
+
+    uint64 i = 0
+    while i < wac {
+        uint64 entry = data + 16 + i * 48
+        uint32 arch_id = 0
+        unsafe { *(entry as uint32) -> arch_id }
+        uint64 wai = arch_id
+        if wai == host_arch {
+            uint64 eo8 = entry + 8
+            uint64 eo16 = entry + 16
+            uint64 eo24 = entry + 24
+            unsafe { *(eo8 as uint64) -> slice_offset }
+            unsafe { *(eo16 as uint64) -> slice_comp_size }
+            unsafe { *(eo24 as uint64) -> slice_uncomp_size }
+            found = 1
+        }
+        i = i + 1
+    }
+
+    if found == 0 {
+        uint64 msg = "krc-run: no slice for this architecture\n"
+        write(2, msg, 40)
+        exit(1)
+    }
+
+    // Decompress
+    uint64 binary = alloc(slice_uncomp_size + 1)
+    uint64 comp_data = data + slice_offset
+    uint64 decomp_size = lz4_decompress_frame_r(comp_data, slice_comp_size, binary)
+
+    // Write to temp
+    uint64 tmp_path = "/tmp/.krc-run-exec"
+    uint64 tfd = file_open(tmp_path, 1)
+    file_write(tfd, binary, decomp_size)
+    file_close(tfd)
+
+    // Signal success — the shell wrapper handles chmod+exec
+    exit(0)
+}
