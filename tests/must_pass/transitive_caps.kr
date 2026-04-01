@@ -1,9 +1,0 @@
-@module_caps(PhysMap);
-
-@ctx(irq)
-@caps(PhysMap)
-fn isr() { helper(); }
-
-@ctx(irq)
-@caps(PhysMap)
-fn helper() { }

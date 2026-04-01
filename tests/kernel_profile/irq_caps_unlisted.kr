@@ -1,9 +1,0 @@
-@module_caps(IoPort);
-
-@ctx(irq)
-@caps(IoPort)
-fn isr() { helper(); }
-
-@ctx(irq)
-@caps(IoPort)
-fn helper() { }

@@ -1,3 +1,0 @@
-fn entry() { helper(); }
-
-fn helper() { allocpoint(); }

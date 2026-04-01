@@ -1,3 +1,0 @@
-fn entry() {
-    raw_write<uint32>(0x1014, x)
-}

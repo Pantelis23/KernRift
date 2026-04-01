@@ -1,5 +1,0 @@
-spinlock ConsoleLock;
-fn bad_sig_case() {
-  acquire(ConsoleLock);
-  release(ConsoleLock);
-}

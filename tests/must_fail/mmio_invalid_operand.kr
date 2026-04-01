@@ -1,3 +1,0 @@
-fn entry() {
-  mmio_read<u32>(a + b);
-}

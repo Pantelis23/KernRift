@@ -1,5 +1,0 @@
-exit=1
-stdout:
-<empty>
-stderr:
-verify: SIG_MISMATCH: signature error: Verification equation was not satisfied

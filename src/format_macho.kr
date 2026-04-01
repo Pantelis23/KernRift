@@ -1,0 +1,121 @@
+// KernRift self-hosted compiler — Mach-O output format
+//
+// Supports macOS x86_64 and AArch64 executable output.
+// Mach-O header + LC_SEGMENT_64 (__TEXT) + LC_MAIN
+
+// ---------------------------------------------------------------------------
+// Mach-O header emission
+// ---------------------------------------------------------------------------
+
+// Emit Mach-O x86_64 executable header
+// Returns the offset where code starts (after headers)
+@export
+fn emit_macho_headers_x64(uint64 code_size) -> uint64 {
+    // Mach-O header (32 bytes)
+    emit_u32_le(0xFEEDFACF)       // magic (MH_MAGIC_64)
+    emit_u32_le(0x01000007)       // cputype (CPU_TYPE_X86_64)
+    emit_u32_le(0x00000003)       // cpusubtype (CPU_SUBTYPE_X86_64_ALL)
+    emit_u32_le(0x00000002)       // filetype (MH_EXECUTE)
+    emit_u32_le(2)                // ncmds (LC_SEGMENT_64 + LC_MAIN)
+    uint64 sizeofcmds = 72 + 24  // LC_SEGMENT_64(72) + LC_MAIN(24)
+    emit_u32_le(sizeofcmds)       // sizeofcmds
+    emit_u32_le(0x00000085)       // flags (NOUNDEFS|DYLDLINK|PIE)
+    emit_u32_le(0)                // reserved
+
+    // LC_SEGMENT_64 for __TEXT (72 bytes)
+    emit_u32_le(0x19)             // cmd = LC_SEGMENT_64
+    emit_u32_le(72)               // cmdsize
+    // segname: "__TEXT\0..." (16 bytes)
+    emit_byte(95); emit_byte(95); emit_byte(84); emit_byte(69)
+    emit_byte(88); emit_byte(84); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    uint64 header_size = 32 + 72 + 24  // mach_header + LC_SEGMENT_64 + LC_MAIN = 128
+    uint64 total = header_size + code_size
+    emit_u64_le(0x100000000)      // vmaddr (4GB base for PIE)
+    emit_u64_le(total)            // vmsize
+    emit_u64_le(0)                // fileoff
+    emit_u64_le(total)            // filesize
+    emit_u32_le(5)                // maxprot (VM_PROT_READ|VM_PROT_EXECUTE)
+    emit_u32_le(5)                // initprot
+    emit_u32_le(0)                // nsects
+    emit_u32_le(0)                // flags
+
+    // LC_MAIN (24 bytes)
+    emit_u32_le(0x80000028)       // cmd = LC_MAIN
+    emit_u32_le(24)               // cmdsize
+    emit_u64_le(header_size)      // entryoff (offset of code from file start)
+    emit_u64_le(0)                // stacksize (0 = default)
+
+    return header_size
+}
+
+// Emit Mach-O AArch64 executable header
+@export
+fn emit_macho_headers_a64(uint64 code_size) -> uint64 {
+    emit_u32_le(0xFEEDFACF)
+    emit_u32_le(0x0100000C)       // cputype (CPU_TYPE_ARM64)
+    emit_u32_le(0x00000000)       // cpusubtype (CPU_SUBTYPE_ARM64_ALL)
+    emit_u32_le(0x00000002)       // filetype (MH_EXECUTE)
+    emit_u32_le(2)
+    uint64 sizeofcmds = 72 + 24
+    emit_u32_le(sizeofcmds)
+    emit_u32_le(0x00000085)
+    emit_u32_le(0)
+
+    // LC_SEGMENT_64 __TEXT
+    emit_u32_le(0x19)
+    emit_u32_le(72)
+    emit_byte(95); emit_byte(95); emit_byte(84); emit_byte(69)
+    emit_byte(88); emit_byte(84); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    uint64 header_size = 128
+    uint64 total = header_size + code_size
+    emit_u64_le(0x100000000)
+    emit_u64_le(total)
+    emit_u64_le(0)
+    emit_u64_le(total)
+    emit_u32_le(5)
+    emit_u32_le(5)
+    emit_u32_le(0)
+    emit_u32_le(0)
+
+    // LC_MAIN
+    emit_u32_le(0x80000028)
+    emit_u32_le(24)
+    emit_u64_le(header_size)
+    emit_u64_le(0)
+
+    return header_size
+}
+
+// ---------------------------------------------------------------------------
+// macOS syscall number mappings
+// ---------------------------------------------------------------------------
+
+// macOS x86_64 syscalls: BSD numbers + 0x2000000 offset
+// exit=0x2000001, write=0x2000004, read=0x2000003, open=0x2000005
+// close=0x2000006, mmap=0x20000C5, lseek=0x20000C7, fstat=0x2000153
+
+static uint64 macos_sys_exit = 0x2000001
+static uint64 macos_sys_read = 0x2000003
+static uint64 macos_sys_write = 0x2000004
+static uint64 macos_sys_open = 0x2000005
+static uint64 macos_sys_close = 0x2000006
+static uint64 macos_sys_mmap = 0x20000C5
+static uint64 macos_sys_lseek = 0x20000C7
+
+// macOS AArch64 syscalls: raw BSD numbers (no offset), svc #0x80
+static uint64 macos_a64_sys_exit = 1
+static uint64 macos_a64_sys_read = 3
+static uint64 macos_a64_sys_write = 4
+static uint64 macos_a64_sys_open = 5
+static uint64 macos_a64_sys_close = 6
+static uint64 macos_a64_sys_mmap = 197
+static uint64 macos_a64_sys_lseek = 199
+
+// macOS AArch64 svc #0x80 instruction
+fn emit_a64_svc_macos() {
+    emit_a64(0xD4001001)
+}

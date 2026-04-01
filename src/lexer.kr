@@ -1,0 +1,407 @@
+// KernRift self-hosted compiler — Lexer (Tokenizer)
+//
+// Converts source text (uint8 bytes) into a flat token array.
+// Each token is 16 bytes:
+//   [0..4)   kind  (uint32, see TokenKind enum)
+//   [4..8)   start (uint32, byte offset in source)
+//   [8..12)  len   (uint32, byte length of token text)
+//   [12..16) line  (uint32, 1-based line number)
+
+// ---------------------------------------------------------------------------
+// Token kinds
+// ---------------------------------------------------------------------------
+
+enum TokenKind {
+    Eof = 0
+    Ident = 1
+    IntLit = 2
+    StrLit = 3
+    CharLit = 4
+
+    // Punctuation
+    LParen = 10
+    RParen = 11
+    LBrace = 12
+    RBrace = 13
+    LBracket = 14
+    RBracket = 15
+    Comma = 16
+    Dot = 17
+    Semicolon = 18
+    Colon = 19
+    Arrow = 20
+    At = 21
+    Star = 22
+    Ampersand = 23
+    Pipe = 24
+    Caret = 25
+    Tilde = 26
+    Bang = 27
+    Question = 28
+
+    // Operators
+    Plus = 30
+    Minus = 31
+    Slash = 32
+    Percent = 33
+    Eq = 34
+    EqEq = 35
+    BangEq = 36
+    Lt = 37
+    LtEq = 38
+    Gt = 39
+    GtEq = 40
+    AmpAmp = 41
+    PipePipe = 42
+    LtLt = 43
+    GtGt = 44
+    PlusEq = 45
+    MinusEq = 46
+    StarEq = 47
+    SlashEq = 48
+    PercentEq = 49
+    AmpEq = 50
+    PipeEq = 51
+    CaretEq = 52
+    LtLtEq = 53
+    GtGtEq = 54
+
+    // Keywords
+    KwFn = 60
+    KwReturn = 61
+    KwIf = 62
+    KwElse = 63
+    KwWhile = 64
+    KwFor = 65
+    KwIn = 66
+    KwBreak = 67
+    KwContinue = 68
+    KwLoop = 69
+    KwConst = 70
+    KwStatic = 71
+    KwStruct = 72
+    KwEnum = 73
+    KwExtern = 74
+    KwImport = 75
+    KwUnsafe = 76
+    KwTrue = 77
+    KwFalse = 78
+
+    // Type keywords
+    KwUint8 = 80
+    KwUint16 = 81
+    KwUint32 = 82
+    KwUint64 = 83
+    KwInt8 = 84
+    KwInt16 = 85
+    KwInt32 = 86
+    KwInt64 = 87
+
+    // Error
+    Error = 255
+}
+
+// ---------------------------------------------------------------------------
+// Lexer state (static globals)
+// ---------------------------------------------------------------------------
+
+static uint64 src_ptr = 0       // pointer to source bytes
+static uint64 src_len = 0       // source length
+static uint64 pos = 0           // current byte position
+static uint64 line = 1          // current line number
+
+static uint64 tok_buf = 0       // pointer to token output buffer
+static uint64 tok_count = 0     // number of tokens emitted
+static uint64 tok_capacity = 0  // max tokens in buffer
+
+// ---------------------------------------------------------------------------
+// Lexer API
+// ---------------------------------------------------------------------------
+
+@export
+fn lexer_init(uint64 source, uint64 length, uint64 tokens, uint64 capacity) {
+    src_ptr = source
+    src_len = length
+    pos = 0
+    line = 1
+    tok_buf = tokens
+    tok_count = 0
+    tok_capacity = capacity
+}
+
+@export
+fn lexer_run() -> uint64 {
+    while pos < src_len {
+        skip_whitespace_and_comments()
+        // Check again after skipping (avoid break-in-if)
+        if pos < src_len {
+            lex_one_token()
+        }
+    }
+    // Emit EOF token
+    emit_token(TokenKind.Eof, pos, 0, line)
+    return tok_count
+}
+
+@export
+fn lexer_token_count() -> uint64 {
+    return tok_count
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+fn peek() -> uint64 {
+    if pos >= src_len { return 0 }
+    uint64 ptr_addr = src_ptr + pos
+    uint64 result = 0
+    unsafe { *(ptr_addr as uint8) -> result }
+    return result & 0xFF
+}
+
+fn advance() -> uint64 {
+    uint64 ch = peek()
+    if ch == 10 { line = line + 1 }
+    pos = pos + 1
+    return ch
+}
+
+fn peek_at(uint64 offset) -> uint64 {
+    uint64 idx = pos + offset
+    if idx >= src_len { return 0 }
+    uint64 ptr_addr = src_ptr + idx
+    uint64 result = 0
+    unsafe { *(ptr_addr as uint8) -> result }
+    return result & 0xFF
+}
+
+fn emit_token(uint64 kind, uint64 start, uint64 len, uint64 tok_line) {
+    if tok_count >= tok_capacity { return }
+    uint64 base = tok_count * 16
+    uint64 buf = tok_buf
+    // Write kind (4 bytes LE)
+    uint64 a0 = buf + base
+    unsafe { *(a0 as uint32) = kind }
+    // Write start (4 bytes LE)
+    uint64 a1 = buf + base + 4
+    uint32 s32 = start
+    unsafe { *(a1 as uint32) = s32 }
+    // Write len (4 bytes LE)
+    uint64 a2 = buf + base + 8
+    uint32 l32 = len
+    unsafe { *(a2 as uint32) = l32 }
+    // Write line (4 bytes LE)
+    uint64 a3 = buf + base + 12
+    unsafe { *(a3 as uint32) = tok_line }
+    tok_count = tok_count + 1
+}
+
+fn skip_whitespace_and_comments() {
+    uint64 done = 0
+    while pos < src_len && done == 0 {
+        uint64 ch = peek()
+        uint64 handled = 0
+        // Whitespace: space, tab, CR, LF
+        if ch == 32 || ch == 9 || ch == 13 || ch == 10 {
+            advance()
+            handled = 1
+        }
+        // Line comment: //
+        if handled == 0 && ch == 47 && peek_at(1) == 47 {
+            // Skip to end of line
+            while pos < src_len && peek() != 10 {
+                advance()
+            }
+            if pos < src_len { advance() }
+            handled = 1
+        }
+        if handled == 0 {
+            done = 1
+        }
+    }
+}
+
+fn is_alpha(uint64 ch) -> uint64 {
+    if ch >= 65 && ch <= 90 { return 1 }
+    if ch >= 97 && ch <= 122 { return 1 }
+    if ch == 95 { return 1 }
+    return 0
+}
+
+fn is_digit(uint64 ch) -> uint64 {
+    if ch >= 48 && ch <= 57 { return 1 }
+    return 0
+}
+
+fn is_alnum(uint64 ch) -> uint64 {
+    if is_alpha(ch) != 0 { return 1 }
+    if is_digit(ch) != 0 { return 1 }
+    return 0
+}
+
+// Check if source[start..start+len] equals a keyword string
+fn match_keyword(uint64 start, uint64 len, uint64 kw_ptr, uint64 kw_len) -> uint64 {
+    if len != kw_len { return 0 }
+    uint64 i = 0
+    while i < len {
+        uint64 sa = src_ptr + start + i
+        uint64 sc = 0
+        unsafe { *(sa as uint8) -> sc }
+        uint64 ka = kw_ptr + i
+        uint64 kc = 0
+        unsafe { *(ka as uint8) -> kc }
+        if sc != kc { return 0 }
+        i = i + 1
+    }
+    return 1
+}
+
+fn classify_keyword(uint64 start, uint64 len) -> uint32 {
+    // Check each keyword
+    if match_keyword(start, len, "fn", 2) != 0 { return TokenKind.KwFn }
+    if match_keyword(start, len, "return", 6) != 0 { return TokenKind.KwReturn }
+    if match_keyword(start, len, "if", 2) != 0 { return TokenKind.KwIf }
+    if match_keyword(start, len, "else", 4) != 0 { return TokenKind.KwElse }
+    if match_keyword(start, len, "while", 5) != 0 { return TokenKind.KwWhile }
+    if match_keyword(start, len, "for", 3) != 0 { return TokenKind.KwFor }
+    if match_keyword(start, len, "in", 2) != 0 { return TokenKind.KwIn }
+    if match_keyword(start, len, "break", 5) != 0 { return TokenKind.KwBreak }
+    if match_keyword(start, len, "continue", 8) != 0 { return TokenKind.KwContinue }
+    if match_keyword(start, len, "loop", 4) != 0 { return TokenKind.KwLoop }
+    if match_keyword(start, len, "const", 5) != 0 { return TokenKind.KwConst }
+    if match_keyword(start, len, "static", 6) != 0 { return TokenKind.KwStatic }
+    if match_keyword(start, len, "struct", 6) != 0 { return TokenKind.KwStruct }
+    if match_keyword(start, len, "enum", 4) != 0 { return TokenKind.KwEnum }
+    if match_keyword(start, len, "extern", 6) != 0 { return TokenKind.KwExtern }
+    if match_keyword(start, len, "import", 6) != 0 { return TokenKind.KwImport }
+    if match_keyword(start, len, "unsafe", 6) != 0 { return TokenKind.KwUnsafe }
+    if match_keyword(start, len, "true", 4) != 0 { return TokenKind.KwTrue }
+    if match_keyword(start, len, "false", 5) != 0 { return TokenKind.KwFalse }
+    // Type keywords
+    if match_keyword(start, len, "uint8", 5) != 0 { return TokenKind.KwUint8 }
+    if match_keyword(start, len, "uint16", 6) != 0 { return TokenKind.KwUint16 }
+    if match_keyword(start, len, "uint32", 6) != 0 { return TokenKind.KwUint32 }
+    if match_keyword(start, len, "uint64", 6) != 0 { return TokenKind.KwUint64 }
+    if match_keyword(start, len, "int8", 4) != 0 { return TokenKind.KwInt8 }
+    if match_keyword(start, len, "int16", 5) != 0 { return TokenKind.KwInt16 }
+    if match_keyword(start, len, "int32", 5) != 0 { return TokenKind.KwInt32 }
+    if match_keyword(start, len, "int64", 5) != 0 { return TokenKind.KwInt64 }
+    return TokenKind.Ident
+}
+
+fn lex_one_token() {
+    uint64 ch = peek()
+    uint64 start = pos
+    uint32 tok_line = line
+
+    // Identifier or keyword
+    if is_alpha(ch) != 0 {
+        while pos < src_len && is_alnum(peek()) != 0 {
+            advance()
+        }
+        uint64 len = pos - start
+        uint32 kind = classify_keyword(start, len)
+        emit_token(kind, start, len, tok_line)
+        return
+    }
+
+    // Integer literal (decimal or 0x hex)
+    if is_digit(ch) != 0 {
+        if ch == 48 && peek_at(1) == 120 {
+            // 0x hex literal
+            advance()
+            advance()
+            // Consume hex digits (avoid break-in-if: use condition in while)
+            uint64 hex_ok = 1
+            while pos < src_len && hex_ok != 0 {
+                uint64 c = peek()
+                if is_digit(c) != 0 || (c >= 97 && c <= 102) || (c >= 65 && c <= 70) {
+                    advance()
+                } else {
+                    hex_ok = 0
+                }
+            }
+        } else {
+            while pos < src_len && is_digit(peek()) != 0 {
+                advance()
+            }
+        }
+        emit_token(TokenKind.IntLit, start, pos - start, tok_line)
+        return
+    }
+
+    // String literal
+    if ch == 34 {
+        advance()
+        while pos < src_len && peek() != 34 {
+            if peek() == 92 { advance() }
+            advance()
+        }
+        if pos < src_len { advance() }
+        emit_token(TokenKind.StrLit, start, pos - start, tok_line)
+        return
+    }
+
+    // Char literal
+    if ch == 39 {
+        advance()
+        if peek() == 92 { advance() }
+        advance()
+        if pos < src_len && peek() == 39 { advance() }
+        emit_token(TokenKind.CharLit, start, pos - start, tok_line)
+        return
+    }
+
+    // Two-char operators (check before single-char)
+    uint64 next = peek_at(1)
+    advance()
+
+    if ch == 61 && next == 61 { advance(); emit_token(TokenKind.EqEq, start, 2, tok_line); return }
+    if ch == 33 && next == 61 { advance(); emit_token(TokenKind.BangEq, start, 2, tok_line); return }
+    if ch == 60 && next == 61 { advance(); emit_token(TokenKind.LtEq, start, 2, tok_line); return }
+    if ch == 62 && next == 61 { advance(); emit_token(TokenKind.GtEq, start, 2, tok_line); return }
+    if ch == 38 && next == 38 { advance(); emit_token(TokenKind.AmpAmp, start, 2, tok_line); return }
+    if ch == 124 && next == 124 { advance(); emit_token(TokenKind.PipePipe, start, 2, tok_line); return }
+    if ch == 60 && next == 60 { advance(); emit_token(TokenKind.LtLt, start, 2, tok_line); return }
+    if ch == 62 && next == 62 { advance(); emit_token(TokenKind.GtGt, start, 2, tok_line); return }
+    if ch == 45 && next == 62 { advance(); emit_token(TokenKind.Arrow, start, 2, tok_line); return }
+    if ch == 43 && next == 61 { advance(); emit_token(TokenKind.PlusEq, start, 2, tok_line); return }
+    if ch == 45 && next == 61 { advance(); emit_token(TokenKind.MinusEq, start, 2, tok_line); return }
+    if ch == 42 && next == 61 { advance(); emit_token(TokenKind.StarEq, start, 2, tok_line); return }
+    if ch == 47 && next == 61 { advance(); emit_token(TokenKind.SlashEq, start, 2, tok_line); return }
+    if ch == 37 && next == 61 { advance(); emit_token(TokenKind.PercentEq, start, 2, tok_line); return }
+    if ch == 38 && next == 61 { advance(); emit_token(TokenKind.AmpEq, start, 2, tok_line); return }
+    if ch == 124 && next == 61 { advance(); emit_token(TokenKind.PipeEq, start, 2, tok_line); return }
+    if ch == 94 && next == 61 { advance(); emit_token(TokenKind.CaretEq, start, 2, tok_line); return }
+
+    // Single-char tokens
+    if ch == 40 { emit_token(TokenKind.LParen, start, 1, tok_line); return }
+    if ch == 41 { emit_token(TokenKind.RParen, start, 1, tok_line); return }
+    if ch == 123 { emit_token(TokenKind.LBrace, start, 1, tok_line); return }
+    if ch == 125 { emit_token(TokenKind.RBrace, start, 1, tok_line); return }
+    if ch == 91 { emit_token(TokenKind.LBracket, start, 1, tok_line); return }
+    if ch == 93 { emit_token(TokenKind.RBracket, start, 1, tok_line); return }
+    if ch == 44 { emit_token(TokenKind.Comma, start, 1, tok_line); return }
+    if ch == 46 { emit_token(TokenKind.Dot, start, 1, tok_line); return }
+    if ch == 59 { emit_token(TokenKind.Semicolon, start, 1, tok_line); return }
+    if ch == 58 { emit_token(TokenKind.Colon, start, 1, tok_line); return }
+    if ch == 64 { emit_token(TokenKind.At, start, 1, tok_line); return }
+    if ch == 42 { emit_token(TokenKind.Star, start, 1, tok_line); return }
+    if ch == 43 { emit_token(TokenKind.Plus, start, 1, tok_line); return }
+    if ch == 45 { emit_token(TokenKind.Minus, start, 1, tok_line); return }
+    if ch == 47 { emit_token(TokenKind.Slash, start, 1, tok_line); return }
+    if ch == 37 { emit_token(TokenKind.Percent, start, 1, tok_line); return }
+    if ch == 61 { emit_token(TokenKind.Eq, start, 1, tok_line); return }
+    if ch == 60 { emit_token(TokenKind.Lt, start, 1, tok_line); return }
+    if ch == 62 { emit_token(TokenKind.Gt, start, 1, tok_line); return }
+    if ch == 38 { emit_token(TokenKind.Ampersand, start, 1, tok_line); return }
+    if ch == 124 { emit_token(TokenKind.Pipe, start, 1, tok_line); return }
+    if ch == 94 { emit_token(TokenKind.Caret, start, 1, tok_line); return }
+    if ch == 126 { emit_token(TokenKind.Tilde, start, 1, tok_line); return }
+    if ch == 33 { emit_token(TokenKind.Bang, start, 1, tok_line); return }
+    if ch == 63 { emit_token(TokenKind.Question, start, 1, tok_line); return }
+
+    // Unknown character
+    emit_token(TokenKind.Error, start, 1, tok_line)
+}

@@ -1,2 +1,0 @@
-@may_block
-fn worker() { }

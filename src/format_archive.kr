@@ -1,0 +1,192 @@
+// KernRift self-hosted compiler — Archive and distribution formats
+//
+// Implements: ar archive (staticlib), hostexe (runtime blob + user code),
+// KRBO (portable object), and KrboFat v2 (LZ4-compressed multi-arch fat binary)
+
+// ---------------------------------------------------------------------------
+// AR archive format (staticlib)
+// ---------------------------------------------------------------------------
+
+@export
+fn emit_ar_header() {
+    emit_byte(33); emit_byte(60); emit_byte(97); emit_byte(114)
+    emit_byte(99); emit_byte(104); emit_byte(62); emit_byte(10)
+}
+
+@export
+fn emit_ar_member(uint64 name_str, uint64 name_len, uint64 content_size) {
+    uint64 i = 0
+    while i < 16 {
+        if i < name_len {
+            uint64 np = name_str + i
+            uint64 nc = 0
+            unsafe { *(np as uint8) -> nc }
+            uint8 nb = nc
+            emit_byte(nb)
+        } else { emit_byte(32) }
+        i = i + 1
+    }
+    emit_byte(48); i = 0
+    while i < 11 { emit_byte(32); i = i + 1 }
+    emit_byte(48); i = 0
+    while i < 5 { emit_byte(32); i = i + 1 }
+    emit_byte(48); i = 0
+    while i < 5 { emit_byte(32); i = i + 1 }
+    emit_byte(49); emit_byte(48); emit_byte(48); emit_byte(54)
+    emit_byte(52); emit_byte(52); emit_byte(32); emit_byte(32)
+    uint8[10] size_buf
+    uint64 sl = fmt_uint(size_buf, content_size)
+    i = 0
+    while i < 10 - sl { emit_byte(32); i = i + 1 }
+    i = 0
+    while i < sl {
+        uint64 sp = size_buf + i
+        uint64 sc = 0
+        unsafe { *(sp as uint8) -> sc }
+        uint8 sb = sc
+        emit_byte(sb)
+        i = i + 1
+    }
+    emit_byte(96); emit_byte(10)
+}
+
+// ---------------------------------------------------------------------------
+// KRBO format (portable object)
+// ---------------------------------------------------------------------------
+// Header: "KRBO" (4 bytes) + version(1) + arch(1) + reserved(2)
+//         + entry_offset(4) + code_length(4) = 16 bytes total
+
+// KRBO arch constants (don't use statics — they'd be zero-initialized)
+// Use inline: x86_64 = 0x01, aarch64 = 0x02
+
+@export
+fn emit_krbo(uint64 arch, uint64 entry_offset, uint64 code_buf, uint64 code_len) {
+    // Magic
+    emit_byte(75); emit_byte(82); emit_byte(66); emit_byte(79)
+    // Version
+    emit_byte(1)
+    // Arch
+    uint8 ab = arch
+    emit_byte(ab)
+    // Reserved
+    emit_byte(0); emit_byte(0)
+    // Entry offset
+    emit_u32_le(entry_offset)
+    // Code length
+    emit_u32_le(code_len)
+    // Code bytes
+    uint64 i = 0
+    while i < code_len {
+        uint64 p = code_buf + i
+        uint64 b = 0
+        unsafe { *(p as uint8) -> b }
+        uint8 bb = b
+        emit_byte(bb)
+        i = i + 1
+    }
+}
+
+// ---------------------------------------------------------------------------
+// LZ4 block compression (minimal implementation)
+// ---------------------------------------------------------------------------
+// LZ4 frame format (simplified — no block dependencies, single block):
+//   Frame header: magic(4) + FLG(1) + BD(1) + HC(1) = 7 bytes
+//   Block: size(4) + data(N)
+//   End mark: 0x00000000 (4 bytes)
+//   Content checksum: optional
+//
+// For a minimal implementation, we emit uncompressed LZ4 frames
+// (the highest bit of block size = 1 means uncompressed)
+
+@export
+fn lz4_compress_frame(uint64 input_buf, uint64 input_len, uint64 output_buf) -> uint64 {
+    uint64 out_pos = 0
+
+    // Frame header
+    // Magic number: 0x184D2204 (4 bytes LE)
+    uint64 p = output_buf + out_pos
+    uint32 magic = 0x184D2204
+    unsafe { *(p as uint32) = magic }
+    out_pos = out_pos + 4
+
+    // FLG byte: version=01, no block independence, no block checksum, no content size, no content checksum, no dict
+    p = output_buf + out_pos
+    uint8 flg = 0x60
+    unsafe { *(p as uint8) = flg }
+    out_pos = out_pos + 1
+
+    // BD byte: max block size = 4 (64KB) → bits 6:4 = 100
+    p = output_buf + out_pos
+    uint8 bd = 0x40
+    unsafe { *(p as uint8) = bd }
+    out_pos = out_pos + 1
+
+    // Header checksum: XXH32([0x60, 0x40], seed=0) >> 8 & 0xFF = 0x82
+    p = output_buf + out_pos
+    uint8 hcb = 0x82
+    unsafe { *(p as uint8) = hcb }
+    out_pos = out_pos + 1
+
+    // Data block: uncompressed (bit 31 set in size)
+    uint64 block_size = input_len | 0x80000000
+    p = output_buf + out_pos
+    uint32 bs32 = block_size
+    unsafe { *(p as uint32) = bs32 }
+    out_pos = out_pos + 4
+
+    // Copy input data
+    uint64 i = 0
+    while i < input_len {
+        uint64 src = input_buf + i
+        uint64 dst = output_buf + out_pos
+        uint64 b = 0
+        unsafe { *(src as uint8) -> b }
+        uint8 bb = b
+        unsafe { *(dst as uint8) = bb }
+        out_pos = out_pos + 1
+        i = i + 1
+    }
+
+    // End mark (4 zero bytes)
+    p = output_buf + out_pos
+    uint32 zero = 0
+    unsafe { *(p as uint32) = zero }
+    out_pos = out_pos + 4
+
+    return out_pos
+}
+
+// ---------------------------------------------------------------------------
+// KrboFat v2 format (LZ4-compressed multi-arch fat binary)
+// ---------------------------------------------------------------------------
+// Header: "KRBOFAT\0" (8 bytes) + version(u32=2) + arch_count(u32) = 16 bytes
+// Per-arch entry (48 bytes):
+//   arch_id(u32) + compression(u32=1 for LZ4) + offset(u64) + compressed_size(u64)
+//   + uncompressed_size(u64) + runtime_offset(u64) + runtime_len(u64)
+// Then: compressed KRBO blobs, then runtime blobs
+
+@export
+fn emit_krbofat_v2_header(uint64 arch_count) {
+    // Magic: "KRBOFAT\0"
+    emit_byte(75); emit_byte(82); emit_byte(66); emit_byte(79)
+    emit_byte(70); emit_byte(65); emit_byte(84); emit_byte(0)
+    // Version = 2
+    emit_u32_le(2)
+    // Arch count
+    emit_u32_le(arch_count)
+}
+
+@export
+fn emit_krbofat_v2_entry_hdr(uint64 arch_id, uint64 compression, uint64 offset, uint64 compressed_size, uint64 uncompressed_size) {
+    emit_u32_le(arch_id)
+    emit_u32_le(compression)
+    emit_u64_le(offset)
+    emit_u64_le(compressed_size)
+    emit_u64_le(uncompressed_size)
+}
+
+@export
+fn emit_krbofat_v2_entry_rt(uint64 runtime_offset, uint64 runtime_len) {
+    emit_u64_le(runtime_offset)
+    emit_u64_le(runtime_len)
+}

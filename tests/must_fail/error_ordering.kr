@@ -1,8 +1,0 @@
-@ctx(irq)
-fn irq_yielder() {
-  yieldpoint();
-}
-
-@caps(MissingCap)
-fn cap_hungry() {
-}

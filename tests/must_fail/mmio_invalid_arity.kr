@@ -1,3 +1,0 @@
-fn entry() {
-  mmio_write<u32>(mmio_base);
-}

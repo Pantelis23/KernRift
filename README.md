@@ -1,83 +1,112 @@
 # KernRift
 
-A kernel-first systems language that turns OS invariants into compile-time errors — not boot-time crashes.
-
-Generic systems languages don't model kernel reality. KernRift bakes interrupt contexts, lock ordering, MMIO semantics, and capability requirements directly into the type system. Invalid kernel behaviour fails at compile time.
+A self-hosted systems language compiler for kernel-first development. KernRift compiles itself — no Rust, no C, no external toolchain. It produces native executables for x86_64 and AArch64, with LZ4-compressed fat binaries as the default output.
 
 ## Features
 
-- **Context safety** — functions are annotated with allowed execution contexts (`boot`, `thread`, `irq`, `nmi`); invalid call edges are rejected
-- **Lock ordering** — deadlock cycles are detected and rejected at compile time
-- **MMIO correctness** — hardware register access is typed and volatile-safe
-- **Capability gating** — privileged operations require explicit module capability declarations
-- **Effect tracking** — allocation, blocking, and yield in disallowed paths are compile errors
-- **Signed artifacts** — contracts can be hashed and signed with Ed25519 for supply-chain verification
-- **Self-contained toolchain** — produces native ELF, PE, and Mach-O executables without `cc`, `ld`, or `ar`
-- **Port I/O intrinsics** — `inb`/`outb`/`inw`/`outw`/`ind`/`outd` built into the language for x86_64 hardware access
-- **Built-in host functions** — `write`, `alloc`, `dealloc`, `getenv`, `exec`, `exit`, `str_copy`, `str_cat`, `str_len` available without `extern fn` declarations
-- **Slice indexing** — `buf[i]` syntax for array element read and write
-
-## Install
-
-| Platform | One-liner |
-|----------|-----------|
-| Linux | `bash <(curl -sSf https://raw.githubusercontent.com/Pantelis23/KernRift/main/scripts/install-linux.sh)` |
-| macOS | `bash <(curl -sSf https://raw.githubusercontent.com/Pantelis23/KernRift/main/scripts/install-macos.sh)` |
-| Windows | `cargo install --git https://github.com/Pantelis23/KernRift kernriftc --locked; cargo install --git https://github.com/Pantelis23/KernRift kernrift --locked` (after [installing rustup](docs/getting-started.md#install-rustup-on-windows)) |
-| All (prebuilt) | See [Releases](../../releases) |
-
-See [Getting Started](docs/getting-started.md) for manual install and prebuilt binaries.
+- **Self-hosting** — the compiler compiles itself to a fixed point
+- **Dual architecture** — x86_64 and AArch64 from a single source
+- **Fat binaries** — default output is KrboFat (both architectures, LZ4-compressed)
+- **Zero dependencies** — static executables, no libc, no linker
+- **Kernel safety** — context checks, effect tracking, lock graphs, capabilities
+- **Living compiler** — pattern detection, fitness scoring, auto-fix suggestions
+- **Cross-compilation** — compile for any target from any host
 
 ## Quickstart
 
-```sh
-# Write a kernel function
-cat > hello.kr << 'EOF'
-@ctx(thread, boot)
-fn entry() {
-    print("Hello, World!\n")
+```bash
+# Install
+bash install.sh
+
+# Compile (default: fat binary with x86_64 + ARM64)
+krc hello.kr -o hello
+
+# Single architecture
+krc --arch=x86_64 hello.kr -o hello
+krc --arch=arm64 hello.kr -o hello
+
+# Safety analysis
+krc check module.kr
+
+# Living compiler
+krc lc program.kr
+```
+
+## Install
+
+**Linux / macOS:**
+```bash
+bash install.sh
+```
+
+**From source** (requires [bootstrap compiler](https://github.com/Pantelis23/KernRift-bootstrap)):
+```bash
+cargo install --git https://github.com/Pantelis23/KernRift-bootstrap kernriftc
+make build && make install
+```
+
+**Windows:**
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1
+```
+
+## Language
+
+```kr
+struct Point {
+    uint64 x
+    uint64 y
 }
-EOF
 
-# Compile — produces a fat binary (x86_64 + ARM64 slices)
-kernriftc hello.kr
-# → hello.krbo  (KRBOFAT fat binary, LZ4-compressed)
+fn fib(uint64 n) -> uint64 {
+    if n <= 1 { return n }
+    return fib(n - 1) + fib(n - 2)
+}
 
-# Run — kernrift detects the host architecture and executes the right slice
-kernrift hello.krbo
+static uint64 counter = 0
 
-# Or just analyse (no binary output)
-kernriftc check hello.kr
+fn main() {
+    Point p
+    p.x = fib(10)
+    p.y = 42
+    exit(p.x + p.y)  // 55 + 42 = 97
+}
 ```
 
-## Documentation
+Types: `uint8/16/32/64`, `int8/16/32/64`, structs, enums, arrays. Control: `if/else`, `while`, `for`, `break/continue`. Functions up to 8 args. Unsafe pointer access for kernel memory operations.
 
-| Doc | Description |
-|-----|-------------|
-| [Getting Started](docs/getting-started.md) | Install, first program, full command reference |
-| [Language Reference](docs/LANGUAGE.md) | Complete syntax and type system |
-| [Architecture](docs/ARCHITECTURE.md) | Compiler pipeline and design decisions |
-| [Contributing](CONTRIBUTING.md) | Build, test, crate map, PR checklist |
-| [Changelog](CHANGELOG.md) | Release history |
+## Architecture
 
-## Testing
+6,500+ lines, 12 source files, 201 functions. Self-compiles to ~182 KB.
 
-Run the default repo-owned local-safe validation path on 32 GB class machines:
+| File | Purpose |
+|------|---------|
+| `lexer.kr` | Tokenizer (90+ kinds) |
+| `parser.kr` | Recursive descent + Pratt precedence |
+| `codegen.kr` | x86_64 code generation |
+| `codegen_aarch64.kr` | AArch64 code generation |
+| `analysis.kr` | Safety passes |
+| `living.kr` | Pattern detection + fitness |
+| `format_*.kr` | ELF, Mach-O, PE, AR, KRBO, KrboFat |
 
-```bash
-bash tools/validation/local_safe.sh
+## Bootstrap
+
+```
+kernriftc (bootstrap) → krc → krc2 → krc3 → krc4
+                               krc3 == krc4 ✓ (fixed point)
 ```
 
-For the heavier local `hir` coverage and per-crate serialized test steps closer to the CI-style path:
+The [bootstrap compiler](https://github.com/Pantelis23/KernRift-bootstrap) is only needed once.
 
-```bash
-bash tools/validation/full_serial.sh
-```
+## Platforms
 
-## Status
-
-KR0–KR3 (facts-only pipeline + artifact emission, driver subset, kernel module, real OS integration) are complete. The compiler is now **fully self-contained** — it produces native executables for Linux, macOS, and Windows (x86_64 + AArch64) without any external compiler, assembler, linker, or archiver. See [KR0_KR3_PLAN.md](docs/KR0_KR3_PLAN.md) for the roadmap.
+| Platform | Compile | Run | Self-host |
+|----------|---------|-----|-----------|
+| Linux x86_64 | ✅ | ✅ | ✅ |
+| Linux ARM64 | ✅ | ✅ | ✅ |
+| macOS | ✅ headers | — | — |
+| Windows | ✅ headers+IAT | — | — |
 
 ## License
 
-MIT © 2025 Pantelis Christou — see [LICENSE](LICENSE) for the full text.
+MIT — see [LICENSE](LICENSE).

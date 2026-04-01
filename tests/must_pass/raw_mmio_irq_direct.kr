@@ -1,6 +1,0 @@
-@module_caps(MmioRaw)
-
-@ctx(irq)
-fn entry() {
-    raw_write<uint32>(0x1014, x)
-}

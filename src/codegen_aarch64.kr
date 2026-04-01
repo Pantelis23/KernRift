@@ -1,0 +1,1391 @@
+// KernRift self-hosted compiler — AArch64 Code Generator
+//
+// AArch64 instruction encoding: all instructions are 4 bytes, little-endian.
+// Calling convention (AAPCS64):
+//   x0-x7: argument/return registers
+//   x8: indirect result / syscall number (Linux)
+//   x9-x15: temporary (caller-saved)
+//   x16-x17: intra-procedure-call (IP0/IP1)
+//   x18: platform register
+//   x19-x28: callee-saved
+//   x29: frame pointer (FP)
+//   x30: link register (LR)
+//   sp: stack pointer
+//
+// Linux syscall: x8=nr, x0-x5=args, svc #0
+
+// ---------------------------------------------------------------------------
+// AArch64 instruction emitters
+// ---------------------------------------------------------------------------
+
+// Emit a 4-byte AArch64 instruction (little-endian)
+fn emit_a64(uint64 insn) {
+    emit_byte(insn & 0xFF)
+    emit_byte((insn >> 8) & 0xFF)
+    emit_byte((insn >> 16) & 0xFF)
+    emit_byte((insn >> 24) & 0xFF)
+}
+
+// MOV Xd, #imm16 (MOVZ with shift=0)
+// Encoding: 1_10_100101_00_imm16_Rd
+fn emit_a64_movz(uint64 rd, uint64 imm16) {
+    uint64 insn = 0xD2800000 | (imm16 << 5) | rd
+    emit_a64(insn)
+}
+
+// MOVK Xd, #imm16, LSL #shift (shift = 0,16,32,48)
+// Encoding: 1_11_100101_hw_imm16_Rd
+fn emit_a64_movk(uint64 rd, uint64 imm16, uint64 shift) {
+    uint64 hw = shift / 16
+    uint64 insn = 0xF2800000 | (hw << 21) | (imm16 << 5) | rd
+    emit_a64(insn)
+}
+
+// Load a full 64-bit immediate into Xd (up to 4 instructions)
+fn emit_a64_mov_imm(uint64 rd, uint64 val) {
+    uint64 lo16 = val & 0xFFFF
+    emit_a64_movz(rd, lo16)
+    uint64 hi16 = (val >> 16) & 0xFFFF
+    if hi16 != 0 {
+        emit_a64_movk(rd, hi16, 16)
+    }
+    uint64 hi32 = (val >> 32) & 0xFFFF
+    if hi32 != 0 {
+        emit_a64_movk(rd, hi32, 32)
+    }
+    uint64 hi48 = (val >> 48) & 0xFFFF
+    if hi48 != 0 {
+        emit_a64_movk(rd, hi48, 48)
+    }
+}
+
+// ADD Xd, Xn, Xm
+fn emit_a64_add(uint64 rd, uint64 rn, uint64 rm) {
+    uint64 insn = 0x8B000000 | (rm << 16) | (rn << 5) | rd
+    emit_a64(insn)
+}
+
+// SUB Xd, Xn, Xm
+fn emit_a64_sub(uint64 rd, uint64 rn, uint64 rm) {
+    uint64 insn = 0xCB000000 | (rm << 16) | (rn << 5) | rd
+    emit_a64(insn)
+}
+
+// MUL Xd, Xn, Xm (alias for MADD Xd, Xn, Xm, XZR)
+fn emit_a64_mul(uint64 rd, uint64 rn, uint64 rm) {
+    uint64 insn = 0x9B007C00 | (rm << 16) | (rn << 5) | rd
+    emit_a64(insn)
+}
+
+// AND Xd, Xn, Xm
+fn emit_a64_and(uint64 rd, uint64 rn, uint64 rm) {
+    uint64 insn = 0x8A000000 | (rm << 16) | (rn << 5) | rd
+    emit_a64(insn)
+}
+
+// ORR Xd, Xn, Xm
+fn emit_a64_orr(uint64 rd, uint64 rn, uint64 rm) {
+    uint64 insn = 0xAA000000 | (rm << 16) | (rn << 5) | rd
+    emit_a64(insn)
+}
+
+// MOV Xd, Xn (alias for ORR Xd, XZR, Xn)
+fn emit_a64_mov(uint64 rd, uint64 rn) {
+    emit_a64_orr(rd, 31, rn)
+}
+
+// STR Xt, [Xn, #imm12*8] (store 64-bit, unsigned offset)
+fn emit_a64_str(uint64 rt, uint64 rn, uint64 offset) {
+    uint64 imm12 = offset / 8
+    uint64 insn = 0xF9000000 | (imm12 << 10) | (rn << 5) | rt
+    emit_a64(insn)
+}
+
+// LDR Xt, [Xn, #imm12*8] (load 64-bit, unsigned offset)
+fn emit_a64_ldr(uint64 rt, uint64 rn, uint64 offset) {
+    uint64 imm12 = offset / 8
+    uint64 insn = 0xF9400000 | (imm12 << 10) | (rn << 5) | rt
+    emit_a64(insn)
+}
+
+// STRB Wt, [Xn, #imm12] (store byte, unsigned offset)
+fn emit_a64_strb(uint64 rt, uint64 rn, uint64 offset) {
+    uint64 insn = 0x39000000 | (offset << 10) | (rn << 5) | rt
+    emit_a64(insn)
+}
+
+// LDRB Wt, [Xn, #imm12] (load byte, unsigned offset)
+fn emit_a64_ldrb(uint64 rt, uint64 rn, uint64 offset) {
+    uint64 insn = 0x39400000 | (offset << 10) | (rn << 5) | rt
+    emit_a64(insn)
+}
+
+// LDR Wt, [Xn, #imm12*4] (load 32-bit, unsigned offset)
+fn emit_a64_ldr32(uint64 rt, uint64 rn, uint64 offset) {
+    uint64 imm12 = offset / 4
+    uint64 insn = 0xB9400000 | (imm12 << 10) | (rn << 5) | rt
+    emit_a64(insn)
+}
+
+// STR Wt, [Xn, #imm12*4] (store 32-bit, unsigned offset)
+fn emit_a64_str32(uint64 rt, uint64 rn, uint64 offset) {
+    uint64 imm12 = offset / 4
+    uint64 insn = 0xB9000000 | (imm12 << 10) | (rn << 5) | rt
+    emit_a64(insn)
+}
+
+// STP X29, X30, [SP, #imm7*8]! (pre-index, for prologue)
+fn emit_a64_stp_pre(uint64 rt1, uint64 rt2, uint64 rn, uint64 offset) {
+    uint64 imm7 = (offset / 8) & 0x7F
+    uint64 insn = 0xA9800000 | (imm7 << 15) | (rt2 << 10) | (rn << 5) | rt1
+    emit_a64(insn)
+}
+
+// LDP X29, X30, [SP], #imm7*8 (post-index, for epilogue)
+fn emit_a64_ldp_post(uint64 rt1, uint64 rt2, uint64 rn, uint64 offset) {
+    uint64 imm7 = (offset / 8) & 0x7F
+    uint64 insn = 0xA8C00000 | (imm7 << 15) | (rt2 << 10) | (rn << 5) | rt1
+    emit_a64(insn)
+}
+
+// SUB SP, SP, #imm12
+fn emit_a64_sub_sp_imm(uint64 imm) {
+    uint64 insn = 0xD1000000 | (imm << 10) | (31 << 5) | 31
+    emit_a64(insn)
+}
+
+// ADD SP, SP, #imm12
+fn emit_a64_add_sp_imm(uint64 imm) {
+    uint64 insn = 0x91000000 | (imm << 10) | (31 << 5) | 31
+    emit_a64(insn)
+}
+
+// BL offset (branch with link, rel26*4)
+fn emit_a64_bl(uint64 offset) {
+    uint64 rel26 = (offset / 4) & 0x3FFFFFF
+    uint64 insn = 0x94000000 | rel26
+    emit_a64(insn)
+}
+
+// B offset (unconditional branch, rel26*4)
+fn emit_a64_b(uint64 offset) {
+    uint64 rel26 = (offset / 4) & 0x3FFFFFF
+    uint64 insn = 0x14000000 | rel26
+    emit_a64(insn)
+}
+
+// B.cond offset (conditional branch, rel19*4)
+fn emit_a64_bcond(uint64 cond, uint64 offset) {
+    uint64 rel19 = (offset / 4) & 0x7FFFF
+    uint64 insn = 0x54000000 | (rel19 << 5) | cond
+    emit_a64(insn)
+}
+
+// CBZ Xt, offset (compare and branch if zero)
+fn emit_a64_cbz(uint64 rt, uint64 offset) {
+    uint64 rel19 = (offset / 4) & 0x7FFFF
+    uint64 insn = 0xB4000000 | (rel19 << 5) | rt
+    emit_a64(insn)
+}
+
+// CBNZ Xt, offset (compare and branch if non-zero)
+fn emit_a64_cbnz(uint64 rt, uint64 offset) {
+    uint64 rel19 = (offset / 4) & 0x7FFFF
+    uint64 insn = 0xB5000000 | (rel19 << 5) | rt
+    emit_a64(insn)
+}
+
+// CMP Xn, Xm (alias for SUBS XZR, Xn, Xm)
+fn emit_a64_cmp(uint64 rn, uint64 rm) {
+    uint64 insn = 0xEB000000 | (rm << 16) | (rn << 5) | 31
+    emit_a64(insn)
+}
+
+// CSET Xd, cond (alias for CSINC Xd, XZR, XZR, invert(cond))
+fn emit_a64_cset(uint64 rd, uint64 cond) {
+    uint64 inv_cond = cond ^ 1
+    uint64 insn = 0x9A9F07E0 | (inv_cond << 12) | rd
+    emit_a64(insn)
+}
+
+// SVC #0 (supervisor call, Linux syscall)
+fn emit_a64_svc() {
+    emit_a64(0xD4000001)
+}
+
+// RET (return via X30)
+fn emit_a64_ret() {
+    emit_a64(0xD65F03C0)
+}
+
+// NEG Xd, Xm (alias for SUB Xd, XZR, Xm)
+fn emit_a64_neg(uint64 rd, uint64 rm) {
+    emit_a64_sub(rd, 31, rm)
+}
+
+// MVN Xd, Xm (alias for ORN Xd, XZR, Xm)
+fn emit_a64_mvn(uint64 rd, uint64 rm) {
+    uint64 insn = 0xAA200000 | (rm << 16) | (31 << 5) | rd
+    emit_a64(insn)
+}
+
+// LSL Xd, Xn, Xm (alias for LSLV)
+fn emit_a64_lsl(uint64 rd, uint64 rn, uint64 rm) {
+    uint64 insn = 0x9AC02000 | (rm << 16) | (rn << 5) | rd
+    emit_a64(insn)
+}
+
+// LSR Xd, Xn, Xm (alias for LSRV)
+fn emit_a64_lsr(uint64 rd, uint64 rn, uint64 rm) {
+    uint64 insn = 0x9AC02400 | (rm << 16) | (rn << 5) | rd
+    emit_a64(insn)
+}
+
+// UDIV Xd, Xn, Xm
+fn emit_a64_udiv(uint64 rd, uint64 rn, uint64 rm) {
+    uint64 insn = 0x9AC00800 | (rm << 16) | (rn << 5) | rd
+    emit_a64(insn)
+}
+
+// MSUB Xd, Xn, Xm, Xa (Xd = Xa - Xn*Xm, for modulo)
+fn emit_a64_msub(uint64 rd, uint64 rn, uint64 rm, uint64 ra) {
+    uint64 insn = 0x9B008000 | (rm << 16) | (ra << 10) | (rn << 5) | rd
+    emit_a64(insn)
+}
+
+// EOR Xd, Xn, Xm (XOR)
+fn emit_a64_eor(uint64 rd, uint64 rn, uint64 rm) {
+    uint64 insn = 0xCA000000 | (rm << 16) | (rn << 5) | rd
+    emit_a64(insn)
+}
+
+// ADRP Xd, label (page-relative address)
+fn emit_a64_adrp(uint64 rd, uint64 imm_hi) {
+    uint64 insn = 0x90000000 | ((imm_hi & 3) << 29) | ((imm_hi >> 2) << 5) | rd
+    emit_a64(insn)
+}
+
+// ADD Xd, Xn, #imm12
+fn emit_a64_add_imm(uint64 rd, uint64 rn, uint64 imm12) {
+    uint64 insn = 0x91000000 | (imm12 << 10) | (rn << 5) | rd
+    emit_a64(insn)
+}
+
+// NOP
+fn emit_a64_nop() {
+    emit_a64(0xD503201F)
+}
+
+// ---------------------------------------------------------------------------
+// AArch64 variable access helpers
+// ---------------------------------------------------------------------------
+// Register allocation:
+//   x0: expression result / return value / arg 0
+//   x1-x7: args 1-7
+//   x9: temp for binop rhs
+//   x10: temp for address computation
+//   x19: callee-saved temp (like rbx on x86_64)
+//   x29: frame pointer (FP)
+//   x30: link register (LR)
+//   sp: stack pointer
+//
+// Stack frame layout:
+//   [sp + 0]          saved x29 (FP)
+//   [sp + 8]          saved x30 (LR)
+//   [sp + 16]         saved x19
+//   [sp + 24]         local variable 0
+//   [sp + 32]         local variable 1
+//   ...
+// Frame overhead: 24 bytes (FP + LR + x19), then 8 bytes per variable
+
+// a64_var_base: offset where variables start on the AArch64 stack frame
+// After saved registers: x29(8) + x30(8) + x19(8) + x20(8) = 32 bytes
+// Initialized in codegen_init
+static uint64 a64_var_base = 0
+
+// Store x0 to variable slot on stack
+fn emit_a64_store_x0(uint64 var_offset) {
+    emit_a64_str(0, 31, a64_var_base + var_offset)
+}
+
+// Load variable from stack into x0
+fn emit_a64_load_x0(uint64 var_offset) {
+    emit_a64_ldr(0, 31, a64_var_base + var_offset)
+}
+
+// ARM64 static access: emit MOVZ/MOVK to load address into x10, then LDR/STR
+fn emit_a64_static_load(uint64 data_offset) {
+    // Record fixup for patching MOVZ/MOVK
+    uint64 fentry = static_fixups + static_fixup_count * 8
+    uint32 cp = out_len
+    unsafe { *(fentry as uint32) = cp }
+    uint64 fe4 = fentry + 4
+    uint32 dp = data_offset
+    unsafe { *(fe4 as uint32) = dp }
+    static_fixup_count = static_fixup_count + 1
+    // Placeholder: movz x10, #0; movk x10, #0, lsl #16
+    emit_a64_movz(10, 0)
+    emit_a64_movk(10, 0, 16)
+    // ldr x0, [x10]
+    emit_a64_ldr(0, 10, 0)
+}
+
+fn emit_a64_static_store(uint64 data_offset) {
+    // Save x0 to temp register first
+    emit_a64_mov(9, 0)
+    uint64 fentry = static_fixups + static_fixup_count * 8
+    uint32 cp = out_len
+    unsafe { *(fentry as uint32) = cp }
+    uint64 fe4 = fentry + 4
+    uint32 dp = data_offset
+    unsafe { *(fe4 as uint32) = dp }
+    static_fixup_count = static_fixup_count + 1
+    // Placeholder: movz x10, #0; movk x10, #0, lsl #16
+    emit_a64_movz(10, 0)
+    emit_a64_movk(10, 0, 16)
+    // str x9, [x10]
+    emit_a64_str(9, 10, 0)
+}
+
+// ---------------------------------------------------------------------------
+// AArch64 expression codegen — result in x0
+// ---------------------------------------------------------------------------
+
+fn gen_expr_a64(uint64 node) {
+    uint32 kind = ast_kind(node)
+
+    // Unary operator
+    if kind == 34 {
+        uint32 operand_idx = ast_child(node)
+        uint64 wop = operand_idx
+        gen_expr_a64(wop)
+        uint32 op_tok = ast_data1(node)
+        uint64 wot = op_tok
+        uint64 p = cg_tokens + wot * 16
+        uint32 op_kind = 0
+        unsafe { *(p as uint32) -> op_kind }
+        uint64 wok = op_kind
+        if wok == 27 {
+            // ! logical NOT: cmp x0, #0; cset x0, eq
+            emit_a64_cmp(0, 31)
+            emit_a64_cset(0, 0)
+        } else if wok == 31 {
+            // - negate: neg x0, x0
+            emit_a64_neg(0, 0)
+        } else if wok == 26 {
+            // ~ bitwise NOT: mvn x0, x0
+            emit_a64_mvn(0, 0)
+        }
+        return
+    }
+
+    // Integer literal
+    if kind == 30 {
+        uint32 tok = ast_data1(node)
+        uint64 val = parse_int_token(tok)
+        emit_a64_mov_imm(0, val)
+        return
+    }
+
+    // String literal
+    if kind == 31 {
+        uint32 tok = ast_data1(node)
+        uint64 wtok = tok
+        uint64 tstart = tok_text_start(wtok)
+        uint64 tlen = tok_text_len(wtok)
+        uint64 str_offset = str_len
+        uint64 si = 1
+        while si < tlen - 1 {
+            uint64 ch = tok_source_byte(wtok, si)
+            if ch == 92 {
+                si = si + 1
+                uint64 esc = tok_source_byte(wtok, si)
+                if esc == 110 { ch = 10 }
+                else if esc == 116 { ch = 9 }
+                else if esc == 114 { ch = 13 }
+                else if esc == 48 { ch = 0 }
+                else if esc == 92 { ch = 92 }
+                else if esc == 34 { ch = 34 }
+                else { ch = esc }
+            }
+            uint64 sp = str_buf + str_len
+            uint8 cb = ch
+            unsafe { *(sp as uint8) = cb }
+            str_len = str_len + 1
+            si = si + 1
+        }
+        uint64 sp = str_buf + str_len
+        uint8 zero = 0
+        unsafe { *(sp as uint8) = zero }
+        str_len = str_len + 1
+        // ADRP + ADD to load string address (placeholder, patched later)
+        // For now, use a simpler approach: store offset in str_fixups
+        // and emit a 2-instruction sequence (8 bytes)
+        uint64 fentry = str_fixups + str_fixup_count * 8
+        uint32 cp = out_len
+        unsafe { *(fentry as uint32) = cp }
+        uint64 fe4 = fentry + 4
+        uint32 so = str_offset
+        unsafe { *(fe4 as uint32) = so }
+        str_fixup_count = str_fixup_count + 1
+        // Placeholder: movz x0, #0; movk x0, #0, lsl #16 (will be patched)
+        emit_a64_movz(0, 0)
+        emit_a64_movk(0, 0, 16)
+        return
+    }
+
+    // Field access (enum value or struct field)
+    if kind == 36 {
+        uint32 obj_tok = ast_data1(node)
+        uint32 field_tok = ast_data2(node)
+        uint64 si = struct_var_lookup(obj_tok)
+        if si != 0xFFFFFFFF {
+            uint64 var_off = var_lookup(obj_tok)
+            if var_off == 0xFFFFFFFF { var_off = 0 }
+            uint64 foff = struct_field_offset(si, field_tok)
+            uint64 fsz = struct_field_size(si, field_tok)
+            emit_a64_load_x0(var_off)
+            if foff != 0 {
+                emit_a64_add_imm(0, 0, foff)
+            }
+            if fsz == 1 {
+                emit_a64_ldrb(0, 0, 0)
+            } else if fsz == 4 {
+                emit_a64_ldr32(0, 0, 0)
+            } else {
+                emit_a64_ldr(0, 0, 0)
+            }
+            return
+        }
+        uint64 val = enum_lookup(obj_tok, field_tok)
+        emit_a64_mov_imm(0, val)
+        return
+    }
+
+    // Identifier
+    if kind == 32 {
+        uint32 tok = ast_data1(node)
+        uint64 offset = var_lookup(tok)
+        if offset != 0xFFFFFFFF {
+            emit_a64_load_x0(offset)
+        } else {
+            uint64 soff = static_lookup(tok)
+            if soff != 0xFFFFFFFF {
+                emit_a64_static_load(soff)
+            }
+        }
+        return
+    }
+
+    // Array indexing
+    if kind == 37 {
+        uint32 arr_tok = ast_data1(node)
+        uint64 arr_offset = var_lookup(arr_tok)
+        if arr_offset == 0xFFFFFFFF { arr_offset = 0 }
+        uint32 idx_child = ast_child(node)
+        uint64 wi = idx_child
+        gen_expr_a64(wi)
+        // x0 = index. Load arr base into x10
+        emit_a64_mov(10, 0)
+        emit_a64_load_x0(arr_offset)
+        // x0 = base, x10 = index. ldrb x0, [x0, x10]
+        emit_a64_add(0, 0, 10)
+        emit_a64_ldrb(0, 0, 0)
+        return
+    }
+
+    // Binary operation
+    if kind == 33 {
+        uint32 lhs_idx = ast_child(node)
+        uint64 wlhs = lhs_idx
+        gen_expr_a64(wlhs)
+        // Save lhs to temp slot
+        uint64 binop_temp = var_count * 8
+        var_count = var_count + 1
+        var_frame_size = var_count * 8
+        uint64 brem = var_frame_size & 15
+        if brem != 0 { var_frame_size = var_frame_size + 16 - brem }
+        emit_a64_store_x0(binop_temp)
+
+        uint32 rhs_idx = ast_data2(node)
+        uint64 wrhs = rhs_idx
+        gen_expr_a64(wrhs)
+        // x0 = rhs. Load lhs into x9
+        emit_a64_mov(9, 0)
+        emit_a64_load_x0(binop_temp)
+        // x0 = lhs, x9 = rhs
+
+        uint32 op_tok = ast_data1(node)
+        uint64 wop = op_tok
+        uint64 p = cg_tokens + wop * 16
+        uint32 op_kind = 0
+        unsafe { *(p as uint32) -> op_kind }
+
+        if op_kind == 30 || op_kind == 45 { emit_a64_add(0, 0, 9) }
+        else if op_kind == 31 || op_kind == 46 { emit_a64_sub(0, 0, 9) }
+        else if op_kind == 22 || op_kind == 47 { emit_a64_mul(0, 0, 9) }
+        else if op_kind == 32 { emit_a64_udiv(0, 0, 9) }
+        else if op_kind == 33 {
+            // modulo: x0 = x0 - (x0/x9)*x9
+            emit_a64_udiv(10, 0, 9)
+            emit_a64_msub(0, 10, 9, 0)
+        }
+        else if op_kind == 23 || op_kind == 50 { emit_a64_and(0, 0, 9) }
+        else if op_kind == 24 || op_kind == 51 { emit_a64_orr(0, 0, 9) }
+        else if op_kind == 25 || op_kind == 52 { emit_a64_eor(0, 0, 9) }
+        else if op_kind == 43 { emit_a64_lsl(0, 0, 9) }
+        else if op_kind == 44 { emit_a64_lsr(0, 0, 9) }
+        return
+    }
+
+    // Comparison
+    if kind == 38 {
+        uint32 lhs_idx = ast_child(node)
+        uint64 wlhs = lhs_idx
+        gen_expr_a64(wlhs)
+        uint64 cmp_temp = var_count * 8
+        var_count = var_count + 1
+        var_frame_size = var_count * 8
+        uint64 crem = var_frame_size & 15
+        if crem != 0 { var_frame_size = var_frame_size + 16 - crem }
+        emit_a64_store_x0(cmp_temp)
+
+        uint32 rhs_idx = ast_data2(node)
+        uint64 wrhs = rhs_idx
+        gen_expr_a64(wrhs)
+        emit_a64_mov(9, 0)
+        emit_a64_load_x0(cmp_temp)
+        emit_a64_cmp(0, 9)
+
+        uint32 op_tok = ast_data1(node)
+        uint64 wop = op_tok
+        uint64 p = cg_tokens + wop * 16
+        uint32 op_kind = 0
+        unsafe { *(p as uint32) -> op_kind }
+
+        // Map comparison op to AArch64 condition code
+        // EQ=0, NE=1, LT=11, LE=13, GT=12, GE=10
+        if op_kind == 35 { emit_a64_cset(0, 0) }       // == → eq
+        else if op_kind == 36 { emit_a64_cset(0, 1) }   // != → ne
+        else if op_kind == 37 { emit_a64_cset(0, 11) }  // < → lt
+        else if op_kind == 38 { emit_a64_cset(0, 13) }  // <= → le
+        else if op_kind == 39 { emit_a64_cset(0, 12) }  // > → gt
+        else if op_kind == 40 { emit_a64_cset(0, 10) }  // >= → ge
+        return
+    }
+
+    // LogicalAnd
+    if kind == 39 {
+        uint32 lhs_idx = ast_child(node)
+        uint64 wlhs = lhs_idx
+        gen_expr_a64(wlhs)
+        uint64 and_temp = var_count * 8
+        var_count = var_count + 1
+        var_frame_size = var_count * 8
+        uint64 arem = var_frame_size & 15
+        if arem != 0 { var_frame_size = var_frame_size + 16 - arem }
+        emit_a64_store_x0(and_temp)
+        uint32 rhs_idx = ast_data2(node)
+        uint64 wrhs = rhs_idx
+        gen_expr_a64(wrhs)
+        // x0 = rhs. Check both non-zero
+        emit_a64_cmp(0, 31)
+        emit_a64_cset(9, 1)
+        emit_a64_load_x0(and_temp)
+        emit_a64_cmp(0, 31)
+        emit_a64_cset(0, 1)
+        emit_a64_and(0, 0, 9)
+        return
+    }
+
+    // LogicalOr
+    if kind == 40 {
+        uint32 lhs_idx = ast_child(node)
+        uint64 wlhs = lhs_idx
+        gen_expr_a64(wlhs)
+        uint64 or_temp = var_count * 8
+        var_count = var_count + 1
+        var_frame_size = var_count * 8
+        uint64 orem = var_frame_size & 15
+        if orem != 0 { var_frame_size = var_frame_size + 16 - orem }
+        emit_a64_store_x0(or_temp)
+        uint32 rhs_idx = ast_data2(node)
+        uint64 wrhs = rhs_idx
+        gen_expr_a64(wrhs)
+        emit_a64_mov(9, 0)
+        emit_a64_load_x0(or_temp)
+        emit_a64_orr(0, 0, 9)
+        emit_a64_cmp(0, 31)
+        emit_a64_cset(0, 1)
+        return
+    }
+
+    // Function call
+    if kind == 35 {
+        uint32 callee_tok = ast_data1(node)
+        uint64 wct = callee_tok
+
+        // Built-in: exit(code)
+        if tok_matches(wct, "exit", 4) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr_a64(wfa)
+            // x0 already has the exit code
+            emit_a64_mov_imm(8, 93)
+            emit_a64_svc()
+            return
+        }
+
+        // Built-in: write(fd, buf, len)
+        if tok_matches(wct, "write", 5) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 wa1 = arg1
+            gen_expr_a64(wa1)
+            emit_a64_store_x0(temp_slot_0)
+            uint32 arg2 = ast_next(wa1)
+            uint64 wa2 = arg2
+            gen_expr_a64(wa2)
+            emit_a64_store_x0(temp_slot_1)
+            uint32 arg3 = ast_next(wa2)
+            uint64 wa3 = arg3
+            gen_expr_a64(wa3)
+            emit_a64_mov(2, 0)
+            emit_a64_load_x0(temp_slot_1)
+            emit_a64_mov(1, 0)
+            emit_a64_load_x0(temp_slot_0)
+            emit_a64_mov_imm(8, 64)
+            emit_a64_svc()
+            return
+        }
+
+        // Built-in: alloc(size) → mmap
+        if tok_matches(wct, "alloc", 5) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr_a64(wfa)
+            emit_a64_mov(1, 0)
+            emit_a64_mov_imm(0, 0)
+            emit_a64_mov_imm(2, 3)
+            emit_a64_mov_imm(3, 0x22)
+            emit_a64_mov_imm(4, 0xFFFFFFFFFFFFFFFF)
+            emit_a64_mov_imm(5, 0)
+            emit_a64_mov_imm(8, 222)
+            emit_a64_svc()
+            return
+        }
+
+        // Built-in: file_open(path, flags)
+        if tok_matches(wct, "file_open", 9) != 0 {
+            // AArch64 Linux uses openat(dirfd, path, flags, mode)
+            // dirfd = AT_FDCWD = -100 (0xFFFFFFFFFFFFFF9C)
+            uint32 arg1 = ast_child(node)
+            uint64 wa1 = arg1
+            gen_expr_a64(wa1)
+            emit_a64_store_x0(temp_slot_0)
+            uint32 arg2 = ast_next(wa1)
+            uint64 wa2 = arg2
+            gen_expr_a64(wa2)
+            // x0 = flags. If 1, use O_WRONLY|O_CREAT|O_TRUNC = 0x241
+            emit_a64_mov(2, 0)
+            emit_a64_mov_imm(9, 1)
+            emit_a64_cmp(0, 9)
+            emit_a64_bcond(1, 8)
+            emit_a64_mov_imm(2, 0x241)
+            // x0 = AT_FDCWD (-100)
+            emit_a64_mov_imm(0, 0xFFFFFFFFFFFFFF9C)
+            // x1 = path
+            emit_a64_load_x0(temp_slot_0)
+            emit_a64_mov(1, 0)
+            emit_a64_mov_imm(0, 0xFFFFFFFFFFFFFF9C)
+            // x3 = mode
+            emit_a64_mov_imm(3, 0x1A4)
+            emit_a64_mov_imm(8, 56)
+            emit_a64_svc()
+            return
+        }
+
+        // Built-in: file_read(fd, buf, len)
+        if tok_matches(wct, "file_read", 9) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 wa1 = arg1
+            gen_expr_a64(wa1)
+            emit_a64_store_x0(temp_slot_0)
+            uint32 arg2 = ast_next(wa1)
+            uint64 wa2 = arg2
+            gen_expr_a64(wa2)
+            emit_a64_store_x0(temp_slot_1)
+            uint32 arg3 = ast_next(wa2)
+            uint64 wa3 = arg3
+            gen_expr_a64(wa3)
+            emit_a64_mov(2, 0)
+            emit_a64_load_x0(temp_slot_1)
+            emit_a64_mov(1, 0)
+            emit_a64_load_x0(temp_slot_0)
+            emit_a64_mov_imm(8, 63)
+            emit_a64_svc()
+            return
+        }
+
+        // Built-in: file_write(fd, buf, len)
+        if tok_matches(wct, "file_write", 10) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 wa1 = arg1
+            gen_expr_a64(wa1)
+            emit_a64_store_x0(temp_slot_0)
+            uint32 arg2 = ast_next(wa1)
+            uint64 wa2 = arg2
+            gen_expr_a64(wa2)
+            emit_a64_store_x0(temp_slot_1)
+            uint32 arg3 = ast_next(wa2)
+            uint64 wa3 = arg3
+            gen_expr_a64(wa3)
+            emit_a64_mov(2, 0)
+            emit_a64_load_x0(temp_slot_1)
+            emit_a64_mov(1, 0)
+            emit_a64_load_x0(temp_slot_0)
+            emit_a64_mov_imm(8, 64)
+            emit_a64_svc()
+            return
+        }
+
+        // Built-in: file_close(fd)
+        if tok_matches(wct, "file_close", 10) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr_a64(wfa)
+            emit_a64_mov_imm(8, 57)
+            emit_a64_svc()
+            return
+        }
+
+        // Built-in: file_size(fd) → lseek to end then back
+        if tok_matches(wct, "file_size", 9) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr_a64(wfa)
+            emit_a64_mov(19, 0)
+            emit_a64_mov_imm(1, 0)
+            emit_a64_mov_imm(2, 2)
+            emit_a64_mov_imm(8, 62)
+            emit_a64_svc()
+            emit_a64_mov(9, 0)
+            emit_a64_mov(0, 19)
+            emit_a64_mov_imm(1, 0)
+            emit_a64_mov_imm(2, 0)
+            emit_a64_mov_imm(8, 62)
+            emit_a64_svc()
+            emit_a64_mov(0, 9)
+            return
+        }
+
+        // User-defined function call
+        uint32 arg = ast_child(node)
+        uint64 warg = arg
+        uint64 arg_count = 0
+        uint64 wtmp = arg
+        while wtmp != 0 {
+            arg_count = arg_count + 1
+            uint32 nt2 = ast_next(wtmp)
+            wtmp = nt2
+        }
+
+        // Allocate temp slots for args
+        uint64 arg_slots_base = var_count * 8
+        uint64 ac = 0
+        while ac < arg_count {
+            var_count = var_count + 1
+            ac = ac + 1
+        }
+        var_frame_size = var_count * 8
+        uint64 acrem = var_frame_size & 15
+        if acrem != 0 { var_frame_size = var_frame_size + 16 - acrem }
+
+        // Evaluate and store all args
+        uint64 weval = warg
+        uint64 ai = 0
+        while weval != 0 {
+            gen_expr_a64(weval)
+            emit_a64_store_x0(arg_slots_base + ai * 8)
+            ai = ai + 1
+            uint32 anxt = ast_next(weval)
+            weval = anxt
+        }
+
+        // Load args into x0-x7
+        if arg_count >= 8 { emit_a64_load_x0(arg_slots_base + 56); emit_a64_mov(7, 0) }
+        if arg_count >= 7 { emit_a64_load_x0(arg_slots_base + 48); emit_a64_mov(6, 0) }
+        if arg_count >= 6 { emit_a64_load_x0(arg_slots_base + 40); emit_a64_mov(5, 0) }
+        if arg_count >= 5 { emit_a64_load_x0(arg_slots_base + 32); emit_a64_mov(4, 0) }
+        if arg_count >= 4 { emit_a64_load_x0(arg_slots_base + 24); emit_a64_mov(3, 0) }
+        if arg_count >= 3 { emit_a64_load_x0(arg_slots_base + 16); emit_a64_mov(2, 0) }
+        if arg_count >= 2 { emit_a64_load_x0(arg_slots_base + 8); emit_a64_mov(1, 0) }
+        if arg_count >= 1 { emit_a64_load_x0(arg_slots_base) }
+
+        // BL rel26 (placeholder, fixup needed)
+        uint64 fixup_off = out_len
+        emit_a64_bl(0)
+        // Record fixup (same table as x86_64 — resolve_fixups handles both)
+        uint64 fentry = fixup_table + fixup_count * 8
+        uint32 fo = fixup_off
+        unsafe { *(fentry as uint32) = fo }
+        uint64 fe4 = fentry + 4
+        uint32 ct = callee_tok
+        unsafe { *(fe4 as uint32) = ct }
+        fixup_count = fixup_count + 1
+        return
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AArch64 statement codegen
+// ---------------------------------------------------------------------------
+
+fn gen_stmt_a64(uint64 node) {
+    uint32 kind = ast_kind(node)
+
+    // Variable declaration
+    if kind == 10 {
+        uint32 name_tok = ast_data2(node)
+        uint32 arr_size_tok = ast_data3(node)
+        uint64 was = arr_size_tok
+        if was != 0 {
+            uint64 arr_size = parse_int_token(was)
+            uint64 n_slots = (arr_size + 7) / 8
+            uint64 arr_offset = var_count * 8
+            uint64 si = 0
+            while si < n_slots { var_count = var_count + 1; si = si + 1 }
+            var_frame_size = var_count * 8
+            uint64 arem2 = var_frame_size & 15
+            if arem2 != 0 { var_frame_size = var_frame_size + 16 - arem2 }
+            uint64 ptr_offset = var_declare(name_tok)
+            emit_a64_add_imm(0, 31, a64_var_base + arr_offset)
+            emit_a64_store_x0(ptr_offset)
+            return
+        }
+        uint32 struct_marker = ast_data4(node)
+        uint64 wsm = struct_marker
+        if wsm != 0 {
+            uint64 sidx = wsm - 1
+            uint64 ssize = struct_total_size(sidx)
+            uint64 n_slots = (ssize + 7) / 8
+            uint64 struct_off = var_count * 8
+            uint64 ssi = 0
+            while ssi < n_slots { var_count = var_count + 1; ssi = ssi + 1 }
+            var_frame_size = var_count * 8
+            uint64 srem = var_frame_size & 15
+            if srem != 0 { var_frame_size = var_frame_size + 16 - srem }
+            uint64 ptr_off = var_declare(name_tok)
+            emit_a64_add_imm(0, 31, a64_var_base + struct_off)
+            emit_a64_store_x0(ptr_off)
+            struct_var_register(name_tok, sidx)
+            return
+        }
+        uint64 offset = var_declare(name_tok)
+        uint32 init_child = ast_child(node)
+        uint64 wic = init_child
+        if wic != 0 {
+            gen_expr_a64(wic)
+            emit_a64_store_x0(offset)
+        }
+        return
+    }
+
+    // Assignment
+    if kind == 11 {
+        uint32 name_tok = ast_data1(node)
+        uint32 val_child = ast_child(node)
+        uint64 wvc = val_child
+        gen_expr_a64(wvc)
+        uint64 offset = var_lookup(name_tok)
+        if offset != 0xFFFFFFFF {
+            emit_a64_store_x0(offset)
+        } else {
+            uint64 soff = static_lookup(name_tok)
+            if soff != 0xFFFFFFFF {
+                emit_a64_static_store(soff)
+            }
+        }
+        return
+    }
+
+    // Return
+    if kind == 12 {
+        uint32 expr_child = ast_child(node)
+        uint64 wec = expr_child
+        if wec != 0 {
+            gen_expr_a64(wec)
+        }
+        // Jump to epilogue
+        emit_a64_b(0)
+        uint64 ret_patch = out_len - 4
+        uint64 rentry = ret_fixups + ret_fixup_count * 4
+        uint32 rp32 = ret_patch
+        unsafe { *(rentry as uint32) = rp32 }
+        ret_fixup_count = ret_fixup_count + 1
+        return
+    }
+
+    // If/else
+    if kind == 13 {
+        uint32 cond = ast_child(node)
+        uint64 wcond = cond
+        gen_expr_a64(wcond)
+        // cbz x0, else_target (placeholder)
+        uint64 cbz_patch = out_len
+        emit_a64_cbz(0, 0)
+        // Then body
+        uint32 then_idx = ast_data1(node)
+        uint64 wthen = then_idx
+        gen_block_a64(wthen)
+        // b endif (placeholder)
+        uint64 b_patch = out_len
+        emit_a64_b(0)
+        // Patch cbz to here
+        uint64 else_target = out_len
+        uint64 cbz_disp = else_target - cbz_patch
+        patch_u32(cbz_patch, 0xB4000000 | (((cbz_disp / 4) & 0x7FFFF) << 5) | 0)
+        // Else body
+        uint32 else_idx = ast_data2(node)
+        uint64 welse = else_idx
+        if welse != 0 {
+            uint32 else_kind = ast_kind(welse)
+            if else_kind == 13 {
+                gen_stmt_a64(welse)
+            } else {
+                gen_block_a64(welse)
+            }
+        }
+        // Patch b to here
+        uint64 endif_target = out_len
+        uint64 b_disp = endif_target - b_patch
+        patch_u32(b_patch, 0x14000000 | ((b_disp / 4) & 0x3FFFFFF))
+        return
+    }
+
+    // While
+    if kind == 14 {
+        uint64 loop_start = out_len
+        uint64 lentry = loop_stack + loop_depth * 16
+        unsafe { *(lentry as uint64) = loop_start }
+        uint64 lentry8 = lentry + 8
+        unsafe { *(lentry8 as uint64) = break_fixup_count }
+        loop_depth = loop_depth + 1
+
+        uint32 cond = ast_child(node)
+        uint64 wcond = cond
+        gen_expr_a64(wcond)
+        uint64 cbz_patch = out_len
+        emit_a64_cbz(0, 0)
+        uint32 body_idx = ast_data1(node)
+        uint64 wbody = body_idx
+        gen_block_a64(wbody)
+        // b loop_start
+        uint64 back_disp = loop_start - out_len
+        emit_a64_b(back_disp & 0xFFFFFFFF)
+        // Patch cbz to here
+        uint64 loop_end = out_len
+        uint64 fwd_disp = loop_end - cbz_patch
+        patch_u32(cbz_patch, 0xB4000000 | (((fwd_disp / 4) & 0x7FFFF) << 5) | 0)
+        // Patch break fixups
+        loop_depth = loop_depth - 1
+        uint64 lentry2 = loop_stack + loop_depth * 16 + 8
+        uint64 saved_break_start = 0
+        unsafe { *(lentry2 as uint64) -> saved_break_start }
+        uint64 bi = saved_break_start
+        while bi < break_fixup_count {
+            uint64 bentry = break_fixups + bi * 4
+            uint32 bpatch = 0
+            unsafe { *(bentry as uint32) -> bpatch }
+            uint64 wbp = bpatch
+            uint64 bdisp = loop_end - wbp
+            patch_u32(wbp, 0x14000000 | ((bdisp / 4) & 0x3FFFFFF))
+            bi = bi + 1
+        }
+        break_fixup_count = saved_break_start
+        return
+    }
+
+    // Break
+    if kind == 17 {
+        uint64 brk_off = out_len
+        emit_a64_b(0)
+        uint64 brk_entry = break_fixups + break_fixup_count * 4
+        uint32 brk32 = brk_off
+        unsafe { *(brk_entry as uint32) = brk32 }
+        break_fixup_count = break_fixup_count + 1
+        return
+    }
+
+    // Continue
+    if kind == 18 {
+        uint64 lentry3 = loop_stack + (loop_depth - 1) * 16
+        uint64 cont_target = 0
+        unsafe { *(lentry3 as uint64) -> cont_target }
+        uint64 cont_disp = cont_target - out_len
+        emit_a64_b(cont_disp & 0xFFFFFFFF)
+        return
+    }
+
+    // PtrLoad
+    if kind == 41 {
+        uint32 type_size = ast_data1(node)
+        uint64 wts = type_size
+        uint32 addr_child = ast_child(node)
+        uint64 wa = addr_child
+        gen_expr_a64(wa)
+        if wts == 1 { emit_a64_ldrb(0, 0, 0) }
+        else if wts == 4 { emit_a64_ldr32(0, 0, 0) }
+        else { emit_a64_ldr(0, 0, 0) }
+        uint32 dest_tok = ast_data2(node)
+        uint64 doff = var_lookup(dest_tok)
+        if doff != 0xFFFFFFFF {
+            emit_a64_store_x0(doff)
+        } else {
+            uint64 soff = static_lookup(dest_tok)
+            if soff != 0xFFFFFFFF { emit_a64_static_store(soff) }
+        }
+        return
+    }
+
+    // PtrStore
+    if kind == 42 {
+        uint32 type_size = ast_data1(node)
+        uint64 wts = type_size
+        uint32 val_child = ast_data2(node)
+        uint64 wv = val_child
+        gen_expr_a64(wv)
+        emit_a64_store_x0(temp_slot_0)
+        uint32 addr_child = ast_child(node)
+        uint64 wa = addr_child
+        gen_expr_a64(wa)
+        emit_a64_mov(10, 0)
+        emit_a64_load_x0(temp_slot_0)
+        if wts == 1 { emit_a64_strb(0, 10, 0) }
+        else if wts == 4 { emit_a64_str32(0, 10, 0) }
+        else { emit_a64_str(0, 10, 0) }
+        return
+    }
+
+    // Indexed assignment (arr[i] = val)
+    if kind == 37 {
+        uint32 idx_d3 = ast_data3(node)
+        uint64 wd3 = idx_d3
+        if wd3 == 1 {
+            uint32 rhs_child = ast_data2(node)
+            uint64 wrhs = rhs_child
+            gen_expr_a64(wrhs)
+            emit_a64_store_x0(temp_slot_0)
+            uint32 idx_child = ast_child(node)
+            uint64 wi = idx_child
+            gen_expr_a64(wi)
+            emit_a64_store_x0(temp_slot_1)
+            uint32 arr_tok = ast_data1(node)
+            uint64 arr_offset = var_lookup(arr_tok)
+            if arr_offset == 0xFFFFFFFF { arr_offset = 0 }
+            emit_a64_load_x0(arr_offset)
+            emit_a64_mov(10, 0)
+            emit_a64_load_x0(temp_slot_1)
+            emit_a64_add(10, 10, 0)
+            emit_a64_load_x0(temp_slot_0)
+            emit_a64_strb(0, 10, 0)
+            return
+        }
+    }
+
+    // Field assignment (var.field = val)
+    if kind == 36 {
+        uint32 fa_d4 = ast_data4(node)
+        uint64 wfad4 = fa_d4
+        if wfad4 == 1 {
+            uint32 obj_tok = ast_data1(node)
+            uint32 field_tok = ast_data2(node)
+            uint32 val_node = ast_data3(node)
+            uint64 wval = val_node
+            gen_expr_a64(wval)
+            emit_a64_store_x0(temp_slot_0)
+            uint64 si = struct_var_lookup(obj_tok)
+            if si != 0xFFFFFFFF {
+                uint64 var_off = var_lookup(obj_tok)
+                if var_off == 0xFFFFFFFF { var_off = 0 }
+                uint64 foff = struct_field_offset(si, field_tok)
+                uint64 fsz = struct_field_size(si, field_tok)
+                emit_a64_load_x0(var_off)
+                if foff != 0 { emit_a64_add_imm(0, 0, foff) }
+                emit_a64_mov(10, 0)
+                emit_a64_load_x0(temp_slot_0)
+                if fsz == 1 { emit_a64_strb(0, 10, 0) }
+                else if fsz == 4 { emit_a64_str32(0, 10, 0) }
+                else { emit_a64_str(0, 10, 0) }
+            }
+            return
+        }
+    }
+
+    // Expression statement
+    if kind == 16 {
+        uint32 expr_child = ast_child(node)
+        uint64 wec = expr_child
+        gen_expr_a64(wec)
+        return
+    }
+}
+
+fn gen_block_a64(uint64 block_node) {
+    uint32 child = ast_child(block_node)
+    uint64 wchild = child
+    while wchild != 0 {
+        gen_stmt_a64(wchild)
+        uint32 nxt = ast_next(wchild)
+        wchild = nxt
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AArch64 ELF header emission
+// ---------------------------------------------------------------------------
+
+fn emit_elf_header_a64() {
+    emit_byte(0x7F); emit_byte(69); emit_byte(76); emit_byte(70)
+    emit_byte(2); emit_byte(1); emit_byte(1); emit_byte(0)
+    uint64 i = 0
+    while i < 8 { emit_byte(0); i = i + 1 }
+    emit_u16_le(2)
+    emit_u16_le(0xB7)
+    emit_u32_le(1)
+    emit_u64_le(0)
+    emit_u64_le(64)
+    emit_u64_le(0)
+    emit_u32_le(0)
+    emit_u16_le(64)
+    emit_u16_le(56)
+    emit_u16_le(1)
+    emit_u16_le(64)
+    emit_u16_le(0)
+    emit_u16_le(0)
+}
+
+fn emit_program_header_a64(uint64 text_size) {
+    uint64 total = 120 + text_size
+    emit_u32_le(1)
+    emit_u32_le(7)
+    emit_u64_le(0)
+    emit_u64_le(0x400000)
+    emit_u64_le(0x400000)
+    emit_u64_le(total)
+    emit_u64_le(total)
+    emit_u64_le(0x10000)
+}
+
+// ---------------------------------------------------------------------------
+// AArch64 function codegen (prologue + body + epilogue)
+// ---------------------------------------------------------------------------
+
+@export
+fn gen_function_a64(uint64 fn_node) {
+    uint32 name_tok = ast_data1(fn_node)
+
+    var_reset()
+    temp_slot_0 = var_count * 8
+    var_count = var_count + 1
+    temp_slot_1 = var_count * 8
+    var_count = var_count + 1
+    var_frame_size = var_count * 8
+    uint64 rem0 = var_frame_size & 15
+    if rem0 != 0 { var_frame_size = var_frame_size + 16 - rem0 }
+
+    fn_register(name_tok, out_len)
+
+    // For main: emit _start trampoline to store argc/argv to statics
+    uint64 wnt_a64 = name_tok
+    if tok_matches(wnt_a64, "main", 4) != 0 {
+        // ldr x0, [sp]        ; x0 = argc
+        emit_a64_ldr(0, 31, 0)
+        // Store to cli_argc static
+        uint64 argc_off_a64 = static_lookup_by_name("cli_argc", 8)
+        if argc_off_a64 != 0xFFFFFFFF {
+            emit_a64_static_store(argc_off_a64)
+        }
+        // add x0, sp, #8      ; x0 = &argv[0]
+        emit_a64_add_imm(0, 31, 8)
+        uint64 argv_off_a64 = static_lookup_by_name("cli_argv", 8)
+        if argv_off_a64 != 0xFFFFFFFF {
+            emit_a64_static_store(argv_off_a64)
+        }
+    }
+
+    // Parse params
+    uint32 first_param = ast_child(fn_node)
+    uint64 wparam = first_param
+    while wparam != 0 {
+        uint32 pk = ast_kind(wparam)
+        if pk == 3 {
+            uint32 param_name = ast_data2(wparam)
+            var_declare(param_name)
+        }
+        uint32 pnxt = ast_next(wparam)
+        wparam = pnxt
+    }
+
+    // Prologue — placeholder for frame allocation, patched later
+    uint64 prologue_start = out_len
+    // For large frames: sub sp, sp, #FRAME (placeholder, 4 bytes)
+    emit_a64(0xD1000000)
+    // stp x29, x30, [sp] (no pre-index, frame already allocated)
+    emit_a64(0xA9007BFD)
+    // mov x29, sp
+    emit_a64_add_imm(29, 31, 0)
+    // stp x19, x20, [sp, #16]
+    emit_a64(0xA90153F3)
+
+    // Spill params to stack (x0-x7)
+    uint64 pidx = 0
+    uint64 wp2 = first_param
+    while wp2 != 0 {
+        uint32 pk2 = ast_kind(wp2)
+        if pk2 == 3 {
+            uint32 pn2 = ast_data2(wp2)
+            uint64 poff = var_lookup(pn2)
+            if poff != 0xFFFFFFFF {
+                // str xN, [sp, #(a64_var_base + poff)]
+                uint64 reg = pidx
+                if reg <= 7 {
+                    emit_a64_str(reg, 31, a64_var_base + poff)
+                }
+                pidx = pidx + 1
+            }
+        }
+        uint32 pn3 = ast_next(wp2)
+        wp2 = pn3
+    }
+
+    ret_fixup_count = 0
+
+    // Generate body
+    uint32 body_idx = ast_data3(fn_node)
+    uint64 wbody = body_idx
+    if wbody != 0 {
+        gen_block_a64(wbody)
+    }
+
+    // Epilogue — patch return jumps here
+    uint64 epilogue_start = out_len
+    uint64 ri = 0
+    while ri < ret_fixup_count {
+        uint64 rentry = ret_fixups + ri * 4
+        uint32 rpatch = 0
+        unsafe { *(rentry as uint32) -> rpatch }
+        uint64 wrp = rpatch
+        uint64 disp = epilogue_start - wrp
+        // Patch B instruction
+        patch_u32(wrp, 0x14000000 | ((disp / 4) & 0x3FFFFFF))
+        ri = ri + 1
+    }
+
+    // ldp x19, x20, [sp, #16]
+    emit_a64(0xA94153F3)
+    // ldp x29, x30, [sp] (no post-index)
+    emit_a64(0xA9407BFD)
+    // add sp, sp, #FRAME (placeholder, patched)
+    uint64 epilogue_add = out_len
+    emit_a64(0x91000000)
+    // ret
+    emit_a64_ret()
+
+    // Patch prologue and epilogue frame sizes
+    uint64 frame = a64_var_base + var_frame_size
+    uint64 fmod = frame & 15
+    if fmod != 0 { frame = frame + 16 - fmod }
+
+    // Patch prologue: sub sp, sp, #frame
+    // SUB SP, SP, #imm12: 0xD1000000 | (imm12 << 10) | (31 << 5) | 31
+    patch_u32(prologue_start, 0xD1000000 | (frame << 10) | (31 << 5) | 31)
+
+    // Patch epilogue: add sp, sp, #frame
+    patch_u32(epilogue_add, 0x91000000 | (frame << 10) | (31 << 5) | 31)
+}
+
+// ---------------------------------------------------------------------------
+// AArch64 fixup resolution
+// ---------------------------------------------------------------------------
+
+@export
+fn resolve_fixups_a64() {
+    uint64 i = 0
+    while i < fixup_count {
+        uint64 fentry = fixup_table + i * 8
+        uint32 patch_off = 0
+        unsafe { *(fentry as uint32) -> patch_off }
+        uint64 fe4 = fentry + 4
+        uint32 target_tok = 0
+        unsafe { *(fe4 as uint32) -> target_tok }
+
+        uint64 wtt = target_tok
+        uint64 target_off = fn_lookup(wtt)
+        if target_off != 0xFFFFFFFF {
+            uint64 wpo = patch_off
+            uint64 disp = target_off - wpo
+            // Patch BL instruction: BL rel26
+            patch_u32(wpo, 0x94000000 | ((disp / 4) & 0x3FFFFFF))
+        }
+        i = i + 1
+    }
+}
+
+// AArch64 static access uses ADRP+LDR/STR pairs
+// For simplicity, we use absolute addresses loaded via MOV immediate sequence
+// The fixup patches the MOV sequence to point to the correct address
+
+@export
+fn resolve_static_fixups_a64(uint64 data_start) {
+    // For AArch64, static access is done via 2-instruction MOV sequence
+    // For now, use the same fixup table as x86_64
+    // Each fixup: (code_patch_offset, static_data_offset)
+    // The code emits: MOVZ x10, #lo16; MOVK x10, #hi16, LSL#16
+    // Then LDR x0, [x10] or STR x0, [x10]
+    // We patch the MOVZ/MOVK with the absolute VA
+    uint64 i = 0
+    while i < static_fixup_count {
+        uint64 fentry = static_fixups + i * 8
+        uint32 code_off = 0
+        unsafe { *(fentry as uint32) -> code_off }
+        uint64 fe4 = fentry + 4
+        uint32 data_off = 0
+        unsafe { *(fe4 as uint32) -> data_off }
+        uint64 wdo = data_off
+        uint64 target_va = 0x400000 + data_start + wdo
+        uint64 lo16 = target_va & 0xFFFF
+        uint64 hi16 = (target_va >> 16) & 0xFFFF
+        uint64 hi32 = (target_va >> 32) & 0xFFFF
+        // Patch MOVZ x10, #lo16 at code_off
+        uint64 wco = code_off
+        patch_u32(wco, 0xD280000A | (lo16 << 5))
+        // Patch MOVK x10, #hi16, LSL#16 at code_off+4
+        patch_u32(wco + 4, 0xF2A0000A | (hi16 << 5))
+        // If hi32 != 0, patch MOVK at code_off+8
+        if hi32 != 0 {
+            patch_u32(wco + 8, 0xF2C0000A | (hi32 << 5))
+        }
+        i = i + 1
+    }
+}
+
+@export
+fn resolve_string_fixups_a64(uint64 str_data_start) {
+    uint64 i = 0
+    while i < str_fixup_count {
+        uint64 fentry = str_fixups + i * 8
+        uint32 code_off = 0
+        unsafe { *(fentry as uint32) -> code_off }
+        uint64 fe4 = fentry + 4
+        uint32 str_off = 0
+        unsafe { *(fe4 as uint32) -> str_off }
+        uint64 wso = str_off
+        uint64 target_va = 0x400000 + str_data_start + wso
+        uint64 lo16 = target_va & 0xFFFF
+        uint64 hi16 = (target_va >> 16) & 0xFFFF
+        uint64 wco = code_off
+        patch_u32(wco, 0xD2800000 | (lo16 << 5))
+        patch_u32(wco + 4, 0xF2A00000 | (hi16 << 5))
+        i = i + 1
+    }
+}

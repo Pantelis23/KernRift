@@ -1,9 +1,0 @@
-[package]
-name = "passes"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-authors.workspace = true
-
-[dependencies]
-krir = { path = "../krir" }

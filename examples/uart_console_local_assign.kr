@@ -1,8 +1,0 @@
-// Probe 2: local mutable variable with IntLiteral assignment.
-// `state = 1` is Stmt::Assign { value: IntLiteral } which must lower to a
-// direct StackStore rather than routing through a temp slot.
-@ctx(thread, boot)
-fn entry() {
-    uint32 state = 0
-    state = 1
-}

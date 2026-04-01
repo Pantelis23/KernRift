@@ -1,5 +1,0 @@
-extern @ctx(thread, boot) @eff() @caps() fn ext();
-
-fn helper() { ext(); }
-
-fn entry() { helper(); }

@@ -1,5 +1,0 @@
-exit=2
-stdout:
-<empty>
-stderr:
-refusing to overwrite existing output '<TMP>/verify.report.json'; remove it first

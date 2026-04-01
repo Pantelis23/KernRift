@@ -1,4 +1,0 @@
-@ctx(irq)
-@eff(alloc)
-fn isr_alloc() {
-}

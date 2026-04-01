@@ -1,5 +1,0 @@
-@noyield
-@ctx(thread, boot)
-fn spinloop() {
-    yieldpoint();
-}

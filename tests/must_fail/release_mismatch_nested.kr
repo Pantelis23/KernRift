@@ -1,9 +1,0 @@
-lock ConsoleLock
-lock SchedLock
-fn nested_release_mismatch() {
-  acquire(ConsoleLock);
-  acquire(SchedLock);
-  release(ConsoleLock);
-  release(SchedLock);
-  release(ConsoleLock);
-}

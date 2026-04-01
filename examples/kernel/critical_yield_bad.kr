@@ -1,8 +1,0 @@
-fn helper() {
-  yieldpoint();
-}
-
-@noyield
-fn critical_entry() {
-  helper();
-}

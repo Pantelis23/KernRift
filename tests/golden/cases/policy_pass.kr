@@ -1,9 +1,0 @@
-spinlock ConsoleLock;
-@module_caps(PhysMap);
-
-@ctx(thread)
-@caps(PhysMap)
-fn mapped() {
-  acquire(ConsoleLock);
-  release(ConsoleLock);
-}

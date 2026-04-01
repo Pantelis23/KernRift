@@ -1,5 +1,0 @@
-exit=2
-stdout:
-<empty>
-stderr:
-invalid hex in '<TMP>/pubkey.hex': expected 64 hex chars, got 2

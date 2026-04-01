@@ -1,4 +1,0 @@
-@ctx(thread, boot)
-fn entry() {
-    print("Hello, World!\n")
-}

@@ -1,7 +1,0 @@
-// Tests __kr_exec: runs echo via /bin/sh -c.
-// Expected: exits 0 (echo succeeds).
-
-fn main() {
-    uint32 rc = exec("echo e2e_exec_ok")
-    exit(rc)
-}

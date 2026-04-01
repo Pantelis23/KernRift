@@ -1,7 +1,0 @@
-mmio UART0 = 0x1000;
-mmio_reg UART0.DR = 4 : u32 rw;
-mmio_reg UART0.SR = 0x04 : u32 ro;
-
-fn entry() {
-  mmio_read<u32>(UART0 + 4);
-}

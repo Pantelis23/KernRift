@@ -1,4 +1,0 @@
-extern @ctx(irq, thread, boot) @eff(block) @caps() fn schedule();
-
-@ctx(irq)
-fn isr() { schedule(); }

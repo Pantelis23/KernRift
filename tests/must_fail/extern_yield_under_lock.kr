@@ -1,8 +1,0 @@
-extern @ctx(thread) @eff(yield) @caps() fn maybe_yield();
-
-@ctx(thread)
-fn f() {
-  acquire(SchedLock);
-  maybe_yield();
-  release(SchedLock);
-}

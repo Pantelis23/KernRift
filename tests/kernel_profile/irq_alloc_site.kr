@@ -1,4 +1,0 @@
-@ctx(irq)
-fn isr_alloc() {
-  allocpoint();
-}

@@ -1,3 +1,0 @@
-extern @ctx(thread, boot) @eff(alloc) @caps() fn kmalloc();
-
-fn entry() { kmalloc(); }

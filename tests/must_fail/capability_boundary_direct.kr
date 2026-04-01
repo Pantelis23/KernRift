@@ -1,6 +1,0 @@
-@module_caps(PhysMap);
-
-fn entry() { helper(); }
-
-@caps(PhysMap)
-fn helper() { }

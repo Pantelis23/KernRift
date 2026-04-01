@@ -1,5 +1,0 @@
-mmio UART0 = BASE + 4;
-
-fn entry() {
-  mmio_read<u32>(0x1000);
-}

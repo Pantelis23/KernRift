@@ -1,5 +1,0 @@
-@ctx(thread)
-fn get_val() -> uint32 {
-    uint32 x = 42
-    return x
-}

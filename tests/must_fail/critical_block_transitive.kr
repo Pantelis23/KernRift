@@ -1,9 +1,0 @@
-fn entry() {
-  critical {
-    helper();
-  }
-}
-
-fn helper() {
-  blockpoint();
-}

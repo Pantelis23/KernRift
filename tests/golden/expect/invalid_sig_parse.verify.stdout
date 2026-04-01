@@ -1,5 +1,0 @@
-exit=2
-stdout:
-<empty>
-stderr:
-invalid base64 signature '<TMP>/contracts.sig': Invalid symbol 37, offset 0.

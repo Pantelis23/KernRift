@@ -1,0 +1,2260 @@
+// KernRift self-hosted compiler — Code Generator (x86_64 ELF)
+//
+// Strategy: register-based codegen. Expressions evaluate into %rax.
+// Variables live on the stack. Function calls use SysV ABI.
+//
+// Stack frame layout (per function):
+//   [rsp + 0]          local variable 0
+//   [rsp + 8]          local variable 1
+//   ...
+//   Frame size = n_locals * 8 (aligned to 16)
+
+// Output buffer
+static uint64 out_buf = 0
+static uint64 out_len = 0
+static uint64 out_cap = 0
+
+// Source + token buffer (for reading token text)
+static uint64 cg_source = 0
+static uint64 cg_tokens = 0
+
+// Variable table: maps variable name token → stack offset
+// Simple flat array: [name_tok_idx(4), stack_offset(4)] × 256
+static uint64 var_table = 0
+static uint64 var_count = 0
+static uint64 var_frame_size = 0
+
+// Temp slot offset within frame (for expression evaluation)
+// Reserved at function start, used by BinOp and function call arg staging
+static uint64 temp_slot_0 = 0
+static uint64 temp_slot_1 = 0
+
+// Function table: maps function name → code offset in output
+// [name_tok_idx(4), code_offset(4)] × 256
+static uint64 fn_table = 0
+static uint64 fn_count = 0
+
+// Return fixup table: jmp offsets that need patching to epilogue
+// [patch_offset(4)] × 64
+static uint64 ret_fixups = 0
+static uint64 ret_fixup_count = 0
+
+// Loop context for break/continue
+// [loop_start_offset(8), break_fixup_start(8)] × 16 deep
+static uint64 loop_stack = 0
+static uint64 loop_depth = 0
+// Break fixup list: [patch_offset(4)] × 256
+static uint64 break_fixups = 0
+static uint64 break_fixup_count = 0
+
+// Fixup table: call sites that need patching after all functions emitted
+// [patch_offset(4), target_name_tok(4)] × 1024
+static uint64 fixup_table = 0
+static uint64 fixup_count = 0
+
+// Static variable table: maps name token → data offset in data section
+// [name_tok_idx(4), data_offset(4)] × 256
+static uint64 static_table = 0
+static uint64 static_count = 0
+static uint64 static_data_size = 0
+
+// Struct metadata table
+// For each struct: [name_tok(4), field_count(4), total_size(4), pad(4)]
+// Followed by field entries: [field_name_tok(4), field_offset(4), field_size(4), pad(4)]
+// Max 64 structs, each with max 16 fields
+static uint64 struct_table = 0
+static uint64 struct_count = 0
+
+// Struct variable type tracking: maps var name_tok → struct index
+// [var_name_tok(4), struct_idx(4)] × 1024
+static uint64 struct_var_table = 0
+static uint64 struct_var_count = 0
+
+// Enum value table: maps (enum_name_tok, field_name_tok) → value
+// [enum_name_tok(4), field_name_tok(4), value(8)] × 512
+static uint64 enum_table = 0
+static uint64 enum_count = 0
+
+// Static access fixup table: RIP-relative displacements to patch
+// [code_patch_offset(4), static_data_offset(4)] × 2048
+static uint64 static_fixups = 0
+static uint64 static_fixup_count = 0
+
+// String literal table: raw string bytes stored contiguously
+static uint64 str_buf = 0
+static uint64 str_len = 0
+// String fixup table: [code_patch_offset(4), str_data_offset(4)] × 1024
+static uint64 str_fixups = 0
+static uint64 str_fixup_count = 0
+
+@export
+fn codegen_init(uint64 capacity, uint64 source, uint64 tokens) {
+    out_buf = alloc(capacity)
+    out_len = 0
+    out_cap = capacity
+    cg_source = source
+    cg_tokens = tokens
+    var_table = alloc(4096 * 8)
+    var_count = 0
+    fn_table = alloc(256 * 8)
+    fn_count = 0
+    fixup_table = alloc(8192 * 8)
+    fixup_count = 0
+    ret_fixups = alloc(64 * 4)
+    ret_fixup_count = 0
+    struct_table = alloc(64 * 272)
+    struct_count = 0
+    struct_var_table = alloc(1024 * 8)
+    struct_var_count = 0
+    loop_stack = alloc(16 * 16)
+    loop_depth = 0
+    break_fixups = alloc(256 * 4)
+    break_fixup_count = 0
+    enum_table = alloc(512 * 16)
+    enum_count = 0
+    static_table = alloc(256 * 8)
+    static_count = 0
+    static_data_size = 0
+    static_fixups = alloc(8192 * 8)
+    static_fixup_count = 0
+    str_buf = alloc(65536)
+    str_len = 0
+    str_fixups = alloc(1024 * 8)
+    str_fixup_count = 0
+    a64_var_base = 32
+}
+
+// ---------------------------------------------------------------------------
+// Emit helpers
+// ---------------------------------------------------------------------------
+
+fn emit_byte(uint8 b) {
+    if out_len >= out_cap { return }
+    uint64 p = out_buf + out_len
+    unsafe { *(p as uint8) = b }
+    out_len = out_len + 1
+}
+
+fn emit_u32_le(uint64 val) {
+    uint8 b0 = val & 0xFF
+    uint8 b1 = (val >> 8) & 0xFF
+    uint8 b2 = (val >> 16) & 0xFF
+    uint8 b3 = (val >> 24) & 0xFF
+    emit_byte(b0)
+    emit_byte(b1)
+    emit_byte(b2)
+    emit_byte(b3)
+}
+
+fn emit_u64_le(uint64 val) {
+    uint64 lo = val & 0xFFFFFFFF
+    uint64 hi = (val >> 32) & 0xFFFFFFFF
+    emit_u32_le(lo)
+    emit_u32_le(hi)
+}
+
+fn emit_u16_le(uint64 val) {
+    uint8 b0 = val & 0xFF
+    uint8 b1 = (val >> 8) & 0xFF
+    emit_byte(b0)
+    emit_byte(b1)
+}
+
+fn patch_u32(uint64 offset, uint64 val) {
+    uint64 p = out_buf + offset
+    uint8 b0 = val & 0xFF
+    uint8 b1 = (val >> 8) & 0xFF
+    uint8 b2 = (val >> 16) & 0xFF
+    uint8 b3 = (val >> 24) & 0xFF
+    unsafe { *(p as uint8) = b0 }
+    uint64 p1 = p + 1
+    unsafe { *(p1 as uint8) = b1 }
+    uint64 p2 = p + 2
+    unsafe { *(p2 as uint8) = b2 }
+    uint64 p3 = p + 3
+    unsafe { *(p3 as uint8) = b3 }
+}
+
+// ---------------------------------------------------------------------------
+// Token text helpers
+// ---------------------------------------------------------------------------
+
+fn tok_text_start(uint64 tok_idx) -> uint64 {
+    uint64 p = cg_tokens + tok_idx * 16 + 4
+    uint32 val = 0
+    unsafe { *(p as uint32) -> val }
+    return val
+}
+
+fn tok_text_len(uint64 tok_idx) -> uint64 {
+    uint64 p = cg_tokens + tok_idx * 16 + 8
+    uint32 val = 0
+    unsafe { *(p as uint32) -> val }
+    return val
+}
+
+fn tok_source_byte(uint64 tok_idx, uint64 offset) -> uint64 {
+    uint64 start = tok_text_start(tok_idx)
+    uint64 p = cg_source + start + offset
+    uint64 val = 0
+    unsafe { *(p as uint8) -> val }
+    return val & 0xFF
+}
+
+// Parse integer or char literal from token text
+fn parse_int_token(uint64 tok_idx) -> uint64 {
+    uint64 len = tok_text_len(tok_idx)
+    // Check for char literal: 'x' or '\n'
+    if len >= 3 && tok_source_byte(tok_idx, 0) == 39 {
+        if tok_source_byte(tok_idx, 1) == 92 {
+            // Escape sequence
+            uint64 esc = tok_source_byte(tok_idx, 2)
+            if esc == 110 { return 10 }
+            if esc == 116 { return 9 }
+            if esc == 114 { return 13 }
+            if esc == 48 { return 0 }
+            if esc == 92 { return 92 }
+            if esc == 39 { return 39 }
+            return esc
+        }
+        return tok_source_byte(tok_idx, 1)
+    }
+    uint64 result = 0
+    uint64 i = 0
+    // Check for 0x prefix
+    if len > 2 && tok_source_byte(tok_idx, 0) == 48 && tok_source_byte(tok_idx, 1) == 120 {
+        i = 2
+        while i < len {
+            uint64 ch = tok_source_byte(tok_idx, i)
+            result = result * 16
+            if ch >= 48 && ch <= 57 { result = result + ch - 48 }
+            if ch >= 97 && ch <= 102 { result = result + ch - 87 }
+            if ch >= 65 && ch <= 70 { result = result + ch - 55 }
+            i = i + 1
+        }
+    } else {
+        while i < len {
+            uint64 ch = tok_source_byte(tok_idx, i)
+            result = result * 10 + ch - 48
+            i = i + 1
+        }
+    }
+    return result
+}
+
+// Compare two token texts for equality
+fn tok_text_eq(uint64 tok_a, uint64 tok_b) -> uint64 {
+    uint64 la = tok_text_len(tok_a)
+    uint64 lb = tok_text_len(tok_b)
+    if la != lb { return 0 }
+    uint64 i = 0
+    while i < la {
+        if tok_source_byte(tok_a, i) != tok_source_byte(tok_b, i) { return 0 }
+        i = i + 1
+    }
+    return 1
+}
+
+// Check if token text matches a string
+fn tok_matches(uint64 tok_idx, uint64 str_ptr, uint64 str_len) -> uint64 {
+    uint64 tlen = tok_text_len(tok_idx)
+    if tlen != str_len { return 0 }
+    uint64 start = tok_text_start(tok_idx)
+    uint64 i = 0
+    while i < tlen {
+        uint64 sp = cg_source + start + i
+        uint64 sc = 0
+        unsafe { *(sp as uint8) -> sc }
+        uint64 kp = str_ptr + i
+        uint64 kc = 0
+        unsafe { *(kp as uint8) -> kc }
+        if sc != kc { return 0 }
+        i = i + 1
+    }
+    return 1
+}
+
+// ---------------------------------------------------------------------------
+// Variable table
+// ---------------------------------------------------------------------------
+
+static uint64 var_table_size = 0
+
+fn var_reset() {
+    var_count = 0
+    var_frame_size = 0
+    var_table_size = 0
+}
+
+fn var_declare(uint64 name_tok) -> uint64 {
+    // Check if variable already declared in this function (handles shadowing)
+    uint64 existing = var_lookup(name_tok)
+    if existing != 0xFFFFFFFF {
+        return existing
+    }
+    uint64 offset = var_count * 8
+    uint64 entry = var_table + var_table_size * 8
+    uint32 nt = name_tok
+    unsafe { *(entry as uint32) = nt }
+    uint64 e4 = entry + 4
+    uint32 off32 = offset
+    unsafe { *(e4 as uint32) = off32 }
+    var_table_size = var_table_size + 1
+    var_count = var_count + 1
+    var_frame_size = var_count * 8
+    // Align frame to 16 bytes
+    uint64 rem = var_frame_size & 15
+    if rem != 0 {
+        var_frame_size = var_frame_size + 16 - rem
+    }
+    return offset
+}
+
+fn var_lookup(uint64 name_tok) -> uint64 {
+    uint64 i = 0
+    while i < var_table_size {
+        uint64 entry = var_table + i * 8
+        uint32 stored_tok = 0
+        unsafe { *(entry as uint32) -> stored_tok }
+        uint64 ws = stored_tok
+        if tok_text_eq(ws, name_tok) != 0 {
+            uint64 e4 = entry + 4
+            uint32 off = 0
+            unsafe { *(e4 as uint32) -> off }
+            return off
+        }
+        i = i + 1
+    }
+    return 0xFFFFFFFF
+}
+
+// ---------------------------------------------------------------------------
+// Struct metadata
+// ---------------------------------------------------------------------------
+
+// Each struct entry is 16 bytes header + 16 bytes per field = 16 + 16*16 = 272 max
+@export
+fn struct_register(uint64 name_tok) -> uint64 {
+    uint64 base = struct_table + struct_count * 272
+    uint32 nt = name_tok
+    unsafe { *(base as uint32) = nt }
+    // field_count = 0 initially
+    uint64 fc_addr = base + 4
+    uint32 zero = 0
+    unsafe { *(fc_addr as uint32) = zero }
+    uint64 idx = struct_count
+    struct_count = struct_count + 1
+    return idx
+}
+
+@export
+fn struct_add_field(uint64 struct_idx, uint64 field_tok, uint64 field_size) {
+    uint64 base = struct_table + struct_idx * 272
+    uint64 fc_addr = base + 4
+    uint32 fc = 0
+    unsafe { *(fc_addr as uint32) -> fc }
+    uint64 wfc = fc
+    // Compute field offset = current total_size
+    uint64 ts_addr = base + 8
+    uint32 ts = 0
+    unsafe { *(ts_addr as uint32) -> ts }
+    uint64 wts = ts
+    // Write field entry at header(16) + field_idx * 16
+    uint64 fentry = base + 16 + wfc * 16
+    uint32 ft = field_tok
+    unsafe { *(fentry as uint32) = ft }
+    uint64 fo_addr = fentry + 4
+    uint32 fo = wts
+    unsafe { *(fo_addr as uint32) = fo }
+    uint64 fs_addr = fentry + 8
+    uint32 fs = field_size
+    unsafe { *(fs_addr as uint32) = fs }
+    // Update field_count and total_size
+    uint32 new_fc = wfc + 1
+    unsafe { *(fc_addr as uint32) = new_fc }
+    uint32 new_ts = wts + field_size
+    unsafe { *(ts_addr as uint32) = new_ts }
+}
+
+fn struct_lookup(uint64 name_tok) -> uint64 {
+    uint64 i = 0
+    while i < struct_count {
+        uint64 base = struct_table + i * 272
+        uint32 stored = 0
+        unsafe { *(base as uint32) -> stored }
+        uint64 ws = stored
+        if tok_text_eq(ws, name_tok) != 0 {
+            return i
+        }
+        i = i + 1
+    }
+    return 0xFFFFFFFF
+}
+
+fn struct_total_size(uint64 struct_idx) -> uint64 {
+    uint64 base = struct_table + struct_idx * 272 + 8
+    uint32 ts = 0
+    unsafe { *(base as uint32) -> ts }
+    return ts
+}
+
+fn struct_field_offset(uint64 struct_idx, uint64 field_tok) -> uint64 {
+    uint64 base = struct_table + struct_idx * 272
+    uint64 fc_addr = base + 4
+    uint32 fc = 0
+    unsafe { *(fc_addr as uint32) -> fc }
+    uint64 wfc = fc
+    uint64 fi = 0
+    while fi < wfc {
+        uint64 fentry = base + 16 + fi * 16
+        uint32 ft = 0
+        unsafe { *(fentry as uint32) -> ft }
+        uint64 wft = ft
+        if tok_text_eq(wft, field_tok) != 0 {
+            uint64 fo_addr = fentry + 4
+            uint32 fo = 0
+            unsafe { *(fo_addr as uint32) -> fo }
+            return fo
+        }
+        fi = fi + 1
+    }
+    return 0xFFFFFFFF
+}
+
+fn struct_field_size(uint64 struct_idx, uint64 field_tok) -> uint64 {
+    uint64 base = struct_table + struct_idx * 272
+    uint64 fc_addr = base + 4
+    uint32 fc = 0
+    unsafe { *(fc_addr as uint32) -> fc }
+    uint64 wfc = fc
+    uint64 fi = 0
+    while fi < wfc {
+        uint64 fentry = base + 16 + fi * 16
+        uint32 ft = 0
+        unsafe { *(fentry as uint32) -> ft }
+        uint64 wft = ft
+        if tok_text_eq(wft, field_tok) != 0 {
+            uint64 fs_addr = fentry + 8
+            uint32 fs = 0
+            unsafe { *(fs_addr as uint32) -> fs }
+            return fs
+        }
+        fi = fi + 1
+    }
+    return 0
+}
+
+// Track which variables are struct-typed
+fn struct_var_register(uint64 var_tok, uint64 struct_idx) {
+    uint64 entry = struct_var_table + struct_var_count * 8
+    uint32 vt = var_tok
+    unsafe { *(entry as uint32) = vt }
+    uint64 e4 = entry + 4
+    uint32 si = struct_idx
+    unsafe { *(e4 as uint32) = si }
+    struct_var_count = struct_var_count + 1
+}
+
+fn struct_var_lookup(uint64 var_tok) -> uint64 {
+    uint64 i = 0
+    while i < struct_var_count {
+        uint64 entry = struct_var_table + i * 8
+        uint32 stored = 0
+        unsafe { *(entry as uint32) -> stored }
+        uint64 ws = stored
+        if tok_text_eq(ws, var_tok) != 0 {
+            uint64 e4 = entry + 4
+            uint32 si = 0
+            unsafe { *(e4 as uint32) -> si }
+            return si
+        }
+        i = i + 1
+    }
+    return 0xFFFFFFFF
+}
+
+// ---------------------------------------------------------------------------
+// Enum value table
+// ---------------------------------------------------------------------------
+
+@export
+fn enum_register(uint64 enum_tok, uint64 field_tok, uint64 value) {
+    uint64 entry = enum_table + enum_count * 16
+    uint32 et = enum_tok
+    unsafe { *(entry as uint32) = et }
+    uint64 e4 = entry + 4
+    uint32 ft = field_tok
+    unsafe { *(e4 as uint32) = ft }
+    uint64 e8 = entry + 8
+    unsafe { *(e8 as uint64) = value }
+    enum_count = enum_count + 1
+}
+
+fn enum_lookup(uint64 enum_tok, uint64 field_tok) -> uint64 {
+    uint64 i = 0
+    while i < enum_count {
+        uint64 entry = enum_table + i * 16
+        uint32 stored_enum = 0
+        unsafe { *(entry as uint32) -> stored_enum }
+        uint64 we = stored_enum
+        if tok_text_eq(we, enum_tok) != 0 {
+            uint64 e4 = entry + 4
+            uint32 stored_field = 0
+            unsafe { *(e4 as uint32) -> stored_field }
+            uint64 wf = stored_field
+            if tok_text_eq(wf, field_tok) != 0 {
+                uint64 e8 = entry + 8
+                uint64 val = 0
+                unsafe { *(e8 as uint64) -> val }
+                return val
+            }
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+// ---------------------------------------------------------------------------
+// Static variable table
+// ---------------------------------------------------------------------------
+
+@export
+fn static_declare(uint64 name_tok) -> uint64 {
+    uint64 offset = static_data_size
+    uint64 entry = static_table + static_count * 8
+    uint32 nt = name_tok
+    unsafe { *(entry as uint32) = nt }
+    uint64 e4 = entry + 4
+    uint32 off32 = offset
+    unsafe { *(e4 as uint32) = off32 }
+    static_count = static_count + 1
+    static_data_size = static_data_size + 8
+    return offset
+}
+
+fn static_lookup(uint64 name_tok) -> uint64 {
+    uint64 i = 0
+    while i < static_count {
+        uint64 entry = static_table + i * 8
+        uint32 stored_tok = 0
+        unsafe { *(entry as uint32) -> stored_tok }
+        uint64 ws = stored_tok
+        if tok_text_eq(ws, name_tok) != 0 {
+            uint64 e4 = entry + 4
+            uint32 off = 0
+            unsafe { *(e4 as uint32) -> off }
+            return off
+        }
+        i = i + 1
+    }
+    return 0xFFFFFFFF
+}
+
+// Look up a static by literal name (for generated code, not user code)
+fn static_lookup_by_name(uint64 name_str, uint64 name_len) -> uint64 {
+    uint64 i = 0
+    while i < static_count {
+        uint64 entry = static_table + i * 8
+        uint32 stored_tok = 0
+        unsafe { *(entry as uint32) -> stored_tok }
+        uint64 ws = stored_tok
+        if tok_matches(ws, name_str, name_len) != 0 {
+            uint64 e4 = entry + 4
+            uint32 off = 0
+            unsafe { *(e4 as uint32) -> off }
+            return off
+        }
+        i = i + 1
+    }
+    return 0xFFFFFFFF
+}
+
+// Emit: load static at data_offset into rax (RIP-relative, placeholder)
+fn emit_static_load(uint64 data_offset) {
+    // mov disp32(%rip), %rax → 48 8B 05 [disp32]
+    emit_byte(0x48)
+    emit_byte(0x8B)
+    emit_byte(0x05)
+    // Record fixup: patch this disp32 later
+    uint64 fentry = static_fixups + static_fixup_count * 8
+    uint32 cp = out_len
+    unsafe { *(fentry as uint32) = cp }
+    uint64 fe4 = fentry + 4
+    uint32 dp = data_offset
+    unsafe { *(fe4 as uint32) = dp }
+    static_fixup_count = static_fixup_count + 1
+    emit_u32_le(0)
+}
+
+// Emit: store rax to static at data_offset (RIP-relative, placeholder)
+fn emit_static_store(uint64 data_offset) {
+    // mov %rax, disp32(%rip) → 48 89 05 [disp32]
+    emit_byte(0x48)
+    emit_byte(0x89)
+    emit_byte(0x05)
+    // Record fixup
+    uint64 fentry = static_fixups + static_fixup_count * 8
+    uint32 cp = out_len
+    unsafe { *(fentry as uint32) = cp }
+    uint64 fe4 = fentry + 4
+    uint32 dp = data_offset
+    unsafe { *(fe4 as uint32) = dp }
+    static_fixup_count = static_fixup_count + 1
+    emit_u32_le(0)
+}
+
+// Resolve all static RIP-relative fixups. Call after all code is emitted.
+// data_start = out_len at the time statics are placed.
+@export
+fn resolve_static_fixups(uint64 data_start) {
+    uint64 i = 0
+    while i < static_fixup_count {
+        uint64 fentry = static_fixups + i * 8
+        uint32 code_off = 0
+        unsafe { *(fentry as uint32) -> code_off }
+        uint64 fe4 = fentry + 4
+        uint32 data_off = 0
+        unsafe { *(fe4 as uint32) -> data_off }
+        // RIP = code_off + 4 (past the disp32 bytes)
+        // target = data_start + data_off
+        // disp = target - RIP
+        uint64 rip = code_off + 4
+        uint64 wdo = data_off
+        uint64 target = data_start + wdo
+        uint64 disp = target - rip
+        patch_u32(code_off, disp)
+        i = i + 1
+    }
+}
+
+// Emit string literal data
+@export
+fn emit_string_data() {
+    uint64 i = 0
+    while i < str_len {
+        uint64 sp = str_buf + i
+        uint8 b = 0
+        unsafe { *(sp as uint8) -> b }
+        emit_byte(b)
+        i = i + 1
+    }
+}
+
+// Resolve string literal RIP-relative fixups
+@export
+fn resolve_string_fixups(uint64 str_data_start) {
+    uint64 i = 0
+    while i < str_fixup_count {
+        uint64 fentry = str_fixups + i * 8
+        uint32 code_off = 0
+        unsafe { *(fentry as uint32) -> code_off }
+        uint64 fe4 = fentry + 4
+        uint32 str_off = 0
+        unsafe { *(fe4 as uint32) -> str_off }
+        uint64 rip = code_off + 4
+        uint64 wso = str_off
+        uint64 target = str_data_start + wso
+        uint64 disp = target - rip
+        patch_u32(code_off, disp)
+        i = i + 1
+    }
+}
+
+// Emit zero-initialized data for all statics
+@export
+fn emit_static_data() {
+    uint64 i = 0
+    while i < static_data_size {
+        emit_byte(0)
+        i = i + 1
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Function table
+// ---------------------------------------------------------------------------
+
+fn fn_register(uint64 name_tok, uint64 code_offset) {
+    uint64 entry = fn_table + fn_count * 8
+    uint32 nt = name_tok
+    unsafe { *(entry as uint32) = nt }
+    uint64 e4 = entry + 4
+    uint32 co = code_offset
+    unsafe { *(e4 as uint32) = co }
+    fn_count = fn_count + 1
+}
+
+fn fn_lookup(uint64 name_tok) -> uint64 {
+    uint64 i = 0
+    while i < fn_count {
+        uint64 entry = fn_table + i * 8
+        uint32 stored_tok = 0
+        unsafe { *(entry as uint32) -> stored_tok }
+        uint64 ws = stored_tok
+        if tok_text_eq(ws, name_tok) != 0 {
+            uint64 e4 = entry + 4
+            uint32 off = 0
+            unsafe { *(e4 as uint32) -> off }
+            return off
+        }
+        i = i + 1
+    }
+    return 0xFFFFFFFF
+}
+
+// ---------------------------------------------------------------------------
+// x86_64 code emission
+// ---------------------------------------------------------------------------
+
+// emit: mov rax, imm64
+fn emit_mov_rax_imm(uint64 val) {
+    if val <= 0x7FFFFFFF {
+        // mov eax, imm32 (5 bytes, zero-extends)
+        emit_byte(0xB8)
+        emit_u32_le(val)
+    } else {
+        // movabs rax, imm64 (10 bytes)
+        emit_byte(0x48)
+        emit_byte(0xB8)
+        emit_u64_le(val)
+    }
+}
+
+// emit: mov [rsp+off], rax
+fn emit_store_rax_to_stack(uint64 offset) {
+    emit_byte(0x48)
+    emit_byte(0x89)
+    if offset == 0 {
+        emit_byte(0x04)
+        emit_byte(0x24)
+    } else if offset < 128 {
+        emit_byte(0x44)
+        emit_byte(0x24)
+        uint8 off8 = offset
+        emit_byte(off8)
+    } else {
+        emit_byte(0x84)
+        emit_byte(0x24)
+        emit_u32_le(offset)
+    }
+}
+
+// emit: mov rax, [rsp+off]
+fn emit_load_rax_from_stack(uint64 offset) {
+    emit_byte(0x48)
+    emit_byte(0x8B)
+    if offset == 0 {
+        emit_byte(0x04)
+        emit_byte(0x24)
+    } else if offset < 128 {
+        emit_byte(0x44)
+        emit_byte(0x24)
+        uint8 off8 = offset
+        emit_byte(off8)
+    } else {
+        emit_byte(0x84)
+        emit_byte(0x24)
+        emit_u32_le(offset)
+    }
+}
+
+// emit: push rax
+fn emit_push_rax() {
+    emit_byte(0x50)
+}
+
+// emit: pop rcx
+fn emit_pop_rcx() {
+    emit_byte(0x59)
+}
+
+// emit: add rax, rcx
+fn emit_add_rax_rcx() {
+    emit_byte(0x48)
+    emit_byte(0x01)
+    emit_byte(0xC8)
+}
+
+// emit: sub rax, rcx  (rax = rax - rcx)
+fn emit_sub_rax_rcx() {
+    emit_byte(0x48)
+    emit_byte(0x29)
+    emit_byte(0xC8)
+}
+
+// emit: imul rax, rcx
+fn emit_mul_rax_rcx() {
+    emit_byte(0x48)
+    emit_byte(0x0F)
+    emit_byte(0xAF)
+    emit_byte(0xC1)
+}
+
+// emit: mov rdi, rax (first arg)
+fn emit_mov_rdi_rax() {
+    emit_byte(0x48)
+    emit_byte(0x89)
+    emit_byte(0xC7)
+}
+
+// emit: mov rsi, rax (second arg)
+fn emit_mov_rsi_rax() {
+    emit_byte(0x48)
+    emit_byte(0x89)
+    emit_byte(0xC6)
+}
+
+// emit: mov rdx, rax (third arg)
+fn emit_mov_rdx_rax() {
+    emit_byte(0x48)
+    emit_byte(0x89)
+    emit_byte(0xC2)
+}
+
+// emit: cmp rcx, rax + setCC al + movzx eax, al
+fn emit_compare(uint64 op_tok_kind) {
+    // cmp rax, rcx  (computes rax - rcx, sets flags for lhs vs rhs)
+    emit_byte(0x48)
+    emit_byte(0x39)
+    emit_byte(0xC8)
+
+    // setCC al
+    emit_byte(0x0F)
+    if op_tok_kind == 35 { emit_byte(0x94) }      // == → sete
+    else if op_tok_kind == 36 { emit_byte(0x95) }  // != → setne
+    else if op_tok_kind == 37 { emit_byte(0x9C) }  // < → setl
+    else if op_tok_kind == 38 { emit_byte(0x9E) }  // <= → setle
+    else if op_tok_kind == 39 { emit_byte(0x9F) }  // > → setg
+    else if op_tok_kind == 40 { emit_byte(0x9D) }  // >= → setge
+    else { emit_byte(0x94) }
+    emit_byte(0xC0)
+
+    // movzx eax, al
+    emit_byte(0x0F)
+    emit_byte(0xB6)
+    emit_byte(0xC0)
+}
+
+// ---------------------------------------------------------------------------
+// AST code generation (recursive)
+// ---------------------------------------------------------------------------
+
+// Generate code for an expression. Result is in %rax.
+@export
+fn gen_expr(uint64 node) {
+    uint32 kind = ast_kind(node)
+
+    // Unary operator: !, -, ~
+    if kind == 34 {
+        uint32 operand_idx = ast_child(node)
+        uint64 wop = operand_idx
+        gen_expr(wop)
+        // Determine op from token kind
+        uint32 op_tok = ast_data1(node)
+        uint64 wot = op_tok
+        uint64 p = cg_tokens + wot * 16
+        uint32 op_kind = 0
+        unsafe { *(p as uint32) -> op_kind }
+        uint64 wok = op_kind
+        if wok == 27 {
+            // ! logical NOT: test rax, rax; sete al; movzbl al, eax
+            emit_byte(0x48); emit_byte(0x85); emit_byte(0xC0)
+            emit_byte(0x0F); emit_byte(0x94); emit_byte(0xC0)
+            emit_byte(0x0F); emit_byte(0xB6); emit_byte(0xC0)
+        } else if wok == 31 {
+            // - negate: neg rax
+            emit_byte(0x48); emit_byte(0xF7); emit_byte(0xD8)
+        } else if wok == 26 {
+            // ~ bitwise NOT: not rax
+            emit_byte(0x48); emit_byte(0xF7); emit_byte(0xD0)
+        }
+        return
+    }
+
+    // Integer literal → mov rax, value
+    if kind == 30 {
+        uint32 tok = ast_data1(node)
+        uint64 val = parse_int_token(tok)
+        emit_mov_rax_imm(val)
+        return
+    }
+
+    // String literal → store bytes in str_buf, emit LEA rip-relative
+    if kind == 31 {
+        uint32 tok = ast_data1(node)
+        uint64 wtok = tok
+        uint64 tstart = tok_text_start(wtok)
+        uint64 tlen = tok_text_len(wtok)
+        // String data offset in str_buf
+        uint64 str_offset = str_len
+        // Copy string bytes (skip opening quote, process escapes, skip closing quote)
+        uint64 si = 1
+        while si < tlen - 1 {
+            uint64 ch = tok_source_byte(wtok, si)
+            if ch == 92 {
+                si = si + 1
+                uint64 esc = tok_source_byte(wtok, si)
+                if esc == 110 { ch = 10 }
+                else if esc == 116 { ch = 9 }
+                else if esc == 114 { ch = 13 }
+                else if esc == 48 { ch = 0 }
+                else if esc == 92 { ch = 92 }
+                else if esc == 34 { ch = 34 }
+                else { ch = esc }
+            }
+            uint64 sp = str_buf + str_len
+            uint8 cb = ch
+            unsafe { *(sp as uint8) = cb }
+            str_len = str_len + 1
+            si = si + 1
+        }
+        // Null-terminate
+        uint64 sp = str_buf + str_len
+        uint8 zero = 0
+        unsafe { *(sp as uint8) = zero }
+        str_len = str_len + 1
+        // Emit: lea disp32(%rip), %rax → 48 8D 05 [disp32]
+        emit_byte(0x48)
+        emit_byte(0x8D)
+        emit_byte(0x05)
+        // Record fixup
+        uint64 fentry = str_fixups + str_fixup_count * 8
+        uint32 cp = out_len
+        unsafe { *(fentry as uint32) = cp }
+        uint64 fe4 = fentry + 4
+        uint32 so = str_offset
+        unsafe { *(fe4 as uint32) = so }
+        str_fixup_count = str_fixup_count + 1
+        emit_u32_le(0)
+        return
+    }
+
+    // Array indexing: arr[i] → load byte from arr base + i
+    if kind == 37 {
+        uint32 arr_tok = ast_data1(node)
+        uint64 arr_offset = var_lookup(arr_tok)
+        if arr_offset == 0xFFFFFFFF {
+            arr_offset = 0
+        }
+        // Evaluate index expression
+        uint32 idx_child = ast_child(node)
+        uint64 wi = idx_child
+        gen_expr(wi)
+        // rax = index. Load arr base ptr into rcx
+        // mov rcx, rax (save index)
+        emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
+        // Load array base pointer from variable
+        emit_load_rax_from_stack(arr_offset)
+        // rax = base, rcx = index. Load byte: movzbl (%rax,%rcx), %eax
+        emit_byte(0x0F); emit_byte(0xB6); emit_byte(0x04); emit_byte(0x08)
+        return
+    }
+
+    // Field access: EnumName.Field (enum constant) or var.field (struct field read)
+    if kind == 36 {
+        uint32 obj_tok = ast_data1(node)
+        uint32 field_tok = ast_data2(node)
+        // Check if obj_tok is a struct variable
+        uint64 si = struct_var_lookup(obj_tok)
+        if si != 0xFFFFFFFF {
+            // Struct field read: load base + field_offset
+            uint64 var_off = var_lookup(obj_tok)
+            if var_off == 0xFFFFFFFF { var_off = 0 }
+            uint64 foff = struct_field_offset(si, field_tok)
+            uint64 fsz = struct_field_size(si, field_tok)
+            // Load struct base address
+            emit_load_rax_from_stack(var_off)
+            // Add field offset
+            if foff != 0 {
+                emit_byte(0x48); emit_byte(0x05)
+                emit_u32_le(foff)
+            }
+            // Load field value based on size
+            if fsz == 1 {
+                emit_byte(0x0F); emit_byte(0xB6); emit_byte(0x00)
+            } else if fsz == 4 {
+                emit_byte(0x8B); emit_byte(0x00)
+            } else {
+                emit_byte(0x48); emit_byte(0x8B); emit_byte(0x00)
+            }
+            return
+        }
+        // Enum constant
+        uint64 val = enum_lookup(obj_tok, field_tok)
+        emit_mov_rax_imm(val)
+        return
+    }
+
+    // Identifier → load from stack variable or static
+    if kind == 32 {
+        uint32 tok = ast_data1(node)
+        uint64 offset = var_lookup(tok)
+        if offset != 0xFFFFFFFF {
+            emit_load_rax_from_stack(offset)
+        } else {
+            uint64 soff = static_lookup(tok)
+            if soff != 0xFFFFFFFF {
+                emit_static_load(soff)
+            }
+        }
+        return
+    }
+
+    // Binary operation: lhs OP rhs
+    // Evaluate lhs first into rax, save to a fresh temp slot,
+    // then evaluate rhs into rax, move to rcx, restore lhs.
+    if kind == 33 {
+        uint32 lhs_idx = ast_child(node)
+        uint64 wlhs = lhs_idx
+        gen_expr(wlhs)           // rax = lhs
+
+        // Allocate a fresh temp slot (avoids nesting conflicts)
+        uint64 binop_temp = var_count * 8
+        var_count = var_count + 1
+        var_frame_size = var_count * 8
+        uint64 brem = var_frame_size & 15
+        if brem != 0 { var_frame_size = var_frame_size + 16 - brem }
+
+        // Save lhs to binop_temp
+        emit_store_rax_to_stack(binop_temp)
+
+        uint32 rhs_idx = ast_data2(node)
+        uint64 wrhs = rhs_idx
+        gen_expr(wrhs)           // rax = rhs
+
+        // mov rcx, rax (rhs → rcx)
+        emit_byte(0x48)
+        emit_byte(0x89)
+        emit_byte(0xC1)
+
+        // Restore lhs from binop_temp → rax
+        emit_load_rax_from_stack(binop_temp)
+
+        // Determine operation from token kind
+        uint32 op_tok = ast_data1(node)
+        uint64 wop = op_tok
+        uint64 p = cg_tokens + wop * 16
+        uint32 op_kind = 0
+        unsafe { *(p as uint32) -> op_kind }
+
+        if op_kind == 30 { emit_add_rax_rcx() }         // +
+        else if op_kind == 31 { emit_sub_rax_rcx() }    // -
+        else if op_kind == 22 { emit_mul_rax_rcx() }    // *
+        else if op_kind == 32 {
+            // / division: rax / rcx
+            // xor rdx, rdx; div rcx → quotient in rax
+            emit_byte(0x48)
+            emit_byte(0x31)
+            emit_byte(0xD2)
+            emit_byte(0x48)
+            emit_byte(0xF7)
+            emit_byte(0xF1)
+        }
+        else if op_kind == 33 {
+            // % modulo: rax % rcx
+            // xor rdx, rdx; div rcx → remainder in rdx; mov rax, rdx
+            emit_byte(0x48)
+            emit_byte(0x31)
+            emit_byte(0xD2)
+            emit_byte(0x48)
+            emit_byte(0xF7)
+            emit_byte(0xF1)
+            emit_byte(0x48)
+            emit_byte(0x89)
+            emit_byte(0xD0)
+        }
+        else if op_kind == 23 {
+            // & bitwise AND: and rcx, rax
+            emit_byte(0x48)
+            emit_byte(0x21)
+            emit_byte(0xC8)
+        }
+        else if op_kind == 24 {
+            // | bitwise OR: or rcx, rax
+            emit_byte(0x48)
+            emit_byte(0x09)
+            emit_byte(0xC8)
+        }
+        else if op_kind == 25 {
+            // ^ bitwise XOR: xor rcx, rax
+            emit_byte(0x48)
+            emit_byte(0x31)
+            emit_byte(0xC8)
+        }
+        else if op_kind == 43 {
+            // << shift left: shl cl, rax (cl = low byte of rcx)
+            emit_byte(0x48)
+            emit_byte(0xD3)
+            emit_byte(0xE0)
+        }
+        else if op_kind == 44 {
+            // >> shift right: shr cl, rax
+            emit_byte(0x48)
+            emit_byte(0xD3)
+            emit_byte(0xE8)
+        }
+        // Compound assignment ops (desugared by parser: x += y → x = x + y)
+        else if op_kind == 45 { emit_add_rax_rcx() }         // +=
+        else if op_kind == 46 { emit_sub_rax_rcx() }         // -=
+        else if op_kind == 47 { emit_mul_rax_rcx() }         // *=
+        else if op_kind == 50 {
+            emit_byte(0x48); emit_byte(0x21); emit_byte(0xC8) // &=
+        }
+        else if op_kind == 51 {
+            emit_byte(0x48); emit_byte(0x09); emit_byte(0xC8) // |=
+        }
+        else if op_kind == 52 {
+            emit_byte(0x48); emit_byte(0x31); emit_byte(0xC8) // ^=
+        }
+        return
+    }
+
+    // Comparison: lhs CMP rhs → 0 or 1 in rax
+    if kind == 38 {
+        uint32 lhs_idx = ast_child(node)
+        uint64 wlhs = lhs_idx
+        gen_expr(wlhs)
+
+        // Allocate a fresh temp slot
+        uint64 cmp_temp = var_count * 8
+        var_count = var_count + 1
+        var_frame_size = var_count * 8
+        uint64 crem = var_frame_size & 15
+        if crem != 0 { var_frame_size = var_frame_size + 16 - crem }
+
+        // Save lhs to cmp_temp
+        emit_store_rax_to_stack(cmp_temp)
+
+        uint32 rhs_idx = ast_data2(node)
+        uint64 wrhs = rhs_idx
+        gen_expr(wrhs)
+
+        // mov rcx, rax (rhs)
+        emit_byte(0x48)
+        emit_byte(0x89)
+        emit_byte(0xC1)
+
+        // Restore lhs → rax
+        emit_load_rax_from_stack(cmp_temp)
+
+        uint32 op_tok = ast_data1(node)
+        uint64 wop = op_tok
+        uint64 p = cg_tokens + wop * 16
+        uint32 op_kind = 0
+        unsafe { *(p as uint32) -> op_kind }
+
+        emit_compare(op_kind)
+        return
+    }
+
+    // LogicalAnd (&&): non-short-circuit, evaluate both, AND results
+    if kind == 39 {
+        uint32 lhs_idx = ast_child(node)
+        uint64 wlhs = lhs_idx
+        gen_expr(wlhs)
+        uint64 and_temp = var_count * 8
+        var_count = var_count + 1
+        var_frame_size = var_count * 8
+        uint64 arem = var_frame_size & 15
+        if arem != 0 { var_frame_size = var_frame_size + 16 - arem }
+        emit_store_rax_to_stack(and_temp)
+        uint32 rhs_idx = ast_data2(node)
+        uint64 wrhs = rhs_idx
+        gen_expr(wrhs)
+        // test both: rax = (lhs != 0) && (rhs != 0)
+        // test rax, rax → set ZF if rhs==0
+        emit_byte(0x48)
+        emit_byte(0x85)
+        emit_byte(0xC0)
+        // setne cl
+        emit_byte(0x0F)
+        emit_byte(0x95)
+        emit_byte(0xC1)
+        // load lhs, test
+        emit_load_rax_from_stack(and_temp)
+        emit_byte(0x48)
+        emit_byte(0x85)
+        emit_byte(0xC0)
+        // setne al
+        emit_byte(0x0F)
+        emit_byte(0x95)
+        emit_byte(0xC0)
+        // and al, cl
+        emit_byte(0x20)
+        emit_byte(0xC8)
+        // movzbl al, eax
+        emit_byte(0x0F)
+        emit_byte(0xB6)
+        emit_byte(0xC0)
+        return
+    }
+
+    // LogicalOr (||): non-short-circuit
+    if kind == 40 {
+        uint32 lhs_idx = ast_child(node)
+        uint64 wlhs = lhs_idx
+        gen_expr(wlhs)
+        uint64 or_temp = var_count * 8
+        var_count = var_count + 1
+        var_frame_size = var_count * 8
+        uint64 orem = var_frame_size & 15
+        if orem != 0 { var_frame_size = var_frame_size + 16 - orem }
+        emit_store_rax_to_stack(or_temp)
+        uint32 rhs_idx = ast_data2(node)
+        uint64 wrhs = rhs_idx
+        gen_expr(wrhs)
+        // or lhs into rax, then test
+        emit_byte(0x48)
+        emit_byte(0x89)
+        emit_byte(0xC1)
+        emit_load_rax_from_stack(or_temp)
+        // or rcx, rax
+        emit_byte(0x48)
+        emit_byte(0x09)
+        emit_byte(0xC8)
+        // test rax, rax; setne al; movzbl
+        emit_byte(0x48)
+        emit_byte(0x85)
+        emit_byte(0xC0)
+        emit_byte(0x0F)
+        emit_byte(0x95)
+        emit_byte(0xC0)
+        emit_byte(0x0F)
+        emit_byte(0xB6)
+        emit_byte(0xC0)
+        return
+    }
+
+    // Function call: callee(args...)
+    if kind == 35 {
+        uint32 callee_tok = ast_data1(node)
+
+        // Check for built-in: exit(code)
+        uint64 wct = callee_tok
+        if tok_matches(wct, "exit", 4) != 0 {
+            // Evaluate first arg
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr(wfa)
+            // mov edi, eax
+            emit_mov_rdi_rax()
+            // mov eax, 231 (exit_group)
+            emit_mov_rax_imm(231)
+            // syscall
+            emit_byte(0x0F)
+            emit_byte(0x05)
+            return
+        }
+
+        // Check for built-in: write(fd, buf, len)
+        if tok_matches(wct, "write", 5) != 0 {
+            // Evaluate 3 args using temp slots (no push/pop to avoid rsp shifts)
+            uint32 arg1 = ast_child(node)
+            uint64 wa1 = arg1
+            gen_expr(wa1)
+            emit_store_rax_to_stack(temp_slot_0)
+
+            uint32 arg2 = ast_next(wa1)
+            uint64 wa2 = arg2
+            gen_expr(wa2)
+            emit_store_rax_to_stack(temp_slot_1)
+
+            uint32 arg3 = ast_next(wa2)
+            uint64 wa3 = arg3
+            gen_expr(wa3)
+            // rax = len → rdx
+            emit_mov_rdx_rax()
+            // buf → rsi
+            emit_load_rax_from_stack(temp_slot_1)
+            emit_mov_rsi_rax()
+            // fd → rdi
+            emit_load_rax_from_stack(temp_slot_0)
+            emit_mov_rdi_rax()
+            // mov eax, 1 (sys_write)
+            emit_mov_rax_imm(1)
+            emit_byte(0x0F)
+            emit_byte(0x05)
+            return
+        }
+
+        // Check for built-in: alloc(size) → mmap
+        if tok_matches(wct, "alloc", 5) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr(wfa)
+            // rax = size → rsi (length)
+            emit_mov_rsi_rax()
+            // rdi = 0 (addr = NULL)
+            emit_byte(0x48)
+            emit_byte(0x31)
+            emit_byte(0xFF)
+            // rdx = 3 (PROT_READ | PROT_WRITE)
+            emit_mov_rax_imm(3)
+            emit_mov_rdx_rax()
+            // r10 = 0x22 (MAP_PRIVATE | MAP_ANONYMOUS)
+            emit_mov_rax_imm(0x22)
+            // mov r10, rax
+            emit_byte(0x49)
+            emit_byte(0x89)
+            emit_byte(0xC2)
+            // r8 = -1 (fd)
+            emit_byte(0x49)
+            emit_byte(0xC7)
+            emit_byte(0xC0)
+            emit_u32_le(0xFFFFFFFF)
+            // r9 = 0 (offset)
+            emit_byte(0x4D)
+            emit_byte(0x31)
+            emit_byte(0xC9)
+            // rax = 9 (sys_mmap)
+            emit_mov_rax_imm(9)
+            emit_byte(0x0F)
+            emit_byte(0x05)
+            return
+        }
+
+        // Check for built-in: file_open(path, flags) → open syscall
+        if tok_matches(wct, "file_open", 9) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 wa1 = arg1
+            gen_expr(wa1)
+            emit_store_rax_to_stack(temp_slot_0)
+            uint32 arg2 = ast_next(wa1)
+            uint64 wa2 = arg2
+            gen_expr(wa2)
+            // rax = flags. Map: 0=read(O_RDONLY), 1=write(O_WRONLY|O_CREAT|O_TRUNC)
+            // Save flags to temp_slot_1
+            emit_store_rax_to_stack(temp_slot_1)
+            // rdi = path
+            emit_load_rax_from_stack(temp_slot_0)
+            emit_mov_rdi_rax()
+            // rsi = flags
+            emit_load_rax_from_stack(temp_slot_1)
+            // If flags == 1, use O_WRONLY|O_CREAT|O_TRUNC = 0x241
+            // mov rcx, rax (save original)
+            emit_byte(0x48)
+            emit_byte(0x89)
+            emit_byte(0xC1)
+            // cmp ecx, 1
+            emit_byte(0x83)
+            emit_byte(0xF9)
+            emit_byte(0x01)
+            // jne +7 (skip the movabs)
+            emit_byte(0x75)
+            emit_byte(0x05)
+            // mov eax, 0x241
+            emit_mov_rax_imm(0x241)
+            emit_mov_rsi_rax()
+            // rdx = 0644 octal = 0x1A4 (mode, for O_CREAT)
+            emit_mov_rax_imm(0x1A4)
+            emit_mov_rdx_rax()
+            // rax = 2 (sys_open)
+            emit_mov_rax_imm(2)
+            emit_byte(0x0F)
+            emit_byte(0x05)
+            return
+        }
+
+        // Check for built-in: file_read(fd, buf, len)
+        if tok_matches(wct, "file_read", 9) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 wa1 = arg1
+            gen_expr(wa1)
+            emit_store_rax_to_stack(temp_slot_0)
+            uint32 arg2 = ast_next(wa1)
+            uint64 wa2 = arg2
+            gen_expr(wa2)
+            emit_store_rax_to_stack(temp_slot_1)
+            uint32 arg3 = ast_next(wa2)
+            uint64 wa3 = arg3
+            gen_expr(wa3)
+            emit_mov_rdx_rax()
+            emit_load_rax_from_stack(temp_slot_1)
+            emit_mov_rsi_rax()
+            emit_load_rax_from_stack(temp_slot_0)
+            emit_mov_rdi_rax()
+            emit_mov_rax_imm(0)
+            emit_byte(0x0F)
+            emit_byte(0x05)
+            return
+        }
+
+        // Check for built-in: file_write(fd, buf, len)
+        if tok_matches(wct, "file_write", 10) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 wa1 = arg1
+            gen_expr(wa1)
+            emit_store_rax_to_stack(temp_slot_0)
+            uint32 arg2 = ast_next(wa1)
+            uint64 wa2 = arg2
+            gen_expr(wa2)
+            emit_store_rax_to_stack(temp_slot_1)
+            uint32 arg3 = ast_next(wa2)
+            uint64 wa3 = arg3
+            gen_expr(wa3)
+            emit_mov_rdx_rax()
+            emit_load_rax_from_stack(temp_slot_1)
+            emit_mov_rsi_rax()
+            emit_load_rax_from_stack(temp_slot_0)
+            emit_mov_rdi_rax()
+            emit_mov_rax_imm(1)
+            emit_byte(0x0F)
+            emit_byte(0x05)
+            return
+        }
+
+        // Check for built-in: file_close(fd)
+        if tok_matches(wct, "file_close", 10) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr(wfa)
+            emit_mov_rdi_rax()
+            emit_mov_rax_imm(3)
+            emit_byte(0x0F)
+            emit_byte(0x05)
+            return
+        }
+
+        // fmt_uint: treat as a user-defined function call (must be defined in source)
+
+        // Check for built-in: file_size(fd) → lseek to end, then back
+        if tok_matches(wct, "file_size", 9) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr(wfa)
+            emit_mov_rdi_rax()
+            // lseek(fd, 0, SEEK_END=2) → rax = size
+            // rsi = 0
+            emit_byte(0x48)
+            emit_byte(0x31)
+            emit_byte(0xF6)
+            // rdx = 2 (SEEK_END)
+            emit_mov_rax_imm(2)
+            emit_mov_rdx_rax()
+            emit_mov_rax_imm(8)
+            emit_byte(0x0F)
+            emit_byte(0x05)
+            // Save size
+            emit_push_rax()
+            // lseek(fd, 0, SEEK_SET=0) to rewind
+            // rdi still has fd
+            emit_byte(0x48)
+            emit_byte(0x31)
+            emit_byte(0xF6)
+            emit_byte(0x48)
+            emit_byte(0x31)
+            emit_byte(0xD2)
+            emit_mov_rax_imm(8)
+            emit_byte(0x0F)
+            emit_byte(0x05)
+            // Restore size
+            emit_pop_rcx()
+            // mov rax, rcx
+            emit_byte(0x48)
+            emit_byte(0x89)
+            emit_byte(0xC8)
+            return
+        }
+
+        // User-defined function call
+        // Evaluate args directly into registers (avoids push/pop clobbering [rsp-8])
+        uint32 arg = ast_child(node)
+        uint64 warg = arg
+        uint64 arg_count = 0
+
+        // Count args
+        uint64 wtmp = arg
+        while wtmp != 0 {
+            arg_count = arg_count + 1
+            uint32 nt2 = ast_next(wtmp)
+            wtmp = nt2
+        }
+
+        // Allocate temp slots for each arg
+        uint64 arg_slots_base = var_count * 8
+        uint64 ac = 0
+        while ac < arg_count {
+            var_count = var_count + 1
+            ac = ac + 1
+        }
+        var_frame_size = var_count * 8
+        uint64 acrem = var_frame_size & 15
+        if acrem != 0 { var_frame_size = var_frame_size + 16 - acrem }
+
+        // Evaluate all args and store to temp slots
+        uint64 weval = warg
+        uint64 ai = 0
+        while weval != 0 {
+            gen_expr(weval)
+            uint64 aslot = arg_slots_base + ai * 8
+            emit_store_rax_to_stack(aslot)
+            ai = ai + 1
+            uint32 anxt = ast_next(weval)
+            weval = anxt
+        }
+
+        // Load args into SysV registers from temp slots
+        if arg_count >= 6 {
+            emit_load_rax_from_stack(arg_slots_base + 40)
+            // mov r9, rax (49 89 C1)
+            emit_byte(0x49); emit_byte(0x89); emit_byte(0xC1)
+        }
+        if arg_count >= 5 {
+            emit_load_rax_from_stack(arg_slots_base + 32)
+            // mov r8, rax (49 89 C0)
+            emit_byte(0x49); emit_byte(0x89); emit_byte(0xC0)
+        }
+        if arg_count >= 4 {
+            emit_load_rax_from_stack(arg_slots_base + 24)
+            // mov rcx, rax
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
+        }
+        if arg_count >= 3 {
+            emit_load_rax_from_stack(arg_slots_base + 16)
+            emit_mov_rdx_rax()
+        }
+        if arg_count >= 2 {
+            emit_load_rax_from_stack(arg_slots_base + 8)
+            emit_mov_rsi_rax()
+        }
+        if arg_count >= 1 {
+            emit_load_rax_from_stack(arg_slots_base)
+            emit_mov_rdi_rax()
+        }
+
+        // emit: call rel32 (placeholder)
+        emit_byte(0xE8)
+        uint64 fixup_off = out_len
+        emit_u32_le(0)
+
+        // Record fixup
+        uint64 fentry = fixup_table + fixup_count * 8
+        uint32 fo = fixup_off
+        unsafe { *(fentry as uint32) = fo }
+        uint64 fe4 = fentry + 4
+        uint32 ct = callee_tok
+        unsafe { *(fe4 as uint32) = ct }
+        fixup_count = fixup_count + 1
+
+        return
+    }
+}
+
+// Generate code for a statement
+@export
+fn gen_stmt(uint64 node) {
+    uint32 kind = ast_kind(node)
+
+    // Variable declaration: TYPE name = expr  OR  TYPE[SIZE] name (array)
+    if kind == 10 {
+        uint32 name_tok = ast_data2(node)
+        uint32 arr_size_tok = ast_data3(node)
+        uint64 was = arr_size_tok
+
+        if was != 0 {
+            // Array declaration: allocate N bytes on stack
+            // Parse the size from the token
+            uint64 arr_size = parse_int_token(was)
+            // Round up to 8-byte slots
+            uint64 n_slots = (arr_size + 7) / 8
+            // Allocate slots
+            uint64 arr_offset = var_count * 8
+            uint64 si = 0
+            while si < n_slots {
+                var_count = var_count + 1
+                si = si + 1
+            }
+            var_frame_size = var_count * 8
+            uint64 arem2 = var_frame_size & 15
+            if arem2 != 0 { var_frame_size = var_frame_size + 16 - arem2 }
+            // The variable stores a pointer to the array on the stack
+            // Declare the name variable and store the address
+            uint64 ptr_offset = var_declare(name_tok)
+            // lea rax, [rsp + arr_offset]
+            emit_byte(0x48)
+            emit_byte(0x8D)
+            if arr_offset == 0 {
+                emit_byte(0x04)
+                emit_byte(0x24)
+            } else if arr_offset < 128 {
+                emit_byte(0x44)
+                emit_byte(0x24)
+                uint8 ao8 = arr_offset
+                emit_byte(ao8)
+            } else {
+                emit_byte(0x84)
+                emit_byte(0x24)
+                emit_u32_le(arr_offset)
+            }
+            emit_store_rax_to_stack(ptr_offset)
+            return
+        }
+
+        // Check for struct variable declaration (data4 != 0)
+        uint32 struct_marker = ast_data4(node)
+        uint64 wsm = struct_marker
+        if wsm != 0 {
+            // Struct variable: allocate struct-sized space on stack
+            uint64 sidx = wsm - 1
+            uint64 ssize = struct_total_size(sidx)
+            uint64 n_slots = (ssize + 7) / 8
+            uint64 struct_off = var_count * 8
+            uint64 ssi = 0
+            while ssi < n_slots {
+                var_count = var_count + 1
+                ssi = ssi + 1
+            }
+            var_frame_size = var_count * 8
+            uint64 srem = var_frame_size & 15
+            if srem != 0 { var_frame_size = var_frame_size + 16 - srem }
+            // Variable holds pointer to struct space
+            uint64 ptr_off = var_declare(name_tok)
+            // lea rax, [rsp + struct_off]
+            emit_byte(0x48); emit_byte(0x8D)
+            if struct_off < 128 {
+                emit_byte(0x44); emit_byte(0x24)
+                uint8 so8 = struct_off
+                emit_byte(so8)
+            } else {
+                emit_byte(0x84); emit_byte(0x24)
+                emit_u32_le(struct_off)
+            }
+            emit_store_rax_to_stack(ptr_off)
+            // Register as struct variable
+            struct_var_register(name_tok, sidx)
+            return
+        }
+
+        uint64 offset = var_declare(name_tok)
+        uint32 init_child = ast_child(node)
+        uint64 wic = init_child
+        if wic != 0 {
+            gen_expr(wic)
+            emit_store_rax_to_stack(offset)
+        }
+        return
+    }
+
+    // Field assignment: var.field = value (kind 36 with data4 = 1)
+    if kind == 36 {
+        uint32 fa_d4 = ast_data4(node)
+        uint64 wfad4 = fa_d4
+        if wfad4 == 1 {
+            uint32 obj_tok = ast_data1(node)
+            uint32 field_tok = ast_data2(node)
+            uint32 val_node = ast_data3(node)
+            uint64 wval = val_node
+            // Evaluate value
+            gen_expr(wval)
+            emit_store_rax_to_stack(temp_slot_0)
+            // Compute address: base + field_offset
+            uint64 si = struct_var_lookup(obj_tok)
+            if si != 0xFFFFFFFF {
+                uint64 var_off = var_lookup(obj_tok)
+                if var_off == 0xFFFFFFFF { var_off = 0 }
+                uint64 foff = struct_field_offset(si, field_tok)
+                uint64 fsz = struct_field_size(si, field_tok)
+                emit_load_rax_from_stack(var_off)
+                if foff != 0 {
+                    emit_byte(0x48); emit_byte(0x05)
+                    emit_u32_le(foff)
+                }
+                // rax = address. Load value from temp, store
+                emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1) // mov rcx, rax (addr)
+                emit_load_rax_from_stack(temp_slot_0)
+                // Store based on field size
+                if fsz == 1 {
+                    emit_byte(0x88); emit_byte(0x01) // mov %al, (%rcx)
+                } else if fsz == 4 {
+                    emit_byte(0x89); emit_byte(0x01) // mov %eax, (%rcx)
+                } else {
+                    emit_byte(0x48); emit_byte(0x89); emit_byte(0x01) // mov %rax, (%rcx)
+                }
+            }
+            return
+        }
+    }
+
+    // Assignment: name = expr
+    if kind == 11 {
+        uint32 name_tok = ast_data1(node)
+        uint32 val_child = ast_child(node)
+        uint64 wvc = val_child
+        gen_expr(wvc)
+        uint64 offset = var_lookup(name_tok)
+        if offset != 0xFFFFFFFF {
+            emit_store_rax_to_stack(offset)
+        } else {
+            uint64 soff = static_lookup(name_tok)
+            if soff != 0xFFFFFFFF {
+                emit_static_store(soff)
+            }
+        }
+        return
+    }
+
+    // Return: return expr
+    if kind == 12 {
+        uint32 expr_child = ast_child(node)
+        uint64 wec = expr_child
+        if wec != 0 {
+            gen_expr(wec)
+        }
+        // Jump to epilogue (placeholder — patched after function body)
+        emit_byte(0xE9)
+        uint64 ret_patch = out_len
+        emit_u32_le(0)
+        // Record fixup
+        uint64 rentry = ret_fixups + ret_fixup_count * 4
+        uint32 rp32 = ret_patch
+        unsafe { *(rentry as uint32) = rp32 }
+        ret_fixup_count = ret_fixup_count + 1
+        return
+    }
+
+    // If: if (cond) { body } else { body }
+    if kind == 13 {
+        uint32 cond = ast_child(node)
+        uint64 wcond = cond
+        gen_expr(wcond)
+
+        // test eax, eax
+        emit_byte(0x85)
+        emit_byte(0xC0)
+
+        // jz else (placeholder)
+        emit_byte(0x0F)
+        emit_byte(0x84)
+        uint64 jz_patch = out_len
+        emit_u32_le(0)
+
+        // Then body
+        uint32 then_idx = ast_data1(node)
+        uint64 wthen = then_idx
+        gen_block(wthen)
+
+        // jmp endif (placeholder)
+        emit_byte(0xE9)
+        uint64 jmp_patch = out_len
+        emit_u32_le(0)
+
+        // Patch jz to here (else)
+        uint64 else_target = out_len
+        uint64 jz_disp = else_target - jz_patch - 4
+        patch_u32(jz_patch, jz_disp)
+
+        // Else body (could be a Block or an If node from else-if)
+        uint32 else_idx = ast_data2(node)
+        uint64 welse = else_idx
+        if welse != 0 {
+            uint32 else_kind = ast_kind(welse)
+            if else_kind == 13 {
+                gen_stmt(welse)
+            } else {
+                gen_block(welse)
+            }
+        }
+
+        // Patch jmp to here (endif)
+        uint64 endif_target = out_len
+        uint64 jmp_disp = endif_target - jmp_patch - 4
+        patch_u32(jmp_patch, jmp_disp)
+        return
+    }
+
+    // While: while (cond) { body }
+    if kind == 14 {
+        uint64 loop_start = out_len
+
+        // Push loop context
+        uint64 lentry = loop_stack + loop_depth * 16
+        unsafe { *(lentry as uint64) = loop_start }
+        uint64 lentry8 = lentry + 8
+        unsafe { *(lentry8 as uint64) = break_fixup_count }
+        loop_depth = loop_depth + 1
+
+        uint32 cond = ast_child(node)
+        uint64 wcond = cond
+        gen_expr(wcond)
+
+        // test eax, eax
+        emit_byte(0x85)
+        emit_byte(0xC0)
+
+        // jz loop_end (placeholder)
+        emit_byte(0x0F)
+        emit_byte(0x84)
+        uint64 jz_patch = out_len
+        emit_u32_le(0)
+
+        // Body
+        uint32 body_idx = ast_data1(node)
+        uint64 wbody = body_idx
+        gen_block(wbody)
+
+        // jmp loop_start
+        emit_byte(0xE9)
+        uint64 back_disp = loop_start - out_len - 4
+        emit_u32_le(back_disp)
+
+        // Patch jz to here (loop_end)
+        uint64 loop_end = out_len
+        uint64 fwd_disp = loop_end - jz_patch - 4
+        patch_u32(jz_patch, fwd_disp)
+
+        // Pop loop context and patch break fixups to loop_end
+        loop_depth = loop_depth - 1
+        uint64 lentry2 = loop_stack + loop_depth * 16 + 8
+        uint64 saved_break_start = 0
+        unsafe { *(lentry2 as uint64) -> saved_break_start }
+        uint64 bi = saved_break_start
+        while bi < break_fixup_count {
+            uint64 bentry = break_fixups + bi * 4
+            uint32 bpatch = 0
+            unsafe { *(bentry as uint32) -> bpatch }
+            uint64 wbp = bpatch
+            uint64 bdisp = loop_end - wbp - 4
+            patch_u32(wbp, bdisp)
+            bi = bi + 1
+        }
+        break_fixup_count = saved_break_start
+        return
+    }
+
+    // Break
+    if kind == 17 {
+        emit_byte(0xE9)
+        uint64 brk_off = out_len
+        emit_u32_le(0)
+        uint64 brk_entry = break_fixups + break_fixup_count * 4
+        uint32 brk32 = brk_off
+        unsafe { *(brk_entry as uint32) = brk32 }
+        break_fixup_count = break_fixup_count + 1
+        return
+    }
+
+    // Continue
+    if kind == 18 {
+        // Jump back to loop_start
+        uint64 lentry3 = loop_stack + (loop_depth - 1) * 16
+        uint64 cont_target = 0
+        unsafe { *(lentry3 as uint64) -> cont_target }
+        emit_byte(0xE9)
+        uint64 cont_disp = cont_target - out_len - 4
+        emit_u32_le(cont_disp)
+        return
+    }
+
+    // Indexed assignment: arr[i] = val (kind 37 with data3=1)
+    if kind == 37 {
+        uint32 idx_d3 = ast_data3(node)
+        uint64 wd3 = idx_d3
+        if wd3 == 1 {
+            // Evaluate value first → save to temp
+            uint32 rhs_child = ast_data2(node)
+            uint64 wrhs = rhs_child
+            gen_expr(wrhs)
+            emit_store_rax_to_stack(temp_slot_0)
+            // Evaluate index
+            uint32 idx_child = ast_child(node)
+            uint64 wi = idx_child
+            gen_expr(wi)
+            emit_store_rax_to_stack(temp_slot_1)
+            // Load array base
+            uint32 arr_tok = ast_data1(node)
+            uint64 arr_offset = var_lookup(arr_tok)
+            if arr_offset == 0xFFFFFFFF { arr_offset = 0 }
+            emit_load_rax_from_stack(arr_offset)
+            // rax = base. Add index: rax = rax + [temp_slot_1]
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1) // mov rcx, rax
+            emit_load_rax_from_stack(temp_slot_1) // rax = index
+            emit_byte(0x48); emit_byte(0x01); emit_byte(0xC8) // add rcx, rax → rax = base+idx
+            // Load value from temp_slot_0 → cl
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1) // mov rcx, rax (save addr)
+            emit_load_rax_from_stack(temp_slot_0) // rax = value
+            // Store byte: mov (%rcx), al
+            emit_byte(0x88); emit_byte(0x01)
+            return
+        }
+    }
+
+    // PtrLoad: *(addr as TYPE) -> dest
+    // kind 41: data1=type_size, child=addr_expr, data2=dest_name_tok
+    if kind == 41 {
+        uint32 type_size = ast_data1(node)
+        uint64 wts = type_size
+        uint32 addr_child = ast_child(node)
+        uint64 wa = addr_child
+        gen_expr(wa)
+        // rax = address. Do indirect load based on type_size.
+        if wts == 1 {
+            // movzbl (%rax), %eax
+            emit_byte(0x0F)
+            emit_byte(0xB6)
+            emit_byte(0x00)
+        } else if wts == 4 {
+            // movl (%rax), %eax
+            emit_byte(0x8B)
+            emit_byte(0x00)
+        } else {
+            // movq (%rax), %rax
+            emit_byte(0x48)
+            emit_byte(0x8B)
+            emit_byte(0x00)
+        }
+        // Store to destination variable
+        uint32 dest_tok = ast_data2(node)
+        uint64 doff = var_lookup(dest_tok)
+        if doff != 0xFFFFFFFF {
+            emit_store_rax_to_stack(doff)
+        } else {
+            uint64 soff = static_lookup(dest_tok)
+            if soff != 0xFFFFFFFF {
+                emit_static_store(soff)
+            }
+        }
+        return
+    }
+
+    // PtrStore: *(addr as TYPE) = value
+    // kind 42: data1=type_size, child=addr_expr, data2=value_expr
+    if kind == 42 {
+        uint32 type_size = ast_data1(node)
+        uint64 wts = type_size
+        // Evaluate value first → save to temp
+        uint32 val_child = ast_data2(node)
+        uint64 wv = val_child
+        gen_expr(wv)
+        // Save value to temp_slot_0
+        emit_store_rax_to_stack(temp_slot_0)
+        // Evaluate address
+        uint32 addr_child = ast_child(node)
+        uint64 wa = addr_child
+        gen_expr(wa)
+        // rax = address, load value from temp → rcx
+        // mov rcx, [rsp + temp_slot_0]
+        emit_byte(0x48)
+        emit_byte(0x8B)
+        if temp_slot_0 == 0 {
+            emit_byte(0x0C)
+            emit_byte(0x24)
+        } else if temp_slot_0 < 128 {
+            emit_byte(0x4C)
+            emit_byte(0x24)
+            uint8 ts8 = temp_slot_0
+            emit_byte(ts8)
+        } else {
+            emit_byte(0x8C)
+            emit_byte(0x24)
+            emit_u32_le(temp_slot_0)
+        }
+        // Store rcx to (%rax) based on type_size
+        if wts == 1 {
+            // movb %cl, (%rax)
+            emit_byte(0x88)
+            emit_byte(0x08)
+        } else if wts == 4 {
+            // movl %ecx, (%rax)
+            emit_byte(0x89)
+            emit_byte(0x08)
+        } else {
+            // movq %rcx, (%rax)
+            emit_byte(0x48)
+            emit_byte(0x89)
+            emit_byte(0x08)
+        }
+        return
+    }
+
+    // Expression statement (e.g. function call)
+    if kind == 16 {
+        uint32 expr_child = ast_child(node)
+        uint64 wec = expr_child
+        gen_expr(wec)
+        return
+    }
+}
+
+// Generate code for a block (linked list of statements)
+@export
+fn gen_block(uint64 block_node) {
+    uint32 child = ast_child(block_node)
+    uint64 wchild = child
+    while wchild != 0 {
+        gen_stmt(wchild)
+        uint32 nxt = ast_next(wchild)
+        wchild = nxt
+    }
+}
+
+// Generate code for a function declaration
+@export
+fn gen_function(uint64 fn_node) {
+    uint32 name_tok = ast_data1(fn_node)
+
+    // Reset variable table for this function
+    var_reset()
+
+    // Reserve two temp slots for expression evaluation
+    temp_slot_0 = var_count * 8
+    var_count = var_count + 1
+    temp_slot_1 = var_count * 8
+    var_count = var_count + 1
+    var_frame_size = var_count * 8
+    uint64 rem0 = var_frame_size & 15
+    if rem0 != 0 { var_frame_size = var_frame_size + 16 - rem0 }
+
+    // Register function at current offset
+    fn_register(name_tok, out_len)
+
+    // For main function: emit _start trampoline that stores argc/argv to statics
+    uint64 wnt = name_tok
+    if tok_matches(wnt, "main", 4) != 0 {
+        // mov rax, [rsp]       ; rax = argc
+        emit_byte(0x48); emit_byte(0x8B); emit_byte(0x04); emit_byte(0x24)
+        // Store to cli_argc static
+        uint64 argc_off = static_lookup_by_name("cli_argc", 8)
+        if argc_off != 0xFFFFFFFF {
+            emit_static_store(argc_off)
+        }
+        // lea rax, [rsp+8]    ; rax = &argv[0]
+        emit_byte(0x48); emit_byte(0x8D); emit_byte(0x44); emit_byte(0x24); emit_byte(0x08)
+        uint64 argv_off = static_lookup_by_name("cli_argv", 8)
+        if argv_off != 0xFFFFFFFF {
+            emit_static_store(argv_off)
+        }
+    }
+
+    // Parse params (declare as variables)
+    uint32 first_param = ast_child(fn_node)
+    uint64 wparam = first_param
+    while wparam != 0 {
+        uint32 pk = ast_kind(wparam)
+        if pk == 3 {
+            uint32 param_name = ast_data2(wparam)
+            var_declare(param_name)
+        }
+        uint32 pnxt = ast_next(wparam)
+        wparam = pnxt
+    }
+
+    // Pre-scan body to count local variables
+    // (For simplicity, emit a placeholder frame setup and patch later)
+    uint64 prologue_start = out_len
+
+    // push rbx
+    emit_byte(0x53)
+    // sub rsp, FRAME_SIZE (placeholder)
+    emit_byte(0x48)
+    emit_byte(0x81)
+    emit_byte(0xEC)
+    uint64 frame_patch = out_len
+    emit_u32_le(0)
+
+    // Spill params to stack
+    // param 0 (rdi) → [rsp + offset_of_param0]
+    uint64 pidx = 0
+    uint64 wp2 = first_param
+    while wp2 != 0 {
+        uint32 pk2 = ast_kind(wp2)
+        if pk2 == 3 {
+            uint32 pn2 = ast_data2(wp2)
+            uint64 poff = var_lookup(pn2)
+            if poff != 0xFFFFFFFF {
+                // mov [rsp+poff], REG
+                if pidx == 0 {
+                    // mov [rsp+off], rdi
+                    emit_byte(0x48)
+                    emit_byte(0x89)
+                    emit_byte(0x7C)
+                    emit_byte(0x24)
+                    uint8 po8 = poff
+                    emit_byte(po8)
+                }
+                if pidx == 1 {
+                    // mov [rsp+off], rsi
+                    emit_byte(0x48)
+                    emit_byte(0x89)
+                    emit_byte(0x74)
+                    emit_byte(0x24)
+                    uint8 po8 = poff
+                    emit_byte(po8)
+                }
+                if pidx == 2 {
+                    // mov [rsp+off], rdx
+                    emit_byte(0x48)
+                    emit_byte(0x89)
+                    emit_byte(0x54)
+                    emit_byte(0x24)
+                    uint8 po8 = poff
+                    emit_byte(po8)
+                }
+                if pidx == 3 {
+                    // mov [rsp+off], rcx
+                    emit_byte(0x48)
+                    emit_byte(0x89)
+                    emit_byte(0x4C)
+                    emit_byte(0x24)
+                    uint8 po8 = poff
+                    emit_byte(po8)
+                }
+                if pidx == 4 {
+                    // mov [rsp+off], r8 (4C 89 44 24 off)
+                    emit_byte(0x4C)
+                    emit_byte(0x89)
+                    emit_byte(0x44)
+                    emit_byte(0x24)
+                    uint8 po8 = poff
+                    emit_byte(po8)
+                }
+                if pidx == 5 {
+                    // mov [rsp+off], r9 (4C 89 4C 24 off)
+                    emit_byte(0x4C)
+                    emit_byte(0x89)
+                    emit_byte(0x4C)
+                    emit_byte(0x24)
+                    uint8 po8 = poff
+                    emit_byte(po8)
+                }
+                pidx = pidx + 1
+            }
+        }
+        uint32 pn3 = ast_next(wp2)
+        wp2 = pn3
+    }
+
+    // Reset return fixups for this function
+    ret_fixup_count = 0
+
+    // Generate body
+    uint32 body_idx = ast_data3(fn_node)
+    uint64 wbody = body_idx
+    if wbody != 0 {
+        gen_block(wbody)
+    }
+
+    // Epilogue label — patch all return jumps to here
+    uint64 epilogue_start = out_len
+    uint64 ri = 0
+    while ri < ret_fixup_count {
+        uint64 rentry = ret_fixups + ri * 4
+        uint32 rpatch = 0
+        unsafe { *(rentry as uint32) -> rpatch }
+        uint64 wrp = rpatch
+        uint64 disp = epilogue_start - wrp - 4
+        patch_u32(wrp, disp)
+        ri = ri + 1
+    }
+
+    // add rsp, FRAME_SIZE
+    emit_byte(0x48)
+    emit_byte(0x81)
+    emit_byte(0xC4)
+    emit_u32_le(var_frame_size)
+    // pop rbx
+    emit_byte(0x5B)
+    // ret
+    emit_byte(0xC3)
+
+    // Patch prologue frame size
+    patch_u32(frame_patch, var_frame_size)
+}
+
+// Find the code offset for "main" function
+@export
+fn find_main_offset() -> uint64 {
+    uint64 i = 0
+    while i < fn_count {
+        uint64 entry = fn_table + i * 8
+        uint32 stored_tok = 0
+        unsafe { *(entry as uint32) -> stored_tok }
+        uint64 ws = stored_tok
+        if tok_matches(ws, "main", 4) != 0 {
+            uint64 e4 = entry + 4
+            uint32 off = 0
+            unsafe { *(e4 as uint32) -> off }
+            return off
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+// Resolve call fixups
+@export
+fn resolve_fixups() {
+    uint64 i = 0
+    while i < fixup_count {
+        uint64 fentry = fixup_table + i * 8
+        uint32 patch_off = 0
+        unsafe { *(fentry as uint32) -> patch_off }
+        uint64 fe4 = fentry + 4
+        uint32 target_tok = 0
+        unsafe { *(fe4 as uint32) -> target_tok }
+
+        uint64 wtt = target_tok
+        uint64 target_off = fn_lookup(wtt)
+        if target_off != 0xFFFFFFFF {
+            uint64 wpo = patch_off
+            uint64 disp = target_off - wpo - 4
+            patch_u32(wpo, disp)
+        }
+        i = i + 1
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ELF emission
+// ---------------------------------------------------------------------------
+
+@export
+fn emit_elf_header() {
+    emit_byte(0x7F)
+    emit_byte(69)
+    emit_byte(76)
+    emit_byte(70)
+    emit_byte(2)
+    emit_byte(1)
+    emit_byte(1)
+    emit_byte(0)
+    uint64 i = 0
+    while i < 8 { emit_byte(0); i = i + 1 }
+    emit_u16_le(2)
+    emit_u16_le(0x3E)
+    emit_u32_le(1)
+    emit_u64_le(0)
+    emit_u64_le(64)
+    emit_u64_le(0)
+    emit_u32_le(0)
+    emit_u16_le(64)
+    emit_u16_le(56)
+    emit_u16_le(1)
+    emit_u16_le(64)
+    emit_u16_le(0)
+    emit_u16_le(0)
+}
+
+@export
+fn emit_program_header(uint64 text_size) {
+    uint64 total = 120 + text_size
+    emit_u32_le(1)
+    emit_u32_le(7)
+    emit_u64_le(0)
+    emit_u64_le(0x400000)
+    emit_u64_le(0x400000)
+    emit_u64_le(total)
+    emit_u64_le(total)
+    emit_u64_le(0x200000)
+}
+
+@export
+fn codegen_write_output(uint64 output_path) {
+    uint64 fd = file_open(output_path, 1)
+    file_write(fd, out_buf, out_len)
+    file_close(fd)
+}
+
+@export
+fn codegen_output_len() -> uint64 {
+    return out_len
+}

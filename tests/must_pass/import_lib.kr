@@ -1,4 +1,0 @@
-@export
-fn add_numbers(uint64 a, uint64 b) -> uint64 {
-    return a + b
-}

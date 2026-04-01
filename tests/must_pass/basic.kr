@@ -1,8 +1,0 @@
-@module_caps(PhysMap);
-
-@ctx(thread, boot)
-fn bar() { }
-
-@ctx(thread, boot)
-@caps(PhysMap)
-fn foo() { bar(); }

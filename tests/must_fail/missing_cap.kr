@@ -1,6 +1,0 @@
-@ctx(thread)
-@caps(PhysMap)
-fn mapit() { }
-
-@ctx(thread)
-fn caller() { mapit(); }

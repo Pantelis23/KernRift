@@ -1,6 +1,0 @@
-@module_caps(PhysMap);
-
-@ctx(thread, boot)
-@caps(PhysMap)
-fn map_page() {
-}

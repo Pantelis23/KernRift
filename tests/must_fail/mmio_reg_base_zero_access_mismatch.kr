@@ -1,6 +1,0 @@
-mmio UART0 = 0x1000;
-mmio_reg UART0.SR = 0 : u32 ro;
-
-fn entry() {
-  mmio_write<u32>(UART0, x);
-}

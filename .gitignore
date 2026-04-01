@@ -1,30 +1,36 @@
-/target
-**/target
-*.rlib
-*.rmeta
-*.exe
-*.pdb
+# Build artifacts
+/build/
+/dist/
+/target/
+
+# Compiled output
+*.krbo
+*.elf
+*.o
+*.a
+a.out
+
+# Test artifacts
+test_input.kr
+krc2
+krc3
+krc4
+
+# IDE
 /.idea
 /.vscode
-*.log
-/.tools/
-/vendor/
-/.cargo/config.toml
-test-list.txt
-**/*.kernriftc.tmp.*
 *.swp
+
+# OS
 .DS_Store
+Thumbs.db
 
-# compiled KernRift output
-*.krbo
-
-/dist
+# Tools
+/.tools/
 .worktrees/
 
-# website (served separately, not part of the Rust workspace)
+# Website (deployed separately)
 /website/
 
-# internal AI workflow docs (plans/specs/design notes)
+# Internal docs
 /docs/superpowers/
-/docs/design/*.md
-/docs/design/examples/*.json.bak

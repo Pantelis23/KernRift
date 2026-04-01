@@ -1,0 +1,27 @@
+// KernRift self-hosted compiler — Runtime helpers
+
+fn fmt_uint(uint64 buf, uint64 val) -> uint64 {
+    if val == 0 {
+        uint8 zero = 48
+        unsafe { *(buf as uint8) = zero }
+        return 1
+    }
+    uint64 len = 0
+    uint64 tmp = val
+    while tmp > 0 {
+        len = len + 1
+        tmp = tmp / 10
+    }
+    uint64 i = len
+    tmp = val
+    while i > 0 {
+        i = i - 1
+        uint64 digit = tmp - tmp / 10 * 10
+        uint64 ch = digit + 48
+        uint64 p = buf + i
+        uint8 cb = ch
+        unsafe { *(p as uint8) = cb }
+        tmp = tmp / 10
+    }
+    return len
+}

@@ -1,6 +1,0 @@
-lock SchedLock
-fn bad() {
-  acquire(SchedLock);
-  yieldpoint
-  release(SchedLock);
-}

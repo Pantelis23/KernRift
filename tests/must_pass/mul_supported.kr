@@ -1,5 +1,0 @@
-@ctx(thread)
-fn bad(uint32 x) -> uint32 {
-    uint32 result = x * 4
-    return result
-}

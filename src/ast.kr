@@ -1,0 +1,220 @@
+// KernRift self-hosted compiler — AST node definitions
+//
+// Arena-based flat AST. Each node is 32 bytes:
+//   [0..4)   node_kind (uint32)
+//   [4..8)   data1     (uint32) — meaning depends on kind
+//   [8..12)  data2     (uint32)
+//   [12..16) data3     (uint32)
+//   [16..20) data4     (uint32)
+//   [20..24) tok_idx   (uint32) — index of the primary token
+//   [24..28) child     (uint32) — first child node index (0 = none)
+//   [28..32) next      (uint32) — next sibling node index (0 = none)
+
+// ---------------------------------------------------------------------------
+// AST node kinds
+// ---------------------------------------------------------------------------
+
+enum AstKind {
+    None = 0
+
+    // Top-level
+    Module = 1         // children: list of function/struct/enum/static decls
+    FnDecl = 2         // data1=name_tok, data2=return_type_tok (0=void), child=first param, next=body
+    Param = 3          // data1=type_tok, data2=name_tok
+    StaticDecl = 4     // data1=type_tok, data2=name_tok, data3=init_value
+
+    // Statements
+    VarDecl = 10       // data1=type_tok, data2=name_tok, child=init_expr (0=none)
+    Assign = 11        // data1=name_tok, child=value_expr
+    Return = 12        // child=expr (0=void return)
+    If = 13            // child=condition_expr, data1=then_body_idx, data2=else_body_idx (0=none)
+    While = 14         // child=condition_expr, data1=body_idx
+    Block = 15         // child=first statement
+    ExprStmt = 16      // child=expression
+    Break = 17
+    Continue = 18
+
+    // Expressions
+    IntLit = 30        // data1=tok_idx (for the value)
+    StrLit = 31        // data1=tok_idx
+    Ident = 32         // data1=tok_idx
+    BinOp = 33         // data1=operator_tok, child=lhs, data2=rhs_idx
+    UnaryOp = 34       // data1=operator_tok, child=operand
+    Call = 35          // data1=callee_tok, child=first_arg
+    FieldAccess = 36   // data1=object_tok, data2=field_tok
+    Index = 37         // child=array_expr, data1=index_expr_idx
+    Compare = 38       // data1=operator_tok, child=lhs, data2=rhs_idx
+    LogicalAnd = 39    // child=lhs, data1=rhs_idx
+    LogicalOr = 40     // child=lhs, data1=rhs_idx
+}
+
+// ---------------------------------------------------------------------------
+// AST arena
+// ---------------------------------------------------------------------------
+
+static uint64 ast_buf = 0       // pointer to node arena
+static uint64 ast_count = 0     // number of nodes allocated
+static uint64 ast_capacity = 0  // max nodes
+
+// Node size in bytes
+// const uint64 NODE_SIZE = 32  -- can't use const with uint64 yet, hardcode 32
+
+@export
+fn ast_init(uint64 max_nodes) {
+    ast_buf = alloc(max_nodes * 32)
+    ast_count = 0
+    ast_capacity = max_nodes
+}
+
+// Allocate a new AST node. Returns the node index (1-based, 0 = null).
+@export
+fn ast_alloc(uint64 kind) -> uint64 {
+    if ast_count >= ast_capacity { return 0 }
+    ast_count = ast_count + 1
+    uint64 idx = ast_count
+    uint64 base = ast_buf + (idx - 1) * 32
+
+    // Zero-fill
+    uint64 i = 0
+    while i < 32 {
+        uint64 p = base + i
+        unsafe { *(p as uint8) = 0 }
+        i = i + 1
+    }
+
+    // Set kind
+    uint32 k32 = kind
+    unsafe { *(base as uint32) = k32 }
+
+    return idx
+}
+
+// Accessors — read/write node fields by index
+fn node_base(uint64 idx) -> uint64 {
+    return ast_buf + (idx - 1) * 32
+}
+
+@export
+fn ast_kind(uint64 idx) -> uint32 {
+    uint64 p = node_base(idx)
+    uint32 val = 0
+    unsafe { *(p as uint32) -> val }
+    return val
+}
+
+@export
+fn ast_set_data1(uint64 idx, uint32 val) {
+    uint64 p = node_base(idx) + 4
+    unsafe { *(p as uint32) = val }
+}
+
+@export
+fn ast_data1(uint64 idx) -> uint32 {
+    uint64 p = node_base(idx) + 4
+    uint32 val = 0
+    unsafe { *(p as uint32) -> val }
+    return val
+}
+
+@export
+fn ast_set_data2(uint64 idx, uint32 val) {
+    uint64 p = node_base(idx) + 8
+    unsafe { *(p as uint32) = val }
+}
+
+@export
+fn ast_data2(uint64 idx) -> uint32 {
+    uint64 p = node_base(idx) + 8
+    uint32 val = 0
+    unsafe { *(p as uint32) -> val }
+    return val
+}
+
+@export
+fn ast_data3(uint64 idx) -> uint32 {
+    uint64 p = node_base(idx) + 12
+    uint32 val = 0
+    unsafe { *(p as uint32) -> val }
+    return val
+}
+
+@export
+fn ast_set_data3(uint64 idx, uint32 val) {
+    uint64 p = node_base(idx) + 12
+    unsafe { *(p as uint32) = val }
+}
+
+@export
+fn ast_set_data4(uint64 idx, uint32 val) {
+    uint64 p = node_base(idx) + 16
+    unsafe { *(p as uint32) = val }
+}
+
+@export
+fn ast_data4(uint64 idx) -> uint32 {
+    uint64 p = node_base(idx) + 16
+    uint32 val = 0
+    unsafe { *(p as uint32) -> val }
+    return val
+}
+
+@export
+fn ast_set_tok(uint64 idx, uint32 tok) {
+    uint64 p = node_base(idx) + 20
+    unsafe { *(p as uint32) = tok }
+}
+
+@export
+fn ast_tok(uint64 idx) -> uint32 {
+    uint64 p = node_base(idx) + 20
+    uint32 val = 0
+    unsafe { *(p as uint32) -> val }
+    return val
+}
+
+@export
+fn ast_set_child(uint64 idx, uint32 child) {
+    uint64 p = node_base(idx) + 24
+    unsafe { *(p as uint32) = child }
+}
+
+@export
+fn ast_child(uint64 idx) -> uint32 {
+    uint64 p = node_base(idx) + 24
+    uint32 val = 0
+    unsafe { *(p as uint32) -> val }
+    return val
+}
+
+@export
+fn ast_set_next(uint64 idx, uint32 next_sib) {
+    uint64 p = node_base(idx) + 28
+    unsafe { *(p as uint32) = next_sib }
+}
+
+@export
+fn ast_next(uint64 idx) -> uint32 {
+    uint64 p = node_base(idx) + 28
+    uint32 val = 0
+    unsafe { *(p as uint32) -> val }
+    return val
+}
+
+// Append a sibling to the end of a linked list
+@export
+fn ast_append_child(uint64 parent_idx, uint64 child_idx) {
+    uint32 c32 = child_idx
+    uint32 existing = ast_child(parent_idx)
+    if existing == 0 {
+        ast_set_child(parent_idx, c32)
+        return
+    }
+    // Walk to last sibling
+    uint64 cur = existing
+    uint32 n = ast_next(cur)
+    while n != 0 {
+        cur = n
+        n = ast_next(cur)
+    }
+    ast_set_next(cur, c32)
+}

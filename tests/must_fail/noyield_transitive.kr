@@ -1,9 +1,0 @@
-fn do_yield() {
-    yieldpoint();
-}
-
-@noyield
-@ctx(thread, boot)
-fn spinloop() {
-    do_yield();
-}

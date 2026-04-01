@@ -1,6 +1,0 @@
-@ctx(irq, thread, boot)
-@eff(alloc)
-fn allocy() { }
-
-@ctx(irq)
-fn isr() { allocy(); }

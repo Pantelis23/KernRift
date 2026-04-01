@@ -1,6 +1,0 @@
-// inb takes exactly 1 argument; this should fail.
-
-fn bad() -> uint8 {
-    uint8 val = inb(0x60, 0x61)
-    return val
-}

@@ -1,8 +1,0 @@
-@ctx(thread)
-fn check(uint32 status) {
-    if status == 0 {
-        uint32 x = 1
-    } else {
-        uint32 x = 2
-    }
-}

@@ -1,0 +1,853 @@
+// KernRift self-hosted compiler — Parser
+//
+// Recursive descent parser. Reads tokens produced by the lexer
+// and builds a flat AST using the arena in ast.kr.
+
+// Token buffer access (shared with lexer)
+static uint64 p_tok_buf = 0
+static uint64 p_tok_count = 0
+static uint64 p_tok_pos = 0       // current token index
+
+// Read a token field
+fn tok_kind_at(uint64 idx) -> uint32 {
+    uint64 p = p_tok_buf + idx * 16
+    uint32 val = 0
+    unsafe { *(p as uint32) -> val }
+    return val
+}
+
+fn tok_start_at(uint64 idx) -> uint32 {
+    uint64 p = p_tok_buf + idx * 16 + 4
+    uint32 val = 0
+    unsafe { *(p as uint32) -> val }
+    return val
+}
+
+fn tok_len_at(uint64 idx) -> uint32 {
+    uint64 p = p_tok_buf + idx * 16 + 8
+    uint32 val = 0
+    unsafe { *(p as uint32) -> val }
+    return val
+}
+
+// Current token helpers
+fn cur_kind() -> uint32 {
+    return tok_kind_at(p_tok_pos)
+}
+
+fn cur_tok() -> uint64 {
+    return p_tok_pos
+}
+
+fn advance_tok() -> uint64 {
+    uint64 prev = p_tok_pos
+    p_tok_pos = p_tok_pos + 1
+    return prev
+}
+
+fn tok_line_at(uint64 idx) -> uint32 {
+    uint64 p = p_tok_buf + idx * 16 + 12
+    uint32 val = 0
+    unsafe { *(p as uint32) -> val }
+    return val
+}
+
+fn expect(uint32 kind) -> uint64 {
+    if cur_kind() != kind {
+        uint8[32] nb
+        // Include line number in error
+        uint32 line_num = tok_line_at(p_tok_pos)
+        uint64 wln = line_num
+        uint64 msg = "error at line "
+        write(2, msg, 14)
+        uint64 l = fmt_uint(nb, wln)
+        write(2, nb, l)
+        msg = ": expected kind "
+        write(2, msg, 16)
+        l = fmt_uint(nb, kind)
+        write(2, nb, l)
+        msg = " got "
+        write(2, msg, 5)
+        l = fmt_uint(nb, cur_kind())
+        write(2, nb, l)
+        msg = "\n"
+        write(2, msg, 1)
+        exit(1)
+    }
+    return advance_tok()
+}
+
+fn at_kind(uint32 kind) -> uint64 {
+    if cur_kind() == kind { return 1 }
+    return 0
+}
+
+fn eat(uint32 kind) -> uint64 {
+    if cur_kind() == kind {
+        advance_tok()
+        return 1
+    }
+    return 0
+}
+
+// ---------------------------------------------------------------------------
+// Parser init
+// ---------------------------------------------------------------------------
+
+@export
+fn parser_init(uint64 tokens, uint64 count_val) {
+    p_tok_buf = tokens
+    p_tok_count = count_val
+    p_tok_pos = 0
+}
+
+// ---------------------------------------------------------------------------
+// Expression parsing (Pratt-style precedence climbing)
+// ---------------------------------------------------------------------------
+
+fn parse_primary() -> uint64 {
+    uint32 kind = cur_kind()
+
+    // Unary operators: !, -, ~
+    if kind == 27 || kind == 31 || kind == 26 {
+        uint64 op_tok = advance_tok()
+        uint64 operand = parse_primary()
+        uint64 node = ast_alloc(AstKind.UnaryOp)
+        uint32 ot = op_tok
+        ast_set_data1(node, ot)
+        uint32 op32 = operand
+        ast_set_child(node, op32)
+        ast_set_tok(node, ot)
+        return node
+    }
+
+    // Integer literal
+    if kind == 2 {
+        uint64 tok = advance_tok()
+        uint64 node = ast_alloc(AstKind.IntLit)
+        uint32 t32 = tok
+        ast_set_data1(node, t32)
+        ast_set_tok(node, t32)
+        return node
+    }
+
+    // String literal
+    if kind == 3 {
+        uint64 tok = advance_tok()
+        uint64 node = ast_alloc(AstKind.StrLit)
+        uint32 t32 = tok
+        ast_set_data1(node, t32)
+        ast_set_tok(node, t32)
+        return node
+    }
+
+    // Char literal → convert to integer value
+    if kind == 4 {
+        uint64 tok = advance_tok()
+        uint64 node = ast_alloc(AstKind.IntLit)
+        uint32 t32 = tok
+        ast_set_data1(node, t32)
+        ast_set_tok(node, t32)
+        return node
+    }
+
+    // Identifier (may be followed by ( for call, . for field, [ for index)
+    if kind == 1 {
+        uint64 tok = advance_tok()
+        uint32 t32 = tok
+
+        // Function call: ident(args...)
+        if cur_kind() == 10 {
+            advance_tok()
+            uint64 call_node = ast_alloc(AstKind.Call)
+            ast_set_data1(call_node, t32)
+            ast_set_tok(call_node, t32)
+
+            if cur_kind() != 11 {
+                uint64 arg = parse_expr()
+                uint32 a32 = arg
+                ast_append_child(call_node, arg)
+                while eat(16) != 0 {
+                    arg = parse_expr()
+                    ast_append_child(call_node, arg)
+                }
+            }
+            expect(11)
+            return call_node
+        }
+
+        // Array indexing: ident[expr]
+        if cur_kind() == 14 {
+            advance_tok()
+            uint64 idx_expr = parse_expr()
+            expect(15)
+            uint64 idx_node = ast_alloc(AstKind.Index)
+            ast_set_data1(idx_node, t32)
+            uint32 ie = idx_expr
+            ast_set_child(idx_node, ie)
+            ast_set_tok(idx_node, t32)
+            return idx_node
+        }
+
+        // Field access: ident.field
+        if cur_kind() == 17 {
+            advance_tok()
+            uint64 field_tok = advance_tok()
+            uint64 field_node = ast_alloc(AstKind.FieldAccess)
+            ast_set_data1(field_node, t32)
+            uint32 ft = field_tok
+            ast_set_data2(field_node, ft)
+            ast_set_tok(field_node, t32)
+            return field_node
+        }
+
+        // Plain identifier
+        uint64 node = ast_alloc(AstKind.Ident)
+        ast_set_data1(node, t32)
+        ast_set_tok(node, t32)
+        return node
+    }
+
+    // Parenthesized expression
+    if kind == 10 {
+        advance_tok()
+        uint64 inner = parse_expr()
+        expect(11)
+        return inner
+    }
+
+    // Error
+    uint8[32] nb
+    uint64 msg = "parse error: unexpected token kind "
+    write(2, msg, 35)
+    uint64 l = fmt_uint(nb, kind)
+    write(2, nb, l)
+    msg = "\n"
+    write(2, msg, 1)
+    exit(1)
+    return 0
+}
+
+fn binop_precedence(uint32 kind) -> uint32 {
+    // ||
+    if kind == 42 { return 1 }
+    // &&
+    if kind == 41 { return 2 }
+    // == !=
+    if kind == 35 { return 3 }
+    if kind == 36 { return 3 }
+    // < <= > >=
+    if kind == 37 { return 4 }
+    if kind == 38 { return 4 }
+    if kind == 39 { return 4 }
+    if kind == 40 { return 4 }
+    // + -
+    if kind == 30 { return 5 }
+    if kind == 31 { return 5 }
+    // * / %
+    if kind == 22 { return 6 }
+    if kind == 32 { return 6 }
+    if kind == 33 { return 6 }
+    // << >>
+    if kind == 43 { return 7 }
+    if kind == 44 { return 7 }
+    // & | ^
+    if kind == 23 { return 8 }
+    if kind == 24 { return 8 }
+    if kind == 25 { return 8 }
+    return 0
+}
+
+fn is_comparison(uint32 kind) -> uint64 {
+    if kind == 35 { return 1 }
+    if kind == 36 { return 1 }
+    if kind == 37 { return 1 }
+    if kind == 38 { return 1 }
+    if kind == 39 { return 1 }
+    if kind == 40 { return 1 }
+    return 0
+}
+
+@export
+fn parse_expr() -> uint64 {
+    return parse_expr_prec(1)
+}
+
+fn parse_expr_prec(uint32 min_prec) -> uint64 {
+    uint64 lhs = parse_primary()
+
+    while binop_precedence(cur_kind()) >= min_prec {
+        uint32 op_kind = cur_kind()
+        uint32 prec = binop_precedence(op_kind)
+        uint64 op_tok = advance_tok()
+        uint64 rhs = parse_expr_prec(prec + 1)
+
+        uint64 node = 0
+        if op_kind == 42 {
+            node = ast_alloc(AstKind.LogicalOr)
+        } else if op_kind == 41 {
+            node = ast_alloc(AstKind.LogicalAnd)
+        } else if is_comparison(op_kind) != 0 {
+            node = ast_alloc(AstKind.Compare)
+        } else {
+            node = ast_alloc(AstKind.BinOp)
+        }
+
+        uint32 o32 = op_tok
+        ast_set_data1(node, o32)
+        ast_set_tok(node, o32)
+        uint32 l32 = lhs
+        ast_set_child(node, l32)
+        uint32 r32 = rhs
+        ast_set_data2(node, r32)
+
+        lhs = node
+    }
+
+    return lhs
+}
+
+// ---------------------------------------------------------------------------
+// Statement parsing
+// ---------------------------------------------------------------------------
+
+fn is_type_keyword(uint32 kind) -> uint64 {
+    if kind >= 80 && kind <= 87 { return 1 }
+    return 0
+}
+
+fn parse_stmt() -> uint64 {
+    uint32 kind = cur_kind()
+
+    // No special assignment handling here — it's handled below
+    // after parsing the expression (check for = after LHS).
+
+    // Variable declaration: TYPE name = expr  OR  TYPE[SIZE] name
+    if is_type_keyword(kind) != 0 {
+        uint64 type_tok = advance_tok()
+
+        // Check for array syntax: TYPE[SIZE] name
+        if cur_kind() == 14 {
+            advance_tok()
+            uint64 size_tok = advance_tok()
+            expect(15)
+            uint64 name_tok = expect(1)
+            // Create VarDecl with data3 = array size (stored as token index)
+            uint64 node = ast_alloc(AstKind.VarDecl)
+            uint32 tt = type_tok
+            uint32 nt = name_tok
+            ast_set_data1(node, tt)
+            ast_set_data2(node, nt)
+            ast_set_tok(node, tt)
+            uint32 st = size_tok
+            ast_set_data3(node, st)
+            return node
+        }
+
+        uint64 name_tok = expect(1)
+        uint64 node = ast_alloc(AstKind.VarDecl)
+        uint32 tt = type_tok
+        uint32 nt = name_tok
+        ast_set_data1(node, tt)
+        ast_set_data2(node, nt)
+        ast_set_tok(node, tt)
+
+        if eat(34) != 0 {
+            uint64 init_expr = parse_expr()
+            uint32 ie = init_expr
+            ast_set_child(node, ie)
+        }
+        return node
+    }
+
+    // Return statement
+    if kind == 61 {
+        uint64 tok = advance_tok()
+        uint64 node = ast_alloc(AstKind.Return)
+        uint32 t32 = tok
+        ast_set_tok(node, t32)
+        // Check if there's a return value (not } or EOF)
+        if cur_kind() != 13 && cur_kind() != 0 {
+            uint64 expr = parse_expr()
+            uint32 e32 = expr
+            ast_set_child(node, e32)
+        }
+        return node
+    }
+
+    // If statement
+    if kind == 62 {
+        uint64 tok = advance_tok()
+        uint64 node = ast_alloc(AstKind.If)
+        uint32 t32 = tok
+        ast_set_tok(node, t32)
+
+        uint64 cond = parse_expr()
+        uint32 c32 = cond
+        ast_set_child(node, c32)
+
+        uint64 then_body = parse_block()
+        uint32 tb = then_body
+        ast_set_data1(node, tb)
+
+        if eat(63) != 0 {
+            uint64 else_body = 0
+            if cur_kind() == 62 {
+                else_body = parse_stmt()
+            } else {
+                else_body = parse_block()
+            }
+            uint32 eb = else_body
+            ast_set_data2(node, eb)
+        }
+        return node
+    }
+
+    // While statement
+    if kind == 64 {
+        uint64 tok = advance_tok()
+        uint64 node = ast_alloc(AstKind.While)
+        uint32 t32 = tok
+        ast_set_tok(node, t32)
+
+        uint64 cond = parse_expr()
+        uint32 c32 = cond
+        ast_set_child(node, c32)
+
+        uint64 body = parse_block()
+        uint32 b32 = body
+        ast_set_data1(node, b32)
+        return node
+    }
+
+    // Break
+    if kind == 67 {
+        uint64 tok = advance_tok()
+        uint64 node = ast_alloc(AstKind.Break)
+        uint32 t32 = tok
+        ast_set_tok(node, t32)
+        return node
+    }
+
+    // Continue
+    if kind == 68 {
+        uint64 tok = advance_tok()
+        uint64 node = ast_alloc(AstKind.Continue)
+        uint32 t32 = tok
+        ast_set_tok(node, t32)
+        return node
+    }
+
+    // For loop: for IDENT in START..END { body }
+    // Desugared to: { uint64 IDENT = START; while IDENT < END { body; IDENT = IDENT + 1 } }
+    if kind == 65 {
+        advance_tok()
+        uint64 iter_tok = expect(1)
+        expect(1)
+        uint64 start_expr = parse_expr()
+        expect(17)
+        expect(17)
+        uint64 end_expr = parse_expr()
+        uint64 body_block = parse_block()
+
+        // Build desugared AST: Block containing VarDecl + While
+        uint64 outer_block = ast_alloc(AstKind.Block)
+
+        // VarDecl: uint64 IDENT = START
+        uint64 var_node = ast_alloc(AstKind.VarDecl)
+        uint32 tt = iter_tok
+        ast_set_data2(var_node, tt)
+        uint32 se = start_expr
+        ast_set_child(var_node, se)
+        ast_append_child(outer_block, var_node)
+
+        // Compare: IDENT < END
+        uint64 iter_ident = ast_alloc(AstKind.Ident)
+        ast_set_data1(iter_ident, tt)
+        uint64 cmp_node = ast_alloc(AstKind.Compare)
+        uint32 ii = iter_ident
+        ast_set_child(cmp_node, ii)
+        uint32 ee = end_expr
+        ast_set_data2(cmp_node, ee)
+        // Need a '<' operator token — use iter_tok as placeholder (kind checked in codegen)
+        ast_set_data1(cmp_node, tt)
+
+        // While node: while cmp { body; IDENT = IDENT + 1 }
+        uint64 while_node = ast_alloc(AstKind.While)
+        uint32 cn = cmp_node
+        ast_set_child(while_node, cn)
+
+        // Increment: IDENT = IDENT + 1
+        uint64 inc_ident = ast_alloc(AstKind.Ident)
+        ast_set_data1(inc_ident, tt)
+        uint64 one_lit = ast_alloc(AstKind.IntLit)
+        uint64 inc_add = ast_alloc(AstKind.BinOp)
+        uint32 inci = inc_ident
+        ast_set_child(inc_add, inci)
+        uint32 ol = one_lit
+        ast_set_data2(inc_add, ol)
+        uint64 inc_assign = ast_alloc(AstKind.Assign)
+        ast_set_data1(inc_assign, tt)
+        uint32 ia = inc_add
+        ast_set_child(inc_assign, ia)
+
+        // Append increment to body
+        ast_append_child(body_block, inc_assign)
+
+        // Set while body
+        uint32 bb = body_block
+        ast_set_data1(while_node, bb)
+
+        ast_append_child(outer_block, while_node)
+        return outer_block
+    }
+
+    // Unsafe block: unsafe { *(addr as TYPE) -> val } or unsafe { *(addr as TYPE) = val }
+    if kind == 76 {
+        advance_tok()
+        expect(12)
+        expect(22)
+        expect(10)
+        uint64 addr_expr = parse_expr()
+        // expect "as" identifier
+        expect(1)
+        // Parse type keyword → determine size
+        uint32 type_kind = cur_kind()
+        advance_tok()
+        uint64 type_size = 8
+        if type_kind == 80 { type_size = 1 }
+        if type_kind == 82 { type_size = 4 }
+        if type_kind == 83 { type_size = 8 }
+        expect(11)
+
+        if cur_kind() == 20 {
+            // PtrLoad: -> dest
+            advance_tok()
+            uint64 dest_tok = advance_tok()
+            expect(13)
+            // Use kind 41 for PtrLoad
+            uint64 node = ast_alloc(41)
+            uint32 ts = type_size
+            ast_set_data1(node, ts)
+            uint32 ae = addr_expr
+            ast_set_child(node, ae)
+            uint32 dt = dest_tok
+            ast_set_data2(node, dt)
+            return node
+        }
+        if cur_kind() == 34 {
+            // PtrStore: = value
+            advance_tok()
+            uint64 val_expr = parse_expr()
+            expect(13)
+            // Use kind 42 for PtrStore
+            uint64 node = ast_alloc(42)
+            uint32 ts = type_size
+            ast_set_data1(node, ts)
+            uint32 ae = addr_expr
+            ast_set_child(node, ae)
+            uint32 ve = val_expr
+            ast_set_data2(node, ve)
+            return node
+        }
+        expect(13)
+    }
+
+    // Struct variable declaration: StructName varName
+    // Check if current token is an identifier that names a known struct
+    if kind == 1 {
+        uint64 maybe_struct = struct_lookup(p_tok_pos)
+        if maybe_struct != 0xFFFFFFFF {
+            uint64 type_tok = advance_tok()
+            uint64 name_tok = expect(1)
+            uint64 node = ast_alloc(AstKind.VarDecl)
+            uint32 tt = type_tok
+            uint32 nt = name_tok
+            ast_set_data1(node, tt)
+            ast_set_data2(node, nt)
+            ast_set_tok(node, tt)
+            // Mark as struct: data4 = struct_idx + 1 (0 = not struct)
+            uint32 si4 = maybe_struct + 1
+            ast_set_data4(node, si4)
+            return node
+        }
+    }
+
+    // Expression statement (assignment or bare call)
+    uint64 expr = parse_expr()
+
+    // Check for assignment: expr = value (or arr[i] = value)
+    if eat(34) != 0 {
+        uint64 rhs = parse_expr()
+        uint32 expr_kind = ast_kind(expr)
+        uint64 wek = expr_kind
+        if wek == 37 {
+            // Indexed assignment: arr[i] = value
+            uint32 r32 = rhs
+            ast_set_data2(expr, r32)
+            uint32 one = 1
+            ast_set_data3(expr, one)
+            return expr
+        }
+        if wek == 36 {
+            // Field assignment: var.field = value
+            uint32 r32 = rhs
+            ast_set_data3(expr, r32)
+            // Mark as field assign by setting data4 = 1
+            uint32 one = 1
+            ast_set_data4(expr, one)
+            return expr
+        }
+        uint64 node = ast_alloc(AstKind.Assign)
+        uint32 lhs_tok = ast_data1(expr)
+        ast_set_data1(node, lhs_tok)
+        ast_set_tok(node, lhs_tok)
+        uint32 r32 = rhs
+        ast_set_child(node, r32)
+        return node
+    }
+
+    // Compound assignment: += -= *= /= %= &= |= ^= <<= >>=
+    // Desugar: x OP= val → x = x OP val
+    // Compound assignment: += -= *= /= %= &= |= ^= <<= >>=
+    // Desugar: x OP= val → x = x OP val
+    uint32 ck = cur_kind()
+    uint64 wck = ck
+    if wck >= 45 && wck <= 54 {
+        uint64 op_tok = advance_tok()
+        uint64 rhs = parse_expr()
+        // Build: Assign(lhs_tok, BinOp(op_tok, lhs_copy, rhs))
+        uint32 lhs_tok = ast_data1(expr)
+        uint64 lhs_copy = ast_alloc(AstKind.Ident)
+        ast_set_data1(lhs_copy, lhs_tok)
+        uint64 binop = ast_alloc(AstKind.BinOp)
+        uint32 ot32 = op_tok
+        ast_set_data1(binop, ot32)
+        uint32 lc32 = lhs_copy
+        ast_set_child(binop, lc32)
+        uint32 r32 = rhs
+        ast_set_data2(binop, r32)
+        uint64 node = ast_alloc(AstKind.Assign)
+        ast_set_data1(node, lhs_tok)
+        ast_set_tok(node, lhs_tok)
+        uint32 bp32 = binop
+        ast_set_child(node, bp32)
+        return node
+    }
+
+    // Bare expression statement
+    uint64 node = ast_alloc(AstKind.ExprStmt)
+    uint32 e32 = expr
+    ast_set_child(node, e32)
+    return node
+}
+
+fn parse_block() -> uint64 {
+    expect(12)
+    uint64 block = ast_alloc(AstKind.Block)
+    while cur_kind() != 13 && cur_kind() != 0 {
+        // Skip semicolons (statement separators)
+        while cur_kind() == 18 {
+            advance_tok()
+        }
+        if cur_kind() != 13 && cur_kind() != 0 {
+            uint64 stmt = parse_stmt()
+            ast_append_child(block, stmt)
+        }
+    }
+    expect(13)
+    return block
+}
+
+// ---------------------------------------------------------------------------
+// Top-level parsing
+// ---------------------------------------------------------------------------
+
+fn parse_param_list() -> uint64 {
+    // Returns first param node (linked via next)
+    uint64 first = 0
+    uint64 last = 0
+
+    expect(10)
+    while cur_kind() != 11 && cur_kind() != 0 {
+        uint64 type_tok = 0
+        if is_type_keyword(cur_kind()) != 0 {
+            type_tok = advance_tok()
+        } else {
+            type_tok = advance_tok()
+        }
+        uint64 name_tok = expect(1)
+
+        uint64 param = ast_alloc(AstKind.Param)
+        uint32 tt = type_tok
+        uint32 nt = name_tok
+        ast_set_data1(param, tt)
+        ast_set_data2(param, nt)
+
+        if first == 0 {
+            first = param
+        } else {
+            uint32 p32 = param
+            ast_set_next(last, p32)
+        }
+        last = param
+
+        eat(16)
+    }
+    expect(11)
+    return first
+}
+
+fn parse_fn_decl() -> uint64 {
+    expect(60)
+    uint64 name_tok = expect(1)
+
+    uint64 node = ast_alloc(AstKind.FnDecl)
+    uint32 nt = name_tok
+    ast_set_data1(node, nt)
+    ast_set_tok(node, nt)
+
+    uint64 params = parse_param_list()
+    uint32 p32 = params
+    ast_set_child(node, p32)
+
+    // Return type: -> TYPE
+    if eat(20) != 0 {
+        uint64 ret_tok = advance_tok()
+        uint32 rt = ret_tok
+        ast_set_data2(node, rt)
+    }
+
+    // Body
+    uint64 body = parse_block()
+    uint32 b32 = body
+    ast_set_data3(node, b32)
+
+    return node
+}
+
+@export
+fn parse_module() -> uint64 {
+    uint64 mod_node = ast_alloc(AstKind.Module)
+
+    while cur_kind() != 0 {
+        uint32 kind = cur_kind()
+
+        // Skip annotations (@export, @ctx, etc)
+        while kind == 21 {
+            advance_tok()
+            advance_tok()
+            if eat(10) != 0 {
+                while cur_kind() != 11 && cur_kind() != 0 {
+                    advance_tok()
+                }
+                eat(11)
+            }
+            kind = cur_kind()
+        }
+
+        if kind == 60 {
+            uint64 fn_node = parse_fn_decl()
+            ast_append_child(mod_node, fn_node)
+        } else if kind == 70 {
+            // const TYPE name = value — treat as static
+            advance_tok()
+            advance_tok()
+            uint64 name_tok = expect(1)
+            static_declare(name_tok)
+            if eat(34) != 0 {
+                while cur_kind() != 60 && cur_kind() != 71 && cur_kind() != 70 && cur_kind() != 72 && cur_kind() != 73 && cur_kind() != 21 && cur_kind() != 0 {
+                    advance_tok()
+                }
+            }
+        } else if kind == 71 {
+            // static TYPE name = value
+            advance_tok()
+            // Skip type keyword
+            advance_tok()
+            // Name token
+            uint64 name_tok = expect(1)
+            // Register the static variable
+            static_declare(name_tok)
+            // Skip = value if present
+            if eat(34) != 0 {
+                // Skip the init value expression tokens
+                while cur_kind() != 60 && cur_kind() != 71 && cur_kind() != 72 && cur_kind() != 73 && cur_kind() != 21 && cur_kind() != 0 {
+                    advance_tok()
+                }
+            }
+        } else if kind == 72 {
+            // struct NAME { TYPE field; TYPE field; ... }
+            advance_tok()
+            uint64 struct_name_tok = expect(1)
+            uint64 sidx = struct_register(struct_name_tok)
+            expect(12)
+            while cur_kind() != 13 && cur_kind() != 0 {
+                uint64 field_type_tok = advance_tok()
+                uint64 field_name_tok = expect(1)
+                // Determine field size from type
+                uint32 ftk = tok_kind_at(field_type_tok)
+                uint64 fsize = 8
+                uint64 wftk = ftk
+                if wftk == 80 { fsize = 1 }
+                if wftk == 81 { fsize = 2 }
+                if wftk == 82 { fsize = 4 }
+                if wftk == 83 { fsize = 8 }
+                if wftk == 84 { fsize = 1 }
+                if wftk == 85 { fsize = 2 }
+                if wftk == 86 { fsize = 4 }
+                if wftk == 87 { fsize = 8 }
+                struct_add_field(sidx, field_name_tok, fsize)
+                eat(18)
+                eat(16)
+            }
+            expect(13)
+        } else if kind == 73 {
+            // enum NAME { FIELD = VALUE, ... }
+            advance_tok()
+            uint64 enum_name_tok = expect(1)
+            expect(12)
+            uint64 next_val = 0
+            while cur_kind() != 13 && cur_kind() != 0 {
+                uint64 field_tok = expect(1)
+                if eat(34) != 0 {
+                    // explicit value
+                    uint64 val_tok = advance_tok()
+                    uint64 tstart = tok_start_at(val_tok)
+                    uint64 tlen = tok_len_at(val_tok)
+                    // Parse integer from token
+                    uint64 val = 0
+                    uint64 vi = 0
+                    while vi < tlen {
+                        uint64 sp = p_tok_buf
+                        // Actually need to read from source, but we don't have source ptr here
+                        // Use parse_int_token from codegen? No, it uses cg_source/cg_tokens
+                        // Simplest: just use the token text from the source
+                        // We can compute the value from the token buffer
+                        vi = tlen
+                    }
+                    // For now, use a simpler approach: read digits from source
+                    // Actually, call parse_int_token-like logic inline
+                    next_val = 0
+                    vi = 0
+                    while vi < tlen {
+                        // Read byte from source via src_ptr
+                        uint64 baddr = src_ptr + tstart + vi
+                        uint64 ch = 0
+                        unsafe { *(baddr as uint8) -> ch }
+                        next_val = next_val * 10 + ch - 48
+                        vi = vi + 1
+                    }
+                }
+                enum_register(enum_name_tok, field_tok, next_val)
+                next_val = next_val + 1
+                eat(16)
+            }
+            expect(13)
+        } else {
+            advance_tok()
+        }
+    }
+
+    return mod_node
+}

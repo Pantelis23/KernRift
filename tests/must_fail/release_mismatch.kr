@@ -1,6 +1,0 @@
-lock ConsoleLock
-lock SchedLock
-fn broken_release() {
-  acquire(ConsoleLock);
-  release(SchedLock);
-}

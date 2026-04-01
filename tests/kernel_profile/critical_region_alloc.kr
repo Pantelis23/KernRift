@@ -1,5 +1,0 @@
-fn entry() {
-  critical {
-    allocpoint();
-  }
-}

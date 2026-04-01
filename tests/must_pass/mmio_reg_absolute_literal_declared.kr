@@ -1,9 +1,0 @@
-@module_caps(Mmio)
-
-device UART0 at 0x1000 {
-    DR at 0x00 : uint32 rw
-}
-
-fn entry() {
-    UART0.DR = x
-}
