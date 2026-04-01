@@ -136,81 +136,33 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
         patch_u32(104, total_size & 0xFFFFFFFF)
         patch_u32(108, (total_size >> 32) & 0xFFFFFFFF)
     } else if emit_mode == 1 {
-        // Mach-O: patch segment headers and entry point
-        // See format_macho.kr for offset map:
-        //   __TEXT vmsize=136, filesize=152
-        //   __DATA vmaddr=200, vmsize=208, fileoff=216, filesize=224
-        //   __LINKEDIT vmaddr=272, vmsize=280, fileoff=288, filesize=296
-        //   LC_MAIN entryoff=328
+        // Mach-O with LC_UNIXTHREAD: simple single-segment layout
+        // __TEXT contains everything (code + statics + strings), RWX
         uint64 page_size = 4096
         if arch == 1 { page_size = 16384 }
 
-        // __TEXT: code + strings (RX). Pad to page boundary.
-        uint64 text_end = codegen_output_len()
-        uint64 text_aligned = (text_end + page_size - 1) & ~(page_size - 1)
-        while codegen_output_len() < text_aligned { emit_byte(0) }
+        uint64 total_file = codegen_output_len()
+        uint64 total_aligned = (total_file + page_size - 1) & ~(page_size - 1)
+        while codegen_output_len() < total_aligned { emit_byte(0) }
 
-        // __DATA: re-emit statics here (in writable segment)
-        // Always allocate at least one page for __DATA to avoid vmaddr overlap
-        uint64 data_file_off = codegen_output_len()
-        uint64 data_va = 0x100000000 + data_file_off
-        // Emit static data into __DATA
-        emit_static_data()
-        uint64 data_raw_end = codegen_output_len()
-        uint64 data_raw_size = data_raw_end - data_file_off
-        // Always page-align __DATA (even if empty, reserve one page)
-        uint64 data_aligned_size = page_size
-        if data_raw_size > page_size {
-            data_aligned_size = (data_raw_size + page_size - 1) & ~(page_size - 1)
-        }
-        while codegen_output_len() < data_file_off + data_aligned_size { emit_byte(0) }
+        // Patch __TEXT vmsize and filesize at offsets 136, 152
+        patch_u32(136, total_aligned & 0xFFFFFFFF)
+        patch_u32(140, (total_aligned >> 32) & 0xFFFFFFFF)
+        patch_u32(152, total_aligned & 0xFFFFFFFF)
+        patch_u32(156, (total_aligned >> 32) & 0xFFFFFFFF)
 
-        // Re-resolve static fixups to point into __DATA
-        if data_raw_size > 0 {
-            if arch == 0 {
-                resolve_static_fixups(data_file_off)
-            } else {
-                resolve_static_fixups_a64(data_file_off)
-            }
-        }
-
-        // __LINKEDIT: one page for codesign
-        uint64 linkedit_file_off = codegen_output_len()
-        uint64 linkedit_va = 0x100000000 + linkedit_file_off
-        uint64 li = 0
-        while li < page_size { emit_byte(0); li = li + 1 }
-
-        // Patch __TEXT: vmsize at 136, filesize at 152
-        patch_u32(136, text_aligned & 0xFFFFFFFF)
-        patch_u32(140, (text_aligned >> 32) & 0xFFFFFFFF)
-        patch_u32(152, text_aligned & 0xFFFFFFFF)
-        patch_u32(156, (text_aligned >> 32) & 0xFFFFFFFF)
-
-        // Patch __DATA: vmaddr=200, vmsize=208, fileoff=216, filesize=224
-        patch_u32(200, data_va & 0xFFFFFFFF)
-        patch_u32(204, (data_va >> 32) & 0xFFFFFFFF)
-        patch_u32(208, data_aligned_size & 0xFFFFFFFF)
-        patch_u32(212, (data_aligned_size >> 32) & 0xFFFFFFFF)
-        patch_u32(216, data_file_off & 0xFFFFFFFF)
-        patch_u32(220, (data_file_off >> 32) & 0xFFFFFFFF)
-        patch_u32(224, data_raw_size & 0xFFFFFFFF)
-        patch_u32(228, (data_raw_size >> 32) & 0xFFFFFFFF)
-
-        // Patch __LINKEDIT: vmaddr=272, vmsize=280, fileoff=288, filesize=296
-        patch_u32(272, linkedit_va & 0xFFFFFFFF)
-        patch_u32(276, (linkedit_va >> 32) & 0xFFFFFFFF)
-        patch_u32(280, page_size & 0xFFFFFFFF)
-        patch_u32(284, 0)
-        patch_u32(288, linkedit_file_off & 0xFFFFFFFF)
-        patch_u32(292, (linkedit_file_off >> 32) & 0xFFFFFFFF)
-        patch_u32(296, page_size & 0xFFFFFFFF)
-        patch_u32(300, 0)
-
-        // Patch LC_MAIN entryoff at 440
-        // (32 hdr + 72*4 segs + 32 dylinker + 56 dylib + 24 buildver + 8 cmd+cmdsize = 440)
+        // Patch LC_UNIXTHREAD entry point (rip/pc)
         uint64 main_off_macho = find_main_offset()
-        patch_u32(440, main_off_macho & 0xFFFFFFFF)
-        patch_u32(444, (main_off_macho >> 32) & 0xFFFFFFFF)
+        uint64 entry_va = 0x100000000 + main_off_macho
+        if arch == 0 {
+            // x86_64: rip at offset 320
+            patch_u32(320, entry_va & 0xFFFFFFFF)
+            patch_u32(324, (entry_va >> 32) & 0xFFFFFFFF)
+        } else {
+            // ARM64: pc at offset 448
+            patch_u32(448, entry_va & 0xFFFFFFFF)
+            patch_u32(452, (entry_va >> 32) & 0xFFFFFFFF)
+        }
     } else if emit_mode == 2 {
         // PE: patch entry point to main function
         uint64 main_off = find_main_offset()
