@@ -1,176 +1,181 @@
 // KernRift self-hosted compiler — Mach-O output format
 //
 // Supports macOS x86_64 and AArch64 executable output.
-// Mach-O header + LC_SEGMENT_64 (__TEXT) + LC_SEGMENT_64 (__DATA)
-//   + LC_SEGMENT_64 (__LINKEDIT) + LC_MAIN
-
-// ---------------------------------------------------------------------------
-// Mach-O header emission
-// ---------------------------------------------------------------------------
-
-// Page size for macOS segment alignment
-// x86_64: 4096, ARM64: 16384 (Apple Silicon uses 16K pages)
+// Layout: __PAGEZERO + __TEXT + __DATA + __LINKEDIT + LC_MAIN
 
 // Emit Mach-O x86_64 executable header
-// Returns the offset where code starts (after headers)
+// Returns the offset where code starts (after page-aligned headers)
 @export
 fn emit_macho_headers_x64(uint64 code_size) -> uint64 {
-    // Header layout (4 load commands):
-    //   Mach-O header:           32 bytes
-    //   LC_SEGMENT_64 __TEXT:    72 bytes
-    //   LC_SEGMENT_64 __DATA:    72 bytes
-    //   LC_SEGMENT_64 __LINKEDIT: 72 bytes
-    //   LC_MAIN:                 24 bytes
-    //   Total: 272 bytes
-    // Pad to 4096-byte page boundary for x86_64
+    // Load commands:
+    //   LC_SEGMENT_64 __PAGEZERO:  72 bytes
+    //   LC_SEGMENT_64 __TEXT:      72 bytes
+    //   LC_SEGMENT_64 __DATA:      72 bytes
+    //   LC_SEGMENT_64 __LINKEDIT:  72 bytes
+    //   LC_MAIN:                   24 bytes
+    // Header: 32 + 312 = 344 bytes, padded to 4096
     uint64 header_size = 4096
 
     // Mach-O header (32 bytes)
-    emit_u32_le(0xFEEDFACF)       // magic (MH_MAGIC_64)
-    emit_u32_le(0x01000007)       // cputype (CPU_TYPE_X86_64)
-    emit_u32_le(0x00000003)       // cpusubtype (CPU_SUBTYPE_X86_64_ALL)
+    emit_u32_le(0xFEEDFACF)       // magic
+    emit_u32_le(0x01000007)       // cputype (X86_64)
+    emit_u32_le(0x00000003)       // cpusubtype
     emit_u32_le(0x00000002)       // filetype (MH_EXECUTE)
-    emit_u32_le(4)                // ncmds (4 load commands)
-    uint64 sizeofcmds = 72 + 72 + 72 + 24  // 3 segments + LC_MAIN = 240
-    emit_u32_le(sizeofcmds)       // sizeofcmds
-    emit_u32_le(0x00200085)       // flags (NOUNDEFS|DYLDLINK|PIE|MH_NO_HEAP_EXECUTION)
+    emit_u32_le(5)                // ncmds
+    emit_u32_le(312)              // sizeofcmds (4*72 + 24)
+    emit_u32_le(0x00200085)       // flags (NOUNDEFS|DYLDLINK|PIE|NO_HEAP_EXEC)
     emit_u32_le(0)                // reserved
 
-    // LC_SEGMENT_64 for __TEXT (72 bytes)
-    emit_u32_le(0x19)             // cmd = LC_SEGMENT_64
-    emit_u32_le(72)               // cmdsize
-    // segname: "__TEXT\0..." (16 bytes)
+    // LC_SEGMENT_64 __PAGEZERO (72 bytes) — null pointer guard
+    emit_u32_le(0x19)
+    emit_u32_le(72)
+    // "__PAGEZERO\0\0\0\0\0\0"
+    emit_byte(95); emit_byte(95); emit_byte(80); emit_byte(65)
+    emit_byte(71); emit_byte(69); emit_byte(90); emit_byte(69)
+    emit_byte(82); emit_byte(79); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_u64_le(0)                // vmaddr
+    emit_u64_le(0x100000000)      // vmsize (4GB guard)
+    emit_u64_le(0)                // fileoff
+    emit_u64_le(0)                // filesize
+    emit_u32_le(0)                // maxprot (NONE)
+    emit_u32_le(0)                // initprot (NONE)
+    emit_u32_le(0)                // nsects
+    emit_u32_le(0)                // flags
+
+    // LC_SEGMENT_64 __TEXT (72 bytes) — code (RX)
+    emit_u32_le(0x19)
+    emit_u32_le(72)
     emit_byte(95); emit_byte(95); emit_byte(84); emit_byte(69)
     emit_byte(88); emit_byte(84); emit_byte(0); emit_byte(0)
     emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
     emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
-    emit_u64_le(0x100000000)      // vmaddr (4GB base)
-    emit_u64_le(0)                // vmsize (patched later)
+    emit_u64_le(0x100000000)      // vmaddr
+    emit_u64_le(0)                // vmsize (patched)
     emit_u64_le(0)                // fileoff
-    emit_u64_le(0)                // filesize (patched later)
-    emit_u32_le(5)                // maxprot (VM_PROT_READ|VM_PROT_EXECUTE)
-    emit_u32_le(5)                // initprot
-    emit_u32_le(0)                // nsects
-    emit_u32_le(0)                // flags
+    emit_u64_le(0)                // filesize (patched)
+    emit_u32_le(5)                // maxprot (RX)
+    emit_u32_le(5)                // initprot (RX)
+    emit_u32_le(0)
+    emit_u32_le(0)
 
-    // LC_SEGMENT_64 for __DATA (72 bytes)
-    emit_u32_le(0x19)             // cmd = LC_SEGMENT_64
-    emit_u32_le(72)               // cmdsize
-    // segname: "__DATA\0..." (16 bytes)
+    // LC_SEGMENT_64 __DATA (72 bytes) — statics (RW)
+    emit_u32_le(0x19)
+    emit_u32_le(72)
     emit_byte(95); emit_byte(95); emit_byte(68); emit_byte(65)
     emit_byte(84); emit_byte(65); emit_byte(0); emit_byte(0)
     emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
     emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
-    emit_u64_le(0)                // vmaddr (patched later)
-    emit_u64_le(0)                // vmsize (patched later)
-    emit_u64_le(0)                // fileoff (patched later)
-    emit_u64_le(0)                // filesize (patched later)
-    emit_u32_le(3)                // maxprot (VM_PROT_READ|VM_PROT_WRITE)
-    emit_u32_le(3)                // initprot
-    emit_u32_le(0)                // nsects
-    emit_u32_le(0)                // flags
+    emit_u64_le(0)                // vmaddr (patched)
+    emit_u64_le(0)                // vmsize (patched)
+    emit_u64_le(0)                // fileoff (patched)
+    emit_u64_le(0)                // filesize (patched)
+    emit_u32_le(3)                // maxprot (RW)
+    emit_u32_le(3)                // initprot (RW)
+    emit_u32_le(0)
+    emit_u32_le(0)
 
-    // LC_SEGMENT_64 for __LINKEDIT (72 bytes)
-    emit_u32_le(0x19)             // cmd = LC_SEGMENT_64
-    emit_u32_le(72)               // cmdsize
-    // segname: "__LINKEDIT\0..." (16 bytes)
+    // LC_SEGMENT_64 __LINKEDIT (72 bytes) — for codesign
+    emit_u32_le(0x19)
+    emit_u32_le(72)
     emit_byte(95); emit_byte(95); emit_byte(76); emit_byte(73)
     emit_byte(78); emit_byte(75); emit_byte(69); emit_byte(68)
     emit_byte(73); emit_byte(84); emit_byte(0); emit_byte(0)
     emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
-    emit_u64_le(0)                // vmaddr (patched later)
-    emit_u64_le(0)                // vmsize (patched later)
-    emit_u64_le(0)                // fileoff (patched later)
-    emit_u64_le(0)                // filesize (patched later)
-    emit_u32_le(1)                // maxprot (VM_PROT_READ)
-    emit_u32_le(1)                // initprot
-    emit_u32_le(0)                // nsects
-    emit_u32_le(0)                // flags
+    emit_u64_le(0)                // vmaddr (patched)
+    emit_u64_le(0)                // vmsize (patched)
+    emit_u64_le(0)                // fileoff (patched)
+    emit_u64_le(0)                // filesize (patched)
+    emit_u32_le(1)                // maxprot (R)
+    emit_u32_le(1)                // initprot (R)
+    emit_u32_le(0)
+    emit_u32_le(0)
 
     // LC_MAIN (24 bytes)
-    emit_u32_le(0x80000028)       // cmd = LC_MAIN
-    emit_u32_le(24)               // cmdsize
-    emit_u64_le(header_size)      // entryoff (patched later to point to main)
-    emit_u64_le(0)                // stacksize (0 = default)
+    emit_u32_le(0x80000028)
+    emit_u32_le(24)
+    emit_u64_le(header_size)      // entryoff (patched)
+    emit_u64_le(0)                // stacksize
 
-    // Pad to page boundary (4096 for x86_64)
+    // Pad to page boundary
     while out_len < header_size { emit_byte(0) }
-
     return header_size
 }
 
 // Emit Mach-O AArch64 executable header
 @export
 fn emit_macho_headers_a64(uint64 code_size) -> uint64 {
-    // Same layout but with ARM64 CPU type and 16K page alignment
+    // ARM64 Apple Silicon uses 16K pages
     uint64 header_size = 16384
 
     emit_u32_le(0xFEEDFACF)
-    emit_u32_le(0x0100000C)       // cputype (CPU_TYPE_ARM64)
-    emit_u32_le(0x00000000)       // cpusubtype (CPU_SUBTYPE_ARM64_ALL)
-    emit_u32_le(0x00000002)       // filetype (MH_EXECUTE)
-    emit_u32_le(4)                // ncmds
-    uint64 sizeofcmds = 72 + 72 + 72 + 24
-    emit_u32_le(sizeofcmds)
-    emit_u32_le(0x00200085)       // flags
+    emit_u32_le(0x0100000C)       // ARM64
+    emit_u32_le(0x00000000)
+    emit_u32_le(0x00000002)
+    emit_u32_le(5)                // ncmds
+    emit_u32_le(312)              // sizeofcmds
+    emit_u32_le(0x00200085)
     emit_u32_le(0)
 
-    // LC_SEGMENT_64 __TEXT
-    emit_u32_le(0x19)
-    emit_u32_le(72)
+    // __PAGEZERO
+    emit_u32_le(0x19); emit_u32_le(72)
+    emit_byte(95); emit_byte(95); emit_byte(80); emit_byte(65)
+    emit_byte(71); emit_byte(69); emit_byte(90); emit_byte(69)
+    emit_byte(82); emit_byte(79); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_u64_le(0); emit_u64_le(0x100000000)
+    emit_u64_le(0); emit_u64_le(0)
+    emit_u32_le(0); emit_u32_le(0); emit_u32_le(0); emit_u32_le(0)
+
+    // __TEXT (RX)
+    emit_u32_le(0x19); emit_u32_le(72)
     emit_byte(95); emit_byte(95); emit_byte(84); emit_byte(69)
     emit_byte(88); emit_byte(84); emit_byte(0); emit_byte(0)
     emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
     emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
-    emit_u64_le(0x100000000)
-    emit_u64_le(0)                // vmsize (patched later)
-    emit_u64_le(0)
-    emit_u64_le(0)                // filesize (patched later)
-    emit_u32_le(5)
-    emit_u32_le(5)
-    emit_u32_le(0)
-    emit_u32_le(0)
+    emit_u64_le(0x100000000); emit_u64_le(0)
+    emit_u64_le(0); emit_u64_le(0)
+    emit_u32_le(5); emit_u32_le(5); emit_u32_le(0); emit_u32_le(0)
 
-    // LC_SEGMENT_64 __DATA
-    emit_u32_le(0x19)
-    emit_u32_le(72)
+    // __DATA (RW)
+    emit_u32_le(0x19); emit_u32_le(72)
     emit_byte(95); emit_byte(95); emit_byte(68); emit_byte(65)
     emit_byte(84); emit_byte(65); emit_byte(0); emit_byte(0)
     emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
     emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
-    emit_u64_le(0)
-    emit_u64_le(0)
-    emit_u64_le(0)
-    emit_u64_le(0)
-    emit_u32_le(3)
-    emit_u32_le(3)
-    emit_u32_le(0)
-    emit_u32_le(0)
+    emit_u64_le(0); emit_u64_le(0)
+    emit_u64_le(0); emit_u64_le(0)
+    emit_u32_le(3); emit_u32_le(3); emit_u32_le(0); emit_u32_le(0)
 
-    // LC_SEGMENT_64 __LINKEDIT
-    emit_u32_le(0x19)
-    emit_u32_le(72)
+    // __LINKEDIT
+    emit_u32_le(0x19); emit_u32_le(72)
     emit_byte(95); emit_byte(95); emit_byte(76); emit_byte(73)
     emit_byte(78); emit_byte(75); emit_byte(69); emit_byte(68)
     emit_byte(73); emit_byte(84); emit_byte(0); emit_byte(0)
     emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
-    emit_u64_le(0)
-    emit_u64_le(0)
-    emit_u64_le(0)
-    emit_u64_le(0)
-    emit_u32_le(1)
-    emit_u32_le(1)
-    emit_u32_le(0)
-    emit_u32_le(0)
+    emit_u64_le(0); emit_u64_le(0)
+    emit_u64_le(0); emit_u64_le(0)
+    emit_u32_le(1); emit_u32_le(1); emit_u32_le(0); emit_u32_le(0)
 
     // LC_MAIN
-    emit_u32_le(0x80000028)
-    emit_u32_le(24)
-    emit_u64_le(header_size)
-    emit_u64_le(0)
+    emit_u32_le(0x80000028); emit_u32_le(24)
+    emit_u64_le(header_size); emit_u64_le(0)
 
-    // Pad to 16K page boundary for ARM64
+    // Pad to 16K page
     while out_len < header_size { emit_byte(0) }
-
     return header_size
 }
+
+// ---------------------------------------------------------------------------
+// Mach-O patch offsets (relative to file start)
+// Header: 32 bytes
+// __PAGEZERO: 32..104 (72 bytes)
+// __TEXT:     104..176 (72 bytes)
+//   vmaddr at 104+24=128, vmsize at 136, fileoff at 144, filesize at 152
+// __DATA:     176..248 (72 bytes)
+//   vmaddr at 176+24=200, vmsize at 208, fileoff at 216, filesize at 224
+// __LINKEDIT: 248..320 (72 bytes)
+//   vmaddr at 248+24=272, vmsize at 280, fileoff at 288, filesize at 296
+// LC_MAIN:    320..344
+//   entryoff at 328
+// ---------------------------------------------------------------------------
