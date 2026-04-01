@@ -42,7 +42,8 @@ build/krc2: build/krc build/krc.kr
 # Run test suite
 test: build/krc2
 	@echo "=== Running test suite ==="
-	@KRC="./build/krc2 --arch=x86_64" bash tests/run_tests.sh || true
+	@echo '#!/bin/bash' > /tmp/krc-test && echo 'exec ./build/krc2 --arch=x86_64 "$$@"' >> /tmp/krc-test && chmod +x /tmp/krc-test
+	@KRC=/tmp/krc-test bash tests/run_tests.sh || true
 
 # Verify bootstrap convergence
 bootstrap: build/krc2

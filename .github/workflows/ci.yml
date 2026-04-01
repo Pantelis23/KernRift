@@ -27,7 +27,11 @@ jobs:
 
       - name: Test suite
         run: |
-          KRC="./build/krc2 --arch=x86_64" bash tests/run_tests.sh
+          # Create a wrapper script so KRC is a single executable
+          echo '#!/bin/bash' > /tmp/krc-test
+          echo 'exec ./build/krc2 --arch=x86_64 "$@"' >> /tmp/krc-test
+          chmod +x /tmp/krc-test
+          KRC=/tmp/krc-test bash tests/run_tests.sh
 
       - name: Bootstrap verification (krc3 == krc4)
         run: make bootstrap
