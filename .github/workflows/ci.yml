@@ -132,6 +132,8 @@ jobs:
           chmod +x /tmp/bins/cross-macos-arm
           codesign --force -s - /tmp/bins/cross-macos-arm
           set +e
+          # Get crash info via lldb
+          echo "run" | lldb /tmp/bins/cross-macos-arm 2>&1 | tail -20 || true
           /tmp/bins/cross-macos-arm
           KR_EXIT=$?
           set -e
