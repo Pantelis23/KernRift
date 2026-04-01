@@ -1,0 +1,37 @@
+fn main() {
+    uint64 N = 10000
+    uint64 buf = alloc(N * 8)
+    // Fill with descending values
+    uint64 i = 0
+    while i < N {
+        uint64 p = buf + i * 8
+        uint64 val = N - i
+        unsafe { *(p as uint64) = val }
+        i = i + 1
+    }
+    // Bubble sort
+    uint64 swapped = 1
+    while swapped != 0 {
+        swapped = 0
+        i = 0
+        while i < N - 1 {
+            uint64 pa = buf + i * 8
+            uint64 pb = buf + (i + 1) * 8
+            uint64 a = 0
+            uint64 b = 0
+            unsafe { *(pa as uint64) -> a }
+            unsafe { *(pb as uint64) -> b }
+            if a > b {
+                unsafe { *(pa as uint64) = b }
+                unsafe { *(pb as uint64) = a }
+                swapped = 1
+            }
+            i = i + 1
+        }
+    }
+    // Check first element
+    uint64 fp = buf
+    uint64 first = 0
+    unsafe { *(fp as uint64) -> first }
+    exit(first & 0xFF)
+}

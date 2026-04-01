@@ -135,6 +135,62 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
         patch_u32(100, (total_size >> 32) & 0xFFFFFFFF)
         patch_u32(104, total_size & 0xFFFFFFFF)
         patch_u32(108, (total_size >> 32) & 0xFFFFFFFF)
+    } else if emit_mode == 1 {
+        // Mach-O: patch vmsize and filesize in LC_SEGMENT_64
+        uint64 total_macho = codegen_output_len()
+        // vmsize at offset 56, filesize at offset 72 (within LC_SEGMENT_64)
+        patch_u32(56, total_macho & 0xFFFFFFFF)
+        patch_u32(60, (total_macho >> 32) & 0xFFFFFFFF)
+        patch_u32(72, total_macho & 0xFFFFFFFF)
+        patch_u32(76, (total_macho >> 32) & 0xFFFFFFFF)
+        // Patch LC_MAIN entryoff to point to main()
+        uint64 main_off_macho = find_main_offset()
+        patch_u32(112, main_off_macho & 0xFFFFFFFF)
+        patch_u32(116, (main_off_macho >> 32) & 0xFFFFFFFF)
+    } else if emit_mode == 2 {
+        // PE: patch entry point to main function
+        uint64 main_off = find_main_offset()
+        uint64 pe_entry = 0x1000 + main_off - text_start
+        patch_u32(0x68, pe_entry)
+        // PE: patch .text section sizes (include code + statics + strings)
+        // text_size includes everything generated: code + statics + strings
+        uint64 text_aligned = (text_size + 0x1FF) & ~0x1FF
+        // Pad .text to file alignment
+        while codegen_output_len() < header_size + text_aligned {
+            emit_byte(0)
+        }
+        // Emit .idata section
+        uint64 idata_rva = 0x2000
+        uint64 iat_rva_val = emit_pe_idata(idata_rva)
+        pe_iat_rva = iat_rva_val
+        // Patch .text section header: VirtualSize and RawSize
+        // .text section header starts at offset 0x198 in PE32+ (DOS=64 + PE_sig=4 + COFF=20 + Optional=240 = 328 = 0x148)
+        // Section headers at 0x148: .text at 0x148, .idata at 0x148+40=0x170
+        // .text VirtualSize at 0x148+8, RawSize at 0x148+16, RawOffset at 0x148+20
+        uint64 text_hdr = 0x148
+        patch_u32(text_hdr + 8, text_size)
+        patch_u32(text_hdr + 16, text_aligned)
+        // .idata RawOffset at 0x170+20
+        uint64 idata_hdr = 0x170
+        uint64 idata_file_off = header_size + text_aligned
+        patch_u32(idata_hdr + 20, idata_file_off)
+        // Patch SizeOfCode in optional header (offset 0x68+4=0x6C... actually 0x44+4)
+        // Optional header starts at 0x58 (64+4+20=88=0x58)
+        // SizeOfCode at 0x58+4 = 0x5C
+        patch_u32(0x5C, text_aligned)
+        // Patch ImageSize at offset 0x90 (optional header offset 0x38)
+        // ImageSize = 0x1000 (headers) + aligned(.text) + aligned(.idata) = 0x3000
+        uint64 text_va_aligned = (text_size + 0xFFF) & ~0xFFF
+        uint64 image_size = 0x1000 + text_va_aligned + 0x1000
+        patch_u32(0x90, image_size)
+        // Resolve Windows IAT fixups
+        if target_os == 2 {
+            if arch == 0 {
+                resolve_win_iat_fixups(text_start, iat_rva_val)
+            } else {
+                resolve_a64_win_iat_fixups(text_start, iat_rva_val)
+            }
+        }
     }
 
     codegen_write_output(output_path)
@@ -357,6 +413,25 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
 static uint64 cli_argc = 0
 static uint64 cli_argv = 0
 
+// Living compiler CLI options
+static uint64 lc_ci_mode = 0
+static uint64 lc_min_fitness = 0
+
+fn parse_uint_arg(uint64 s) -> uint64 {
+    uint64 val = 0
+    uint64 i = 0
+    uint64 p = s + i
+    uint64 c = 0
+    unsafe { *(p as uint8) -> c }
+    while c >= 48 && c <= 57 {
+        val = val * 10 + (c - 48)
+        i = i + 1
+        p = s + i
+        unsafe { *(p as uint8) -> c }
+    }
+    return val
+}
+
 @export
 fn main() {
     uint64 input_path = 0
@@ -400,10 +475,34 @@ fn main() {
                 } else if str_starts_with(emit_str, "pe", 2) != 0 {
                     emit_mode = 2
                 }
+            } else if str_starts_with(arg, "--target=", 9) != 0 {
+                uint64 tgt_str = arg + 9
+                if str_starts_with(tgt_str, "macos", 5) != 0 {
+                    target_os = 1
+                } else if str_starts_with(tgt_str, "darwin", 6) != 0 {
+                    target_os = 1
+                } else if str_starts_with(tgt_str, "windows", 7) != 0 {
+                    target_os = 2
+                } else if str_starts_with(tgt_str, "win", 3) != 0 {
+                    target_os = 2
+                } else if str_starts_with(tgt_str, "linux", 5) != 0 {
+                    target_os = 0
+                }
             } else if str_starts_with(arg, "--version", 9) != 0 {
                 uint64 msg = "krc 1.0.0 (KernRift self-hosted compiler)\n"
                 write(1, msg, 42)
                 exit(0)
+            } else if str_starts_with(arg, "--ci", 4) != 0 {
+                lc_ci_mode = 1
+            } else if str_starts_with(arg, "--min-fitness=", 14) != 0 {
+                lc_min_fitness = parse_uint_arg(arg + 14)
+            } else if str_starts_with(arg, "--min-fitness", 13) != 0 {
+                // --min-fitness N (next arg)
+                i = i + 1
+                uint64 next_ptr = cli_argv + i * 8
+                uint64 next_arg = 0
+                unsafe { *(next_ptr as uint64) -> next_arg }
+                lc_min_fitness = parse_uint_arg(next_arg)
             } else if str_starts_with(arg, "check", 5) != 0 {
                 mode = 1
             } else if str_starts_with(arg, "lc", 2) != 0 {
@@ -414,6 +513,10 @@ fn main() {
             i = i + 1
         }
     }
+
+    // Auto-set target_os from emit_mode if not explicitly set
+    if emit_mode == 1 && target_os == 0 { target_os = 1 }
+    if emit_mode == 2 && target_os == 0 { target_os = 2 }
 
     if input_path == 0 {
         input_path = "test_input.kr"
@@ -461,11 +564,24 @@ fn main() {
         codegen_init(1048576, source, my_tokens)
         parser_init(my_tokens, tcount)
         uint64 root = parse_module()
+        // Run analysis first to populate lock graph
+        analysis_init()
         uint64 tel = collect_telemetry(root)
         uint64 patterns = detect_patterns(root, tel)
         uint64 cycles = check_lock_cycles()
         uint64 fitness = compute_fitness(tel, patterns, cycles)
-        print_living_report(tel, patterns, fitness)
+        if lc_min_fitness > 0 {
+            print_living_report_filtered(tel, patterns, fitness, lc_min_fitness)
+        } else {
+            print_living_report(tel, patterns, fitness)
+        }
+        if lc_ci_mode != 0 {
+            uint64 gate_threshold = lc_min_fitness
+            if gate_threshold == 0 { gate_threshold = 50 }
+            if lc_check_ci_gate(gate_threshold) != 0 {
+                exit(1)
+            }
+        }
         exit(0)
     }
 

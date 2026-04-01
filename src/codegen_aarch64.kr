@@ -13,6 +13,15 @@
 //   sp: stack pointer
 //
 // Linux syscall: x8=nr, x0-x5=args, svc #0
+// Windows ARM64: IAT indirect calls via MOVZ/MOVK/LDR/BLR sequence
+
+// ---------------------------------------------------------------------------
+// ARM64 Windows IAT fixup table
+// ---------------------------------------------------------------------------
+// [patch_offset(4), iat_slot(4)] × 1024
+// patch_offset points to the MOVZ instruction that starts the IAT call sequence
+static uint64 a64_win_iat_fixups = 0
+static uint64 a64_win_iat_fixup_count = 0
 
 // ---------------------------------------------------------------------------
 // AArch64 instruction emitters
@@ -210,7 +219,20 @@ fn emit_a64_cset(uint64 rd, uint64 cond) {
 
 // SVC #0 (supervisor call, Linux syscall)
 fn emit_a64_svc() {
-    emit_a64(0xD4000001)
+    if target_os == 1 {
+        emit_a64(0xD4001001)
+    } else {
+        emit_a64(0xD4000001)
+    }
+}
+
+// Load syscall number: X8 on Linux, X16 on macOS
+fn emit_a64_syscall_nr(uint64 nr) {
+    if target_os == 1 {
+        emit_a64_mov_imm(16, nr)
+    } else {
+        emit_a64_mov_imm(8, nr)
+    }
 }
 
 // RET (return via X30)
@@ -276,6 +298,84 @@ fn emit_a64_nop() {
     emit_a64(0xD503201F)
 }
 
+// BLR Xn (branch with link to register)
+fn emit_a64_blr(uint64 rn) {
+    uint64 insn = 0xD63F0000 | (rn << 5)
+    emit_a64(insn)
+}
+
+// ---------------------------------------------------------------------------
+// ARM64 Windows IAT call helpers
+// ---------------------------------------------------------------------------
+
+// Record an IAT fixup: patch_off = output offset of MOVZ instruction, slot = IAT slot index
+fn a64_win_fixup_add(uint64 patch_off, uint64 slot) {
+    uint64 entry = a64_win_iat_fixups + a64_win_iat_fixup_count * 8
+    uint32 po = patch_off
+    unsafe { *(entry as uint32) = po }
+    uint64 e4 = entry + 4
+    uint32 sl = slot
+    unsafe { *(e4 as uint32) = sl }
+    a64_win_iat_fixup_count = a64_win_iat_fixup_count + 1
+}
+
+// Emit an indirect call through IAT on ARM64 Windows
+// Sequence (24 bytes = 6 instructions):
+//   MOVZ X16, #imm16         ; low 16 bits of IAT slot VA (placeholder)
+//   MOVK X16, #imm16, LSL#16 ; bits 16-31 (placeholder)
+//   MOVK X16, #imm16, LSL#32 ; bits 32-47 (placeholder)
+//   MOVK X16, #imm16, LSL#48 ; bits 48-63 (placeholder)
+//   LDR  X16, [X16]          ; dereference: X16 = *IAT_slot = function pointer
+//   BLR  X16                  ; call through function pointer
+fn emit_a64_win_call_iat(uint64 slot) {
+    uint64 patch_off = out_len
+    // Placeholder MOVZ/MOVK sequence (will be patched by resolve_a64_win_iat_fixups)
+    emit_a64_movz(16, 0)
+    emit_a64_movk(16, 0, 16)
+    emit_a64_movk(16, 0, 32)
+    emit_a64_movk(16, 0, 48)
+    // LDR X16, [X16] — dereference the IAT slot pointer
+    emit_a64_ldr(16, 16, 0)
+    // BLR X16 — call the function
+    emit_a64_blr(16)
+    // Record fixup
+    a64_win_fixup_add(patch_off, slot)
+}
+
+// Resolve ARM64 Windows IAT fixups
+// Patches the MOVZ/MOVK sequence with the actual IAT slot VA
+// text_start: file offset where .text begins, iat_rva: RVA of IAT in .idata
+@export
+fn resolve_a64_win_iat_fixups(uint64 text_start, uint64 iat_rva) {
+    // PE image base = 0x140000000
+    // IAT slot N has VA = 0x140000000 + iat_rva + N * 8
+    uint64 i = 0
+    while i < a64_win_iat_fixup_count {
+        uint64 entry = a64_win_iat_fixups + i * 8
+        uint32 patch_off = 0
+        unsafe { *(entry as uint32) -> patch_off }
+        uint64 e4 = entry + 4
+        uint32 slot = 0
+        unsafe { *(e4 as uint32) -> slot }
+        uint64 wpatch = patch_off
+        uint64 wslot = slot
+        uint64 target_va = 0x140000000 + iat_rva + wslot * 8
+        uint64 lo16 = target_va & 0xFFFF
+        uint64 hi16 = (target_va >> 16) & 0xFFFF
+        uint64 hi32 = (target_va >> 32) & 0xFFFF
+        uint64 hi48 = (target_va >> 48) & 0xFFFF
+        // Patch MOVZ X16, #lo16
+        patch_u32(wpatch, 0xD2800010 | (lo16 << 5))
+        // Patch MOVK X16, #hi16, LSL#16
+        patch_u32(wpatch + 4, 0xF2A00010 | (hi16 << 5))
+        // Patch MOVK X16, #hi32, LSL#32
+        patch_u32(wpatch + 8, 0xF2C00010 | (hi32 << 5))
+        // Patch MOVK X16, #hi48, LSL#48
+        patch_u32(wpatch + 12, 0xF2E00010 | (hi48 << 5))
+        i = i + 1
+    }
+}
+
 // ---------------------------------------------------------------------------
 // AArch64 variable access helpers
 // ---------------------------------------------------------------------------
@@ -323,9 +423,11 @@ fn emit_a64_static_load(uint64 data_offset) {
     uint32 dp = data_offset
     unsafe { *(fe4 as uint32) = dp }
     static_fixup_count = static_fixup_count + 1
-    // Placeholder: movz x10, #0; movk x10, #0, lsl #16
+    // Placeholder: movz x10, #0; movk x10, #0, lsl #16; movk x10, #0, lsl #32
+    // Third instruction needed for PE/Mach-O high base addresses
     emit_a64_movz(10, 0)
     emit_a64_movk(10, 0, 16)
+    emit_a64_movk(10, 0, 32)
     // ldr x0, [x10]
     emit_a64_ldr(0, 10, 0)
 }
@@ -340,9 +442,10 @@ fn emit_a64_static_store(uint64 data_offset) {
     uint32 dp = data_offset
     unsafe { *(fe4 as uint32) = dp }
     static_fixup_count = static_fixup_count + 1
-    // Placeholder: movz x10, #0; movk x10, #0, lsl #16
+    // Placeholder: movz x10, #0; movk x10, #0, lsl #16; movk x10, #0, lsl #32
     emit_a64_movz(10, 0)
     emit_a64_movk(10, 0, 16)
+    emit_a64_movk(10, 0, 32)
     // str x9, [x10]
     emit_a64_str(9, 10, 0)
 }
@@ -428,9 +531,11 @@ fn gen_expr_a64(uint64 node) {
         uint32 so = str_offset
         unsafe { *(fe4 as uint32) = so }
         str_fixup_count = str_fixup_count + 1
-        // Placeholder: movz x0, #0; movk x0, #0, lsl #16 (will be patched)
+        // Placeholder: movz x0, #0; movk x0, #0, lsl #16; movk x0, #0, lsl #32 (will be patched)
+        // Third instruction needed for PE/Mach-O high base addresses
         emit_a64_movz(0, 0)
         emit_a64_movk(0, 0, 16)
+        emit_a64_movk(0, 0, 32)
         return
     }
 
@@ -630,9 +735,15 @@ fn gen_expr_a64(uint64 node) {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr_a64(wfa)
-            // x0 already has the exit code
-            emit_a64_mov_imm(8, 93)
-            emit_a64_svc()
+            if target_os == 2 {
+                // Windows ARM64: ExitProcess(code)
+                // x0 = exit code (already in place)
+                emit_a64_win_call_iat(0)
+            } else {
+                // x0 already has exit code
+                if target_os == 1 { emit_a64_syscall_nr(1) } else { emit_a64_syscall_nr(93) }
+                emit_a64_svc()
+            }
             return
         }
 
@@ -649,35 +760,71 @@ fn gen_expr_a64(uint64 node) {
             uint32 arg3 = ast_next(wa2)
             uint64 wa3 = arg3
             gen_expr_a64(wa3)
-            emit_a64_mov(2, 0)
-            emit_a64_load_x0(temp_slot_1)
-            emit_a64_mov(1, 0)
-            emit_a64_load_x0(temp_slot_0)
-            emit_a64_mov_imm(8, 64)
-            emit_a64_svc()
+            if target_os == 2 {
+                // Windows ARM64: GetStdHandle(-(10+fd)) then WriteFile(handle, buf, len, NULL, NULL)
+                // Save len (x0) to extra temp
+                uint64 wr_extra = var_frame_size
+                emit_a64_store_x0(wr_extra)
+                // GetStdHandle: x0 = -(10 + fd)
+                emit_a64_load_x0(temp_slot_0)
+                emit_a64_neg(0, 0)
+                emit_a64_mov_imm(9, 10)
+                emit_a64_sub(0, 0, 9)
+                emit_a64_win_call_iat(1)
+                // x0 = handle from GetStdHandle, save to x19
+                emit_a64_mov(19, 0)
+                // Set up WriteFile(handle, buf, len, NULL, NULL) args in reverse
+                emit_a64_mov_imm(4, 0)
+                emit_a64_mov_imm(3, 0)
+                emit_a64_load_x0(wr_extra)
+                emit_a64_mov(2, 0)
+                emit_a64_load_x0(temp_slot_1)
+                emit_a64_mov(1, 0)
+                emit_a64_mov(0, 19)
+                emit_a64_win_call_iat(2)
+            } else {
+                emit_a64_mov(2, 0)
+                emit_a64_load_x0(temp_slot_1)
+                emit_a64_mov(1, 0)
+                emit_a64_load_x0(temp_slot_0)
+                if target_os == 1 { emit_a64_syscall_nr(4) } else { emit_a64_syscall_nr(64) }
+                emit_a64_svc()
+            }
             return
         }
 
-        // Built-in: alloc(size) → mmap
+        // Built-in: alloc(size) → mmap / VirtualAlloc
         if tok_matches(wct, "alloc", 5) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr_a64(wfa)
-            emit_a64_mov(1, 0)
-            emit_a64_mov_imm(0, 0)
-            emit_a64_mov_imm(2, 3)
-            emit_a64_mov_imm(3, 0x22)
-            emit_a64_mov_imm(4, 0xFFFFFFFFFFFFFFFF)
-            emit_a64_mov_imm(5, 0)
-            emit_a64_mov_imm(8, 222)
-            emit_a64_svc()
+            if target_os == 2 {
+                // Windows ARM64: VirtualAlloc(NULL, size, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE)
+                // x0 = size
+                emit_a64_mov(1, 0)
+                emit_a64_mov_imm(0, 0)
+                emit_a64_mov_imm(2, 0x3000)
+                emit_a64_mov_imm(3, 4)
+                emit_a64_win_call_iat(3)
+            } else {
+                emit_a64_mov(1, 0)
+                emit_a64_mov_imm(0, 0)
+                emit_a64_mov_imm(2, 3)
+                if target_os == 1 {
+                    emit_a64_mov_imm(3, 0x1002)
+                } else {
+                    emit_a64_mov_imm(3, 0x22)
+                }
+                emit_a64_mov_imm(4, 0xFFFFFFFFFFFFFFFF)
+                emit_a64_mov_imm(5, 0)
+                if target_os == 1 { emit_a64_syscall_nr(197) } else { emit_a64_syscall_nr(222) }
+                emit_a64_svc()
+            }
             return
         }
 
         // Built-in: file_open(path, flags)
         if tok_matches(wct, "file_open", 9) != 0 {
-            // AArch64 Linux uses openat(dirfd, path, flags, mode)
-            // dirfd = AT_FDCWD = -100 (0xFFFFFFFFFFFFFF9C)
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr_a64(wa1)
@@ -685,22 +832,56 @@ fn gen_expr_a64(uint64 node) {
             uint32 arg2 = ast_next(wa1)
             uint64 wa2 = arg2
             gen_expr_a64(wa2)
-            // x0 = flags. If 1, use O_WRONLY|O_CREAT|O_TRUNC = 0x241
-            emit_a64_mov(2, 0)
-            emit_a64_mov_imm(9, 1)
-            emit_a64_cmp(0, 9)
-            emit_a64_bcond(1, 8)
-            emit_a64_mov_imm(2, 0x241)
-            // x0 = AT_FDCWD (-100)
-            emit_a64_mov_imm(0, 0xFFFFFFFFFFFFFF9C)
-            // x1 = path
-            emit_a64_load_x0(temp_slot_0)
-            emit_a64_mov(1, 0)
-            emit_a64_mov_imm(0, 0xFFFFFFFFFFFFFF9C)
-            // x3 = mode
-            emit_a64_mov_imm(3, 0x1A4)
-            emit_a64_mov_imm(8, 56)
-            emit_a64_svc()
+            if target_os == 2 {
+                // Windows ARM64: CreateFileA(path, access, share, NULL, disposition, flags, NULL)
+                // x0 = flags argument
+                emit_a64_store_x0(temp_slot_1)
+                // CreateFileA args: x0=path, x1=access, x2=share, x3=NULL, x4=disposition, x5=flags, x6=NULL
+                emit_a64_load_x0(temp_slot_0)
+                // x1 = GENERIC_READ (0x80000000) by default
+                emit_a64_mov_imm(1, 0x80000000)
+                // x2 = FILE_SHARE_READ = 1
+                emit_a64_mov_imm(2, 1)
+                // x3 = NULL (security)
+                emit_a64_mov_imm(3, 0)
+                // x4 = OPEN_EXISTING = 3
+                emit_a64_mov_imm(4, 3)
+                // x5 = FILE_ATTRIBUTE_NORMAL = 0x80
+                emit_a64_mov_imm(5, 0x80)
+                // x6 = NULL (template)
+                emit_a64_mov_imm(6, 0)
+                emit_a64_win_call_iat(4)
+            } else if target_os == 1 {
+                // macOS ARM64: open(path, flags, mode) — no AT_FDCWD
+                // x0 = flags. If 1, use O_WRONLY|O_CREAT|O_TRUNC = 0x601 (macOS)
+                emit_a64_mov(1, 0)
+                emit_a64_mov_imm(9, 1)
+                emit_a64_cmp(0, 9)
+                emit_a64_bcond(1, 8)
+                emit_a64_mov_imm(1, 0x601)
+                // x0 = path
+                emit_a64_load_x0(temp_slot_0)
+                // x2 = mode
+                emit_a64_mov_imm(2, 0x1A4)
+                emit_a64_syscall_nr(5)
+                emit_a64_svc()
+            } else {
+                // Linux ARM64: openat(AT_FDCWD, path, flags, mode)
+                emit_a64_mov(2, 0)
+                emit_a64_mov_imm(9, 1)
+                emit_a64_cmp(0, 9)
+                emit_a64_bcond(1, 8)
+                emit_a64_mov_imm(2, 0x241)
+                // x0 = AT_FDCWD (-100)
+                emit_a64_mov_imm(0, 0xFFFFFFFFFFFFFF9C)
+                emit_a64_load_x0(temp_slot_0)
+                emit_a64_mov(1, 0)
+                emit_a64_mov_imm(0, 0xFFFFFFFFFFFFFF9C)
+                // x3 = mode
+                emit_a64_mov_imm(3, 0x1A4)
+                emit_a64_syscall_nr(56)
+                emit_a64_svc()
+            }
             return
         }
 
@@ -717,12 +898,28 @@ fn gen_expr_a64(uint64 node) {
             uint32 arg3 = ast_next(wa2)
             uint64 wa3 = arg3
             gen_expr_a64(wa3)
-            emit_a64_mov(2, 0)
-            emit_a64_load_x0(temp_slot_1)
-            emit_a64_mov(1, 0)
-            emit_a64_load_x0(temp_slot_0)
-            emit_a64_mov_imm(8, 63)
-            emit_a64_svc()
+            if target_os == 2 {
+                // Windows ARM64: ReadFile(handle, buf, len, NULL, NULL)
+                // x0 = len at this point; save it
+                uint64 rd_extra = var_frame_size
+                emit_a64_store_x0(rd_extra)
+                // Load args in reverse order to avoid clobbering x0
+                emit_a64_mov_imm(4, 0)
+                emit_a64_mov_imm(3, 0)
+                emit_a64_load_x0(rd_extra)
+                emit_a64_mov(2, 0)
+                emit_a64_load_x0(temp_slot_1)
+                emit_a64_mov(1, 0)
+                emit_a64_load_x0(temp_slot_0)
+                emit_a64_win_call_iat(5)
+            } else {
+                emit_a64_mov(2, 0)
+                emit_a64_load_x0(temp_slot_1)
+                emit_a64_mov(1, 0)
+                emit_a64_load_x0(temp_slot_0)
+                if target_os == 1 { emit_a64_syscall_nr(3) } else { emit_a64_syscall_nr(63) }
+                emit_a64_svc()
+            }
             return
         }
 
@@ -739,12 +936,28 @@ fn gen_expr_a64(uint64 node) {
             uint32 arg3 = ast_next(wa2)
             uint64 wa3 = arg3
             gen_expr_a64(wa3)
-            emit_a64_mov(2, 0)
-            emit_a64_load_x0(temp_slot_1)
-            emit_a64_mov(1, 0)
-            emit_a64_load_x0(temp_slot_0)
-            emit_a64_mov_imm(8, 64)
-            emit_a64_svc()
+            if target_os == 2 {
+                // Windows ARM64: WriteFile(handle, buf, len, NULL, NULL)
+                // x0 = len at this point; save it
+                uint64 fw_extra = var_frame_size
+                emit_a64_store_x0(fw_extra)
+                // Load args in reverse order to avoid clobbering x0
+                emit_a64_mov_imm(4, 0)
+                emit_a64_mov_imm(3, 0)
+                emit_a64_load_x0(fw_extra)
+                emit_a64_mov(2, 0)
+                emit_a64_load_x0(temp_slot_1)
+                emit_a64_mov(1, 0)
+                emit_a64_load_x0(temp_slot_0)
+                emit_a64_win_call_iat(2)
+            } else {
+                emit_a64_mov(2, 0)
+                emit_a64_load_x0(temp_slot_1)
+                emit_a64_mov(1, 0)
+                emit_a64_load_x0(temp_slot_0)
+                if target_os == 1 { emit_a64_syscall_nr(4) } else { emit_a64_syscall_nr(64) }
+                emit_a64_svc()
+            }
             return
         }
 
@@ -753,28 +966,62 @@ fn gen_expr_a64(uint64 node) {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr_a64(wfa)
-            emit_a64_mov_imm(8, 57)
-            emit_a64_svc()
+            if target_os == 2 {
+                // Windows ARM64: CloseHandle(handle)
+                // x0 = handle (already in place)
+                emit_a64_win_call_iat(6)
+            } else {
+                if target_os == 1 { emit_a64_syscall_nr(6) } else { emit_a64_syscall_nr(57) }
+                emit_a64_svc()
+            }
             return
         }
 
-        // Built-in: file_size(fd) → lseek to end then back
+        // Built-in: file_size(fd) → lseek to end then back / SetFilePointerEx
         if tok_matches(wct, "file_size", 9) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr_a64(wfa)
-            emit_a64_mov(19, 0)
-            emit_a64_mov_imm(1, 0)
-            emit_a64_mov_imm(2, 2)
-            emit_a64_mov_imm(8, 62)
-            emit_a64_svc()
-            emit_a64_mov(9, 0)
-            emit_a64_mov(0, 19)
-            emit_a64_mov_imm(1, 0)
-            emit_a64_mov_imm(2, 0)
-            emit_a64_mov_imm(8, 62)
-            emit_a64_svc()
-            emit_a64_mov(0, 9)
+            if target_os == 2 {
+                // Windows ARM64: SetFilePointerEx(handle, 0, &newPos, FILE_END=2)
+                // then SetFilePointerEx(handle, 0, NULL, FILE_BEGIN=0)
+                // Save handle in x19 (callee-saved)
+                emit_a64_mov(19, 0)
+                // Allocate 8 bytes on stack for output (use extra temp area)
+                // sub sp, sp, #16  (keep 16-byte aligned)
+                emit_a64_sub_sp_imm(16)
+                // SetFilePointerEx(handle, distance=0, lpNewPos=sp, dwMoveMethod=FILE_END=2)
+                emit_a64_mov(0, 19)
+                emit_a64_mov_imm(1, 0)
+                emit_a64_mov(2, 31)
+                emit_a64_mov_imm(3, 2)
+                emit_a64_win_call_iat(7)
+                // Read size from [sp]
+                emit_a64_ldr(20, 31, 0)
+                // Rewind: SetFilePointerEx(handle, 0, NULL, FILE_BEGIN=0)
+                emit_a64_mov(0, 19)
+                emit_a64_mov_imm(1, 0)
+                emit_a64_mov_imm(2, 0)
+                emit_a64_mov_imm(3, 0)
+                emit_a64_win_call_iat(7)
+                // Restore stack
+                emit_a64_add_sp_imm(16)
+                // Result in x0
+                emit_a64_mov(0, 20)
+            } else {
+                emit_a64_mov(19, 0)
+                emit_a64_mov_imm(1, 0)
+                emit_a64_mov_imm(2, 2)
+                if target_os == 1 { emit_a64_syscall_nr(199) } else { emit_a64_syscall_nr(62) }
+                emit_a64_svc()
+                emit_a64_mov(9, 0)
+                emit_a64_mov(0, 19)
+                emit_a64_mov_imm(1, 0)
+                emit_a64_mov_imm(2, 0)
+                if target_os == 1 { emit_a64_syscall_nr(199) } else { emit_a64_syscall_nr(62) }
+                emit_a64_svc()
+                emit_a64_mov(0, 9)
+            }
             return
         }
 
@@ -1196,8 +1443,9 @@ fn gen_function_a64(uint64 fn_node) {
     fn_register(name_tok, out_len)
 
     // For main: emit _start trampoline to store argc/argv to statics
+    // Skip on Windows — PE entry point receives no args on stack
     uint64 wnt_a64 = name_tok
-    if tok_matches(wnt_a64, "main", 4) != 0 {
+    if tok_matches(wnt_a64, "main", 4) != 0 && target_os != 2 {
         // ldr x0, [sp]        ; x0 = argc
         emit_a64_ldr(0, 31, 0)
         // Store to cli_argc static
@@ -1331,14 +1579,32 @@ fn resolve_fixups_a64() {
     }
 }
 
-// AArch64 static access uses ADRP+LDR/STR pairs
-// For simplicity, we use absolute addresses loaded via MOV immediate sequence
+// AArch64 static access uses absolute addresses loaded via MOV immediate sequence
 // The fixup patches the MOV sequence to point to the correct address
+//
+// VA computation depends on target format:
+//   ELF:    VA = 0x400000 + file_offset
+//   Mach-O: VA = 0x100000000 + file_offset
+//   PE:     VA = 0x140000000 + 0x1000 + (file_offset - 0x200)
+//                = 0x140000E00 + file_offset
+
+// Compute VA from a raw file offset based on target_os
+fn a64_compute_va(uint64 file_offset) -> uint64 {
+    if target_os == 2 {
+        // PE: image_base(0x140000000) + text_rva(0x1000) + (file_off - header_size(0x200))
+        return 0x140000E00 + file_offset
+    }
+    if target_os == 1 {
+        // Mach-O: vmaddr(0x100000000) + file_offset
+        return 0x100000000 + file_offset
+    }
+    // ELF: load at 0x400000
+    return 0x400000 + file_offset
+}
 
 @export
 fn resolve_static_fixups_a64(uint64 data_start) {
     // For AArch64, static access is done via 2-instruction MOV sequence
-    // For now, use the same fixup table as x86_64
     // Each fixup: (code_patch_offset, static_data_offset)
     // The code emits: MOVZ x10, #lo16; MOVK x10, #hi16, LSL#16
     // Then LDR x0, [x10] or STR x0, [x10]
@@ -1352,7 +1618,7 @@ fn resolve_static_fixups_a64(uint64 data_start) {
         uint32 data_off = 0
         unsafe { *(fe4 as uint32) -> data_off }
         uint64 wdo = data_off
-        uint64 target_va = 0x400000 + data_start + wdo
+        uint64 target_va = a64_compute_va(data_start + wdo)
         uint64 lo16 = target_va & 0xFFFF
         uint64 hi16 = (target_va >> 16) & 0xFFFF
         uint64 hi32 = (target_va >> 32) & 0xFFFF
@@ -1361,10 +1627,8 @@ fn resolve_static_fixups_a64(uint64 data_start) {
         patch_u32(wco, 0xD280000A | (lo16 << 5))
         // Patch MOVK x10, #hi16, LSL#16 at code_off+4
         patch_u32(wco + 4, 0xF2A0000A | (hi16 << 5))
-        // If hi32 != 0, patch MOVK at code_off+8
-        if hi32 != 0 {
-            patch_u32(wco + 8, 0xF2C0000A | (hi32 << 5))
-        }
+        // Patch MOVK x10, #hi32, LSL#32 at code_off+8
+        patch_u32(wco + 8, 0xF2C0000A | (hi32 << 5))
         i = i + 1
     }
 }
@@ -1380,12 +1644,15 @@ fn resolve_string_fixups_a64(uint64 str_data_start) {
         uint32 str_off = 0
         unsafe { *(fe4 as uint32) -> str_off }
         uint64 wso = str_off
-        uint64 target_va = 0x400000 + str_data_start + wso
+        uint64 target_va = a64_compute_va(str_data_start + wso)
         uint64 lo16 = target_va & 0xFFFF
         uint64 hi16 = (target_va >> 16) & 0xFFFF
+        uint64 hi32 = (target_va >> 32) & 0xFFFF
         uint64 wco = code_off
         patch_u32(wco, 0xD2800000 | (lo16 << 5))
         patch_u32(wco + 4, 0xF2A00000 | (hi16 << 5))
+        // Patch MOVK x0, #hi32, LSL#32
+        patch_u32(wco + 8, 0xF2C00000 | (hi32 << 5))
         i = i + 1
     }
 }

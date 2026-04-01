@@ -3,13 +3,14 @@
 ## Install
 
 ```bash
-# Linux / macOS
+# Linux / macOS (auto-detects x86_64 or ARM64)
 bash install.sh
 
-# Or download directly
+# Or download directly (x86_64)
 curl -L -o krc https://github.com/Pantelis23/KernRift/releases/latest/download/krc-linux-x86_64
-chmod +x krc
-sudo mv krc /usr/local/bin/
+curl -L -o kr  https://github.com/Pantelis23/KernRift/releases/latest/download/kr
+chmod +x krc kr
+sudo mv krc kr /usr/local/bin/
 ```
 
 ## Your First Program
@@ -25,8 +26,11 @@ fn main() {
 Save as `hello.kr` and compile:
 
 ```bash
-krc hello.kr -o hello        # fat binary (x86_64 + ARM64)
-krc --arch=x86_64 hello.kr   # native x86_64 ELF
+krc hello.kr -o hello.krbo        # fat binary (x86_64 + ARM64, LZ4-compressed)
+kr hello.krbo                     # run on any platform
+
+krc --arch=x86_64 hello.kr -o hello   # native x86_64 ELF
+./hello                               # run directly
 ```
 
 ## Language Basics
@@ -86,5 +90,12 @@ static uint64 counter = 0
 
 ```bash
 krc check module.kr     # context, effect, lock, capability checks
-krc lc module.kr        # living compiler patterns + fitness
+krc lc module.kr        # living compiler patterns + fitness score
 ```
+
+## Toolchain
+
+| Tool | Purpose |
+|------|---------|
+| `krc` | Compiler — compiles `.kr` source to native ELF or `.krbo` fat binary |
+| `kr` | Runner — executes `.krbo` fat binaries on any supported platform |

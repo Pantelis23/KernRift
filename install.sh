@@ -73,13 +73,32 @@ else
     fi
 fi
 
-# Install
+# Install krc
 mkdir -p "$INSTALL_DIR"
 cp "$BINARY" "$INSTALL_DIR/krc"
 chmod +x "$INSTALL_DIR/krc"
 
+# Install kr (fat binary runner)
+KR_BINARY=""
+if [ -f "$REPO_DIR/dist/kr" ]; then
+    KR_BINARY="$REPO_DIR/dist/kr"
+fi
+
+if [ -n "$KR_BINARY" ]; then
+    cp "$KR_BINARY" "$INSTALL_DIR/kr"
+    chmod +x "$INSTALL_DIR/kr"
+    # Also install native extractor if available
+    if [ -f "$REPO_DIR/dist/kr-$OS_NAME-$ARCH_NAME" ]; then
+        cp "$REPO_DIR/dist/kr-$OS_NAME-$ARCH_NAME" "$INSTALL_DIR/kr-$OS_NAME-$ARCH_NAME"
+        chmod +x "$INSTALL_DIR/kr-$OS_NAME-$ARCH_NAME"
+    fi
+fi
+
 echo ""
 echo "Installed: $INSTALL_DIR/krc"
+if [ -n "$KR_BINARY" ]; then
+    echo "Installed: $INSTALL_DIR/kr"
+fi
 
 # Verify
 if "$INSTALL_DIR/krc" --version 2>/dev/null; then
@@ -99,13 +118,13 @@ fi
 
 echo ""
 echo "Usage:"
-echo "  krc program.kr                  # compile to fat binary (x86_64 + arm64)"
+echo "  krc program.kr -o prog.krbo    # compile to fat binary (x86_64 + arm64)"
+echo "  kr prog.krbo                   # run fat binary on any platform"
 echo "  krc --arch=x86_64 prog.kr      # compile for x86_64 only"
 echo "  krc --arch=arm64 prog.kr       # compile for arm64 only"
 echo "  krc -o output prog.kr          # specify output file"
 echo "  krc check prog.kr              # run analysis passes"
 echo "  krc lc prog.kr                 # living compiler report"
-echo "  krc --version                  # show version"
 echo ""
 echo "=== Installation complete ==="
 

@@ -1,6 +1,6 @@
 # KernRift
 
-A self-hosted systems language compiler for kernel-first development. KernRift compiles itself — no Rust, no C, no external toolchain. It produces native executables for x86_64 and AArch64, with LZ4-compressed fat binaries as the default output.
+A self-hosted systems language compiler for kernel-first development. KernRift compiles itself — no Rust, no C, no external toolchain. It produces native executables for x86_64 and AArch64, with LZ4-compressed fat binaries as the default output. The `kr` runner executes `.krbo` fat binaries on any supported platform.
 
 ## Features
 
@@ -15,13 +15,16 @@ A self-hosted systems language compiler for kernel-first development. KernRift c
 ## Quickstart
 
 ```bash
-# Install
+# Install (gets both krc compiler and kr runner)
 bash install.sh
 
-# Compile (default: fat binary with x86_64 + ARM64)
-krc hello.kr -o hello
+# Compile to fat binary (default: x86_64 + ARM64, LZ4-compressed)
+krc hello.kr -o hello.krbo
 
-# Single architecture
+# Run on any platform
+kr hello.krbo
+
+# Single architecture — native ELF executable
 krc --arch=x86_64 hello.kr -o hello
 krc --arch=arm64 hello.kr -o hello
 
@@ -34,7 +37,7 @@ krc lc program.kr
 
 ## Install
 
-**Linux / macOS:**
+**Linux / macOS** (installs both `krc` and `kr`):
 ```bash
 bash install.sh
 ```
@@ -77,7 +80,7 @@ Types: `uint8/16/32/64`, `int8/16/32/64`, structs, enums, arrays. Control: `if/e
 
 ## Architecture
 
-6,500+ lines, 12 source files, 201 functions. Self-compiles to ~182 KB.
+7,300+ lines, 12 source files, 226 functions. Self-compiles to ~194 KB in 12ms.
 
 | File | Purpose |
 |------|---------|
@@ -104,8 +107,9 @@ The [bootstrap compiler](https://github.com/Pantelis23/KernRift-bootstrap) is on
 |----------|---------|-----|-----------|
 | Linux x86_64 | ✅ | ✅ | ✅ |
 | Linux ARM64 | ✅ | ✅ | ✅ |
-| macOS | ✅ headers | — | — |
-| Windows | ✅ headers+IAT | — | — |
+| macOS x86_64 | ✅ | ✅ | — |
+| macOS ARM64 | ✅ | ✅ | — |
+| Windows x86_64 | ✅ | ✅ | — |
 
 ## License
 

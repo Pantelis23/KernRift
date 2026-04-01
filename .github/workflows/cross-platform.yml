@@ -1,0 +1,228 @@
+name: cross-platform
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Cross-compile test binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (for bootstrap)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install bootstrap compiler
+        run: cargo install --git https://github.com/Pantelis23/KernRift-bootstrap kernriftc --locked
+
+      - name: Build self-hosted compiler
+        run: make build
+
+      - name: Compile test programs for all platforms
+        run: |
+          mkdir -p /tmp/test-bins
+
+          # Test programs
+          echo 'fn main() { exit(42) }' > /tmp/exit42.kr
+          echo 'fn main() { uint64 msg = "Hello from KernRift!\n"; write(1, msg, 21); exit(0) }' > /tmp/hello.kr
+          echo 'fn fib(uint64 n) -> uint64 { if n <= 1 { return n }; return fib(n - 1) + fib(n - 2) }
+          fn main() { exit(fib(10)) }' > /tmp/fib.kr
+          echo 'fn add(uint64 a, uint64 b) -> uint64 { return a + b }
+          fn main() { exit(add(10, 32)) }' > /tmp/add.kr
+          echo 'static uint64 c = 0
+          fn inc() { c = c + 1 }
+          fn main() { inc(); inc(); inc(); exit(c) }' > /tmp/static.kr
+
+          # macOS x86_64
+          for t in exit42 hello fib add static; do
+            ./build/krc2 --arch=x86_64 --emit=macho /tmp/$t.kr -o /tmp/test-bins/macos-x64-$t
+          done
+
+          # macOS ARM64
+          for t in exit42 hello fib add static; do
+            ./build/krc2 --arch=arm64 --emit=macho /tmp/$t.kr -o /tmp/test-bins/macos-arm-$t
+          done
+
+          # Windows x86_64
+          for t in exit42 hello fib add static; do
+            ./build/krc2 --arch=x86_64 --emit=pe /tmp/$t.kr -o /tmp/test-bins/win-x64-$t.exe
+          done
+
+          # Windows ARM64
+          for t in exit42 hello fib add static; do
+            ./build/krc2 --arch=arm64 --emit=pe /tmp/$t.kr -o /tmp/test-bins/win-arm-$t.exe
+          done
+
+          ls -la /tmp/test-bins/
+
+      - name: Upload test binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-bins
+          path: /tmp/test-bins/
+
+  test-macos-x64:
+    name: macOS x86_64
+    needs: build
+    runs-on: macos-13
+    steps:
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: test-bins
+          path: bins
+
+      - name: Run tests
+        run: |
+          PASS=0; FAIL=0
+          run_test() {
+            local name="$1" bin="$2" expected="$3"
+            chmod +x "$bin"
+            OUTPUT=$("$bin" 2>&1) || true
+            CODE=$?
+            if [ "$CODE" -eq "$expected" ]; then
+              echo "PASS: $name (exit=$CODE)"
+              PASS=$((PASS+1))
+            else
+              echo "FAIL: $name (expected=$expected, got=$CODE)"
+              FAIL=$((FAIL+1))
+            fi
+          }
+          run_test "exit42" bins/macos-x64-exit42 42
+          run_test "hello"  bins/macos-x64-hello 0
+          run_test "fib10"  bins/macos-x64-fib 55
+          run_test "add"    bins/macos-x64-add 42
+          run_test "static" bins/macos-x64-static 3
+          echo "=== macOS x86_64: $PASS passed, $FAIL failed ==="
+          exit $FAIL
+
+  test-macos-arm:
+    name: macOS ARM64
+    needs: build
+    runs-on: macos-latest
+    steps:
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: test-bins
+          path: bins
+
+      - name: Run tests
+        run: |
+          PASS=0; FAIL=0
+          run_test() {
+            local name="$1" bin="$2" expected="$3"
+            chmod +x "$bin"
+            codesign -s - "$bin" 2>/dev/null || true
+            OUTPUT=$("$bin" 2>&1) || true
+            CODE=$?
+            if [ "$CODE" -eq "$expected" ]; then
+              echo "PASS: $name (exit=$CODE)"
+              PASS=$((PASS+1))
+            else
+              echo "FAIL: $name (expected=$expected, got=$CODE)"
+              FAIL=$((FAIL+1))
+            fi
+          }
+          run_test "exit42" bins/macos-arm-exit42 42
+          run_test "hello"  bins/macos-arm-hello 0
+          run_test "fib10"  bins/macos-arm-fib 55
+          run_test "add"    bins/macos-arm-add 42
+          run_test "static" bins/macos-arm-static 3
+          echo "=== macOS ARM64: $PASS passed, $FAIL failed ==="
+          exit $FAIL
+
+  test-windows-x64:
+    name: Windows x86_64
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: test-bins
+          path: bins
+
+      - name: Run tests
+        shell: pwsh
+        run: |
+          $pass = 0; $fail = 0
+          function Run-Test($name, $bin, $expected) {
+            & $bin 2>$null
+            $code = $LASTEXITCODE
+            if ($code -eq $expected) {
+              Write-Host "PASS: $name (exit=$code)"
+              $script:pass++
+            } else {
+              Write-Host "FAIL: $name (expected=$expected, got=$code)"
+              $script:fail++
+            }
+          }
+          Run-Test "exit42" "bins\win-x64-exit42.exe" 42
+          Run-Test "fib10"  "bins\win-x64-fib.exe" 55
+          Run-Test "add"    "bins\win-x64-add.exe" 42
+          Run-Test "static" "bins\win-x64-static.exe" 3
+          Write-Host "=== Windows x86_64: $pass passed, $fail failed ==="
+          exit $fail
+
+      - name: Test hello world output
+        shell: pwsh
+        run: |
+          $output = & bins\win-x64-hello.exe 2>&1
+          if ($output -match "Hello from KernRift") {
+            Write-Host "PASS: hello world output"
+          } else {
+            Write-Host "FAIL: hello world output: $output"
+            exit 1
+          }
+
+  test-windows-arm64:
+    name: Windows ARM64
+    needs: build
+    runs-on: windows-11-arm
+    steps:
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: test-bins
+          path: bins
+
+      - name: Run tests
+        shell: pwsh
+        run: |
+          $pass = 0; $fail = 0
+          function Run-Test($name, $bin, $expected) {
+            & $bin 2>$null
+            $code = $LASTEXITCODE
+            if ($code -eq $expected) {
+              Write-Host "PASS: $name (exit=$code)"
+              $script:pass++
+            } else {
+              Write-Host "FAIL: $name (expected=$expected, got=$code)"
+              $script:fail++
+            }
+          }
+          Run-Test "exit42" "bins\win-arm-exit42.exe" 42
+          Run-Test "fib10"  "bins\win-arm-fib.exe" 55
+          Run-Test "add"    "bins\win-arm-add.exe" 42
+          Run-Test "static" "bins\win-arm-static.exe" 3
+          Write-Host "=== Windows ARM64: $pass passed, $fail failed ==="
+          exit $fail
+
+      - name: Test hello world output
+        shell: pwsh
+        run: |
+          $output = & bins\win-arm-hello.exe 2>&1
+          if ($output -match "Hello from KernRift") {
+            Write-Host "PASS: hello world output"
+          } else {
+            Write-Host "FAIL: hello world output: $output"
+            exit 1
+          }

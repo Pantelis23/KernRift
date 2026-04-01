@@ -87,6 +87,18 @@ static uint64 str_len = 0
 static uint64 str_fixups = 0
 static uint64 str_fixup_count = 0
 
+// Target OS: 0=linux, 1=macos, 2=windows
+static uint64 target_os = 0
+
+// Windows IAT call fixups: [patch_offset(4), iat_slot(4)] × 1024
+static uint64 win_iat_fixups = 0
+static uint64 win_iat_fixup_count = 0
+// ARM64 Windows IAT fixups (same format)
+static uint64 a64_win_iat_fixups = 0
+static uint64 a64_win_iat_fixup_count = 0
+// PE IAT RVA (set during PE header emission)
+static uint64 pe_iat_rva = 0
+
 @export
 fn codegen_init(uint64 capacity, uint64 source, uint64 tokens) {
     out_buf = alloc(capacity)
@@ -122,6 +134,10 @@ fn codegen_init(uint64 capacity, uint64 source, uint64 tokens) {
     str_fixups = alloc(1024 * 8)
     str_fixup_count = 0
     a64_var_base = 32
+    win_iat_fixups = alloc(1024 * 8)
+    win_iat_fixup_count = 0
+    a64_win_iat_fixups = alloc(1024 * 8)
+    a64_win_iat_fixup_count = 0
 }
 
 // ---------------------------------------------------------------------------
@@ -811,6 +827,128 @@ fn emit_mov_rdx_rax() {
     emit_byte(0xC2)
 }
 
+// ---------------------------------------------------------------------------
+// Windows x64 ABI helpers
+// ---------------------------------------------------------------------------
+
+fn win_fixup_add(uint64 patch_off, uint64 slot) {
+    uint64 entry = win_iat_fixups + win_iat_fixup_count * 8
+    uint32 po = patch_off
+    unsafe { *(entry as uint32) = po }
+    uint64 e4 = entry + 4
+    uint32 sl = slot
+    unsafe { *(e4 as uint32) = sl }
+    win_iat_fixup_count = win_iat_fixup_count + 1
+}
+
+// sub rsp, N for Windows API calls (N must keep RSP 16-byte aligned)
+// After prologue (push rbx + sub rsp, frame), RSP is 16-aligned
+// So we need N divisible by 16 for alignment
+// Use 0x20 (32) for <=4 args, 0x30 (48) for 5 args, 0x40 (64) for 7 args
+fn emit_win_alloc_stack(uint64 nbytes) {
+    emit_byte(0x48)
+    emit_byte(0x83)
+    emit_byte(0xEC)
+    uint8 nb = nbytes
+    emit_byte(nb)
+}
+
+fn emit_win_free_stack(uint64 nbytes) {
+    emit_byte(0x48)
+    emit_byte(0x83)
+    emit_byte(0xC4)
+    uint8 nb = nbytes
+    emit_byte(nb)
+}
+
+// mov rcx, rax (Windows 1st arg)
+fn emit_mov_rcx_rax() {
+    emit_byte(0x48)
+    emit_byte(0x89)
+    emit_byte(0xC1)
+}
+
+// mov r8, rax (Windows 3rd arg)
+fn emit_mov_r8_rax() {
+    emit_byte(0x49)
+    emit_byte(0x89)
+    emit_byte(0xC0)
+}
+
+// mov r9, imm32 (sign-extended, Windows 4th arg)
+fn emit_mov_r9_imm(uint64 val) {
+    emit_byte(0x49)
+    emit_byte(0xC7)
+    emit_byte(0xC1)
+    emit_u32_le(val)
+}
+
+// call qword [rip + disp32] — IAT indirect call
+// Emits FF 15 <disp32>, stores fixup for later patching
+fn emit_win_call_iat(uint64 slot) {
+    emit_byte(0xFF)
+    emit_byte(0x15)
+    uint64 patch_off = out_len
+    emit_u32_le(0)
+    win_fixup_add(patch_off, slot)
+}
+
+// neg rax
+fn emit_neg_rax() {
+    emit_byte(0x48)
+    emit_byte(0xF7)
+    emit_byte(0xD8)
+}
+
+// sub rax, imm8
+fn emit_sub_rax_imm8(uint64 val) {
+    emit_byte(0x48)
+    emit_byte(0x83)
+    emit_byte(0xE8)
+    uint8 b = val
+    emit_byte(b)
+}
+
+// mov [rsp+32], imm32 (5th arg on stack for Windows calls)
+fn emit_win_stack_arg5(uint64 val) {
+    emit_byte(0x48)
+    emit_byte(0xC7)
+    emit_byte(0x44)
+    emit_byte(0x24)
+    emit_byte(0x20)
+    emit_u32_le(val)
+}
+
+// Resolve Windows IAT fixups: patch call [rip+disp32] with correct displacement
+// text_start: offset of code within file, iat_rva: RVA of IAT in .idata section
+@export
+fn resolve_win_iat_fixups(uint64 text_start, uint64 iat_rva) {
+    // PE image base = 0x140000000, text section RVA = 0x1000
+    // Code at file offset text_start corresponds to RVA 0x1000
+    // So code at file offset X has RVA = 0x1000 + (X - text_start)
+    // RIP at end of call instruction = RVA of byte after the disp32
+    // Target = iat_rva + slot * 8
+    // disp32 = target_rva - rip_rva
+    uint64 i = 0
+    while i < win_iat_fixup_count {
+        uint64 entry = win_iat_fixups + i * 8
+        uint32 patch_off = 0
+        unsafe { *(entry as uint32) -> patch_off }
+        uint64 e4 = entry + 4
+        uint32 slot = 0
+        unsafe { *(e4 as uint32) -> slot }
+        uint64 wpatch = patch_off
+        uint64 wslot = slot
+        // RIP at end of this instruction = RVA of (patch_off + 4)
+        uint64 rip_rva = 0x1000 + (wpatch + 4 - text_start)
+        uint64 target_rva = iat_rva + wslot * 8
+        // disp32 = target_rva - rip_rva (signed 32-bit)
+        uint64 disp = target_rva - rip_rva
+        patch_u32(wpatch, disp & 0xFFFFFFFF)
+        i = i + 1
+    }
+}
+
 // emit: cmp rcx, rax + setCC al + movzx eax, al
 fn emit_compare(uint64 op_tok_kind) {
     // cmp rax, rcx  (computes rax - rcx, sets flags for lhs vs rhs)
@@ -1232,88 +1370,133 @@ fn gen_expr(uint64 node) {
         // Check for built-in: exit(code)
         uint64 wct = callee_tok
         if tok_matches(wct, "exit", 4) != 0 {
-            // Evaluate first arg
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr(wfa)
-            // mov edi, eax
-            emit_mov_rdi_rax()
-            // mov eax, 231 (exit_group)
-            emit_mov_rax_imm(231)
-            // syscall
-            emit_byte(0x0F)
-            emit_byte(0x05)
+            if target_os == 2 {
+                // Windows: ExitProcess(code)
+                emit_mov_rcx_rax()
+                emit_win_alloc_stack(0x20)
+                emit_win_call_iat(0)
+            } else {
+                emit_mov_rdi_rax()
+                if target_os == 1 { emit_mov_rax_imm(0x2000001) } else { emit_mov_rax_imm(231) }
+                emit_byte(0x0F)
+                emit_byte(0x05)
+            }
             return
         }
 
         // Check for built-in: write(fd, buf, len)
         if tok_matches(wct, "write", 5) != 0 {
-            // Evaluate 3 args using temp slots (no push/pop to avoid rsp shifts)
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr(wa1)
             emit_store_rax_to_stack(temp_slot_0)
-
             uint32 arg2 = ast_next(wa1)
             uint64 wa2 = arg2
             gen_expr(wa2)
             emit_store_rax_to_stack(temp_slot_1)
-
             uint32 arg3 = ast_next(wa2)
             uint64 wa3 = arg3
             gen_expr(wa3)
-            // rax = len → rdx
-            emit_mov_rdx_rax()
-            // buf → rsi
-            emit_load_rax_from_stack(temp_slot_1)
-            emit_mov_rsi_rax()
-            // fd → rdi
-            emit_load_rax_from_stack(temp_slot_0)
-            emit_mov_rdi_rax()
-            // mov eax, 1 (sys_write)
-            emit_mov_rax_imm(1)
-            emit_byte(0x0F)
-            emit_byte(0x05)
+            if target_os == 2 {
+                // Windows: GetStdHandle(-(10+fd)) then WriteFile(handle, buf, len, NULL, NULL)
+                // Save len to extra temp
+                uint64 extra_tmp = var_frame_size
+                emit_store_rax_to_stack(extra_tmp)
+                // GetStdHandle: rcx = -(10 + fd)
+                emit_load_rax_from_stack(temp_slot_0)
+                emit_neg_rax()
+                emit_sub_rax_imm8(10)
+                emit_mov_rcx_rax()
+                emit_win_alloc_stack(0x20)
+                emit_win_call_iat(1)
+                emit_win_free_stack(0x20)
+                // rax = handle
+                emit_mov_rcx_rax()
+                emit_load_rax_from_stack(temp_slot_1)
+                // mov rdx, rax (buf)
+                emit_mov_rdx_rax()
+                emit_load_rax_from_stack(extra_tmp)
+                emit_mov_r8_rax()
+                emit_mov_r9_imm(0)
+                emit_win_alloc_stack(0x30)
+                emit_win_stack_arg5(0)
+                emit_win_call_iat(2)
+                emit_win_free_stack(0x30)
+            } else {
+                // rax = len -> rdx
+                emit_mov_rdx_rax()
+                emit_load_rax_from_stack(temp_slot_1)
+                emit_mov_rsi_rax()
+                emit_load_rax_from_stack(temp_slot_0)
+                emit_mov_rdi_rax()
+                if target_os == 1 { emit_mov_rax_imm(0x2000004) } else { emit_mov_rax_imm(1) }
+                emit_byte(0x0F)
+                emit_byte(0x05)
+            }
             return
         }
 
-        // Check for built-in: alloc(size) → mmap
+        // Check for built-in: alloc(size) → mmap / VirtualAlloc
         if tok_matches(wct, "alloc", 5) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr(wfa)
-            // rax = size → rsi (length)
-            emit_mov_rsi_rax()
-            // rdi = 0 (addr = NULL)
-            emit_byte(0x48)
-            emit_byte(0x31)
-            emit_byte(0xFF)
-            // rdx = 3 (PROT_READ | PROT_WRITE)
-            emit_mov_rax_imm(3)
-            emit_mov_rdx_rax()
-            // r10 = 0x22 (MAP_PRIVATE | MAP_ANONYMOUS)
-            emit_mov_rax_imm(0x22)
-            // mov r10, rax
-            emit_byte(0x49)
-            emit_byte(0x89)
-            emit_byte(0xC2)
-            // r8 = -1 (fd)
-            emit_byte(0x49)
-            emit_byte(0xC7)
-            emit_byte(0xC0)
-            emit_u32_le(0xFFFFFFFF)
-            // r9 = 0 (offset)
-            emit_byte(0x4D)
-            emit_byte(0x31)
-            emit_byte(0xC9)
-            // rax = 9 (sys_mmap)
-            emit_mov_rax_imm(9)
-            emit_byte(0x0F)
-            emit_byte(0x05)
+            if target_os == 2 {
+                // Windows: VirtualAlloc(NULL, size, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE)
+                // rax = size
+                emit_mov_rdx_rax()
+                // rcx = NULL (lpAddress)
+                emit_mov_rax_imm(0)
+                emit_mov_rcx_rax()
+                // r8 = 0x3000 (MEM_COMMIT | MEM_RESERVE)
+                emit_mov_rax_imm(0x3000)
+                emit_mov_r8_rax()
+                // r9 = 4 (PAGE_READWRITE)
+                emit_mov_r9_imm(4)
+                emit_win_alloc_stack(0x20)
+                emit_win_call_iat(3)
+                emit_win_free_stack(0x20)
+            } else {
+                // rax = size -> rsi (length)
+                emit_mov_rsi_rax()
+                // rdi = 0 (addr = NULL)
+                emit_byte(0x48)
+                emit_byte(0x31)
+                emit_byte(0xFF)
+                // rdx = 3 (PROT_READ | PROT_WRITE)
+                emit_mov_rax_imm(3)
+                emit_mov_rdx_rax()
+                // r10 = flags
+                if target_os == 1 {
+                    emit_mov_rax_imm(0x1002)
+                } else {
+                    emit_mov_rax_imm(0x22)
+                }
+                // mov r10, rax
+                emit_byte(0x49)
+                emit_byte(0x89)
+                emit_byte(0xC2)
+                // r8 = -1 (fd)
+                emit_byte(0x49)
+                emit_byte(0xC7)
+                emit_byte(0xC0)
+                emit_u32_le(0xFFFFFFFF)
+                // r9 = 0 (offset)
+                emit_byte(0x4D)
+                emit_byte(0x31)
+                emit_byte(0xC9)
+                // rax = syscall number
+                if target_os == 1 { emit_mov_rax_imm(0x20000C5) } else { emit_mov_rax_imm(9) }
+                emit_byte(0x0F)
+                emit_byte(0x05)
+            }
             return
         }
 
-        // Check for built-in: file_open(path, flags) → open syscall
+        // Check for built-in: file_open(path, flags) → open / CreateFileA
         if tok_matches(wct, "file_open", 9) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
@@ -1322,40 +1505,78 @@ fn gen_expr(uint64 node) {
             uint32 arg2 = ast_next(wa1)
             uint64 wa2 = arg2
             gen_expr(wa2)
-            // rax = flags. Map: 0=read(O_RDONLY), 1=write(O_WRONLY|O_CREAT|O_TRUNC)
-            // Save flags to temp_slot_1
             emit_store_rax_to_stack(temp_slot_1)
-            // rdi = path
-            emit_load_rax_from_stack(temp_slot_0)
-            emit_mov_rdi_rax()
-            // rsi = flags
-            emit_load_rax_from_stack(temp_slot_1)
-            // If flags == 1, use O_WRONLY|O_CREAT|O_TRUNC = 0x241
-            // mov rcx, rax (save original)
-            emit_byte(0x48)
-            emit_byte(0x89)
-            emit_byte(0xC1)
-            // cmp ecx, 1
-            emit_byte(0x83)
-            emit_byte(0xF9)
-            emit_byte(0x01)
-            // jne +7 (skip the movabs)
-            emit_byte(0x75)
-            emit_byte(0x05)
-            // mov eax, 0x241
-            emit_mov_rax_imm(0x241)
-            emit_mov_rsi_rax()
-            // rdx = 0644 octal = 0x1A4 (mode, for O_CREAT)
-            emit_mov_rax_imm(0x1A4)
-            emit_mov_rdx_rax()
-            // rax = 2 (sys_open)
-            emit_mov_rax_imm(2)
-            emit_byte(0x0F)
-            emit_byte(0x05)
+            if target_os == 2 {
+                // Windows: CreateFileA(path, access, share, NULL, disposition, flags, NULL)
+                // If flags==0 (read): GENERIC_READ, OPEN_EXISTING
+                // If flags==1 (write): GENERIC_WRITE, CREATE_ALWAYS
+                emit_load_rax_from_stack(temp_slot_0)
+                emit_mov_rcx_rax()
+                emit_load_rax_from_stack(temp_slot_1)
+                // Check if write mode
+                // mov rcx_saved, rax (flags)
+                emit_store_rax_to_stack(var_frame_size)
+                // Default: GENERIC_READ = 0x80000000
+                emit_mov_rax_imm(0x80000000)
+                emit_mov_rdx_rax()
+                // r8 = FILE_SHARE_READ = 1
+                emit_mov_rax_imm(1)
+                emit_mov_r8_rax()
+                // r9 = NULL (security)
+                emit_mov_r9_imm(0)
+                // path into rcx
+                emit_load_rax_from_stack(temp_slot_0)
+                emit_mov_rcx_rax()
+                emit_win_alloc_stack(0x40)
+                // [rsp+32] = disposition: OPEN_EXISTING=3
+                emit_win_stack_arg5(3)
+                // [rsp+40] = flags: FILE_ATTRIBUTE_NORMAL=0x80
+                emit_byte(0x48)
+                emit_byte(0xC7)
+                emit_byte(0x44)
+                emit_byte(0x24)
+                emit_byte(0x28)
+                emit_u32_le(0x80)
+                // [rsp+48] = NULL (template)
+                emit_byte(0x48)
+                emit_byte(0xC7)
+                emit_byte(0x44)
+                emit_byte(0x24)
+                emit_byte(0x30)
+                emit_u32_le(0)
+                emit_win_call_iat(4)
+                emit_win_free_stack(0x40)
+            } else {
+                emit_load_rax_from_stack(temp_slot_0)
+                emit_mov_rdi_rax()
+                emit_load_rax_from_stack(temp_slot_1)
+                // mov rcx, rax (save flags)
+                emit_byte(0x48)
+                emit_byte(0x89)
+                emit_byte(0xC1)
+                // cmp ecx, 1
+                emit_byte(0x83)
+                emit_byte(0xF9)
+                emit_byte(0x01)
+                // jne +5 (skip the mov eax)
+                emit_byte(0x75)
+                emit_byte(0x05)
+                if target_os == 1 {
+                    emit_mov_rax_imm(0x601)
+                } else {
+                    emit_mov_rax_imm(0x241)
+                }
+                emit_mov_rsi_rax()
+                emit_mov_rax_imm(0x1A4)
+                emit_mov_rdx_rax()
+                if target_os == 1 { emit_mov_rax_imm(0x2000005) } else { emit_mov_rax_imm(2) }
+                emit_byte(0x0F)
+                emit_byte(0x05)
+            }
             return
         }
 
-        // Check for built-in: file_read(fd, buf, len)
+        // Check for built-in: file_read(fd, buf, len) → read / ReadFile
         if tok_matches(wct, "file_read", 9) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
@@ -1368,18 +1589,35 @@ fn gen_expr(uint64 node) {
             uint32 arg3 = ast_next(wa2)
             uint64 wa3 = arg3
             gen_expr(wa3)
-            emit_mov_rdx_rax()
-            emit_load_rax_from_stack(temp_slot_1)
-            emit_mov_rsi_rax()
-            emit_load_rax_from_stack(temp_slot_0)
-            emit_mov_rdi_rax()
-            emit_mov_rax_imm(0)
-            emit_byte(0x0F)
-            emit_byte(0x05)
+            if target_os == 2 {
+                // Windows: ReadFile(handle, buf, len, NULL, NULL)
+                uint64 extra_tmp = var_frame_size
+                emit_store_rax_to_stack(extra_tmp)
+                emit_load_rax_from_stack(temp_slot_0)
+                emit_mov_rcx_rax()
+                emit_load_rax_from_stack(temp_slot_1)
+                emit_mov_rdx_rax()
+                emit_load_rax_from_stack(extra_tmp)
+                emit_mov_r8_rax()
+                emit_mov_r9_imm(0)
+                emit_win_alloc_stack(0x30)
+                emit_win_stack_arg5(0)
+                emit_win_call_iat(5)
+                emit_win_free_stack(0x30)
+            } else {
+                emit_mov_rdx_rax()
+                emit_load_rax_from_stack(temp_slot_1)
+                emit_mov_rsi_rax()
+                emit_load_rax_from_stack(temp_slot_0)
+                emit_mov_rdi_rax()
+                if target_os == 1 { emit_mov_rax_imm(0x2000003) } else { emit_mov_rax_imm(0) }
+                emit_byte(0x0F)
+                emit_byte(0x05)
+            }
             return
         }
 
-        // Check for built-in: file_write(fd, buf, len)
+        // Check for built-in: file_write(fd, buf, len) → write / WriteFile
         if tok_matches(wct, "file_write", 10) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
@@ -1392,67 +1630,146 @@ fn gen_expr(uint64 node) {
             uint32 arg3 = ast_next(wa2)
             uint64 wa3 = arg3
             gen_expr(wa3)
-            emit_mov_rdx_rax()
-            emit_load_rax_from_stack(temp_slot_1)
-            emit_mov_rsi_rax()
-            emit_load_rax_from_stack(temp_slot_0)
-            emit_mov_rdi_rax()
-            emit_mov_rax_imm(1)
-            emit_byte(0x0F)
-            emit_byte(0x05)
+            if target_os == 2 {
+                // Windows: WriteFile(handle, buf, len, NULL, NULL)
+                uint64 extra_tmp = var_frame_size
+                emit_store_rax_to_stack(extra_tmp)
+                emit_load_rax_from_stack(temp_slot_0)
+                emit_mov_rcx_rax()
+                emit_load_rax_from_stack(temp_slot_1)
+                emit_mov_rdx_rax()
+                emit_load_rax_from_stack(extra_tmp)
+                emit_mov_r8_rax()
+                emit_mov_r9_imm(0)
+                emit_win_alloc_stack(0x30)
+                emit_win_stack_arg5(0)
+                emit_win_call_iat(2)
+                emit_win_free_stack(0x30)
+            } else {
+                emit_mov_rdx_rax()
+                emit_load_rax_from_stack(temp_slot_1)
+                emit_mov_rsi_rax()
+                emit_load_rax_from_stack(temp_slot_0)
+                emit_mov_rdi_rax()
+                if target_os == 1 { emit_mov_rax_imm(0x2000004) } else { emit_mov_rax_imm(1) }
+                emit_byte(0x0F)
+                emit_byte(0x05)
+            }
             return
         }
 
-        // Check for built-in: file_close(fd)
+        // Check for built-in: file_close(fd) → close / CloseHandle
         if tok_matches(wct, "file_close", 10) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr(wfa)
-            emit_mov_rdi_rax()
-            emit_mov_rax_imm(3)
-            emit_byte(0x0F)
-            emit_byte(0x05)
+            if target_os == 2 {
+                // Windows: CloseHandle(handle)
+                emit_mov_rcx_rax()
+                emit_win_alloc_stack(0x20)
+                emit_win_call_iat(6)
+                emit_win_free_stack(0x20)
+            } else {
+                emit_mov_rdi_rax()
+                if target_os == 1 { emit_mov_rax_imm(0x2000006) } else { emit_mov_rax_imm(3) }
+                emit_byte(0x0F)
+                emit_byte(0x05)
+            }
             return
         }
 
         // fmt_uint: treat as a user-defined function call (must be defined in source)
 
-        // Check for built-in: file_size(fd) → lseek to end, then back
+        // Check for built-in: file_size(fd) → lseek / GetFileSize
         if tok_matches(wct, "file_size", 9) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr(wfa)
-            emit_mov_rdi_rax()
-            // lseek(fd, 0, SEEK_END=2) → rax = size
-            // rsi = 0
-            emit_byte(0x48)
-            emit_byte(0x31)
-            emit_byte(0xF6)
-            // rdx = 2 (SEEK_END)
-            emit_mov_rax_imm(2)
-            emit_mov_rdx_rax()
-            emit_mov_rax_imm(8)
-            emit_byte(0x0F)
-            emit_byte(0x05)
-            // Save size
-            emit_push_rax()
-            // lseek(fd, 0, SEEK_SET=0) to rewind
-            // rdi still has fd
-            emit_byte(0x48)
-            emit_byte(0x31)
-            emit_byte(0xF6)
-            emit_byte(0x48)
-            emit_byte(0x31)
-            emit_byte(0xD2)
-            emit_mov_rax_imm(8)
-            emit_byte(0x0F)
-            emit_byte(0x05)
-            // Restore size
-            emit_pop_rcx()
-            // mov rax, rcx
-            emit_byte(0x48)
-            emit_byte(0x89)
-            emit_byte(0xC8)
+            if target_os == 2 {
+                // Windows: GetFileSizeEx(handle, &size) — use SetFilePointerEx instead
+                // SetFilePointerEx(handle, 0, &newPos, FILE_END=2)
+                // then SetFilePointerEx(handle, 0, NULL, FILE_BEGIN=0)
+                emit_store_rax_to_stack(temp_slot_0)
+                // Allocate 8 bytes on stack for output
+                // sub rsp, 8
+                emit_byte(0x48)
+                emit_byte(0x83)
+                emit_byte(0xEC)
+                emit_byte(0x08)
+                // rcx = handle
+                emit_load_rax_from_stack(temp_slot_0 + 8)
+                emit_mov_rcx_rax()
+                // rdx = 0 (distance)
+                emit_mov_rax_imm(0)
+                emit_mov_rdx_rax()
+                // r8 = rsp (output pointer)
+                // mov r8, rsp
+                emit_byte(0x49)
+                emit_byte(0x89)
+                emit_byte(0xE0)
+                // r9 = 2 (FILE_END)
+                emit_mov_r9_imm(2)
+                emit_win_alloc_stack(0x20)
+                emit_win_call_iat(7)
+                emit_win_free_stack(0x20)
+                // Read size from [rsp]
+                // mov rax, [rsp]
+                emit_byte(0x48)
+                emit_byte(0x8B)
+                emit_byte(0x04)
+                emit_byte(0x24)
+                // Save size
+                emit_store_rax_to_stack(temp_slot_1 + 8)
+                // Rewind: SetFilePointerEx(handle, 0, NULL, FILE_BEGIN=0)
+                emit_load_rax_from_stack(temp_slot_0 + 8)
+                emit_mov_rcx_rax()
+                emit_mov_rax_imm(0)
+                emit_mov_rdx_rax()
+                emit_mov_rax_imm(0)
+                emit_mov_r8_rax()
+                emit_mov_r9_imm(0)
+                emit_win_alloc_stack(0x20)
+                emit_win_call_iat(7)
+                emit_win_free_stack(0x20)
+                // Restore rsp
+                emit_byte(0x48)
+                emit_byte(0x83)
+                emit_byte(0xC4)
+                emit_byte(0x08)
+                // Load saved size
+                emit_load_rax_from_stack(temp_slot_1)
+            } else {
+                emit_mov_rdi_rax()
+                // lseek(fd, 0, SEEK_END=2) -> rax = size
+                // rsi = 0
+                emit_byte(0x48)
+                emit_byte(0x31)
+                emit_byte(0xF6)
+                // rdx = 2 (SEEK_END)
+                emit_mov_rax_imm(2)
+                emit_mov_rdx_rax()
+                if target_os == 1 { emit_mov_rax_imm(0x20000C7) } else { emit_mov_rax_imm(8) }
+                emit_byte(0x0F)
+                emit_byte(0x05)
+                // Save size
+                emit_push_rax()
+                // lseek(fd, 0, SEEK_SET=0) to rewind
+                emit_byte(0x48)
+                emit_byte(0x31)
+                emit_byte(0xF6)
+                emit_byte(0x48)
+                emit_byte(0x31)
+                emit_byte(0xD2)
+                if target_os == 1 { emit_mov_rax_imm(0x20000C7) } else { emit_mov_rax_imm(8) }
+                emit_byte(0x0F)
+                emit_byte(0x05)
+                // Restore size
+                emit_pop_rcx()
+                // mov rax, rcx
+                emit_byte(0x48)
+                emit_byte(0x89)
+                emit_byte(0xC8)
+            }
             return
         }
 
@@ -1493,39 +1810,65 @@ fn gen_expr(uint64 node) {
             weval = anxt
         }
 
-        // Load args into SysV registers from temp slots
-        if arg_count >= 6 {
-            emit_load_rax_from_stack(arg_slots_base + 40)
-            // mov r9, rax (49 89 C1)
-            emit_byte(0x49); emit_byte(0x89); emit_byte(0xC1)
-        }
-        if arg_count >= 5 {
-            emit_load_rax_from_stack(arg_slots_base + 32)
-            // mov r8, rax (49 89 C0)
-            emit_byte(0x49); emit_byte(0x89); emit_byte(0xC0)
-        }
-        if arg_count >= 4 {
-            emit_load_rax_from_stack(arg_slots_base + 24)
-            // mov rcx, rax
-            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
-        }
-        if arg_count >= 3 {
-            emit_load_rax_from_stack(arg_slots_base + 16)
-            emit_mov_rdx_rax()
+        // Load args into registers from temp slots
+        // SysV: rdi, rsi, rdx, rcx, r8, r9
+        // Windows: rcx, rdx, r8, r9, stack, stack
+        if target_os == 2 {
+            // Windows x64 calling convention
+            if arg_count >= 4 {
+                emit_load_rax_from_stack(arg_slots_base + 24)
+                // mov r9, rax
+                emit_byte(0x49); emit_byte(0x89); emit_byte(0xC1)
+            }
+            if arg_count >= 3 {
+                emit_load_rax_from_stack(arg_slots_base + 16)
+                emit_mov_r8_rax()
+            }
+        } else {
+            // SysV calling convention (Linux/macOS)
+            if arg_count >= 6 {
+                emit_load_rax_from_stack(arg_slots_base + 40)
+                // mov r9, rax (49 89 C1)
+                emit_byte(0x49); emit_byte(0x89); emit_byte(0xC1)
+            }
+            if arg_count >= 5 {
+                emit_load_rax_from_stack(arg_slots_base + 32)
+                // mov r8, rax (49 89 C0)
+                emit_byte(0x49); emit_byte(0x89); emit_byte(0xC0)
+            }
+            if arg_count >= 4 {
+                emit_load_rax_from_stack(arg_slots_base + 24)
+                // mov rcx, rax
+                emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
+            }
+            if arg_count >= 3 {
+                emit_load_rax_from_stack(arg_slots_base + 16)
+                emit_mov_rdx_rax()
+            }
         }
         if arg_count >= 2 {
             emit_load_rax_from_stack(arg_slots_base + 8)
-            emit_mov_rsi_rax()
+            if target_os == 2 { emit_mov_rdx_rax() } else { emit_mov_rsi_rax() }
         }
         if arg_count >= 1 {
             emit_load_rax_from_stack(arg_slots_base)
-            emit_mov_rdi_rax()
+            if target_os == 2 { emit_mov_rcx_rax() } else { emit_mov_rdi_rax() }
+        }
+
+        // Windows: allocate shadow space before internal calls
+        if target_os == 2 {
+            emit_win_alloc_stack(0x20)
         }
 
         // emit: call rel32 (placeholder)
         emit_byte(0xE8)
         uint64 fixup_off = out_len
         emit_u32_le(0)
+
+        // Windows: free shadow space after call
+        if target_os == 2 {
+            emit_win_free_stack(0x20)
+        }
 
         // Record fixup
         uint64 fentry = fixup_table + fixup_count * 8
@@ -2008,8 +2351,9 @@ fn gen_function(uint64 fn_node) {
     fn_register(name_tok, out_len)
 
     // For main function: emit _start trampoline that stores argc/argv to statics
+    // Skip on Windows — PE entry point receives no args on stack
     uint64 wnt = name_tok
-    if tok_matches(wnt, "main", 4) != 0 {
+    if tok_matches(wnt, "main", 4) != 0 && target_os != 2 {
         // mov rax, [rsp]       ; rax = argc
         emit_byte(0x48); emit_byte(0x8B); emit_byte(0x04); emit_byte(0x24)
         // Store to cli_argc static
@@ -2052,7 +2396,8 @@ fn gen_function(uint64 fn_node) {
     emit_u32_le(0)
 
     // Spill params to stack
-    // param 0 (rdi) → [rsp + offset_of_param0]
+    // SysV:    param 0=rdi, 1=rsi, 2=rdx, 3=rcx, 4=r8, 5=r9
+    // Windows: param 0=rcx, 1=rdx, 2=r8,  3=r9
     uint64 pidx = 0
     uint64 wp2 = first_param
     while wp2 != 0 {
@@ -2061,60 +2406,61 @@ fn gen_function(uint64 fn_node) {
             uint32 pn2 = ast_data2(wp2)
             uint64 poff = var_lookup(pn2)
             if poff != 0xFFFFFFFF {
-                // mov [rsp+poff], REG
-                if pidx == 0 {
-                    // mov [rsp+off], rdi
-                    emit_byte(0x48)
-                    emit_byte(0x89)
-                    emit_byte(0x7C)
-                    emit_byte(0x24)
-                    uint8 po8 = poff
-                    emit_byte(po8)
-                }
-                if pidx == 1 {
-                    // mov [rsp+off], rsi
-                    emit_byte(0x48)
-                    emit_byte(0x89)
-                    emit_byte(0x74)
-                    emit_byte(0x24)
-                    uint8 po8 = poff
-                    emit_byte(po8)
-                }
-                if pidx == 2 {
-                    // mov [rsp+off], rdx
-                    emit_byte(0x48)
-                    emit_byte(0x89)
-                    emit_byte(0x54)
-                    emit_byte(0x24)
-                    uint8 po8 = poff
-                    emit_byte(po8)
-                }
-                if pidx == 3 {
-                    // mov [rsp+off], rcx
-                    emit_byte(0x48)
-                    emit_byte(0x89)
-                    emit_byte(0x4C)
-                    emit_byte(0x24)
-                    uint8 po8 = poff
-                    emit_byte(po8)
-                }
-                if pidx == 4 {
-                    // mov [rsp+off], r8 (4C 89 44 24 off)
-                    emit_byte(0x4C)
-                    emit_byte(0x89)
-                    emit_byte(0x44)
-                    emit_byte(0x24)
-                    uint8 po8 = poff
-                    emit_byte(po8)
-                }
-                if pidx == 5 {
-                    // mov [rsp+off], r9 (4C 89 4C 24 off)
-                    emit_byte(0x4C)
-                    emit_byte(0x89)
-                    emit_byte(0x4C)
-                    emit_byte(0x24)
-                    uint8 po8 = poff
-                    emit_byte(po8)
+                uint8 po8 = poff
+                if target_os == 2 {
+                    // Windows calling convention
+                    if pidx == 0 {
+                        // mov [rsp+off], rcx
+                        emit_byte(0x48); emit_byte(0x89); emit_byte(0x4C)
+                        emit_byte(0x24); emit_byte(po8)
+                    }
+                    if pidx == 1 {
+                        // mov [rsp+off], rdx
+                        emit_byte(0x48); emit_byte(0x89); emit_byte(0x54)
+                        emit_byte(0x24); emit_byte(po8)
+                    }
+                    if pidx == 2 {
+                        // mov [rsp+off], r8
+                        emit_byte(0x4C); emit_byte(0x89); emit_byte(0x44)
+                        emit_byte(0x24); emit_byte(po8)
+                    }
+                    if pidx == 3 {
+                        // mov [rsp+off], r9
+                        emit_byte(0x4C); emit_byte(0x89); emit_byte(0x4C)
+                        emit_byte(0x24); emit_byte(po8)
+                    }
+                } else {
+                    // SysV calling convention
+                    if pidx == 0 {
+                        // mov [rsp+off], rdi
+                        emit_byte(0x48); emit_byte(0x89); emit_byte(0x7C)
+                        emit_byte(0x24); emit_byte(po8)
+                    }
+                    if pidx == 1 {
+                        // mov [rsp+off], rsi
+                        emit_byte(0x48); emit_byte(0x89); emit_byte(0x74)
+                        emit_byte(0x24); emit_byte(po8)
+                    }
+                    if pidx == 2 {
+                        // mov [rsp+off], rdx
+                        emit_byte(0x48); emit_byte(0x89); emit_byte(0x54)
+                        emit_byte(0x24); emit_byte(po8)
+                    }
+                    if pidx == 3 {
+                        // mov [rsp+off], rcx
+                        emit_byte(0x48); emit_byte(0x89); emit_byte(0x4C)
+                        emit_byte(0x24); emit_byte(po8)
+                    }
+                    if pidx == 4 {
+                        // mov [rsp+off], r8
+                        emit_byte(0x4C); emit_byte(0x89); emit_byte(0x44)
+                        emit_byte(0x24); emit_byte(po8)
+                    }
+                    if pidx == 5 {
+                        // mov [rsp+off], r9
+                        emit_byte(0x4C); emit_byte(0x89); emit_byte(0x4C)
+                        emit_byte(0x24); emit_byte(po8)
+                    }
                 }
                 pidx = pidx + 1
             }

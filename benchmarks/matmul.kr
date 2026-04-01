@@ -1,0 +1,53 @@
+fn main() {
+    uint64 N = 200
+    uint64 sz = N * N * 8
+    uint64 A = alloc(sz)
+    uint64 B = alloc(sz)
+    uint64 C = alloc(sz)
+    // Init A and B
+    uint64 i = 0
+    while i < N {
+        uint64 j = 0
+        while j < N {
+            uint64 idx = (i * N + j) * 8
+            uint64 pa = A + idx
+            uint64 pb = B + idx
+            uint64 val = (i + j) & 0xFF
+            unsafe { *(pa as uint64) = val }
+            unsafe { *(pb as uint64) = val }
+            uint64 pc = C + idx
+            uint64 zero = 0
+            unsafe { *(pc as uint64) = zero }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    // Multiply
+    i = 0
+    while i < N {
+        uint64 k = 0
+        while k < N {
+            uint64 aik_p = A + (i * N + k) * 8
+            uint64 aik = 0
+            unsafe { *(aik_p as uint64) -> aik }
+            uint64 j = 0
+            while j < N {
+                uint64 bkj_p = B + (k * N + j) * 8
+                uint64 bkj = 0
+                unsafe { *(bkj_p as uint64) -> bkj }
+                uint64 cij_p = C + (i * N + j) * 8
+                uint64 cij = 0
+                unsafe { *(cij_p as uint64) -> cij }
+                cij = cij + aik * bkj
+                unsafe { *(cij_p as uint64) = cij }
+                j = j + 1
+            }
+            k = k + 1
+        }
+        i = i + 1
+    }
+    // Return C[0][0] mod 256
+    uint64 c00 = 0
+    unsafe { *(C as uint64) -> c00 }
+    exit(c00 & 0xFF)
+}

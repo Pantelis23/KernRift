@@ -35,7 +35,7 @@ All compiler source is in `src/`:
 | `codegen.kr` | x86_64 code generation |
 | `codegen_aarch64.kr` | AArch64 code generation |
 | `analysis.kr` | Safety passes |
-| `living.kr` | Living compiler |
+| `living.kr` | Living compiler (7 patterns, CI gating) |
 | `format_*.kr` | Output formats (ELF, Mach-O, PE, AR, KRBO) |
 | `main.kr` | CLI and compilation driver |
 

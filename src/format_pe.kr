@@ -194,7 +194,7 @@ fn emit_pe_headers_x64(uint64 code_size) -> uint64 {
     emit_u32_le(0x200)      // SizeOfHeaders
     emit_u32_le(0)
     emit_u16_le(3)           // CONSOLE
-    emit_u16_le(0x8160)
+    emit_u16_le(0x8100)
     emit_u64_le(0x100000); emit_u64_le(0x1000)
     emit_u64_le(0x100000); emit_u64_le(0x1000)
     emit_u32_le(0); emit_u32_le(16)
@@ -222,7 +222,7 @@ fn emit_pe_headers_x64(uint64 code_size) -> uint64 {
     emit_u32_le(0x200)
     emit_u32_le(0); emit_u32_le(0)
     emit_u16_le(0); emit_u16_le(0)
-    emit_u32_le(0x60000020)  // CODE|EXECUTE|READ
+    emit_u32_le(0xE0000020)  // CODE|EXECUTE|READ|WRITE (statics in .text)
 
     // .idata section header
     emit_byte(0x2E); emit_byte(0x69); emit_byte(0x64); emit_byte(0x61)
@@ -281,7 +281,7 @@ fn emit_pe_headers_a64(uint64 code_size) -> uint64 {
     emit_byte(0x74); emit_byte(0); emit_byte(0); emit_byte(0)
     emit_u32_le(text_aligned); emit_u32_le(0x1000); emit_u32_le(text_aligned)
     emit_u32_le(0x200); emit_u32_le(0); emit_u32_le(0)
-    emit_u16_le(0); emit_u16_le(0); emit_u32_le(0x60000020)
+    emit_u16_le(0); emit_u16_le(0); emit_u32_le(0xE0000020)
     // .idata
     emit_byte(0x2E); emit_byte(0x69); emit_byte(0x64); emit_byte(0x61)
     emit_byte(0x74); emit_byte(0x61); emit_byte(0); emit_byte(0)

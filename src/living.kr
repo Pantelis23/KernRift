@@ -1,11 +1,19 @@
 // KernRift self-hosted compiler — Living Compiler
 //
-// Implements pattern detection, fitness scoring, and auto-fix suggestions.
-// The "living compiler" continuously improves code quality by detecting
-// optimization opportunities and safety patterns.
+// Implements pattern detection, fitness scoring, and per-pattern reporting.
+// Matches and extends the Rust bootstrap compiler's living compiler features.
+//
+// Patterns detected:
+//   1. try_tail_call      — function ends with return of a call (tail-call candidate)
+//   2. high_extern_ratio  — >50% of functions are extern declarations
+//   3. deep_lock_nesting  — lock edge count suggests deep nesting (>= 3 edges)
+//   4. large_unsafe_ratio — >25% of operations are unsafe pointer ops
+//   5. unchecked_call     — call in expression-statement (result discarded)
+//   6. many_trivial_fns   — >30% of functions have <=2 statements
+//   7. high_call_density  — call-to-function ratio > 10 (complex call graph)
 
 // ---------------------------------------------------------------------------
-// Telemetry collection
+// Telemetry struct (80 bytes, 10 fields × 8)
 // ---------------------------------------------------------------------------
 
 struct Telemetry {
@@ -13,156 +21,226 @@ struct Telemetry {
     uint64 extern_count
     uint64 call_count
     uint64 unsafe_count
-    uint64 lock_acquire_count
+    uint64 lock_edge_count
     uint64 irq_fn_count
     uint64 total_ops
+    uint64 exprstmt_call_count
+    uint64 trivial_fn_count
+    uint64 tail_call_candidates
+}
+
+// ---------------------------------------------------------------------------
+// Pattern entry (40 bytes: 5 × 8)
+// ---------------------------------------------------------------------------
+// [0]  id string ptr
+// [8]  title string ptr
+// [16] suggestion string ptr
+// [24] fitness (uint64)
+// [32] signal value (uint64, context-dependent)
+
+static uint64 lc_patterns = 0
+static uint64 lc_pattern_count = 0
+
+fn lc_add_pattern(uint64 id, uint64 title, uint64 suggestion, uint64 fitness, uint64 signal_val) {
+    uint64 entry = lc_patterns + lc_pattern_count * 40
+    unsafe { *(entry as uint64) = id }
+    uint64 e8 = entry + 8
+    unsafe { *(e8 as uint64) = title }
+    uint64 e16 = entry + 16
+    unsafe { *(e16 as uint64) = suggestion }
+    uint64 e24 = entry + 24
+    unsafe { *(e24 as uint64) = fitness }
+    uint64 e32 = entry + 32
+    unsafe { *(e32 as uint64) = signal_val }
+    lc_pattern_count = lc_pattern_count + 1
+}
+
+fn lc_get_pattern_id(uint64 idx) -> uint64 {
+    uint64 entry = lc_patterns + idx * 40
+    uint64 val = 0
+    unsafe { *(entry as uint64) -> val }
+    return val
+}
+
+fn lc_get_pattern_title(uint64 idx) -> uint64 {
+    uint64 entry = lc_patterns + idx * 40 + 8
+    uint64 val = 0
+    unsafe { *(entry as uint64) -> val }
+    return val
+}
+
+fn lc_get_pattern_suggestion(uint64 idx) -> uint64 {
+    uint64 entry = lc_patterns + idx * 40 + 16
+    uint64 val = 0
+    unsafe { *(entry as uint64) -> val }
+    return val
+}
+
+fn lc_get_pattern_fitness(uint64 idx) -> uint64 {
+    uint64 entry = lc_patterns + idx * 40 + 24
+    uint64 val = 0
+    unsafe { *(entry as uint64) -> val }
+    return val
+}
+
+fn lc_get_pattern_signal(uint64 idx) -> uint64 {
+    uint64 entry = lc_patterns + idx * 40 + 32
+    uint64 val = 0
+    unsafe { *(entry as uint64) -> val }
+    return val
+}
+
+// ---------------------------------------------------------------------------
+// Telemetry collection
+// ---------------------------------------------------------------------------
+
+fn tel_set(uint64 tel, uint64 field, uint64 val) {
+    uint64 p = tel + field * 8
+    unsafe { *(p as uint64) = val }
+}
+
+fn tel_get(uint64 tel, uint64 field) -> uint64 {
+    uint64 p = tel + field * 8
+    uint64 val = 0
+    unsafe { *(p as uint64) -> val }
+    return val
+}
+
+fn tel_inc(uint64 tel, uint64 field) {
+    uint64 p = tel + field * 8
+    uint64 val = 0
+    unsafe { *(p as uint64) -> val }
+    val = val + 1
+    unsafe { *(p as uint64) = val }
 }
 
 @export
 fn collect_telemetry(uint64 root) -> uint64 {
-    // Allocate telemetry struct
-    uint64 tel = alloc(64)
+    uint64 tel = alloc(80)
     // Zero fill
     uint64 i = 0
-    while i < 64 {
+    while i < 80 {
         uint64 p = tel + i
         uint8 z = 0
         unsafe { *(p as uint8) = z }
         i = i + 1
     }
 
-    // Walk AST and count
+    // Walk top-level declarations
     uint32 child = ast_child(root)
     uint64 wchild = child
     while wchild != 0 {
         uint32 ck = ast_kind(wchild)
-        if ck == 2 {
-            // Function
-            uint64 fc_p = tel
-            uint64 fc = 0
-            unsafe { *(fc_p as uint64) -> fc }
-            fc = fc + 1
-            unsafe { *(fc_p as uint64) = fc }
 
-            // Count calls and unsafe in body
+        if ck == 2 {
+            // FnDecl
+            tel_inc(tel, 0)
+
+            // Check if it has a body — no body means extern-like
             uint32 body = ast_data3(wchild)
             uint64 wb = body
-            if wb != 0 {
-                count_in_block(wb, tel)
+            if wb == 0 {
+                tel_inc(tel, 1)
+            } else {
+                // Count statements in body
+                uint64 stmt_count = 0
+                uint32 bchild = ast_child(wb)
+                uint64 wbc = bchild
+                while wbc != 0 {
+                    stmt_count = stmt_count + 1
+                    uint32 bnxt = ast_next(wbc)
+                    wbc = bnxt
+                }
+                if stmt_count <= 2 {
+                    tel_inc(tel, 8)
+                }
+
+                // Count calls, unsafe, etc. in body
+                lc_count_in_block(wb, tel)
+
+                // Check tail call candidate
+                if check_tail_call_candidate(wb) != 0 {
+                    tel_inc(tel, 9)
+                }
             }
         }
+        if ck == 3 {
+            // Param at top level — this is an extern function param, count parent
+            // (Actually top-level kind 3 shouldn't appear; externs are FnDecl with no body)
+        }
+
         uint32 nxt = ast_next(wchild)
         wchild = nxt
     }
+
+    // Get lock edge count from analysis module
+    tel_set(tel, 4, lock_edge_count)
+
     return tel
 }
 
-fn count_in_block(uint64 block_node, uint64 tel) {
+fn lc_count_in_block(uint64 block_node, uint64 tel) {
     uint32 child = ast_child(block_node)
     uint64 wchild = child
     while wchild != 0 {
-        count_in_stmt(wchild, tel)
+        lc_count_in_stmt(wchild, tel)
         uint32 nxt = ast_next(wchild)
         wchild = nxt
     }
 }
 
-fn count_in_stmt(uint64 node, uint64 tel) {
+fn lc_count_in_stmt(uint64 node, uint64 tel) {
     uint32 kind = ast_kind(node)
     // Count total ops
-    uint64 ops_p = tel + 48
-    uint64 ops = 0
-    unsafe { *(ops_p as uint64) -> ops }
-    ops = ops + 1
-    unsafe { *(ops_p as uint64) = ops }
+    tel_inc(tel, 6)
 
+    // ExprStmt containing a Call = unchecked call result
     if kind == 16 {
         uint32 expr = ast_child(node)
         uint64 wexpr = expr
-        uint32 ek = ast_kind(wexpr)
-        if ek == 35 {
-            // Call
-            uint64 cc_p = tel + 16
-            uint64 cc = 0
-            unsafe { *(cc_p as uint64) -> cc }
-            cc = cc + 1
-            unsafe { *(cc_p as uint64) = cc }
+        if wexpr != 0 {
+            uint32 ek = ast_kind(wexpr)
+            if ek == 35 {
+                // Call in ExprStmt — result discarded
+                tel_inc(tel, 2)
+                tel_inc(tel, 7)
+            }
         }
     }
-    if kind == 41 || kind == 42 {
-        // Unsafe PtrLoad/PtrStore
-        uint64 uc_p = tel + 24
-        uint64 uc = 0
-        unsafe { *(uc_p as uint64) -> uc }
-        uc = uc + 1
-        unsafe { *(uc_p as uint64) = uc }
+
+    // Count calls in other contexts (not ExprStmt)
+    // We already counted ExprStmt calls above; also count calls in expressions
+    if kind == 12 {
+        // Return — check if child is a call
+        uint32 rexpr = ast_child(node)
+        uint64 wre = rexpr
+        if wre != 0 {
+            uint32 rek = ast_kind(wre)
+            if rek == 35 {
+                tel_inc(tel, 2)
+            }
+        }
     }
+
+    // Unsafe PtrLoad/PtrStore
+    if kind == 41 || kind == 42 {
+        tel_inc(tel, 3)
+    }
+
+    // Recurse into if/while blocks
     if kind == 13 {
         uint32 tb = ast_data1(node)
         uint64 wtb = tb
-        if wtb != 0 { count_in_block(wtb, tel) }
+        if wtb != 0 { lc_count_in_block(wtb, tel) }
         uint32 eb = ast_data2(node)
         uint64 web = eb
-        if web != 0 { count_in_block(web, tel) }
+        if web != 0 { lc_count_in_block(web, tel) }
     }
     if kind == 14 {
         uint32 lb = ast_data1(node)
         uint64 wlb = lb
-        if wlb != 0 { count_in_block(wlb, tel) }
+        if wlb != 0 { lc_count_in_block(wlb, tel) }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Pattern detection
-// ---------------------------------------------------------------------------
-// Patterns detected:
-// 1. try_tail_call: last call in function could be a tail call
-// 2. high_extern_ratio: too many extern calls relative to total
-// 3. deep_lock_nesting: lock depth > 2
-// 4. many_irq_fns: > 50% of functions are IRQ context
-// 5. unused_caps: declared capabilities not used
-// 6. large_unsafe_blocks: too many consecutive unsafe ops
-// 7. missing_error_check: call result not checked
-
-static uint64 pattern_count = 0
-static uint64 patterns_buf = 0
-
-@export
-fn detect_patterns(uint64 root, uint64 tel) -> uint64 {
-    patterns_buf = alloc(4096)
-    pattern_count = 0
-
-    // Pattern 1: try_tail_call
-    // Check if the last statement in each function is a call (could be tail-optimized)
-    uint32 child = ast_child(root)
-    uint64 wchild = child
-    while wchild != 0 {
-        uint32 ck = ast_kind(wchild)
-        if ck == 2 {
-            uint32 body = ast_data3(wchild)
-            uint64 wb = body
-            if wb != 0 {
-                if check_tail_call_candidate(wb) != 0 {
-                    pattern_count = pattern_count + 1
-                }
-            }
-        }
-        uint32 nxt = ast_next(wchild)
-        wchild = nxt
-    }
-
-    // Pattern 2: high extern ratio (simplified — count extern vs total fns)
-    uint64 fn_c = 0
-    uint64 fc_p = tel
-    unsafe { *(fc_p as uint64) -> fn_c }
-    uint64 ext_c = 0
-    uint64 ec_p = tel + 8
-    unsafe { *(ec_p as uint64) -> ext_c }
-    if fn_c > 0 && ext_c * 2 > fn_c {
-        pattern_count = pattern_count + 1
-    }
-
-    return pattern_count
 }
 
 fn check_tail_call_candidate(uint64 block_node) -> uint64 {
@@ -192,56 +270,173 @@ fn check_tail_call_candidate(uint64 block_node) -> uint64 {
 }
 
 // ---------------------------------------------------------------------------
+// Pattern detection
+// ---------------------------------------------------------------------------
+
+@export
+fn detect_patterns(uint64 root, uint64 tel) -> uint64 {
+    lc_patterns = alloc(4096)
+    lc_pattern_count = 0
+
+    uint64 fn_c = tel_get(tel, 0)
+    uint64 ext_c = tel_get(tel, 1)
+    uint64 call_c = tel_get(tel, 2)
+    uint64 unsafe_c = tel_get(tel, 3)
+    uint64 ledge_c = tel_get(tel, 4)
+    uint64 total_ops = tel_get(tel, 6)
+    uint64 exprstmt_c = tel_get(tel, 7)
+    uint64 trivial_c = tel_get(tel, 8)
+    uint64 tail_c = tel_get(tel, 9)
+
+    // Pattern 1: try_tail_call
+    // Functions whose last statement returns a call — could use tail-call optimization
+    if tail_c > 0 {
+        uint64 fit = tail_c * 15
+        if fit > 100 { fit = 100 }
+        lc_add_pattern(
+            "try_tail_call",
+            "Tail-call opportunity",
+            "Replace loop-back call() with tail_call() for zero stack growth.",
+            fit,
+            tail_c
+        )
+    }
+
+    // Pattern 2: high_extern_ratio
+    // More than 50% of functions are extern declarations (no body)
+    if ext_c > 0 && fn_c > 0 && ext_c * 2 >= fn_c {
+        uint64 fit = ext_c * 20
+        if fit > 100 { fit = 100 }
+        lc_add_pattern(
+            "high_extern_ratio",
+            "High extern density",
+            "Verify that all extern @ctx/@eff/@caps annotations match C-side contracts.",
+            fit,
+            ext_c
+        )
+    }
+
+    // Pattern 3: deep_lock_nesting
+    // Lock edge count >= 3 suggests deep nesting (potential deadlock territory)
+    if ledge_c >= 3 {
+        uint64 fit = 20 + (ledge_c - 2) * 15
+        if fit > 75 { fit = 75 }
+        lc_add_pattern(
+            "deep_lock_nesting",
+            "Deep lock nesting",
+            "Restructure lock acquisition so no path holds more than 2 locks simultaneously.",
+            fit,
+            ledge_c
+        )
+    }
+
+    // Pattern 4: large_unsafe_ratio
+    // More than 25% of all operations are unsafe pointer ops
+    if total_ops > 0 && unsafe_c * 4 > total_ops {
+        uint64 pct = unsafe_c * 100 / total_ops
+        uint64 fit = 20 + pct
+        if fit > 80 { fit = 80 }
+        lc_add_pattern(
+            "large_unsafe_ratio",
+            "High unsafe operation density",
+            "Consider wrapping repeated unsafe patterns in safe helper functions.",
+            fit,
+            pct
+        )
+    }
+
+    // Pattern 5: unchecked_call
+    // Calls in expression-statements whose results are discarded
+    // Only flag if a significant fraction of calls are unchecked (>80%)
+    if call_c > 0 && exprstmt_c * 5 > call_c * 4 && exprstmt_c > 10 {
+        uint64 pct = exprstmt_c * 100 / call_c
+        uint64 fit = 20 + pct / 4
+        if fit > 60 { fit = 60 }
+        lc_add_pattern(
+            "unchecked_call",
+            "Unchecked call results",
+            "Check return values of calls, especially for file I/O and allocation.",
+            fit,
+            pct
+        )
+    }
+
+    // Pattern 6: many_trivial_fns
+    // More than 30% of functions have <= 2 statements
+    if fn_c > 4 && trivial_c * 10 > fn_c * 3 {
+        uint64 fit = 15 + trivial_c * 5
+        if fit > 50 { fit = 50 }
+        lc_add_pattern(
+            "many_trivial_fns",
+            "Many trivial functions",
+            "Consider inlining trivial 1-2 statement functions at call sites.",
+            fit,
+            trivial_c
+        )
+    }
+
+    // Pattern 7: high_call_density
+    // Average calls per function > 10 suggests complex call graph
+    if fn_c > 0 && call_c > fn_c * 10 {
+        uint64 ratio = call_c / fn_c
+        uint64 fit = 20 + ratio * 3
+        if fit > 70 { fit = 70 }
+        lc_add_pattern(
+            "high_call_density",
+            "Complex call graph",
+            "Consider splitting functions with many call sites to improve readability.",
+            fit,
+            ratio
+        )
+    }
+
+    return lc_pattern_count
+}
+
+// ---------------------------------------------------------------------------
 // Fitness scoring (0-100)
 // ---------------------------------------------------------------------------
-// Score based on:
-//   - Low unsafe usage: +20 if <10% of ops are unsafe
-//   - Annotations present: +20 if >50% of functions have @ctx
-//   - No lock cycles: +20
-//   - Low extern ratio: +20 if <30% extern
-//   - Tail call optimization opportunities found: +20
+// Global fitness = base score with deductions for detected issues
 
 @export
 fn compute_fitness(uint64 tel, uint64 patterns, uint64 has_lock_cycles) -> uint64 {
-    uint64 score = 0
+    uint64 score = 100
 
-    uint64 fn_c = 0
-    uint64 fc_p = tel
-    unsafe { *(fc_p as uint64) -> fn_c }
+    uint64 fn_c = tel_get(tel, 0)
+    uint64 unsafe_c = tel_get(tel, 3)
+    uint64 total_ops = tel_get(tel, 6)
 
-    uint64 unsafe_c = 0
-    uint64 uc_p = tel + 24
-    unsafe { *(uc_p as uint64) -> unsafe_c }
+    // No functions: can't score meaningfully
+    if fn_c == 0 { return 50 }
 
-    uint64 total_ops = 0
-    uint64 tp = tel + 48
-    unsafe { *(tp as uint64) -> total_ops }
+    // Deduct for each detected pattern based on its fitness
+    uint64 i = 0
+    while i < lc_pattern_count {
+        uint64 fit = lc_get_pattern_fitness(i)
+        // Higher pattern fitness = more important issue = bigger deduction
+        uint64 deduct = fit / 5
+        if deduct > 15 { deduct = 15 }
+        if score > deduct {
+            score = score - deduct
+        } else {
+            score = 0
+        }
+        i = i + 1
+    }
 
-    // Low unsafe usage
+    // Deduct for lock cycles
+    if has_lock_cycles != 0 {
+        if score > 20 { score = score - 20 } else { score = 0 }
+    }
+
+    // Deduct for high unsafe ratio
     if total_ops > 0 {
-        if unsafe_c * 10 < total_ops { score = score + 20 }
-        else if unsafe_c * 5 < total_ops { score = score + 10 }
-    } else {
-        score = score + 20
+        if unsafe_c * 10 > total_ops {
+            // >10% unsafe
+            if score > 10 { score = score - 10 } else { score = 0 }
+        }
     }
 
-    // No lock cycles
-    if has_lock_cycles == 0 {
-        score = score + 20
-    }
-
-    // Tail call candidates found (optimization opportunity = good)
-    if patterns > 0 {
-        score = score + 10
-    }
-
-    // Base points for having functions
-    if fn_c > 0 { score = score + 20 }
-
-    // Penalty-free base
-    score = score + 20
-
-    if score > 100 { score = 100 }
     return score
 }
 
@@ -249,45 +444,196 @@ fn compute_fitness(uint64 tel, uint64 patterns, uint64 has_lock_cycles) -> uint6
 // Report generation
 // ---------------------------------------------------------------------------
 
+fn lc_write_str(uint64 s) {
+    uint64 slen = 0
+    uint64 p = s
+    uint64 c = 0
+    unsafe { *(p as uint8) -> c }
+    while c != 0 {
+        slen = slen + 1
+        p = s + slen
+        unsafe { *(p as uint8) -> c }
+    }
+    write(1, s, slen)
+}
+
+fn lc_write_num(uint64 val) {
+    uint8[32] nb
+    uint64 nl = fmt_uint(nb, val)
+    write(1, nb, nl)
+}
+
 @export
 fn print_living_report(uint64 tel, uint64 patterns, uint64 fitness) {
-    uint8[32] nb
+    uint64 msg = "=== KernRift Living Compiler Report ===\n"
+    write(1, msg, 40)
+
+    // Telemetry summary
+    msg = "Functions: "
+    write(1, msg, 11)
+    lc_write_num(tel_get(tel, 0))
+
+    msg = "\nExterns: "
+    write(1, msg, 9)
+    lc_write_num(tel_get(tel, 1))
+
+    msg = "\nCalls: "
+    write(1, msg, 7)
+    lc_write_num(tel_get(tel, 2))
+
+    msg = "\nUnsafe ops: "
+    write(1, msg, 12)
+    lc_write_num(tel_get(tel, 3))
+
+    msg = "\nTotal ops: "
+    write(1, msg, 11)
+    lc_write_num(tel_get(tel, 6))
+
+    msg = "\nPatterns found: "
+    write(1, msg, 16)
+    lc_write_num(patterns)
+
+    msg = "\nFitness score: "
+    write(1, msg, 15)
+    lc_write_num(fitness)
+    msg = "/100\n"
+    write(1, msg, 5)
+
+    // Per-pattern details
+    if patterns > 0 {
+        msg = "\n"
+        write(1, msg, 1)
+        uint64 i = 0
+        while i < lc_pattern_count {
+            msg = "["
+            write(1, msg, 1)
+            lc_write_num(i + 1)
+            msg = "] "
+            write(1, msg, 2)
+            lc_write_str(lc_get_pattern_id(i))
+            msg = "  fitness: "
+            write(1, msg, 11)
+            lc_write_num(lc_get_pattern_fitness(i))
+            msg = "\n    title: "
+            write(1, msg, 11)
+            lc_write_str(lc_get_pattern_title(i))
+            msg = "\n    signal: "
+            write(1, msg, 12)
+            lc_write_num(lc_get_pattern_signal(i))
+            msg = " occurrence(s)\n    suggestion: "
+            write(1, msg, 31)
+            lc_write_str(lc_get_pattern_suggestion(i))
+            msg = "\n\n"
+            write(1, msg, 2)
+            i = i + 1
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CI gating
+// ---------------------------------------------------------------------------
+// Returns 1 if any pattern fitness >= threshold, 0 otherwise
+
+@export
+fn lc_check_ci_gate(uint64 min_fitness) -> uint64 {
+    uint64 i = 0
+    while i < lc_pattern_count {
+        uint64 fit = lc_get_pattern_fitness(i)
+        if fit >= min_fitness {
+            return 1
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+// ---------------------------------------------------------------------------
+// Filtered report (only patterns >= threshold)
+// ---------------------------------------------------------------------------
+
+@export
+fn print_living_report_filtered(uint64 tel, uint64 patterns, uint64 fitness, uint64 min_fitness) {
     uint64 msg = "=== KernRift Living Compiler Report ===\n"
     write(1, msg, 40)
 
     msg = "Functions: "
     write(1, msg, 11)
-    uint64 fn_c = 0
-    uint64 fc_p = tel
-    unsafe { *(fc_p as uint64) -> fn_c }
-    uint64 nl = fmt_uint(nb, fn_c)
-    write(1, nb, nl)
+    lc_write_num(tel_get(tel, 0))
 
-    msg = "\nCalls: "
+    msg = "  Calls: "
+    write(1, msg, 9)
+    lc_write_num(tel_get(tel, 2))
+
+    msg = "  Unsafe: "
+    write(1, msg, 10)
+    lc_write_num(tel_get(tel, 3))
+
+    msg = "  Ops: "
     write(1, msg, 7)
-    uint64 cc = 0
-    uint64 cc_p = tel + 16
-    unsafe { *(cc_p as uint64) -> cc }
-    nl = fmt_uint(nb, cc)
-    write(1, nb, nl)
+    lc_write_num(tel_get(tel, 6))
 
-    msg = "\nUnsafe ops: "
-    write(1, msg, 12)
-    uint64 uc = 0
-    uint64 uc_p = tel + 24
-    unsafe { *(uc_p as uint64) -> uc }
-    nl = fmt_uint(nb, uc)
-    write(1, nb, nl)
-
-    msg = "\nPatterns found: "
-    write(1, msg, 16)
-    nl = fmt_uint(nb, patterns)
-    write(1, nb, nl)
-
-    msg = "\nFitness score: "
-    write(1, msg, 15)
-    nl = fmt_uint(nb, fitness)
-    write(1, nb, nl)
+    msg = "\nFitness: "
+    write(1, msg, 9)
+    lc_write_num(fitness)
     msg = "/100\n"
     write(1, msg, 5)
+
+    // Count filtered patterns
+    uint64 shown = 0
+    uint64 i = 0
+    while i < lc_pattern_count {
+        uint64 fit = lc_get_pattern_fitness(i)
+        if fit >= min_fitness {
+            shown = shown + 1
+        }
+        i = i + 1
+    }
+
+    if shown > 0 {
+        msg = "\nliving-compiler: "
+        write(1, msg, 17)
+        lc_write_num(shown)
+        msg = " suggestion(s) at fitness >= "
+        write(1, msg, 28)
+        lc_write_num(min_fitness)
+        msg = "\n\n"
+        write(1, msg, 2)
+
+        uint64 n = 0
+        i = 0
+        while i < lc_pattern_count {
+            uint64 fit = lc_get_pattern_fitness(i)
+            if fit >= min_fitness {
+                n = n + 1
+                msg = "["
+                write(1, msg, 1)
+                lc_write_num(n)
+                msg = "] "
+                write(1, msg, 2)
+                lc_write_str(lc_get_pattern_id(i))
+                msg = "  fitness: "
+                write(1, msg, 11)
+                lc_write_num(fit)
+                msg = "\n    title: "
+                write(1, msg, 11)
+                lc_write_str(lc_get_pattern_title(i))
+                msg = "\n    signal: "
+                write(1, msg, 12)
+                lc_write_num(lc_get_pattern_signal(i))
+                msg = " occurrence(s)\n    suggestion: "
+                write(1, msg, 31)
+                lc_write_str(lc_get_pattern_suggestion(i))
+                msg = "\n\n"
+                write(1, msg, 2)
+            }
+            i = i + 1
+        }
+    } else {
+        msg = "\nliving-compiler: 0 suggestion(s) at fitness >= "
+        write(1, msg, 47)
+        lc_write_num(min_fitness)
+        msg = "\n"
+        write(1, msg, 1)
+    }
 }

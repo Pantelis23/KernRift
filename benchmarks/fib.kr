@@ -1,0 +1,8 @@
+fn fib(uint64 n) -> uint64 {
+    if n <= 1 { return n }
+    return fib(n - 1) + fib(n - 2)
+}
+fn main() {
+    uint64 r = fib(40)
+    exit(r & 0xFF)
+}
