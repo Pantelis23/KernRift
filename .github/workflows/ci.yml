@@ -114,13 +114,12 @@ jobs:
       - name: Run macOS ARM64 binary
         run: |
           chmod +x /tmp/bins/cross-macos-arm
-          echo "=== Binary info ==="
+          echo "=== Binary structure ==="
           file /tmp/bins/cross-macos-arm
-          ls -la /tmp/bins/cross-macos-arm
+          otool -l /tmp/bins/cross-macos-arm 2>&1 | head -80
           echo "=== Codesign ==="
           codesign --force -s - /tmp/bins/cross-macos-arm -v 2>&1 || echo "codesign exit: $?"
-          echo "=== Verify signature ==="
-          codesign -vvv /tmp/bins/cross-macos-arm 2>&1 || echo "verify exit: $?"
+          codesign -d --verbose=4 /tmp/bins/cross-macos-arm 2>&1 || true
           echo "=== Run ==="
           /tmp/bins/cross-macos-arm; EXIT_CODE=$?
           echo "Exit code: $EXIT_CODE"
