@@ -189,16 +189,27 @@ fn parse_primary() -> uint64 {
             return idx_node
         }
 
-        // Field access: ident.field
+        // Field access (possibly chained): ident.field or ident.field.field2...
         if cur_kind() == 17 {
-            advance_tok()
-            uint64 field_tok = advance_tok()
-            uint64 field_node = ast_alloc(AstKind.FieldAccess)
-            ast_set_data1(field_node, t32)
-            uint32 ft = field_tok
-            ast_set_data2(field_node, ft)
-            ast_set_tok(field_node, t32)
-            return field_node
+            // Build initial Ident node for the base object
+            uint64 obj_node = ast_alloc(AstKind.Ident)
+            ast_set_data1(obj_node, t32)
+            ast_set_tok(obj_node, t32)
+
+            while cur_kind() == 17 {
+                advance_tok()
+                uint64 field_tok = advance_tok()
+
+                uint64 field_node = ast_alloc(AstKind.FieldAccess)
+                uint32 oc = obj_node
+                ast_set_child(field_node, oc)
+                uint32 ft = field_tok
+                ast_set_data2(field_node, ft)
+                ast_set_tok(field_node, ft)
+
+                obj_node = field_node
+            }
+            return obj_node
         }
 
         // Plain identifier
@@ -614,6 +625,24 @@ fn parse_stmt() -> uint64 {
             ast_set_data4(node, si4)
             return node
         }
+        // Check if current token is a type alias
+        uint64 alias_size = type_alias_lookup(p_tok_pos)
+        if alias_size != 0xFFFFFFFF {
+            uint64 type_tok = advance_tok()
+            uint64 name_tok = expect(1)
+            uint64 node = ast_alloc(AstKind.VarDecl)
+            uint32 tt = type_tok
+            uint32 nt = name_tok
+            ast_set_data1(node, tt)
+            ast_set_data2(node, nt)
+            ast_set_tok(node, tt)
+            if eat(34) != 0 {
+                uint64 init_expr = parse_expr()
+                uint32 ie = init_expr
+                ast_set_child(node, ie)
+            }
+            return node
+        }
     }
 
     // Expression statement (assignment or bare call)
@@ -745,6 +774,13 @@ fn parse_fn_decl() -> uint64 {
     expect(60)
     uint64 name_tok = expect(1)
 
+    // Method syntax: fn StructName.method(...) -> registered as method
+    if cur_kind() == 17 {
+        advance_tok()
+        uint64 method_tok = expect(1)
+        name_tok = method_tok
+    }
+
     uint64 node = ast_alloc(AstKind.FnDecl)
     uint32 nt = name_tok
     ast_set_data1(node, nt)
@@ -799,7 +835,7 @@ fn parse_module() -> uint64 {
             uint64 name_tok = expect(1)
             static_declare(name_tok)
             if eat(34) != 0 {
-                while cur_kind() != 60 && cur_kind() != 71 && cur_kind() != 70 && cur_kind() != 72 && cur_kind() != 73 && cur_kind() != 21 && cur_kind() != 0 {
+                while cur_kind() != 60 && cur_kind() != 71 && cur_kind() != 70 && cur_kind() != 72 && cur_kind() != 73 && cur_kind() != 21 && cur_kind() != 89 && cur_kind() != 0 {
                     advance_tok()
                 }
             }
@@ -815,7 +851,7 @@ fn parse_module() -> uint64 {
             // Skip = value if present
             if eat(34) != 0 {
                 // Skip the init value expression tokens
-                while cur_kind() != 60 && cur_kind() != 71 && cur_kind() != 72 && cur_kind() != 73 && cur_kind() != 21 && cur_kind() != 0 {
+                while cur_kind() != 60 && cur_kind() != 71 && cur_kind() != 72 && cur_kind() != 73 && cur_kind() != 21 && cur_kind() != 89 && cur_kind() != 0 {
                     advance_tok()
                 }
             }
@@ -887,6 +923,25 @@ fn parse_module() -> uint64 {
                 eat(16)
             }
             expect(13)
+        } else if kind == 89 {
+            // type AliasName = TargetType
+            advance_tok()
+            uint64 alias_tok = expect(1)
+            expect(34)
+            // Parse target type keyword — determine size
+            uint32 target_kind = cur_kind()
+            advance_tok()
+            uint64 tsize = 8
+            uint64 wtk = target_kind
+            if wtk == 80 { tsize = 1 }
+            if wtk == 81 { tsize = 2 }
+            if wtk == 82 { tsize = 4 }
+            if wtk == 83 { tsize = 8 }
+            if wtk == 84 { tsize = 1 }
+            if wtk == 85 { tsize = 2 }
+            if wtk == 86 { tsize = 4 }
+            if wtk == 87 { tsize = 8 }
+            type_alias_register(alias_tok, tsize)
         } else {
             advance_tok()
         }

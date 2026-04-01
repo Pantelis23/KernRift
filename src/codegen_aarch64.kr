@@ -540,8 +540,18 @@ fn gen_expr_a64(uint64 node) {
 
     // Field access (enum value or struct field)
     if kind == 36 {
-        uint32 obj_tok = ast_data1(node)
+        uint32 child_idx = ast_child(node)
+        uint64 wchild = child_idx
         uint32 field_tok = ast_data2(node)
+        // Extract object token from child Ident node
+        uint32 obj_tok = 0
+        if wchild != 0 {
+            uint32 child_kind = ast_kind(wchild)
+            uint64 wck = child_kind
+            if wck == 32 {
+                obj_tok = ast_data1(wchild)
+            }
+        }
         uint64 si = struct_var_lookup(obj_tok)
         if si != 0xFFFFFFFF {
             uint64 var_off = var_lookup(obj_tok)
@@ -1400,7 +1410,16 @@ fn gen_stmt_a64(uint64 node) {
         uint32 fa_d4 = ast_data4(node)
         uint64 wfad4 = fa_d4
         if wfad4 == 1 {
-            uint32 obj_tok = ast_data1(node)
+            uint32 fa_child = ast_child(node)
+            uint64 wfachild = fa_child
+            uint32 obj_tok = 0
+            if wfachild != 0 {
+                uint32 fack = ast_kind(wfachild)
+                uint64 wfack = fack
+                if wfack == 32 {
+                    obj_tok = ast_data1(wfachild)
+                }
+            }
             uint32 field_tok = ast_data2(node)
             uint32 val_node = ast_data3(node)
             uint64 wval = val_node

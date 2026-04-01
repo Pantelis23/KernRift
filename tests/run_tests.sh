@@ -261,6 +261,30 @@ fn main() {
     exit(r)
 }' 20
 
+# --- Type aliases ---
+run_test "type_alias" 'type Size = uint64
+fn main() {
+    Size x = 42
+    exit(x)
+}' 42
+
+# --- Method syntax ---
+run_test "method_decl" 'struct Point { uint64 x; uint64 y }
+fn Point.sum(uint64 self) -> uint64 {
+    uint64 sx = 0
+    uint64 sy = 0
+    unsafe { *(self as uint64) -> sx }
+    uint64 yp = self + 8
+    unsafe { *(yp as uint64) -> sy }
+    return sx + sy
+}
+fn main() {
+    Point p
+    p.x = 10
+    p.y = 32
+    exit(sum(p))
+}' 42
+
 # --- Bootstrap test ---
 echo ""
 echo "--- Bootstrap test ---"

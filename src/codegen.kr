@@ -99,6 +99,10 @@ static uint64 a64_win_iat_fixup_count = 0
 // PE IAT RVA (set during PE header emission)
 static uint64 pe_iat_rva = 0
 
+// Type alias table: [alias_name_tok(4), target_size(4)] × 64
+static uint64 type_alias_table = 0
+static uint64 type_alias_count = 0
+
 @export
 fn codegen_init(uint64 capacity, uint64 source, uint64 tokens) {
     out_buf = alloc(capacity)
@@ -138,6 +142,8 @@ fn codegen_init(uint64 capacity, uint64 source, uint64 tokens) {
     win_iat_fixup_count = 0
     a64_win_iat_fixups = alloc(1024 * 8)
     a64_win_iat_fixup_count = 0
+    type_alias_table = alloc(64 * 8)
+    type_alias_count = 0
 }
 
 // ---------------------------------------------------------------------------
@@ -582,6 +588,40 @@ fn static_lookup_by_name(uint64 name_str, uint64 name_len) -> uint64 {
             uint32 off = 0
             unsafe { *(e4 as uint32) -> off }
             return off
+        }
+        i = i + 1
+    }
+    return 0xFFFFFFFF
+}
+
+// ---------------------------------------------------------------------------
+// Type alias table
+// ---------------------------------------------------------------------------
+
+@export
+fn type_alias_register(uint64 name_tok, uint64 target_size) {
+    uint64 entry = type_alias_table + type_alias_count * 8
+    uint32 nt = name_tok
+    unsafe { *(entry as uint32) = nt }
+    uint64 e4 = entry + 4
+    uint32 ts = target_size
+    unsafe { *(e4 as uint32) = ts }
+    type_alias_count = type_alias_count + 1
+}
+
+@export
+fn type_alias_lookup(uint64 name_tok) -> uint64 {
+    uint64 i = 0
+    while i < type_alias_count {
+        uint64 entry = type_alias_table + i * 8
+        uint32 stored_tok = 0
+        unsafe { *(entry as uint32) -> stored_tok }
+        uint64 ws = stored_tok
+        if tok_text_eq(ws, name_tok) != 0 {
+            uint64 e4 = entry + 4
+            uint32 ts = 0
+            unsafe { *(e4 as uint32) -> ts }
+            return ts
         }
         i = i + 1
     }
@@ -1093,8 +1133,18 @@ fn gen_expr(uint64 node) {
 
     // Field access: EnumName.Field (enum constant) or var.field (struct field read)
     if kind == 36 {
-        uint32 obj_tok = ast_data1(node)
+        uint32 child_idx = ast_child(node)
+        uint64 wchild = child_idx
         uint32 field_tok = ast_data2(node)
+        // Extract object token from child Ident node
+        uint32 obj_tok = 0
+        if wchild != 0 {
+            uint32 child_kind = ast_kind(wchild)
+            uint64 wck = child_kind
+            if wck == 32 {
+                obj_tok = ast_data1(wchild)
+            }
+        }
         // Check if obj_tok is a struct variable
         uint64 si = struct_var_lookup(obj_tok)
         if si != 0xFFFFFFFF {
@@ -1981,7 +2031,16 @@ fn gen_stmt(uint64 node) {
         uint32 fa_d4 = ast_data4(node)
         uint64 wfad4 = fa_d4
         if wfad4 == 1 {
-            uint32 obj_tok = ast_data1(node)
+            uint32 fa_child = ast_child(node)
+            uint64 wfachild = fa_child
+            uint32 obj_tok = 0
+            if wfachild != 0 {
+                uint32 fack = ast_kind(wfachild)
+                uint64 wfack = fack
+                if wfack == 32 {
+                    obj_tok = ast_data1(wfachild)
+                }
+            }
             uint32 field_tok = ast_data2(node)
             uint32 val_node = ast_data3(node)
             uint64 wval = val_node
