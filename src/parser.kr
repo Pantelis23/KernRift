@@ -208,6 +208,16 @@ fn parse_primary() -> uint64 {
         return node
     }
 
+    // Boolean literals: true → 1, false → 0
+    if kind == 77 || kind == 78 {
+        uint64 tok = advance_tok()
+        uint64 node = ast_alloc(AstKind.IntLit)
+        uint32 t32 = tok
+        ast_set_data1(node, t32)
+        ast_set_tok(node, t32)
+        return node
+    }
+
     // Parenthesized expression
     if kind == 10 {
         advance_tok()
@@ -436,6 +446,39 @@ fn parse_stmt() -> uint64 {
         uint32 t32 = tok
         ast_set_tok(node, t32)
         return node
+    }
+
+    // Match statement: match expr { val => { body } val => { body } ... }
+    if kind == 88 {
+        advance_tok()
+        uint64 match_node = ast_alloc(19)
+        uint64 scrutinee = parse_expr()
+        uint32 s32 = scrutinee
+        ast_set_child(match_node, s32)
+        expect(12)  // {
+        uint64 first_arm = 0
+        uint64 last_arm = 0
+        while cur_kind() != 13 && cur_kind() != 0 {
+            uint64 val_expr = parse_expr()
+            expect(29)  // =>
+            uint64 arm_body = parse_block()
+            uint64 arm = ast_alloc(20)
+            uint32 ve = val_expr
+            ast_set_data1(arm, ve)
+            uint32 ab = arm_body
+            ast_set_data2(arm, ab)
+            if first_arm == 0 {
+                first_arm = arm
+            } else {
+                uint32 a32 = arm
+                ast_set_next(last_arm, a32)
+            }
+            last_arm = arm
+        }
+        expect(13)  // }
+        uint32 fa32 = first_arm
+        ast_set_data1(match_node, fa32)
+        return match_node
     }
 
     // For loop: for IDENT in START..END { body }

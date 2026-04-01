@@ -227,6 +227,40 @@ run_test "file_io" 'fn main() {
     exit(0)
 }' 0
 
+# --- Boolean literals ---
+run_test "bool_true" 'fn main() { uint64 x = true; if x { exit(1) }; exit(0) }' 1
+run_test "bool_false" 'fn main() { uint64 x = false; if x { exit(1) }; exit(0) }' 0
+
+# --- Match statement ---
+run_test "match_basic" 'fn main() {
+    uint64 x = 2
+    uint64 r = 0
+    match x { 1 => { r = 10 } 2 => { r = 20 } 3 => { r = 30 } }
+    exit(r)
+}' 20
+
+run_test "match_first" 'fn main() {
+    uint64 x = 1
+    uint64 r = 0
+    match x { 1 => { r = 42 } 2 => { r = 99 } }
+    exit(r)
+}' 42
+
+run_test "match_nomatch" 'fn main() {
+    uint64 x = 99
+    uint64 r = 42
+    match x { 1 => { r = 0 } 2 => { r = 0 } }
+    exit(r)
+}' 42
+
+run_test "match_enum" 'enum Color { Red = 1 Green = 2 Blue = 3 }
+fn main() {
+    uint64 c = Color.Green
+    uint64 r = 0
+    match c { 1 => { r = 10 } 2 => { r = 20 } 3 => { r = 30 } }
+    exit(r)
+}' 20
+
 # --- Bootstrap test ---
 echo ""
 echo "--- Bootstrap test ---"

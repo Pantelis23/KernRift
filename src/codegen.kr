@@ -220,6 +220,9 @@ fn tok_source_byte(uint64 tok_idx, uint64 offset) -> uint64 {
 // Parse integer or char literal from token text
 fn parse_int_token(uint64 tok_idx) -> uint64 {
     uint64 len = tok_text_len(tok_idx)
+    // Check for boolean keywords: true → 1, false → 0
+    if len == 4 && tok_source_byte(tok_idx, 0) == 116 { return 1 }
+    if len == 5 && tok_source_byte(tok_idx, 0) == 102 { return 0 }
     // Check for char literal: 'x' or '\n'
     if len >= 3 && tok_source_byte(tok_idx, 0) == 39 {
         if tok_source_byte(tok_idx, 1) == 92 {
@@ -2180,6 +2183,70 @@ fn gen_stmt(uint64 node) {
         emit_byte(0xE9)
         uint64 cont_disp = cont_target - out_len - 4
         emit_u32_le(cont_disp)
+        return
+    }
+
+    // Match statement: evaluate scrutinee, compare to each arm, execute matching body
+    if kind == 19 {
+        uint32 scrutinee = ast_child(node)
+        uint64 wscr = scrutinee
+        gen_expr(wscr)
+        // Allocate temp for scrutinee
+        uint64 match_temp = var_count * 8
+        var_count = var_count + 1
+        var_frame_size = var_count * 8
+        uint64 mrem = var_frame_size & 15
+        if mrem != 0 { var_frame_size = var_frame_size + 16 - mrem }
+        emit_store_rax_to_stack(match_temp)
+        // Track end-of-match jumps using break_fixups
+        uint64 saved_break = break_fixup_count
+        uint32 arm_idx = ast_data1(node)
+        uint64 warm = arm_idx
+        while warm != 0 {
+            // Evaluate arm value
+            uint32 val_idx = ast_data1(warm)
+            uint64 wval = val_idx
+            gen_expr(wval)
+            // cmp scrutinee (in temp), arm_value (in rax)
+            // mov rcx, rax
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
+            emit_load_rax_from_stack(match_temp)
+            // cmp rax, rcx
+            emit_byte(0x48); emit_byte(0x39); emit_byte(0xC8)
+            // jne skip_arm
+            emit_byte(0x0F); emit_byte(0x85)
+            uint64 jne_patch = out_len
+            emit_u32_le(0)
+            // Execute arm body
+            uint32 body_idx = ast_data2(warm)
+            uint64 wbody = body_idx
+            gen_block(wbody)
+            // jmp end_match (stored in break_fixups)
+            emit_byte(0xE9)
+            uint64 end_patch = out_len
+            emit_u32_le(0)
+            uint64 bf = break_fixups + break_fixup_count * 4
+            uint32 ep32 = end_patch
+            unsafe { *(bf as uint32) = ep32 }
+            break_fixup_count = break_fixup_count + 1
+            // Patch jne to here (skip this arm)
+            uint64 skip_target = out_len
+            patch_u32(jne_patch, (skip_target - jne_patch - 4) & 0xFFFFFFFF)
+            uint32 next_arm = ast_next(warm)
+            warm = next_arm
+        }
+        // Patch all end-match jumps to here
+        uint64 end_addr = out_len
+        uint64 bi = saved_break
+        while bi < break_fixup_count {
+            uint64 bfe = break_fixups + bi * 4
+            uint32 bp32 = 0
+            unsafe { *(bfe as uint32) -> bp32 }
+            uint64 wbp = bp32
+            patch_u32(wbp, (end_addr - wbp - 4) & 0xFFFFFFFF)
+            bi = bi + 1
+        }
+        break_fixup_count = saved_break
         return
     }
 

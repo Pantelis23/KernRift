@@ -97,6 +97,11 @@ enum TokenKind {
     KwInt32 = 86
     KwInt64 = 87
 
+    // Extended keywords
+    KwMatch = 88
+    KwType = 89
+    FatArrow = 29    // =>
+
     // Error
     Error = 255
 }
@@ -278,6 +283,8 @@ fn classify_keyword(uint64 start, uint64 len) -> uint32 {
     if match_keyword(start, len, "unsafe", 6) != 0 { return TokenKind.KwUnsafe }
     if match_keyword(start, len, "true", 4) != 0 { return TokenKind.KwTrue }
     if match_keyword(start, len, "false", 5) != 0 { return TokenKind.KwFalse }
+    if match_keyword(start, len, "match", 5) != 0 { return TokenKind.KwMatch }
+    if match_keyword(start, len, "type", 4) != 0 { return TokenKind.KwType }
     // Type keywords
     if match_keyword(start, len, "uint8", 5) != 0 { return TokenKind.KwUint8 }
     if match_keyword(start, len, "uint16", 6) != 0 { return TokenKind.KwUint16 }
@@ -358,6 +365,7 @@ fn lex_one_token() {
     advance()
 
     if ch == 61 && next == 61 { advance(); emit_token(TokenKind.EqEq, start, 2, tok_line); return }
+    if ch == 61 && next == 62 { advance(); emit_token(TokenKind.FatArrow, start, 2, tok_line); return }
     if ch == 33 && next == 61 { advance(); emit_token(TokenKind.BangEq, start, 2, tok_line); return }
     if ch == 60 && next == 61 { advance(); emit_token(TokenKind.LtEq, start, 2, tok_line); return }
     if ch == 62 && next == 61 { advance(); emit_token(TokenKind.GtEq, start, 2, tok_line); return }

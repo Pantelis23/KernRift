@@ -33,6 +33,8 @@ enum AstKind {
     ExprStmt = 16      // child=expression
     Break = 17
     Continue = 18
+    Match = 19         // child=scrutinee_expr, data1=first_arm_idx
+    MatchArm = 20      // data1=value_expr_idx, data2=body_block_idx, next=next_arm
 
     // Expressions
     IntLit = 30        // data1=tok_idx (for the value)
