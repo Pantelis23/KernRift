@@ -1,291 +1,90 @@
-# Getting Started with KernRift
+# Getting Started
 
-## Prerequisites: Installing Rust
+## Install
 
-KernRift requires **Rust 1.93.1+** and **Cargo**. Both come from [rustup](https://rustup.rs) — the official Rust toolchain manager. Once installed, `rust-toolchain.toml` in the repo automatically selects the right version.
+```bash
+# Linux / macOS
+bash install.sh
 
-> **Do not use your OS package manager to install Rust.** `apt install cargo`, `dnf install rust`, `pacman -S rust`, and similar all ship outdated versions that will fail with `feature 'edition2024' is required`. Always use rustup.
-
----
-
-### Install rustup on Linux
-
-```sh
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+# Or download directly
+curl -L -o krc https://github.com/Pantelis23/KernRift/releases/latest/download/krc-linux-x86_64
+chmod +x krc
+sudo mv krc /usr/local/bin/
 ```
-
-When prompted, choose option **1** (default installation). Then reload your shell:
-
-```sh
-source "$HOME/.cargo/env"
-```
-
-To verify:
-
-```sh
-rustc --version   # should print 1.93.x or newer
-cargo --version
-```
-
-If you already installed Rust via `apt`/`dnf`/`pacman`, remove it first:
-
-```sh
-# Debian/Ubuntu
-sudo apt remove --purge cargo rustc rustup libstd-rust-dev 'libstd-rust-*'
-sudo apt autoremove
-
-# Fedora/RHEL
-sudo dnf remove cargo rust
-
-# Arch
-sudo pacman -Rs rust cargo
-```
-
-Then run the `curl` command above.
-
----
-
-### Install rustup on macOS
-
-```sh
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
-
-If you don't have `curl`, install Xcode Command Line Tools first:
-
-```sh
-xcode-select --install
-```
-
-If you installed Rust via Homebrew, unlink it first to avoid conflicts:
-
-```sh
-brew unlink rust
-```
-
-Then reload your shell and verify:
-
-```sh
-source "$HOME/.cargo/env"
-rustc --version
-cargo --version
-```
-
----
-
-### Install rustup on Windows
-
-1. Download **rustup-init.exe** from [rustup.rs](https://rustup.rs) (the site auto-detects Windows and offers the `.exe` directly).
-2. Run it and choose option **1** (default installation).
-3. Open a **new** terminal — Cargo's `bin` directory (`%USERPROFILE%\.cargo\bin`) is added to your PATH automatically.
-
-To verify (in a new terminal):
-
-```powershell
-rustc --version
-cargo --version
-```
-
-> **Do not install Rust via winget, choco, or scoop** — those packages lag behind and may conflict with rustup. Use the official installer from rustup.rs.
-
----
-
-## Install KernRift
-
-### Quick install (recommended)
-
-These scripts handle everything: installing rustup if needed, removing conflicting system Rust, and placing both `kernriftc` and `kernrift` on your PATH.
-
-**Linux**
-```sh
-bash <(curl -sSf https://raw.githubusercontent.com/Pantelis23/KernRift/main/scripts/install-linux.sh)
-```
-
-**macOS**
-```sh
-bash <(curl -sSf https://raw.githubusercontent.com/Pantelis23/KernRift/main/scripts/install-macos.sh)
-```
-
-**Windows** <a name="windows"></a>
-
-Antivirus software (including Bitdefender) blocks PowerShell scripts that download executables, regardless of their content. Use the manual steps below instead — they go through your browser and the official rustup installer, which AV products trust.
-
-1. **Install Rust** — follow [Install rustup on Windows](#install-rustup-on-windows) above if you haven't already.
-2. **Open a new terminal** (PowerShell or Command Prompt) and run:
-
-```powershell
-cargo install --git https://github.com/Pantelis23/KernRift kernrift kernriftc --locked
-```
-
-That's it. Both `kernriftc` and `kernrift` are now on your PATH.
-
-### From source (manual)
-
-If you already have Rust 1.93.1+ via rustup:
-
-```sh
-git clone https://github.com/Pantelis23/KernRift
-cd KernRift
-cargo install --path crates/kernrift
-cargo install --path crates/kernriftc
-```
-
-This builds and installs `kernrift` and `kernriftc` to `~/.cargo/bin/` (Linux/macOS) or `%USERPROFILE%\.cargo\bin\` (Windows).
-
-### Prebuilt binary — Linux x86_64
-
-```sh
-# Download both binaries
-curl -L -o kernriftc https://github.com/Pantelis23/KernRift/releases/latest/download/kernriftc-linux-x86_64
-curl -L -o kernrift  https://github.com/Pantelis23/KernRift/releases/latest/download/kernrift-linux-x86_64
-curl -L -o kernriftc.sha256 https://github.com/Pantelis23/KernRift/releases/latest/download/kernriftc-linux-x86_64.sha256
-curl -L -o kernrift.sha256  https://github.com/Pantelis23/KernRift/releases/latest/download/kernrift-linux-x86_64.sha256
-
-# Verify
-sha256sum --check kernriftc.sha256
-sha256sum --check kernrift.sha256
-
-# Install
-chmod +x kernriftc kernrift
-sudo mv kernriftc kernrift /usr/local/bin/
-```
-
-### Prebuilt binary — Linux AArch64 (ARM64)
-
-Replace `x86_64` with `aarch64` in the filenames above:
-
-```sh
-curl -L -o kernriftc https://github.com/Pantelis23/KernRift/releases/latest/download/kernriftc-linux-aarch64
-curl -L -o kernrift  https://github.com/Pantelis23/KernRift/releases/latest/download/kernrift-linux-aarch64
-# ... verify and install as above
-```
-
-### Prebuilt binary — macOS
-
-```sh
-# Apple Silicon (M1/M2/M3)
-curl -L -o kernriftc https://github.com/Pantelis23/KernRift/releases/latest/download/kernriftc-macos-aarch64
-curl -L -o kernrift  https://github.com/Pantelis23/KernRift/releases/latest/download/kernrift-macos-aarch64
-
-# Intel Mac
-curl -L -o kernriftc https://github.com/Pantelis23/KernRift/releases/latest/download/kernriftc-macos-x86_64
-curl -L -o kernrift  https://github.com/Pantelis23/KernRift/releases/latest/download/kernrift-macos-x86_64
-
-# Verify (macOS ships shasum, not sha256sum)
-shasum -a 256 --check kernriftc.sha256
-shasum -a 256 --check kernrift.sha256
-
-# Install
-chmod +x kernriftc kernrift
-sudo mv kernriftc kernrift /usr/local/bin/
-```
-
-### Prebuilt binary — Windows
-
-```powershell
-# x86_64 (most PCs)
-$arch = "x86_64"
-
-# ARM64 — use this on Snapdragon / Copilot+ PCs
-# $arch = "arm64"
-
-Invoke-WebRequest -Uri "https://github.com/Pantelis23/KernRift/releases/latest/download/kernriftc-windows-$arch.exe" -OutFile kernriftc.exe
-Invoke-WebRequest -Uri "https://github.com/Pantelis23/KernRift/releases/latest/download/kernrift-windows-$arch.exe"  -OutFile kernrift.exe
-Invoke-WebRequest -Uri "https://github.com/Pantelis23/KernRift/releases/latest/download/kernriftc-windows-$arch.sha256" -OutFile kernriftc.sha256
-Invoke-WebRequest -Uri "https://github.com/Pantelis23/KernRift/releases/latest/download/kernrift-windows-$arch.sha256"  -OutFile kernrift.sha256
-
-# Verify
-foreach ($pair in @(("kernriftc.exe","kernriftc.sha256"),("kernrift.exe","kernrift.sha256"))) {
-    $expected = (Get-Content $pair[1]).Split(" ")[0]
-    $actual   = (Get-FileHash $pair[0] -Algorithm SHA256).Hash.ToLower()
-    if ($expected -ne $actual) { Write-Error "SHA256 mismatch: $($pair[0])!" } else { Write-Host "$($pair[0]) OK" }
-}
-
-# Add to PATH — move to a directory already on your PATH, e.g.:
-Move-Item kernriftc.exe "$env:USERPROFILE\bin\kernriftc.exe"
-Move-Item kernrift.exe  "$env:USERPROFILE\bin\kernrift.exe"
-```
-
----
 
 ## Your First Program
 
-The repo includes `hello.kr`:
-
 ```kr
-@ctx(thread, boot)
-fn entry() {
-    print("Hello, World!\n")
+fn main() {
+    uint64 msg = "Hello, World!\n"
+    write(1, msg, 14)
+    exit(0)
 }
 ```
 
-- `@ctx(thread, boot)` — this function may only be called from thread or boot contexts. Calling it from `@ctx(irq)` is a compile error.
-- `print("...")` — compiler intrinsic that emits a debug string (maps to a platform debug port in kernel context).
+Save as `hello.kr` and compile:
 
-Compile it:
-
-```sh
-kernriftc hello.kr
+```bash
+krc hello.kr -o hello        # fat binary (x86_64 + ARM64)
+krc --arch=x86_64 hello.kr   # native x86_64 ELF
 ```
 
-On success, `kernriftc` exits 0 and produces `hello.krbo` in the current directory. Run it with:
-
-```sh
-kernrift hello.krbo
-```
-
-A context violation looks like this:
+## Language Basics
 
 ```kr
-@ctx(irq)
-fn bad_call() {
-    entry();   // error: entry() requires ctx(thread|boot), caller is ctx(irq)
+// Types
+uint64 x = 42
+uint32 y = 10
+uint8 byte = 0xFF
+
+// Control flow
+if x > 10 {
+    exit(1)
+} else {
+    exit(0)
 }
+
+while x > 0 {
+    x -= 1
+}
+
+for i in 0..10 {
+    // i goes from 0 to 9
+}
+
+// Functions
+fn add(uint64 a, uint64 b) -> uint64 {
+    return a + b
+}
+
+// Structs
+struct Point {
+    uint64 x
+    uint64 y
+}
+
+// Enums
+enum Color {
+    Red = 0
+    Green = 1
+    Blue = 2
+}
+
+// Arrays
+uint8[256] buffer
+buffer[0] = 42
+
+// Pointer operations (kernel memory access)
+unsafe { *(addr as uint32) = value }
+unsafe { *(addr as uint32) -> result }
+
+// Static variables
+static uint64 counter = 0
 ```
 
+## Safety Analysis
+
+```bash
+krc check module.kr     # context, effect, lock, capability checks
+krc lc module.kr        # living compiler patterns + fitness
 ```
-error[E0002]: context mismatch: `entry` requires {thread, boot}, called from {irq}
-  --> bad.kr:3:5
-```
-
----
-
-## Command Reference
-
-| Command | Output | Description |
-|---------|--------|-------------|
-| `kernriftc --version` / `-V` | version string | Print compiler version and exit |
-| `kernriftc <file.kr>` | `<stem>.krbo` in CWD | **Default compile** — KRBOFAT fat binary (x86_64 + ARM64 slices, LZ4-compressed) |
-| `kernriftc --arch x86_64 <file.kr>` | `<stem>.krbo` (fat, x86_64 targeted) | Fat binary with x86_64 slice |
-| `kernriftc --arch arm64 <file.kr>`  | `<stem>.krbo` (fat, ARM64 targeted)  | Fat binary with ARM64 slice; `--arch aarch64` is an accepted alias |
-| `kernriftc --emit=krbofat -o <out> <file.kr>` | fat binary | Explicit KRBOFAT emit (equivalent to default) |
-| `kernriftc --emit=krboexe -o <out> <file.kr>` | x86_64 single-arch KRBO | Single-arch executable KRBO (legacy / explicit) |
-| `kernrift <file.krbo>` | — | **Run a compiled program** — fat-first detection: reads 8-byte magic, extracts host-arch slice, flushes I-cache on ARM64 before execution |
-| `kernriftc check <file.kr>` | stderr diagnostics | Analysis only, no binary |
-| `kernriftc check --emit=krir <file.kr>` | JSON to **stdout** | KRIR canonical IR |
-| `kernriftc check --emit=lockgraph <file.kr>` | JSON to **stdout** | Lock graph analysis |
-| `kernriftc check --emit=caps <file.kr>` | JSON to **stdout** | Capabilities manifest |
-| `kernriftc check --emit=contracts <file.kr>` | JSON to **stdout** | Signed contracts artifact |
-| `kernriftc check --report <metrics> <file.kr>` | JSON to **stdout** | Analysis report |
-| `kernriftc verify --contracts <f> --hash <h>` | JSON to **stdout** | Verify artifact hash |
-| `kernriftc policy --policy <p> --contracts <c>` | JSON to **stdout** | Policy evaluation |
-| `kernriftc inspect-artifact <path>` | JSON/text to **stdout** | Artifact inspection |
-| `kernriftc fix ...` | Source edits | Apply canonical fixes |
-| `kernriftc lc <file.kr>` | text to **stdout** | Living compiler suggestions |
-| `kernriftc lc --format json <file.kr>` | JSON to **stdout** | Same, machine-readable |
-| `kernriftc lc --ci <file.kr>` | text to **stdout** | Exit 1 if fitness ≥ 50 |
-| `kernriftc lc --diff <file.kr>` | text to **stdout** | New/worsened suggestions vs HEAD |
-| `kernriftc lc --fix --dry-run <file.kr>` | unified diff to **stdout** | Preview tail-call fixes |
-| `kernriftc lc --fix --write <file.kr>` | confirmation to **stdout** | Apply tail-call fixes |
-| `kernriftc living-compiler <file.kr>` | text to **stdout** | Alias for `lc` |
-
----
-
-## Next Steps
-
-- [Language Reference](LANGUAGE.md) — types, control flow, annotations, device blocks
-- [Architecture](ARCHITECTURE.md) — compiler pipeline, KRIR facts model, pass design
-- [examples/](../examples/) — more example programs
-- [Contributing](../CONTRIBUTING.md) — build from source, run tests, add features
-
----

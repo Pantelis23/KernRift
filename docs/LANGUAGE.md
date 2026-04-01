@@ -63,11 +63,11 @@ fn entry() {
 Compile and run it:
 
 ```sh
-kernriftc hello.kr                # produces hello.krbo (native .krbo)
-kernrift hello.krbo               # executes it, prints to stdout
+krc hello.kr                # produces hello.krbo (native .krbo)
+./hello                           # run the native binary
 
-kernriftc --emit=krbofat -o hello.krbo hello.kr   # fat binary (x86_64 + arm64)
-kernrift hello.krbo               # auto-selects slice for the host arch
+krc --emit=krbofat -o hello.krbo hello.kr   # fat binary (x86_64 + arm64)
+./hello                           # run the native binary
 ```
 
 ### Minimal MMIO driver
@@ -786,7 +786,7 @@ fn uart_poll(uint64 head) {
 
 ### Auto-fix
 
-`kernriftc lc --fix --dry-run <file.kr>` previews what a tail-call rewrite would look like as a unified diff.  `--fix --write` applies it atomically.  The rewrite prepends `tail ` to the last bare call statement in each function body.
+`krc lc --fix --dry-run <file.kr>` previews what a tail-call rewrite would look like as a unified diff.  `--fix --write` applies it atomically.  The rewrite prepends `tail ` to the last bare call statement in each function body.
 
 ### Constraints
 
@@ -1038,20 +1038,20 @@ fn fill([uint8] buf, uint64 n, uint8 val) {
 ### Default compilation
 
 ```sh
-kernriftc <file.kr>                        # compile to <stem>.krbo (native arch)
-kernriftc --version
+krc <file.kr>                        # compile to <stem>.krbo (native arch)
+krc --version
 ```
 
 ### Check and analyse
 
 ```sh
-kernriftc check <file.kr>
-kernriftc check --surface stable <file.kr>
-kernriftc check --surface experimental <file.kr>
-kernriftc check --profile kernel <file.kr>
-kernriftc check --policy <policy.toml> <file.kr>
-kernriftc check --contracts-out <contracts.json> <file.kr>
-kernriftc link <file1.kr> [file2.kr ...]   # cross-file lock-cycle check
+krc check <file.kr>
+krc check --surface stable <file.kr>
+krc check --surface experimental <file.kr>
+krc check --profile kernel <file.kr>
+krc check --policy <policy.toml> <file.kr>
+krc check --contracts-out <contracts.json> <file.kr>
+krc link <file1.kr> [file2.kr ...]   # cross-file lock-cycle check
 ```
 
 The `--surface` flag controls which language features are accepted:
@@ -1064,46 +1064,46 @@ The `--surface` flag controls which language features are accepted:
 ### Emit binary artifacts
 
 ```sh
-kernriftc --emit=krbofat -o out.krbo <file.kr>        # fat binary (x86_64 + arm64)
-kernriftc --emit=krbo    -o out.krbo <file.kr>        # native-arch .krbo
-kernriftc --emit=krboexe -o out.krbo <file.kr>        # self-contained .krbo (single-arch)
-kernriftc --emit=elfobj  -o out.o    <file.kr>        # ELF relocatable object
-kernriftc --emit=elfobj  --arch arm64 -o out.o <file.kr>
-kernriftc --emit=asm     -o out.s    <file.kr>        # textual assembly
-kernriftc --emit=asm     --arch arm64 -o out.s <file.kr>
-kernriftc --emit=staticlib -o out.a  <file.kr>        # static library archive (no ar needed)
-kernriftc --emit=elfexe  -o out     <file.kr>        # native ELF executable (no ld needed)
-kernriftc --emit=hostexe -o build   <file.kr>        # native host executable (no cc needed)
+krc --emit=krbofat -o out.krbo <file.kr>        # fat binary (x86_64 + arm64)
+krc --emit=krbo    -o out.krbo <file.kr>        # native-arch .krbo
+krc --emit=krboexe -o out.krbo <file.kr>        # self-contained .krbo (single-arch)
+krc --emit=elfobj  -o out.o    <file.kr>        # ELF relocatable object
+krc --emit=elfobj  --arch arm64 -o out.o <file.kr>
+krc --emit=asm     -o out.s    <file.kr>        # textual assembly
+krc --emit=asm     --arch arm64 -o out.s <file.kr>
+krc --emit=staticlib -o out.a  <file.kr>        # static library archive (no ar needed)
+krc --emit=elfexe  -o out     <file.kr>        # native ELF executable (no ld needed)
+krc --emit=hostexe -o build   <file.kr>        # native host executable (no cc needed)
 ```
 
 Optionally emit a sidecar metadata JSON alongside the binary:
 
 ```sh
-kernriftc --emit=krbo -o out.krbo --meta-out out.json <file.kr>
+krc --emit=krbo -o out.krbo --meta-out out.json <file.kr>
 ```
 
 ### Introspection
 
 ```sh
-kernriftc --emit krir      <file.kr>   # dump KRIR IR as JSON
-kernriftc --emit lockgraph <file.kr>   # dump lock graph as JSON
-kernriftc --emit caps      <file.kr>   # dump capability manifest as JSON
-kernriftc --emit contracts <file.kr>   # dump semantic contracts as JSON
-kernriftc inspect --contracts <contracts.json>
-kernriftc inspect-artifact <artifact>
-kernriftc inspect-artifact <artifact> --format json
+krc --emit krir      <file.kr>   # dump KRIR IR as JSON
+krc --emit lockgraph <file.kr>   # dump lock graph as JSON
+krc --emit caps      <file.kr>   # dump capability manifest as JSON
+krc --emit contracts <file.kr>   # dump semantic contracts as JSON
+krc inspect --contracts <contracts.json>
+krc inspect-artifact <artifact>
+krc inspect-artifact <artifact> --format json
 ```
 
 ### Contracts and verification
 
 ```sh
-kernriftc check --contracts-out contracts.json \
+krc check --contracts-out contracts.json \
     --hash-out contracts.sha256 \
     --sign-ed25519 secret.hex \
     --sig-out contracts.sig \
     driver.kr
 
-kernriftc verify --contracts contracts.json \
+krc verify --contracts contracts.json \
     --hash contracts.sha256 \
     --sig contracts.sig \
     --pubkey pubkey.hex
@@ -1115,24 +1115,24 @@ The living compiler (`lc`) analyses a source file for non-canonical annotation
 spellings and can rewrite them automatically:
 
 ```sh
-kernriftc lc <file.kr>             # report non-canonical annotations
-kernriftc lc --fix --dry-run <file.kr>   # preview changes as a diff
-kernriftc lc --fix --write <file.kr>     # apply changes in-place
-kernriftc lc --ci --min-fitness 70 <file.kr>   # CI mode: fail below fitness score
+krc lc <file.kr>             # report non-canonical annotations
+krc lc --fix --dry-run <file.kr>   # preview changes as a diff
+krc lc --fix --write <file.kr>     # apply changes in-place
+krc lc --ci --min-fitness 70 <file.kr>   # CI mode: fail below fitness score
 ```
 
 ### Canonical form
 
 ```sh
-kernriftc check --canonical <file.kr>
-kernriftc migrate <file.kr>        # rewrite to canonical annotation form
-kernriftc migrate <file.kr> --dry-run
+krc check --canonical <file.kr>
+krc migrate <file.kr>        # rewrite to canonical annotation form
+krc migrate <file.kr> --dry-run
 ```
 
 ### Running compiled programs
 
 ```sh
-kernrift <file.krbo>
+./output                          # run the compiled binary
 ```
 
 The `kernrift` runtime maps the UART buffer, copies the code to executable
@@ -1207,9 +1207,9 @@ These are always accepted and lower to their canonical equivalents.
 List the active feature aliases for a profile:
 
 ```sh
-kernriftc features --surface stable
-kernriftc features --surface experimental
-kernriftc features --surface stable --json
+krc features --surface stable
+krc features --surface experimental
+krc features --surface stable --json
 ```
 
 ### The `proposals` subcommand
@@ -1219,19 +1219,19 @@ to audit the compiler's own roadmap:
 
 ```sh
 # List all proposals with their current status.
-kernriftc proposals
+krc proposals
 
 # Validate internal consistency of the proposal table.
-kernriftc proposals --validate
+krc proposals --validate
 
 # Show which proposals are ready to promote to the next lifecycle stage.
-kernriftc proposals --promotion-readiness
+krc proposals --promotion-readiness
 
 # Preview what promoting a feature would change (dry run + diff).
-kernriftc proposals --promote irq_handler_alias --dry-run --diff
+krc proposals --promote irq_handler_alias --dry-run --diff
 
 # Perform the promotion (updates the compiler's internal table).
-kernriftc proposals --promote irq_handler_alias
+krc proposals --promote irq_handler_alias
 ```
 
 Promoting a feature means advancing it from `Experimental` → `Stable`, or
@@ -1245,13 +1245,13 @@ fixup suggestions.  It is the primary tool for adopting the latest canonical
 style:
 
 ```sh
-kernriftc lc <file.kr>                      # analyse and report fitness
-kernriftc lc --surface experimental <file.kr>
-kernriftc lc --ci <file.kr>                 # exit 1 if fitness < threshold
-kernriftc lc --ci --min-fitness 70 <file.kr>
-kernriftc lc --diff <file.kr>               # show suggested rewrites as a diff
-kernriftc lc --fix --dry-run <file.kr>      # preview in-place fixes
-kernriftc lc --fix --write <file.kr>        # apply fixes in-place
+krc lc <file.kr>                      # analyse and report fitness
+krc lc --surface experimental <file.kr>
+krc lc --ci <file.kr>                 # exit 1 if fitness < threshold
+krc lc --ci --min-fitness 70 <file.kr>
+krc lc --diff <file.kr>               # show suggested rewrites as a diff
+krc lc --fix --dry-run <file.kr>      # preview in-place fixes
+krc lc --fix --write <file.kr>        # apply fixes in-place
 ```
 
 The living compiler scans for patterns such as:
@@ -1269,7 +1269,7 @@ is idiomatic and no suggestions are available.
 
 ### `.krbo` — KernRift binary object
 
-The native binary format produced by `kernriftc`.  A single `.krbo` contains
+The native binary format produced by `krc`.  A single `.krbo` contains
 code for one architecture.  The 16-byte header layout:
 
 | Offset | Size | Field          | Description                         |
@@ -1290,7 +1290,7 @@ the host architecture at runtime.
 Produce a fat binary with:
 
 ```sh
-kernriftc --emit=krbofat -o output.krbo source.kr
+krc --emit=krbofat -o output.krbo source.kr
 ```
 
 A fat binary is the recommended distribution format: a single file runs on
@@ -1314,8 +1314,8 @@ artifact kind, surface profile, input path, byte length, and SHA-256 hash of
 the binary.  Verify a binary against its sidecar at any later point:
 
 ```sh
-kernriftc verify-artifact-meta <artifact> <meta.json>
-kernriftc verify-artifact-meta --format json <artifact> <meta.json>
+krc verify-artifact-meta <artifact> <meta.json>
+krc verify-artifact-meta --format json <artifact> <meta.json>
 ```
 
 ---

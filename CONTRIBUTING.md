@@ -2,73 +2,46 @@
 
 ## Prerequisites
 
-- **Rust 1.93.1** — `rust-toolchain.toml` pins this automatically after cloning; no manual version management needed
-- **Cargo** — bundled with Rust
-- Run all commands from the **repo root**
+- **Bootstrap compiler** — needed only once: `cargo install --git https://github.com/Pantelis23/KernRift-bootstrap kernriftc`
+- After first build, `krc` compiles itself — no Rust needed
 
 ## Build
 
 ```sh
-cargo build --release -p kernrift -p kernriftc
+make build       # bootstrap → krc → krc2 (self-compiled)
 ```
-
-Binaries land at `target/release/kernrift` and `target/release/kernriftc`.
 
 ## Test
 
 ```sh
-# All tests
-cargo test --workspace
-
-# Quality gate (fmt + test + clippy with warnings-as-errors)
-./scripts/local_gate.sh        # Linux / macOS
-.\scripts\local_gate.ps1       # Windows PowerShell
+make test        # 45 tests (arithmetic, control flow, functions, structs, etc.)
+make bootstrap   # verify krc3 == krc4 (fixed point)
 ```
 
-All PRs must pass the gate before merge.
-
-## Crate Map
-
-The workspace contains 7 crates: a 6-crate compiler pipeline and a standalone runner.
-
-| Crate | Role | Key Types |
-|-------|------|-----------|
-| [`parser`](crates/parser/) | Lexer + AST | `ModuleAst`, `FnAst`, `Stmt`, `Expr`, `DeviceDecl` |
-| [`hir`](crates/hir/) | Type checking, lowering, extern resolution | `HirModule`, `HirFn`, `lower_module` |
-| [`krir`](crates/krir/) | Canonical semantic IR + backend target model | `KrirModule`, `KrirFn`, `MmioScalarType`, `KrirOp`, `TargetArch`, `AArch64IntegerRegister`, `emit_krbofat_bytes`, `parse_krbofat_slice` |
-| [`passes`](crates/passes/) | Context / effect / capability / lock analysis | `analyze`, `AnalysisReport` |
-| [`emit`](crates/emit/) | JSON and artifact emission | `emit_krir_json`, `emit_contracts_json` |
-| [`kernriftc`](crates/kernriftc/) | Compiler CLI — orchestrates the pipeline | `main`, `compile_file`, `check_file` |
-| [`kernrift`](crates/kernrift/) | Runner CLI — executes `.krbo` files | `run_krbo_file` |
-
-## Adding Tests
-
-Tests live in `tests/` at the repo root:
-
-| Directory | Purpose | When to add |
-|-----------|---------|-------------|
-| `tests/must_pass/` | Positive cases — compiler must accept | New valid syntax or feature |
-| `tests/must_fail/` | Negative cases — compiler must reject | New error condition |
-| `tests/golden/` | Snapshot tests — exact output must match | New CLI output format |
-
-**Naming:** `tests/must_pass/descriptive_name.kr`, one `.kr` file per case.
-
-Both `must_pass` and `must_fail` directories are auto-discovered by the suite tests in `crates/kernriftc/tests/kr0_contract.rs` — adding a file is enough; no test registration needed.
-
-## Code Style
-
-- `rustfmt` and `clippy` are enforced by the gate (warnings-as-errors)
-- No `#[allow(warnings)]` in new code
-- Run `cargo fmt --all` and `cargo clippy --workspace` before pushing
-
-## PR Checklist
-
-- [ ] Gate passes: `./scripts/local_gate.sh`
-- [ ] New `.kr` test file in `tests/must_pass/` or `tests/must_fail/` for new behaviour
-- [ ] `CHANGELOG.md` updated under `[Unreleased]`
-
-## Dev Hooks
+## Install
 
 ```sh
-git config core.hooksPath tools/hooks
+make install     # installs to ~/.local/bin/krc
 ```
+
+## Source Structure
+
+All compiler source is in `src/`:
+
+| File | Purpose |
+|------|---------|
+| `lexer.kr` | Tokenizer |
+| `parser.kr` | Parser (recursive descent + Pratt) |
+| `codegen.kr` | x86_64 code generation |
+| `codegen_aarch64.kr` | AArch64 code generation |
+| `analysis.kr` | Safety passes |
+| `living.kr` | Living compiler |
+| `format_*.kr` | Output formats (ELF, Mach-O, PE, AR, KRBO) |
+| `main.kr` | CLI and compilation driver |
+
+## Guidelines
+
+- The compiler must always self-compile to a fixed point
+- Run `make bootstrap` before submitting changes
+- All tests must pass (`make test`)
+- No external dependencies — the compiler is fully self-contained
