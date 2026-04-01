@@ -130,7 +130,7 @@ jobs:
 
           # Test KernRift binary (disable set -e to capture exit codes)
           chmod +x /tmp/bins/cross-macos-arm
-          codesign --force -s - /tmp/bins/cross-macos-arm 2>&1 || echo "codesign warning: $?"
+          # LC_UNIXTHREAD binaries don't need codesign (kernel handles directly)
           set +e
           /tmp/bins/cross-macos-arm
           KR_EXIT=$?
@@ -139,7 +139,6 @@ jobs:
 
           # Test x86_64 via Rosetta
           chmod +x /tmp/bins/cross-macos-x64
-          codesign --force -s - /tmp/bins/cross-macos-x64
           set +e
           arch -x86_64 /tmp/bins/cross-macos-x64
           X64_EXIT=$?
