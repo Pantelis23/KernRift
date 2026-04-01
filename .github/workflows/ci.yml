@@ -130,10 +130,8 @@ jobs:
 
           # Test KernRift binary (disable set -e to capture exit codes)
           chmod +x /tmp/bins/cross-macos-arm
-          codesign --force -s - /tmp/bins/cross-macos-arm
+          codesign --force -s - /tmp/bins/cross-macos-arm 2>&1 || echo "codesign warning: $?"
           set +e
-          # Get crash info via lldb
-          echo "run" | lldb /tmp/bins/cross-macos-arm 2>&1 | tail -20 || true
           /tmp/bins/cross-macos-arm
           KR_EXIT=$?
           set -e
