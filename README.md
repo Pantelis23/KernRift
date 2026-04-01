@@ -107,8 +107,8 @@ The [bootstrap compiler](https://github.com/Pantelis23/KernRift-bootstrap) is on
 |----------|---------|-----|-----------|
 | Linux x86_64 | ✅ | ✅ | ✅ |
 | Linux ARM64 | ✅ | ✅ | ✅ |
-| macOS x86_64 | ✅ | WIP (code signing) | — |
-| macOS ARM64 | ✅ | WIP (code signing) | — |
+| macOS x86_64 | ✅ | WIP (segfault debugging) | — |
+| macOS ARM64 | ✅ | WIP (segfault debugging) | — |
 | Windows x86_64 | ✅ | ✅ | — |
 | Windows ARM64 | ✅ | WIP | — |
 
