@@ -9,182 +9,67 @@ permissions:
   contents: read
 
 jobs:
-  kr0:
+  build-test:
+    name: Build and Test (Linux x86_64)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: "Guard: dist/ must not be tracked"
-        shell: bash
+      - name: Install Rust (for bootstrap)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install bootstrap compiler
+        run: cargo install --git https://github.com/Pantelis23/KernRift-bootstrap kernriftc --locked
+
+      - name: Build (bootstrap → krc → krc2)
+        run: make build
+
+      - name: Test suite
         run: |
-          set -euo pipefail
-          if git ls-files -z -- 'dist/*' | grep -q .; then
-            echo "ERROR: dist/ is tracked. Remove it from git history and add /dist to .gitignore." >&2
-            git ls-files -- 'dist/*' >&2
+          KRC="./build/krc2 --arch=x86_64" bash tests/run_tests.sh
+
+      - name: Bootstrap verification (krc3 == krc4)
+        run: make bootstrap
+
+      - name: Cross-compile ARM64
+        run: |
+          ./build/krc2 --arch=arm64 build/krc.kr -o /tmp/krc-arm64
+          file /tmp/krc-arm64 | grep -q "ARM aarch64"
+          echo "ARM64 cross-compile: OK"
+
+      - name: Fat binary verification
+        run: |
+          echo 'fn main() { exit(42) }' > /tmp/test.kr
+          ./build/krc2 /tmp/test.kr -o /tmp/test.krbo
+          python3 -c "
+          d = open('/tmp/test.krbo','rb').read()
+          assert d[:8] == b'KRBOFAT\x00', 'not a fat binary'
+          import struct
+          count = struct.unpack_from('<I', d, 12)[0]
+          assert count == 2, f'expected 2 arches, got {count}'
+          print(f'Fat binary OK: {count} architectures, {len(d)} bytes')
+          "
+
+  source-check:
+    name: Source integrity
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: No build artifacts tracked
+        run: |
+          if git ls-files -- 'build/*' 'dist/*' '*.krbo' 'a.out' | grep -q .; then
+            echo "ERROR: build artifacts are tracked"
             exit 1
           fi
+          echo "Clean: no artifacts tracked"
 
-      - name: "Guard: no new blobs > 25MB"
-        shell: bash
-        env:
-          LIMIT_BYTES: "26214400"
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          BEFORE_SHA: ${{ github.event.before }}
-          HEAD_SHA: ${{ github.sha }}
-          EVENT_NAME: ${{ github.event_name }}
+      - name: Source stats
         run: |
-          set -euo pipefail
-
-          # Determine diff base/head
-          if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            base="$BASE_SHA"
-            head="$HEAD_SHA"
-          else
-            # push event
-            if [[ "$BEFORE_SHA" == "0000000000000000000000000000000000000000" ]]; then
-              echo "No BEFORE sha (new branch). Skipping size guard."
-              exit 0
-            fi
-            base="$BEFORE_SHA"
-            head="$HEAD_SHA"
-          fi
-
-          fail=0
-          while IFS= read -r -d '' f; do
-            [[ -f "$f" ]] || continue
-            sz=$(wc -c <"$f" | tr -d ' ')
-            if [[ "$sz" -gt "$LIMIT_BYTES" ]]; then
-              echo "ERROR: $f is ${sz} bytes (> ${LIMIT_BYTES})" >&2
-              fail=1
-            fi
-          done < <(git diff --name-only --diff-filter=AM -z "$base" "$head")
-
-          exit "$fail"
-
-      - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Cargo cache
-        uses: Swatinem/rust-cache@v2
-
-      - name: fmt
-        run: cargo fmt --all -- --check
-
-      - name: clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: test
-        run: cargo test --workspace
-
-  acceptance-smoke:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install linker and ELF tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y lld binutils clang
-
-      - name: acceptance smoke
-        run: ./tools/acceptance/all.sh
-
-  # ── Cross-platform coverage ────────────────────────────────────────────────
-  # Covers targets not exercised by the jobs above (Linux x86_64).
-  # The acceptance scripts require apt packages (lld, binutils) and are
-  # Linux x86_64 only, so they run in the kr0/acceptance-smoke jobs.
-  # Here we just need: build + cargo test + optional end-to-end smoke.
-  cross:
-    name: Cross (${{ matrix.name }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Linux AArch64 – already verified on Pi 400, now confirmed in CI too
-          - name: "Linux AArch64"
-            os: ubuntu-24.04-arm
-            arch: aarch64
-
-          # macOS – Apple Silicon only; macos-13 (Intel) was deprecated by
-          # GitHub in late 2024 and is no longer available on free accounts.
-          # Intel macOS is unverified.
-          - name: "macOS AArch64 (Apple Silicon)"
-            os: macos-latest
-            arch: aarch64
-
-          # Windows – x86_64 verified locally; ARM64 runner is public beta
-          - name: "Windows x86_64"
-            os: windows-latest
-            arch: x86_64
-
-          - name: "Windows AArch64 (beta)"
-            os: windows-11-arm
-            arch: aarch64
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      # rust-toolchain.toml pins the exact version (1.93.1).
-      # `rustup show` forces rustup to read the file and install the toolchain
-      # before any cargo command runs.
-      - name: Install Rust toolchain
-        shell: bash
-        run: rustup show
-
-      - name: Cargo cache
-        uses: Swatinem/rust-cache@v2
-
-      - name: Build (release)
-        run: cargo build --release
-
-      - name: Test (release)
-        run: cargo test --workspace --release
-
-      # ── Smoke tests ────────────────────────────────────────────────────────
-      # Two tiers:
-      #
-      #  A. smoke_noop (ALL platforms)
-      #     examples/smoke_noop.kr has no MMIO ops → fat binary with both
-      #     slices on every platform.  kernrift runs the native slice, exits 0.
-      #
-      #  B. hello.kr (x86_64 only)
-      #     hello.kr uses print() → MmioWriteImm → kernrift maps the UART
-      #     buffer at a fixed address (0x10000000) using MAP_FIXED.  This
-      #     fails on some CI ARM64/macOS runners due to kernel restrictions on
-      #     fixed-address mmap.  The AArch64 encoder correctly emits both
-      #     slices (verified on Pi 400), so the fat binary is correct; we
-      #     simply cannot execute it on restricted CI hosts.
-      #
-      # Windows note: git bash (shell: bash on Windows Actions runners) does NOT
-      # automatically add .exe to ./path/to/bin, so we detect RUNNER_OS and set
-      # an $exe suffix that appends ".exe" on Windows.
-
-      - name: Smoke – compile and run smoke_noop.kr (all platforms)
-        shell: bash
-        run: |
-          exe=""; [[ "$RUNNER_OS" == "Windows" ]] && exe=".exe"
-          "./target/release/kernriftc${exe}" examples/smoke_noop.kr
-          "./target/release/kernrift${exe}" smoke_noop.krbo
-          echo "smoke_noop: PASS"
-
-      - name: Smoke – compile hello.kr and verify output (x86_64 only)
-        if: matrix.arch == 'x86_64'
-        shell: bash
-        run: |
-          exe=""; [[ "$RUNNER_OS" == "Windows" ]] && exe=".exe"
-          "./target/release/kernriftc${exe}" hello.kr
-          output=$("./target/release/kernrift${exe}" hello.krbo)
-          printf '%s\n' "$output"
-          echo "$output" | grep -q "Hello, World!"
-          echo "hello smoke: PASS"
+          echo "=== KernRift Self-Hosted Compiler ==="
+          wc -l src/*.kr
+          echo "---"
+          echo "Total: $(cat src/*.kr | wc -l) lines"
+          echo "Functions: $(grep -c '^fn ' src/*.kr)"
