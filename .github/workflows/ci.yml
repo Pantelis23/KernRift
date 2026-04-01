@@ -125,30 +125,25 @@ jobs:
           as -o /tmp/ref.o /tmp/ref.s
           ld -o /tmp/ref_arm64 /tmp/ref.o -lSystem -syslibroot $(xcrun --show-sdk-path) -e _main -arch arm64
           codesign -s - /tmp/ref_arm64
-          /tmp/ref_arm64 || true
-          REF_EXIT=$?
+          set +e; /tmp/ref_arm64; REF_EXIT=$?; set -e
           echo "Reference (with libSystem): exit=$REF_EXIT"
 
-          # Build reference WITHOUT libSystem
-          ld -o /tmp/ref_nosys /tmp/ref.o -e _main -arch arm64 2>&1 || echo "ld without libSystem failed"
-          if [ -f /tmp/ref_nosys ]; then
-            codesign -s - /tmp/ref_nosys 2>&1 || true
-            /tmp/ref_nosys || true
-            echo "Reference (no libSystem): exit=$?"
-          fi
-
-          # Test KernRift binary
+          # Test KernRift binary (disable set -e to capture exit codes)
           chmod +x /tmp/bins/cross-macos-arm
           codesign --force -s - /tmp/bins/cross-macos-arm
-          /tmp/bins/cross-macos-arm || true
+          set +e
+          /tmp/bins/cross-macos-arm
           KR_EXIT=$?
+          set -e
           echo "KernRift ARM64: exit=$KR_EXIT"
 
           # Test x86_64 via Rosetta
           chmod +x /tmp/bins/cross-macos-x64
           codesign --force -s - /tmp/bins/cross-macos-x64
-          arch -x86_64 /tmp/bins/cross-macos-x64 || true
+          set +e
+          arch -x86_64 /tmp/bins/cross-macos-x64
           X64_EXIT=$?
+          set -e
           echo "KernRift x86_64 Rosetta: exit=$X64_EXIT"
 
           # Verdict
