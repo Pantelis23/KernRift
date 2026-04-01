@@ -111,9 +111,9 @@ jobs:
           name: cross-compiled
           path: /tmp/bins
 
-      - name: Build and run reference binary
+      - name: Build reference and test both
         run: |
-          # Test if raw syscall even works on this macOS runner
+          # Build reference binary WITH libSystem
           cat > /tmp/ref.s << 'SEOF'
           .global _main
           .align 4
@@ -125,18 +125,37 @@ jobs:
           as -o /tmp/ref.o /tmp/ref.s
           ld -o /tmp/ref_arm64 /tmp/ref.o -lSystem -syslibroot $(xcrun --show-sdk-path) -e _main -arch arm64
           codesign -s - /tmp/ref_arm64
-          /tmp/ref_arm64; echo "Reference exit: $?"
+          /tmp/ref_arm64 || true
+          REF_EXIT=$?
+          echo "Reference (with libSystem): exit=$REF_EXIT"
 
-      - name: Run macOS ARM64 binary
-        run: |
+          # Build reference WITHOUT libSystem
+          ld -o /tmp/ref_nosys /tmp/ref.o -e _main -arch arm64 2>&1 || echo "ld without libSystem failed"
+          if [ -f /tmp/ref_nosys ]; then
+            codesign -s - /tmp/ref_nosys 2>&1 || true
+            /tmp/ref_nosys || true
+            echo "Reference (no libSystem): exit=$?"
+          fi
+
+          # Test KernRift binary
           chmod +x /tmp/bins/cross-macos-arm
-          codesign --force -s - /tmp/bins/cross-macos-arm -v 2>&1 || true
-          # Try with detailed crash report
-          /tmp/bins/cross-macos-arm 2>&1; EXIT_CODE=$?
-          echo "Exit code: $EXIT_CODE"
-          # Check system log for crash reason
-          log show --predicate 'process == "cross-macos-arm"' --last 10s 2>&1 | tail -5 || true
-          [ "$EXIT_CODE" -eq 42 ] && echo "PASS: macOS ARM64 exit(42)" || { echo "FAIL: expected 42, got $EXIT_CODE"; exit 1; }
+          codesign --force -s - /tmp/bins/cross-macos-arm
+          /tmp/bins/cross-macos-arm || true
+          KR_EXIT=$?
+          echo "KernRift ARM64: exit=$KR_EXIT"
+
+          # Test x86_64 via Rosetta
+          chmod +x /tmp/bins/cross-macos-x64
+          codesign --force -s - /tmp/bins/cross-macos-x64
+          arch -x86_64 /tmp/bins/cross-macos-x64 || true
+          X64_EXIT=$?
+          echo "KernRift x86_64 Rosetta: exit=$X64_EXIT"
+
+          # Verdict
+          FAIL=0
+          [ "$KR_EXIT" -eq 42 ] && echo "PASS: macOS ARM64" || { echo "FAIL: macOS ARM64 (got $KR_EXIT)"; FAIL=1; }
+          [ "$X64_EXIT" -eq 42 ] && echo "PASS: macOS x86_64" || { echo "FAIL: macOS x86_64 (got $X64_EXIT)"; FAIL=1; }
+          exit $FAIL
 
       - name: Run macOS x86_64 binary (via Rosetta 2)
         run: |
