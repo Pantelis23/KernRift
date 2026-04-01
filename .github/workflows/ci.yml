@@ -114,9 +114,15 @@ jobs:
       - name: Run macOS ARM64 binary
         run: |
           chmod +x /tmp/bins/cross-macos-arm
-          codesign --force -s - /tmp/bins/cross-macos-arm
-          /tmp/bins/cross-macos-arm
-          EXIT_CODE=$?
+          echo "=== Binary info ==="
+          file /tmp/bins/cross-macos-arm
+          ls -la /tmp/bins/cross-macos-arm
+          echo "=== Codesign ==="
+          codesign --force -s - /tmp/bins/cross-macos-arm -v 2>&1 || echo "codesign exit: $?"
+          echo "=== Verify signature ==="
+          codesign -vvv /tmp/bins/cross-macos-arm 2>&1 || echo "verify exit: $?"
+          echo "=== Run ==="
+          /tmp/bins/cross-macos-arm; EXIT_CODE=$?
           echo "Exit code: $EXIT_CODE"
           [ "$EXIT_CODE" -eq 42 ] && echo "PASS: macOS ARM64 exit(42)" || { echo "FAIL: expected 42, got $EXIT_CODE"; exit 1; }
 
