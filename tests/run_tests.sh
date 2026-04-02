@@ -639,6 +639,67 @@ else
 fi
 rm -f /tmp/krc_dce_unused_$$.kr /tmp/krc_dce_used_$$.kr /tmp/krc_dce_small_$$ /tmp/krc_dce_large_$$
 
+# --- ELF relocatable (.o) test ---
+echo ""
+echo "--- ELF relocatable (.o) test ---"
+TOTAL=$((TOTAL + 1))
+printf 'fn add(uint64 a, uint64 b) -> uint64 { return a + b }\nfn main() { exit(add(30, 12)) }\n' > /tmp/krc_obj_$$.kr
+if $KRC --emit=obj /tmp/krc_obj_$$.kr -o /tmp/krc_obj_$$.o > /dev/null 2>&1; then
+    # Check first 18 bytes: ELF magic (4) + class(1) + data(1) + version(1) + osabi(1) + padding(8) + e_type LE (2)
+    # e_type at offset 16-17 should be 01 00 (ET_REL = 1, little-endian)
+    magic=$(xxd -l 4 -p /tmp/krc_obj_$$.o 2>/dev/null)
+    etype=$(xxd -s 16 -l 2 -p /tmp/krc_obj_$$.o 2>/dev/null)
+    if [ "$magic" = "7f454c46" ] && [ "$etype" = "0100" ]; then
+        PASS=$((PASS + 1))
+        echo "  emit_obj: PASS (valid ELF relocatable, $(wc -c < /tmp/krc_obj_$$.o) bytes)"
+    else
+        FAIL=$((FAIL + 1))
+        echo "  emit_obj: FAIL (bad ELF header: magic=$magic etype=$etype)"
+    fi
+else
+    FAIL=$((FAIL + 1))
+    echo "  emit_obj: FAIL (compilation with --emit=obj failed)"
+fi
+
+# Also test -c flag produces same result
+TOTAL=$((TOTAL + 1))
+if $KRC -c /tmp/krc_obj_$$.kr -o /tmp/krc_obj_c_$$.o > /dev/null 2>&1; then
+    c_magic=$(xxd -l 4 -p /tmp/krc_obj_c_$$.o 2>/dev/null)
+    c_etype=$(xxd -s 16 -l 2 -p /tmp/krc_obj_c_$$.o 2>/dev/null)
+    if [ "$c_magic" = "7f454c46" ] && [ "$c_etype" = "0100" ]; then
+        PASS=$((PASS + 1))
+        echo "  emit_obj_c_flag: PASS"
+    else
+        FAIL=$((FAIL + 1))
+        echo "  emit_obj_c_flag: FAIL (bad ELF header)"
+    fi
+else
+    FAIL=$((FAIL + 1))
+    echo "  emit_obj_c_flag: FAIL (compilation with -c failed)"
+fi
+
+# Test readelf can parse sections and symbols
+TOTAL=$((TOTAL + 1))
+if command -v readelf > /dev/null 2>&1 && [ -f /tmp/krc_obj_$$.o ]; then
+    sections=$(readelf -S /tmp/krc_obj_$$.o 2>/dev/null)
+    has_text=$(echo "$sections" | grep -c '\.text')
+    has_symtab=$(echo "$sections" | grep -c '\.symtab')
+    symbols=$(readelf -s /tmp/krc_obj_$$.o 2>/dev/null)
+    has_main=$(echo "$symbols" | grep -c 'FUNC.*GLOBAL.*main')
+    has_add=$(echo "$symbols" | grep -c 'FUNC.*LOCAL.*add')
+    if [ "$has_text" -ge 1 ] && [ "$has_symtab" -ge 1 ] && [ "$has_main" -ge 1 ] && [ "$has_add" -ge 1 ]; then
+        PASS=$((PASS + 1))
+        echo "  emit_obj_readelf: PASS (.text, .symtab, main GLOBAL, add LOCAL)"
+    else
+        FAIL=$((FAIL + 1))
+        echo "  emit_obj_readelf: FAIL (text=$has_text symtab=$has_symtab main=$has_main add=$has_add)"
+    fi
+else
+    PASS=$((PASS + 1))
+    echo "  emit_obj_readelf: SKIP (readelf not found or .o missing)"
+fi
+rm -f /tmp/krc_obj_$$.kr /tmp/krc_obj_$$.o /tmp/krc_obj_c_$$.o
+
 # --- Bootstrap test ---
 echo ""
 echo "--- Bootstrap test ---"

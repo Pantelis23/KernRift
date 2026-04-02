@@ -4426,6 +4426,343 @@ fn emit_program_header(uint64 text_size) {
     emit_u64_le(0x200000)
 }
 
+// Emit an ELF relocatable object file (.o) wrapping the code already in out_buf.
+// text_len = size of executable code (from offset 0)
+// data_len = size of static data (immediately after code)
+// arch: 0=x86_64, 1=aarch64
+// The function copies the existing output, resets the buffer, and emits a proper
+// ELF .o file with: ELF header, .text, .data, .symtab, .strtab, .shstrtab, section headers.
+@export
+fn emit_elf_relocatable(uint64 text_len, uint64 data_len, uint64 arch) {
+    // Save the generated code+data blob
+    uint64 blob_len = out_len
+    uint64 blob = alloc(blob_len + 16)
+    uint64 ci = 0
+    while ci < blob_len {
+        uint64 sp = out_buf + ci
+        uint64 dp = blob + ci
+        uint64 bv = 0
+        unsafe { *(sp as uint8) -> bv }
+        uint8 bb = bv
+        unsafe { *(dp as uint8) = bb }
+        ci = ci + 1
+    }
+
+    // Reset output buffer
+    out_len = 0
+
+    // Build section name string table (.shstrtab) content:
+    // idx 0: \0
+    // idx 1: .text\0       (6 bytes)
+    // idx 7: .data\0       (6 bytes)
+    // idx 13: .symtab\0    (8 bytes)
+    // idx 21: .strtab\0    (8 bytes)
+    // idx 29: .shstrtab\0  (10 bytes)
+    // Total: 39 bytes
+    uint64 shstrtab_size = 39
+
+    // Build string table (.strtab) for symbol names:
+    // idx 0: \0 (null symbol name)
+    // idx 1: function names from fn_table, each null-terminated
+    // We'll also compute symtab entries count.
+    // Allocate temp buffer for strtab content
+    uint64 strtab_buf = alloc(8192)
+    uint64 strtab_len = 1  // start at 1 (index 0 = null byte)
+    uint64 sb0 = strtab_buf
+    uint8 nul = 0
+    unsafe { *(sb0 as uint8) = nul }
+
+    // Symtab: first entry is null (STN_UNDEF), then one per function
+    // Elf64_Sym = 24 bytes each
+    uint64 sym_count = 1 + fn_count  // null + functions
+    uint64 symtab_size = sym_count * 24
+
+    // Build strtab: copy each function name from source
+    // Also track name offsets for symtab
+    uint64 name_offsets = alloc(fn_count * 8)
+    uint64 fi = 0
+    // Track which function index is "main" for making it GLOBAL
+    uint64 main_fn_idx = 0xFFFFFFFF
+    while fi < fn_count {
+        uint64 fentry = fn_table + fi * 8
+        uint32 stored_tok = 0
+        unsafe { *(fentry as uint32) -> stored_tok }
+        uint64 ws = stored_tok
+        // Store name offset
+        uint64 no_ptr = name_offsets + fi * 8
+        unsafe { *(no_ptr as uint64) = strtab_len }
+        // Copy name bytes
+        uint64 nstart = tok_text_start(ws)
+        uint64 nlen = tok_text_len(ws)
+        uint64 ni = 0
+        while ni < nlen {
+            uint64 src_p = cg_source + nstart + ni
+            uint64 dst_p = strtab_buf + strtab_len
+            uint64 ch = 0
+            unsafe { *(src_p as uint8) -> ch }
+            uint8 cb = ch
+            unsafe { *(dst_p as uint8) = cb }
+            strtab_len = strtab_len + 1
+            ni = ni + 1
+        }
+        // Null terminate
+        uint64 ntp = strtab_buf + strtab_len
+        unsafe { *(ntp as uint8) = nul }
+        strtab_len = strtab_len + 1
+        // Check if this is "main"
+        if tok_matches(ws, "main", 4) != 0 {
+            main_fn_idx = fi
+        }
+        fi = fi + 1
+    }
+
+    // Layout:
+    // 0x00: ELF header (64 bytes)
+    // 0x40: .text section content (text_len bytes)
+    // 0x40 + text_len: .data section content (data_len bytes)
+    // then: .symtab (symtab_size bytes)
+    // then: .strtab (strtab_len bytes)
+    // then: .shstrtab (shstrtab_size bytes)
+    // then: section headers (6 * 64 = 384 bytes)
+
+    uint64 elf_hdr_size = 64
+    uint64 text_off = elf_hdr_size
+    uint64 data_off = text_off + text_len
+    uint64 symtab_off = data_off + data_len
+    uint64 strtab_off = symtab_off + symtab_size
+    uint64 shstrtab_off = strtab_off + strtab_len
+    // Align section headers to 8 bytes
+    uint64 shdr_off = shstrtab_off + shstrtab_size
+    uint64 shdr_align_pad = (8 - (shdr_off & 7)) & 7
+    shdr_off = shdr_off + shdr_align_pad
+    uint64 num_sections = 6  // null, .text, .data, .symtab, .strtab, .shstrtab
+
+    // --- Emit ELF header (64 bytes) ---
+    // e_ident[0..3]: magic
+    emit_byte(0x7F); emit_byte(69); emit_byte(76); emit_byte(70)
+    // e_ident[4]: class = ELFCLASS64
+    emit_byte(2)
+    // e_ident[5]: data = ELFDATA2LSB
+    emit_byte(1)
+    // e_ident[6]: version = EV_CURRENT
+    emit_byte(1)
+    // e_ident[7]: OS/ABI = ELFOSABI_NONE
+    emit_byte(0)
+    // e_ident[8..15]: padding
+    uint64 pi = 0
+    while pi < 8 { emit_byte(0); pi = pi + 1 }
+    // e_type = ET_REL (1)
+    emit_u16_le(1)
+    // e_machine
+    if arch == 0 {
+        emit_u16_le(0x3E)  // EM_X86_64
+    } else {
+        emit_u16_le(0xB7)  // EM_AARCH64
+    }
+    // e_version = 1
+    emit_u32_le(1)
+    // e_entry = 0 (no entry point for .o)
+    emit_u64_le(0)
+    // e_phoff = 0 (no program headers)
+    emit_u64_le(0)
+    // e_shoff = offset to section headers
+    emit_u64_le(shdr_off)
+    // e_flags = 0
+    emit_u32_le(0)
+    // e_ehsize = 64
+    emit_u16_le(64)
+    // e_phentsize = 0 (no program headers)
+    emit_u16_le(0)
+    // e_phnum = 0
+    emit_u16_le(0)
+    // e_shentsize = 64
+    emit_u16_le(64)
+    // e_shnum = number of sections
+    emit_u16_le(num_sections)
+    // e_shstrndx = 5 (.shstrtab is section 5)
+    emit_u16_le(5)
+
+    // --- Emit .text section content ---
+    ci = 0
+    while ci < text_len {
+        uint64 p = blob + ci
+        uint64 bv = 0
+        unsafe { *(p as uint8) -> bv }
+        uint8 bb = bv
+        emit_byte(bb)
+        ci = ci + 1
+    }
+
+    // --- Emit .data section content ---
+    ci = 0
+    while ci < data_len {
+        uint64 p = blob + text_len + ci
+        uint64 bv = 0
+        unsafe { *(p as uint8) -> bv }
+        uint8 bb = bv
+        emit_byte(bb)
+        ci = ci + 1
+    }
+
+    // --- Emit .symtab ---
+    // Entry 0: STN_UNDEF (24 zero bytes)
+    uint64 si = 0
+    while si < 24 { emit_byte(0); si = si + 1 }
+
+    // Entries for each function
+    fi = 0
+    // Count local symbols: everything except main (which is GLOBAL)
+    // STB_LOCAL symbols must come before STB_GLOBAL in symtab
+    // info field = (binding << 4) | type
+    // We emit locals first, then globals.
+    // First pass: emit LOCAL functions (not main)
+    uint64 local_count = 1  // include null symbol
+    fi = 0
+    while fi < fn_count {
+        if fi != main_fn_idx {
+            uint64 no_ptr = name_offsets + fi * 8
+            uint64 name_off = 0
+            unsafe { *(no_ptr as uint64) -> name_off }
+            // st_name
+            emit_u32_le(name_off)
+            // st_info = STB_LOCAL(0) << 4 | STT_FUNC(2) = 0x02
+            emit_byte(0x02)
+            // st_other = 0
+            emit_byte(0)
+            // st_shndx = 1 (.text section)
+            emit_u16_le(1)
+            // st_value = offset within .text section
+            uint64 fentry = fn_table + fi * 8
+            uint64 fe4 = fentry + 4
+            uint32 code_off = 0
+            unsafe { *(fe4 as uint32) -> code_off }
+            emit_u64_le(code_off)
+            // st_size = 0
+            emit_u64_le(0)
+            local_count = local_count + 1
+        }
+        fi = fi + 1
+    }
+
+    // Second pass: emit GLOBAL functions (main)
+    if main_fn_idx != 0xFFFFFFFF {
+        uint64 no_ptr = name_offsets + main_fn_idx * 8
+        uint64 name_off = 0
+        unsafe { *(no_ptr as uint64) -> name_off }
+        // st_name
+        emit_u32_le(name_off)
+        // st_info = STB_GLOBAL(1) << 4 | STT_FUNC(2) = 0x12
+        emit_byte(0x12)
+        // st_other = 0
+        emit_byte(0)
+        // st_shndx = 1 (.text section)
+        emit_u16_le(1)
+        // st_value = offset within .text
+        uint64 fentry = fn_table + main_fn_idx * 8
+        uint64 fe4 = fentry + 4
+        uint32 code_off = 0
+        unsafe { *(fe4 as uint32) -> code_off }
+        emit_u64_le(code_off)
+        // st_size = 0
+        emit_u64_le(0)
+    }
+
+    // --- Emit .strtab ---
+    ci = 0
+    while ci < strtab_len {
+        uint64 p = strtab_buf + ci
+        uint64 bv = 0
+        unsafe { *(p as uint8) -> bv }
+        uint8 bb = bv
+        emit_byte(bb)
+        ci = ci + 1
+    }
+
+    // --- Emit .shstrtab ---
+    // \0
+    emit_byte(0)
+    // .text\0
+    emit_byte(46); emit_byte(116); emit_byte(101); emit_byte(120); emit_byte(116); emit_byte(0)
+    // .data\0
+    emit_byte(46); emit_byte(100); emit_byte(97); emit_byte(116); emit_byte(97); emit_byte(0)
+    // .symtab\0
+    emit_byte(46); emit_byte(115); emit_byte(121); emit_byte(109); emit_byte(116); emit_byte(97); emit_byte(98); emit_byte(0)
+    // .strtab\0
+    emit_byte(46); emit_byte(115); emit_byte(116); emit_byte(114); emit_byte(116); emit_byte(97); emit_byte(98); emit_byte(0)
+    // .shstrtab\0
+    emit_byte(46); emit_byte(115); emit_byte(104); emit_byte(115); emit_byte(116); emit_byte(114); emit_byte(116); emit_byte(97); emit_byte(98); emit_byte(0)
+
+    // --- Alignment padding before section headers ---
+    pi = 0
+    while pi < shdr_align_pad { emit_byte(0); pi = pi + 1 }
+
+    // --- Section Headers (6 entries, 64 bytes each) ---
+
+    // Section 0: SHN_UNDEF (64 zero bytes)
+    si = 0
+    while si < 64 { emit_byte(0); si = si + 1 }
+
+    // Section 1: .text
+    emit_u32_le(1)          // sh_name (offset 1 in .shstrtab)
+    emit_u32_le(1)          // sh_type = SHT_PROGBITS
+    emit_u64_le(6)          // sh_flags = SHF_ALLOC | SHF_EXECINSTR
+    emit_u64_le(0)          // sh_addr = 0 (relocatable)
+    emit_u64_le(text_off)   // sh_offset
+    emit_u64_le(text_len)   // sh_size
+    emit_u32_le(0)          // sh_link
+    emit_u32_le(0)          // sh_info
+    emit_u64_le(16)         // sh_addralign
+    emit_u64_le(0)          // sh_entsize
+
+    // Section 2: .data
+    emit_u32_le(7)          // sh_name (offset 7 in .shstrtab)
+    emit_u32_le(1)          // sh_type = SHT_PROGBITS
+    emit_u64_le(3)          // sh_flags = SHF_ALLOC | SHF_WRITE
+    emit_u64_le(0)          // sh_addr = 0
+    emit_u64_le(data_off)   // sh_offset
+    emit_u64_le(data_len)   // sh_size
+    emit_u32_le(0)          // sh_link
+    emit_u32_le(0)          // sh_info
+    emit_u64_le(8)          // sh_addralign
+    emit_u64_le(0)          // sh_entsize
+
+    // Section 3: .symtab
+    emit_u32_le(13)         // sh_name (offset 13 in .shstrtab)
+    emit_u32_le(2)          // sh_type = SHT_SYMTAB
+    emit_u64_le(0)          // sh_flags = 0
+    emit_u64_le(0)          // sh_addr = 0
+    emit_u64_le(symtab_off) // sh_offset
+    emit_u64_le(symtab_size) // sh_size
+    emit_u32_le(4)          // sh_link = index of .strtab (section 4)
+    emit_u32_le(local_count) // sh_info = one past last local symbol
+    emit_u64_le(8)          // sh_addralign
+    emit_u64_le(24)         // sh_entsize = sizeof(Elf64_Sym)
+
+    // Section 4: .strtab
+    emit_u32_le(21)         // sh_name (offset 21 in .shstrtab)
+    emit_u32_le(3)          // sh_type = SHT_STRTAB
+    emit_u64_le(0)          // sh_flags = 0
+    emit_u64_le(0)          // sh_addr = 0
+    emit_u64_le(strtab_off) // sh_offset
+    emit_u64_le(strtab_len) // sh_size
+    emit_u32_le(0)          // sh_link
+    emit_u32_le(0)          // sh_info
+    emit_u64_le(1)          // sh_addralign
+    emit_u64_le(0)          // sh_entsize
+
+    // Section 5: .shstrtab
+    emit_u32_le(29)         // sh_name (offset 29 in .shstrtab)
+    emit_u32_le(3)          // sh_type = SHT_STRTAB
+    emit_u64_le(0)          // sh_flags = 0
+    emit_u64_le(0)          // sh_addr = 0
+    emit_u64_le(shstrtab_off) // sh_offset
+    emit_u64_le(shstrtab_size) // sh_size
+    emit_u32_le(0)          // sh_link
+    emit_u32_le(0)          // sh_info
+    emit_u64_le(1)          // sh_addralign
+    emit_u64_le(0)          // sh_entsize
+}
+
 @export
 fn codegen_write_output(uint64 output_path) {
     uint64 fd = file_open(output_path, 1)

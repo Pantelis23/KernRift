@@ -429,7 +429,7 @@ fn imp_process(uint64 file_path) {
 }
 
 // arch: 0=x86_64, 1=arm64
-// emit: 0=elfexe, 1=machoexe, 2=peexe
+// emit: 0=elfexe, 1=machoexe, 2=peexe, 3=obj (ELF relocatable)
 fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode) {
     imp_init()
     imp_check_file(input_path)
@@ -451,7 +451,7 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
     dce_init()
     dce_scan(root)
 
-    // Emit headers based on format
+    // Emit headers based on format (skip for .o — code goes at offset 0)
     uint64 header_size = 120
     if emit_mode == 0 {
         // ELF
@@ -475,6 +475,9 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
         } else {
             header_size = emit_pe_headers_a64(0)
         }
+    } else if emit_mode == 3 {
+        // ELF relocatable (.o) — no header at start, code goes at offset 0
+        header_size = 0
     }
 
     uint64 text_start = codegen_output_len()
@@ -524,6 +527,35 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
     }
 
     uint64 text_size = codegen_output_len() - text_start
+
+    // For ELF relocatable (.o), wrap the raw code+data in ELF .o format
+    if emit_mode == 3 {
+        // text_start is 0 for .o (no headers emitted)
+        // All content (code + statics + strings) goes in .text to preserve
+        // RIP-relative references. .data section has zero size.
+        uint64 total_code = codegen_output_len()
+        emit_elf_relocatable(total_code, 0, arch)
+        codegen_write_output(output_path)
+
+        uint8[64] nb
+        uint64 tl = fmt_uint(nb, tcount)
+        write(1, nb, tl)
+        uint64 msg = " tokens, "
+        write(1, msg, 9)
+        uint64 al = fmt_uint(nb, ast_count)
+        write(1, nb, al)
+        msg = " nodes, "
+        write(1, msg, 8)
+        uint64 cl = fmt_uint(nb, text_size)
+        write(1, nb, cl)
+        msg = " bytes -> "
+        write(1, msg, 10)
+        uint64 olen = str_len(output_path)
+        write(1, output_path, olen)
+        msg = " (relocatable)\n"
+        write(1, msg, 15)
+        return
+    }
 
     // Patch headers
     uint64 entry_off = find_main_offset()
@@ -984,7 +1016,12 @@ fn main() {
                     emit_mode = 1
                 } else if str_starts_with(emit_str, "pe", 2) != 0 {
                     emit_mode = 2
+                } else if str_starts_with(emit_str, "obj", 3) != 0 {
+                    emit_mode = 3
                 }
+            } else if str_eq_full(arg, "-c") != 0 {
+                emit_set = 1
+                emit_mode = 3
             } else if str_starts_with(arg, "--target=", 9) != 0 {
                 uint64 tgt_str = arg + 9
                 if str_starts_with(tgt_str, "macos", 5) != 0 {
@@ -1043,7 +1080,18 @@ fn main() {
             uint64 dp2 = dp + 2; unsafe { *(dp2 as uint8) -> d2 }
             if d0 == 46 && d1 == 107 && d2 == 114 { base_len = ilen - 3 }
         }
-        if arch_set != 0 || emit_set != 0 {
+        if emit_mode == 3 {
+            // Object file: input.kr → input.o
+            uint64 out = alloc(base_len + 3)
+            memcpy(out, input_path, base_len)
+            uint64 ep = out + base_len
+            uint8 e0 = 46; uint8 e1 = 111
+            unsafe { *(ep as uint8) = e0 }
+            uint64 ep1 = ep + 1; unsafe { *(ep1 as uint8) = e1 }
+            uint64 ep2 = ep + 2; uint8 z = 0
+            unsafe { *(ep2 as uint8) = z }
+            output_path = out
+        } else if arch_set != 0 || emit_set != 0 {
             // Single arch: input.kr → input (no extension, native binary)
             uint64 out = alloc(base_len + 1)
             memcpy(out, input_path, base_len)
@@ -1074,7 +1122,8 @@ fn main() {
             write(2, "usage: krc [options] <file.kr> [-o output]\n\n", 44)
             write(2, "options:\n", 9)
             write(2, "  --arch=x86_64|arm64\n", 22)
-            write(2, "  --emit=elfexe|macho|pe\n", 25)
+            write(2, "  --emit=elfexe|macho|pe|obj\n", 29)
+            write(2, "  -c                        emit relocatable .o\n", 48)
             write(2, "  --target=linux|macos|windows\n", 31)
             write(2, "  --version\n\n", 13)
             write(2, "commands:\n", 10)
