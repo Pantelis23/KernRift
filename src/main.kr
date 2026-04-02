@@ -980,6 +980,19 @@ fn main() {
     if emit_mode == 2 && target_os == 0 { target_os = 2 }
 
     if input_path == 0 {
+        if cli_argc > 0 {
+            write(2, "krc: no input file\n\n", 20)
+            write(2, "usage: krc [options] <file.kr> [-o output]\n\n", 44)
+            write(2, "options:\n", 9)
+            write(2, "  --arch=x86_64|arm64\n", 22)
+            write(2, "  --emit=elfexe|macho|pe\n", 25)
+            write(2, "  --target=linux|macos|windows\n", 31)
+            write(2, "  --version\n\n", 13)
+            write(2, "commands:\n", 10)
+            write(2, "  check <file.kr>   safety analysis\n", 36)
+            write(2, "  lc <file.kr>      living compiler\n", 36)
+            exit(1)
+        }
         input_path = "test_input.kr"
     }
 
@@ -999,14 +1012,17 @@ fn main() {
         uint64 errors = run_analysis(root)
         if errors > 0 {
             uint8[32] nb
+            write(2, "\nkrc: ", 6)
             uint64 nl = fmt_uint(nb, errors)
             write(2, nb, nl)
-            uint64 msg = " analysis error(s) found\n"
-            write(2, msg, 25)
+            write(2, " analysis error(s) found in ", 28)
+            write(2, input_path, str_len(input_path))
+            write(2, "\n", 1)
             exit(1)
         }
-        uint64 msg = "check: OK\n"
-        write(1, msg, 10)
+        write(1, "krc check: ", 11)
+        write(1, input_path, str_len(input_path))
+        write(1, " — OK\n", 6)
         exit(0)
     }
 

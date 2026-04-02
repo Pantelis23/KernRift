@@ -64,8 +64,10 @@ static uint64 cli_argv = 0
 @export
 fn main() {
     if cli_argc < 2 {
-        uint64 msg = "usage: kr program.krbo [args...]\n"
-        write(2, msg, 38)
+        write(2, "kr: KernRift fat binary runner\n", 30)
+        write(2, "usage: kr <program.krbo> [args...]\n\n", 36)
+        write(2, "Runs .krbo fat binaries (LZ4-compressed x86_64 + ARM64).\n", 57)
+        write(2, "Auto-detects host architecture and extracts the matching native binary.\n", 71)
         exit(1)
     }
 
@@ -133,8 +135,9 @@ fn main() {
     }
 
     if found == 0 {
-        uint64 msg = "kr: no slice for this architecture\n"
-        write(2, msg, 40)
+        write(2, "kr: no native binary found for this architecture\n", 50)
+        write(2, "The .krbo file may not contain a slice for your platform.\n", 57)
+        write(2, "Recompile with: krc program.kr -o program.krbo\n", 47)
         exit(1)
     }
 
