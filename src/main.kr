@@ -979,6 +979,44 @@ fn main() {
     if emit_mode == 1 && target_os == 0 { target_os = 1 }
     if emit_mode == 2 && target_os == 0 { target_os = 2 }
 
+    // Derive output name from input if not specified with -o
+    if str_eq_full(output_path, "a.krbo") != 0 && input_path != 0 {
+        uint64 ilen = str_len(input_path)
+        // Strip .kr extension if present, then add appropriate extension
+        uint64 base_len = ilen
+        if ilen > 3 {
+            uint64 dp = input_path + ilen - 3
+            uint64 d0 = 0; uint64 d1 = 0; uint64 d2 = 0
+            unsafe { *(dp as uint8) -> d0 }
+            uint64 dp1 = dp + 1; unsafe { *(dp1 as uint8) -> d1 }
+            uint64 dp2 = dp + 2; unsafe { *(dp2 as uint8) -> d2 }
+            if d0 == 46 && d1 == 107 && d2 == 114 { base_len = ilen - 3 }
+        }
+        if arch_set != 0 || emit_set != 0 {
+            // Single arch: input.kr → input (no extension, native binary)
+            uint64 out = alloc(base_len + 1)
+            memcpy(out, input_path, base_len)
+            uint64 tp = out + base_len
+            uint8 z = 0
+            unsafe { *(tp as uint8) = z }
+            output_path = out
+        } else {
+            // Fat binary: input.kr → input.krbo
+            uint64 out = alloc(base_len + 6)
+            memcpy(out, input_path, base_len)
+            uint64 ep = out + base_len
+            uint8 e0 = 46; uint8 e1 = 107; uint8 e2 = 114; uint8 e3 = 98; uint8 e4 = 111
+            unsafe { *(ep as uint8) = e0 }
+            uint64 ep1 = ep + 1; unsafe { *(ep1 as uint8) = e1 }
+            uint64 ep2 = ep + 2; unsafe { *(ep2 as uint8) = e2 }
+            uint64 ep3 = ep + 3; unsafe { *(ep3 as uint8) = e3 }
+            uint64 ep4 = ep + 4; unsafe { *(ep4 as uint8) = e4 }
+            uint64 ep5 = ep + 5; uint8 z = 0
+            unsafe { *(ep5 as uint8) = z }
+            output_path = out
+        }
+    }
+
     if input_path == 0 {
         if cli_argc > 0 {
             write(2, "krc: no input file\n\n", 20)
