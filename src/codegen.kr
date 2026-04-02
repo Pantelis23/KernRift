@@ -767,6 +767,12 @@ fn fn_lookup(uint64 name_tok) -> uint64 {
 
 // emit: mov rax, imm64
 fn emit_mov_rax_imm(uint64 val) {
+    if val == 0 {
+        // xor eax, eax (2 bytes, zero-extends to rax)
+        emit_byte(0x31)
+        emit_byte(0xC0)
+        return
+    }
     if val <= 0x7FFFFFFF {
         // mov eax, imm32 (5 bytes, zero-extends)
         emit_byte(0xB8)
@@ -1195,8 +1201,38 @@ fn gen_expr(uint64 node) {
     // Evaluate lhs first into rax, save to a fresh temp slot,
     // then evaluate rhs into rax, move to rcx, restore lhs.
     if kind == 33 {
+        // Constant folding: if both operands are IntLit, compute at compile time
         uint32 lhs_idx = ast_child(node)
         uint64 wlhs = lhs_idx
+        uint32 rhs_idx_cf = ast_data2(node)
+        uint64 wrhs_cf = rhs_idx_cf
+        uint32 lhs_kind = ast_kind(wlhs)
+        uint32 rhs_kind = ast_kind(wrhs_cf)
+        if lhs_kind == 30 && rhs_kind == 30 {
+            uint32 l_tok = ast_data1(wlhs)
+            uint32 r_tok = ast_data1(wrhs_cf)
+            uint64 lv = parse_int_token(l_tok)
+            uint64 rv = parse_int_token(r_tok)
+            uint32 op_tok_cf = ast_data1(node)
+            uint64 wop_cf = op_tok_cf
+            uint64 pcf = cg_tokens + wop_cf * 16
+            uint32 op_cf = 0
+            unsafe { *(pcf as uint32) -> op_cf }
+            uint64 result = 0
+            if op_cf == 30 { result = lv + rv }
+            else if op_cf == 31 { result = lv - rv }
+            else if op_cf == 22 { result = lv * rv }
+            else if op_cf == 32 { if rv != 0 { result = lv / rv } }
+            else if op_cf == 33 { if rv != 0 { result = lv - lv / rv * rv } }
+            else if op_cf == 23 { result = lv & rv }
+            else if op_cf == 24 { result = lv | rv }
+            else if op_cf == 25 { result = lv ^ rv }
+            else if op_cf == 43 { result = lv << rv }
+            else if op_cf == 44 { result = lv >> rv }
+            emit_mov_rax_imm(result)
+            return
+        }
+
         gen_expr(wlhs)           // rax = lhs
 
         // Allocate a fresh temp slot (avoids nesting conflicts)
@@ -1302,8 +1338,33 @@ fn gen_expr(uint64 node) {
 
     // Comparison: lhs CMP rhs → 0 or 1 in rax
     if kind == 38 {
+        // Constant comparison folding
         uint32 lhs_idx = ast_child(node)
         uint64 wlhs = lhs_idx
+        uint32 rhs_idx_cc = ast_data2(node)
+        uint64 wrhs_cc = rhs_idx_cc
+        uint32 lk_cc = ast_kind(wlhs)
+        uint32 rk_cc = ast_kind(wrhs_cc)
+        if lk_cc == 30 && rk_cc == 30 {
+            uint32 lt_cc = ast_data1(wlhs)
+            uint32 rt_cc = ast_data1(wrhs_cc)
+            uint64 lvc = parse_int_token(lt_cc)
+            uint64 rvc = parse_int_token(rt_cc)
+            uint32 op_cc = ast_data1(node)
+            uint64 pcc = cg_tokens + op_cc * 16
+            uint32 okcc = 0
+            unsafe { *(pcc as uint32) -> okcc }
+            uint64 res = 0
+            if okcc == 35 { if lvc == rvc { res = 1 } }
+            else if okcc == 36 { if lvc != rvc { res = 1 } }
+            else if okcc == 37 { if lvc < rvc { res = 1 } }
+            else if okcc == 38 { if lvc <= rvc { res = 1 } }
+            else if okcc == 39 { if lvc > rvc { res = 1 } }
+            else if okcc == 40 { if lvc >= rvc { res = 1 } }
+            emit_mov_rax_imm(res)
+            return
+        }
+
         gen_expr(wlhs)
 
         // Allocate a fresh temp slot
