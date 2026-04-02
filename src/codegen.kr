@@ -3344,6 +3344,22 @@ fn gen_function(uint64 fn_node) {
         ri = ri + 1
     }
 
+    // For main: auto-insert exit(0) so programs don't segfault on return
+    uint64 wnt_ep = name_tok
+    if tok_matches(wnt_ep, "main", 4) != 0 {
+        // mov edi, 0 (exit code)
+        emit_mov_rax_imm(0)
+        if target_os == 2 {
+            emit_mov_rcx_rax()
+            emit_win_alloc_stack(0x20)
+            emit_win_call_iat(0)
+        } else {
+            emit_mov_rdi_rax()
+            if target_os == 1 { emit_mov_rax_imm(0x2000001) } else { emit_mov_rax_imm(231) }
+            emit_byte(0x0F); emit_byte(0x05)
+        }
+    }
+
     // add rsp, FRAME_SIZE
     emit_byte(0x48)
     emit_byte(0x81)

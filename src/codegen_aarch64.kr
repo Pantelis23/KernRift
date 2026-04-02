@@ -2117,6 +2117,18 @@ fn gen_function_a64(uint64 fn_node) {
         ri = ri + 1
     }
 
+    // For main: auto-insert exit(0) so programs don't segfault on return
+    uint64 wnt_ep = name_tok
+    if tok_matches(wnt_ep, "main", 4) != 0 {
+        emit_a64_mov_imm(0, 0)
+        if target_os == 2 {
+            emit_a64_win_call_iat(0)
+        } else {
+            if target_os == 1 { emit_a64_syscall_nr(1) } else { emit_a64_syscall_nr(93) }
+            emit_a64_svc()
+        }
+    }
+
     // ldp x19, x20, [sp, #16]
     emit_a64(0xA94153F3)
     // ldp x29, x30, [sp] (no post-index)
