@@ -329,6 +329,17 @@ fn imp_resolve_stdlib(uint64 import_path) -> uint64 {
     return 0
 }
 
+fn imp_check_file(uint64 path) {
+    uint64 fd = file_open(path, 0)
+    if fd >= 0xFFFFFFFF {
+        write(2, "error: cannot open '", 20)
+        write(2, path, str_len(path))
+        write(2, "': file not found\n", 18)
+        exit(1)
+    }
+    file_close(fd)
+}
+
 fn imp_process(uint64 file_path) {
     if imp_is_seen(file_path) != 0 { return }
     imp_mark_seen(file_path)
@@ -421,6 +432,7 @@ fn imp_process(uint64 file_path) {
 // emit: 0=elfexe, 1=machoexe, 2=peexe
 fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode) {
     imp_init()
+    imp_check_file(input_path)
     imp_process(input_path)
     uint64 source = imp_buf
     uint64 size = imp_buf_len
@@ -679,6 +691,7 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
 // Produce KrboFat: compile for both x86_64 and ARM64, LZ4-compress, wrap in fat binary
 fn compile_fat(uint64 input_path, uint64 output_path) {
     imp_init()
+    imp_check_file(input_path)
     imp_process(input_path)
     uint64 source = imp_buf
     uint64 size = imp_buf_len
@@ -1046,6 +1059,7 @@ fn main() {
 
     if mode == 1 {
         imp_init()
+    imp_check_file(input_path)
         imp_process(input_path)
         uint64 source = imp_buf
         uint64 size = imp_buf_len
@@ -1076,6 +1090,7 @@ fn main() {
 
     if mode == 2 {
         imp_init()
+    imp_check_file(input_path)
         imp_process(input_path)
         uint64 source = imp_buf
         uint64 size = imp_buf_len

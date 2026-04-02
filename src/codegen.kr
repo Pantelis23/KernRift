@@ -3396,6 +3396,13 @@ fn resolve_fixups() {
             uint64 wpo = patch_off
             uint64 disp = target_off - wpo - 4
             patch_u32(wpo, disp)
+        } else {
+            write(2, "error: undefined function '", 27)
+            uint64 ts = tok_text_start(wtt)
+            uint64 tl = tok_text_len(wtt)
+            write(2, cg_source + ts, tl)
+            write(2, "'\n", 2)
+            exit(1)
         }
         i = i + 1
     }
