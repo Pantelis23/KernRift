@@ -226,19 +226,129 @@ fn imp_check_import_line(uint64 buf, uint64 size, uint64 pos) -> uint64 {
     return p
 }
 
+// Stdlib search paths for imports not found relative to source file
+static uint64 imp_search_paths = 0
+static uint64 imp_search_count = 0
+
+fn imp_read_home() -> uint64 {
+    // Read HOME from /proc/self/environ (Linux-specific)
+    uint64 fd = file_open("/proc/self/environ", 0)
+    if fd >= 0xFFFFFFFF { return 0 }
+    uint64 buf = alloc(4096)
+    file_read(fd, buf, 4096)
+    file_close(fd)
+    // environ is null-separated: VAR=VALUE\0VAR=VALUE\0...
+    uint64 pos = 0
+    while pos < 4096 {
+        uint64 p = buf + pos
+        uint64 ch = 0
+        unsafe { *(p as uint8) -> ch }
+        if ch == 0 { break }
+        // Check for "HOME="
+        if ch == 72 {
+            uint64 p1 = p + 1; uint64 c1 = 0; unsafe { *(p1 as uint8) -> c1 }
+            uint64 p2 = p + 2; uint64 c2 = 0; unsafe { *(p2 as uint8) -> c2 }
+            uint64 p3 = p + 3; uint64 c3 = 0; unsafe { *(p3 as uint8) -> c3 }
+            uint64 p4 = p + 4; uint64 c4 = 0; unsafe { *(p4 as uint8) -> c4 }
+            if c1 == 79 && c2 == 77 && c3 == 69 && c4 == 61 {
+                // Found HOME=, copy value to new buffer
+                uint64 home_ptr = p + 5
+                uint64 home_len = str_len(home_ptr)
+                uint64 home_copy = alloc(home_len + 1)
+                memcpy(home_copy, home_ptr, home_len)
+                uint64 htp = home_copy + home_len
+                uint8 hz = 0
+                unsafe { *(htp as uint8) = hz }
+                return home_copy
+            }
+        }
+        // Skip to next null
+        while pos < 4096 {
+            p = buf + pos
+            unsafe { *(p as uint8) -> ch }
+            if ch == 0 { pos = pos + 1; break }
+            pos = pos + 1
+        }
+    }
+    return 0
+}
+
+fn imp_init_search_paths() {
+    if imp_search_paths != 0 { return }
+    imp_search_paths = alloc(2048)
+    imp_search_count = 0
+    // Add system paths
+    imp_add_search_path("/usr/local/share/kernrift/")
+    imp_add_search_path("/usr/share/kernrift/")
+    // Add user path: $HOME/.local/share/kernrift/
+    uint64 home = imp_read_home()
+    if home != 0 {
+        uint64 hlen = str_len(home)
+        uint64 suffix = "/.local/share/kernrift/"
+        uint64 slen = 22
+        uint64 full = alloc(hlen + slen + 1)
+        memcpy(full, home, hlen)
+        memcpy(full + hlen, suffix, slen)
+        uint8 z = 0
+        uint64 tp = full + hlen + slen
+        unsafe { *(tp as uint8) = z }
+        imp_add_search_path(full)
+    }
+}
+
+fn imp_add_search_path(uint64 path) {
+    uint64 plen = str_len(path)
+    uint64 entry = imp_search_paths + imp_search_count * 256
+    memcpy(entry, path, plen)
+    uint64 tp = entry + plen
+    uint8 z = 0
+    unsafe { *(tp as uint8) = z }
+    imp_search_count = imp_search_count + 1
+}
+
+fn imp_resolve_stdlib(uint64 import_path) -> uint64 {
+    imp_init_search_paths()
+    uint64 plen = str_len(import_path)
+    uint64 i = 0
+    while i < imp_search_count {
+        uint64 base = imp_search_paths + i * 256
+        uint64 blen = str_len(base)
+        uint64 full = alloc(blen + plen + 1)
+        memcpy(full, base, blen)
+        memcpy(full + blen, import_path, plen)
+        uint64 tp = full + blen + plen
+        uint8 z = 0
+        unsafe { *(tp as uint8) = z }
+        uint64 fd = file_open(full, 0)
+        if fd < 0xFFFFFFFF {
+            file_close(fd)
+            return full
+        }
+        i = i + 1
+    }
+    return 0
+}
+
 fn imp_process(uint64 file_path) {
     if imp_is_seen(file_path) != 0 { return }
     imp_mark_seen(file_path)
 
     uint64 fd = file_open(file_path, 0)
-    // Check for error: fd >= 0xFFFFFFFF means open failed
+    // If not found, try ~/.local/share/kernrift/ as fallback
+    if fd >= 0xFFFFFFFF {
+        uint64 fallback = imp_resolve_stdlib(file_path)
+        if fallback != 0 {
+            fd = file_open(fallback, 0)
+        }
+    }
     if fd >= 0xFFFFFFFF {
         uint64 msg = "error: cannot open import: "
         write(2, msg, 27)
         write(2, file_path, str_len(file_path))
-        uint64 nl = "\n"
-        write(2, nl, 1)
-        exit(1)
+        write(2, "\n", 1)
+        // Don't exit — let compilation continue with what we have
+        // This allows the parser to report the actual error
+        return
     }
     uint64 size = file_size(fd)
     uint64 tmp = alloc(size + 1)
@@ -275,8 +385,23 @@ fn imp_process(uint64 file_path) {
             }
             uint64 name_len = ne - ns
             uint64 name_ptr = tmp + ns
-            // Resolve full path
+            // Resolve full path relative to source file
             uint64 full_path = imp_resolve(file_path, name_ptr, name_len)
+            // Check if resolved path exists
+            uint64 check_fd = file_open(full_path, 0)
+            if check_fd < 0xFFFFFFFF {
+                file_close(check_fd)
+            } else {
+                // Not found locally — try stdlib search paths
+                // Build a null-terminated copy of the import name
+                uint64 name_copy = alloc(name_len + 1)
+                memcpy(name_copy, name_ptr, name_len)
+                uint64 ntp = name_copy + name_len
+                uint8 nz = 0
+                unsafe { *(ntp as uint8) = nz }
+                uint64 stdlib_path = imp_resolve_stdlib(name_copy)
+                if stdlib_path != 0 { full_path = stdlib_path }
+            }
             // Recurse
             imp_process(full_path)
             // Skip past closing quote and rest of line

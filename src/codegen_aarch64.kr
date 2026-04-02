@@ -750,10 +750,10 @@ fn gen_expr_a64(uint64 node) {
         // EQ=0, NE=1, LT=11, LE=13, GT=12, GE=10
         if op_kind == 35 { emit_a64_cset(0, 0) }       // == → eq
         else if op_kind == 36 { emit_a64_cset(0, 1) }   // != → ne
-        else if op_kind == 37 { emit_a64_cset(0, 11) }  // < → lt
-        else if op_kind == 38 { emit_a64_cset(0, 13) }  // <= → le
-        else if op_kind == 39 { emit_a64_cset(0, 12) }  // > → gt
-        else if op_kind == 40 { emit_a64_cset(0, 10) }  // >= → ge
+        else if op_kind == 37 { emit_a64_cset(0, 3) }  // < → lo (unsigned below)
+        else if op_kind == 38 { emit_a64_cset(0, 9) }  // <= → ls (unsigned below or equal)
+        else if op_kind == 39 { emit_a64_cset(0, 8) }  // > → hi (unsigned above)
+        else if op_kind == 40 { emit_a64_cset(0, 2) }  // >= → hs (unsigned above or equal)
         return
     }
 

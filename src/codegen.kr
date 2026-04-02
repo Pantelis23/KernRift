@@ -1031,10 +1031,10 @@ fn emit_compare(uint64 op_tok_kind) {
     emit_byte(0x0F)
     if op_tok_kind == 35 { emit_byte(0x94) }      // == → sete
     else if op_tok_kind == 36 { emit_byte(0x95) }  // != → setne
-    else if op_tok_kind == 37 { emit_byte(0x9C) }  // < → setl
-    else if op_tok_kind == 38 { emit_byte(0x9E) }  // <= → setle
-    else if op_tok_kind == 39 { emit_byte(0x9F) }  // > → setg
-    else if op_tok_kind == 40 { emit_byte(0x9D) }  // >= → setge
+    else if op_tok_kind == 37 { emit_byte(0x92) }  // < → setb (unsigned below)
+    else if op_tok_kind == 38 { emit_byte(0x96) }  // <= → setbe (unsigned below or equal)
+    else if op_tok_kind == 39 { emit_byte(0x97) }  // > → seta (unsigned above)
+    else if op_tok_kind == 40 { emit_byte(0x93) }  // >= → setae (unsigned above or equal)
     else { emit_byte(0x94) }
     emit_byte(0xC0)
 
