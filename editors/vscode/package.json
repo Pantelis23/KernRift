@@ -2,7 +2,7 @@
   "name": "kernrift",
   "displayName": "KernRift",
   "description": "Language support for KernRift systems language (.kr files)",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "publisher": "Pantelis23",
   "license": "MIT",
   "repository": {
@@ -12,6 +12,8 @@
   "icon": "logo.png",
   "engines": { "vscode": "^1.80.0" },
   "categories": ["Programming Languages"],
+  "activationEvents": ["onLanguage:kernrift"],
+  "main": "./out/extension.js",
   "contributes": {
     "languages": [{
       "id": "kernrift",
@@ -23,6 +25,31 @@
       "language": "kernrift",
       "scopeName": "source.kr",
       "path": "./syntaxes/kernrift.tmLanguage.json"
-    }]
+    }],
+    "configuration": {
+      "title": "KernRift",
+      "properties": {
+        "kernrift.compilerPath": {
+          "type": "string",
+          "default": "krc",
+          "description": "Path to the krc compiler binary"
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.0",
+    "vscode-languageserver": "^9.0.0",
+    "vscode-languageserver-textdocument": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.80.0",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.0.0"
+  },
+  "scripts": {
+    "build": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node && esbuild src/server.ts --bundle --outfile=out/server.js --format=cjs --platform=node",
+    "package": "npx vsce package"
   }
 }
