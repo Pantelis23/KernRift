@@ -1,6 +1,6 @@
 # Maintainer: Pantelis Christou <pantelis@kernrift.org>
 pkgname=kernrift
-pkgver=1.1.0
+pkgver=2.1.0
 pkgrel=1
 pkgdesc="Self-hosted systems language compiler for kernel development"
 arch=('x86_64' 'aarch64')

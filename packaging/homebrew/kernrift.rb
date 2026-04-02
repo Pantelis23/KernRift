@@ -4,7 +4,7 @@
 class Kernrift < Formula
   desc "Self-hosted systems language compiler for kernel development"
   homepage "https://kernrift.org"
-  version "1.1.0"
+  version "2.1.0"
   license "MIT"
 
   BASE = "https://github.com/Pantelis23/KernRift/releases/latest/download"
