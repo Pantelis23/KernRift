@@ -22,10 +22,18 @@ jobs:
       - name: Install bootstrap compiler
         run: cargo install --git https://github.com/Pantelis23/KernRift-bootstrap kernriftc --locked
 
-      - name: Build and create distribution
+      - name: Bootstrap build/krc2
         run: |
-          make build
-          make dist
+          mkdir -p build
+          cat src/lexer.kr src/ast.kr src/parser.kr src/codegen.kr \
+              src/codegen_aarch64.kr src/format_macho.kr src/format_pe.kr \
+              src/format_archive.kr src/analysis.kr src/living.kr \
+              src/runtime.kr src/main.kr > build/krc.kr
+          kernriftc --emit=hostexe build/krc.kr -o build/krc2
+          chmod +x build/krc2
+
+      - name: Create distribution
+        run: make dist
 
       - name: Build Windows binaries
         run: |
