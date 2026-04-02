@@ -1103,6 +1103,437 @@ fn gen_expr_a64(uint64 node) {
             return
         }
 
+        // Built-in: print(arg) — print string or integer to stdout
+        if tok_matches(wct, "print", 5) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            uint32 arg_kind = ast_kind(wfa)
+            if arg_kind == 31 {
+                // String literal: evaluate to get pointer in x0
+                gen_expr_a64(wfa)
+                emit_a64_store_x0(temp_slot_0)
+                // Inline strlen: x9 = ptr copy for scanning
+                emit_a64_mov(9, 0)
+                uint64 apr_loop = out_len
+                emit_a64_ldrb(10, 9, 0)
+                uint64 apr_cbz = out_len
+                emit_a64_cbz(10, 0)
+                emit_a64_add_imm(9, 9, 1)
+                uint64 apr_bk = apr_loop - out_len
+                emit_a64_b(apr_bk & 0xFFFFFFFF)
+                uint64 apr_done = out_len
+                uint64 apr_fwd = apr_done - apr_cbz
+                patch_u32(apr_cbz, 0xB4000000 | (((apr_fwd / 4) & 0x7FFFF) << 5) | 10)
+                // x9 = end, temp_slot_0 = start. len = x9 - start
+                emit_a64_load_x0(temp_slot_0)
+                emit_a64_sub(2, 9, 0)
+                emit_a64_mov(1, 0)
+                if target_os == 2 {
+                    // Save buf(x1=x19) and len(x2=x20) across GetStdHandle call
+                    emit_a64_mov(19, 1)
+                    emit_a64_mov(20, 2)
+                    emit_a64_mov_imm(0, 0xFFFFFFFFFFFFFFF5)
+                    emit_a64_win_call_iat(1)
+                    emit_a64_mov_imm(4, 0)
+                    emit_a64_mov_imm(3, 0)
+                    emit_a64_mov(2, 20)
+                    emit_a64_mov(1, 19)
+                    emit_a64_win_call_iat(2)
+                } else {
+                    emit_a64_mov_imm(0, 1)
+                    if target_os == 1 { emit_a64_syscall_nr(4) } else { emit_a64_syscall_nr(64) }
+                    emit_a64_svc()
+                }
+            } else {
+                // Integer: format and print
+                gen_expr_a64(wfa)
+                emit_a64_store_x0(temp_slot_0)
+                uint64 apr_cbz2 = out_len
+                emit_a64_cbnz(0, 0)
+
+                // Zero case: write "0"
+                emit_a64_mov_imm(9, 0x30)
+                emit_a64_strb(9, 31, a64_var_base + temp_slot_1)
+                emit_a64_add_imm(1, 31, a64_var_base + temp_slot_1)
+                emit_a64_mov_imm(2, 1)
+                if target_os == 2 {
+                    emit_a64_mov(19, 1)
+                    emit_a64_mov(20, 2)
+                    emit_a64_mov_imm(0, 0xFFFFFFFFFFFFFFF5)
+                    emit_a64_win_call_iat(1)
+                    emit_a64_mov_imm(4, 0)
+                    emit_a64_mov_imm(3, 0)
+                    emit_a64_mov(2, 20)
+                    emit_a64_mov(1, 19)
+                    emit_a64_win_call_iat(2)
+                } else {
+                    emit_a64_mov_imm(0, 1)
+                    if target_os == 1 { emit_a64_syscall_nr(4) } else { emit_a64_syscall_nr(64) }
+                    emit_a64_svc()
+                }
+                uint64 apr_b_end = out_len
+                emit_a64_b(0)
+
+                // non_zero: patch cbnz
+                uint64 apr_nz = out_len
+                uint64 apr_nzd = apr_nz - apr_cbz2
+                patch_u32(apr_cbz2, 0xB5000000 | (((apr_nzd / 4) & 0x7FFFF) << 5) | 0)
+
+                // Convert integer to decimal
+                emit_a64_load_x0(temp_slot_0)
+                emit_a64_add_imm(9, 31, a64_var_base + temp_slot_1 + 19)
+                emit_a64_mov_imm(10, 0)
+                emit_a64_mov_imm(11, 10)
+
+                uint64 apr_div = out_len
+                emit_a64_udiv(12, 0, 11)
+                emit_a64_msub(13, 12, 11, 0)
+                emit_a64_add_imm(13, 13, 0x30)
+                emit_a64_strb(13, 9, 0)
+                emit_a64(0xD1000400 | (9 << 5) | 9)
+                emit_a64_add_imm(10, 10, 1)
+                emit_a64_mov(0, 12)
+                uint64 apr_div_bk = apr_div - out_len
+                emit_a64(0xB5000000 | (((apr_div_bk / 4) & 0x7FFFF) << 5) | 0)
+
+                emit_a64_add_imm(9, 9, 1)
+                // write(1, x9=buf, x10=len)
+                emit_a64_mov(1, 9)
+                emit_a64_mov(2, 10)
+                if target_os == 2 {
+                    emit_a64_mov(19, 1)
+                    emit_a64_mov(20, 2)
+                    emit_a64_mov_imm(0, 0xFFFFFFFFFFFFFFF5)
+                    emit_a64_win_call_iat(1)
+                    emit_a64_mov_imm(4, 0)
+                    emit_a64_mov_imm(3, 0)
+                    emit_a64_mov(2, 20)
+                    emit_a64_mov(1, 19)
+                    emit_a64_win_call_iat(2)
+                } else {
+                    emit_a64_mov_imm(0, 1)
+                    if target_os == 1 { emit_a64_syscall_nr(4) } else { emit_a64_syscall_nr(64) }
+                    emit_a64_svc()
+                }
+
+                uint64 apr_end = out_len
+                uint64 apr_end_d = apr_end - apr_b_end
+                patch_u32(apr_b_end, 0x14000000 | ((apr_end_d / 4) & 0x3FFFFFF))
+            }
+            return
+        }
+
+        // Built-in: println(arg) — same as print but adds newline
+        if tok_matches(wct, "println", 7) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            uint32 arg_kind = ast_kind(wfa)
+            if arg_kind == 31 {
+                // String literal
+                gen_expr_a64(wfa)
+                emit_a64_store_x0(temp_slot_0)
+                emit_a64_mov(9, 0)
+                uint64 apn_loop = out_len
+                emit_a64_ldrb(10, 9, 0)
+                uint64 apn_cbz = out_len
+                emit_a64_cbz(10, 0)
+                emit_a64_add_imm(9, 9, 1)
+                uint64 apn_bk = apn_loop - out_len
+                emit_a64_b(apn_bk & 0xFFFFFFFF)
+                uint64 apn_done = out_len
+                uint64 apn_fwd = apn_done - apn_cbz
+                patch_u32(apn_cbz, 0xB4000000 | (((apn_fwd / 4) & 0x7FFFF) << 5) | 10)
+                emit_a64_load_x0(temp_slot_0)
+                emit_a64_sub(2, 9, 0)
+                emit_a64_mov(1, 0)
+                if target_os == 2 {
+                    emit_a64_mov(19, 1)
+                    emit_a64_mov(20, 2)
+                    emit_a64_mov_imm(0, 0xFFFFFFFFFFFFFFF5)
+                    emit_a64_win_call_iat(1)
+                    emit_a64_mov_imm(4, 0)
+                    emit_a64_mov_imm(3, 0)
+                    emit_a64_mov(2, 20)
+                    emit_a64_mov(1, 19)
+                    emit_a64_win_call_iat(2)
+                } else {
+                    emit_a64_mov_imm(0, 1)
+                    if target_os == 1 { emit_a64_syscall_nr(4) } else { emit_a64_syscall_nr(64) }
+                    emit_a64_svc()
+                }
+            } else {
+                // Integer
+                gen_expr_a64(wfa)
+                emit_a64_store_x0(temp_slot_0)
+                uint64 apn_cbz2 = out_len
+                emit_a64_cbnz(0, 0)
+
+                emit_a64_mov_imm(9, 0x30)
+                emit_a64_strb(9, 31, a64_var_base + temp_slot_1)
+                emit_a64_add_imm(1, 31, a64_var_base + temp_slot_1)
+                emit_a64_mov_imm(2, 1)
+                if target_os == 2 {
+                    emit_a64_mov(19, 1)
+                    emit_a64_mov(20, 2)
+                    emit_a64_mov_imm(0, 0xFFFFFFFFFFFFFFF5)
+                    emit_a64_win_call_iat(1)
+                    emit_a64_mov_imm(4, 0)
+                    emit_a64_mov_imm(3, 0)
+                    emit_a64_mov(2, 20)
+                    emit_a64_mov(1, 19)
+                    emit_a64_win_call_iat(2)
+                } else {
+                    emit_a64_mov_imm(0, 1)
+                    if target_os == 1 { emit_a64_syscall_nr(4) } else { emit_a64_syscall_nr(64) }
+                    emit_a64_svc()
+                }
+                uint64 apn_b_end = out_len
+                emit_a64_b(0)
+
+                uint64 apn_nz = out_len
+                uint64 apn_nzd = apn_nz - apn_cbz2
+                patch_u32(apn_cbz2, 0xB5000000 | (((apn_nzd / 4) & 0x7FFFF) << 5) | 0)
+
+                emit_a64_load_x0(temp_slot_0)
+                emit_a64_add_imm(9, 31, a64_var_base + temp_slot_1 + 19)
+                emit_a64_mov_imm(10, 0)
+                emit_a64_mov_imm(11, 10)
+
+                uint64 apn_div = out_len
+                emit_a64_udiv(12, 0, 11)
+                emit_a64_msub(13, 12, 11, 0)
+                emit_a64_add_imm(13, 13, 0x30)
+                emit_a64_strb(13, 9, 0)
+                emit_a64(0xD1000400 | (9 << 5) | 9)
+                emit_a64_add_imm(10, 10, 1)
+                emit_a64_mov(0, 12)
+                uint64 apn_div_bk = apn_div - out_len
+                emit_a64(0xB5000000 | (((apn_div_bk / 4) & 0x7FFFF) << 5) | 0)
+
+                emit_a64_add_imm(9, 9, 1)
+                emit_a64_mov(1, 9)
+                emit_a64_mov(2, 10)
+                if target_os == 2 {
+                    emit_a64_mov(19, 1)
+                    emit_a64_mov(20, 2)
+                    emit_a64_mov_imm(0, 0xFFFFFFFFFFFFFFF5)
+                    emit_a64_win_call_iat(1)
+                    emit_a64_mov_imm(4, 0)
+                    emit_a64_mov_imm(3, 0)
+                    emit_a64_mov(2, 20)
+                    emit_a64_mov(1, 19)
+                    emit_a64_win_call_iat(2)
+                } else {
+                    emit_a64_mov_imm(0, 1)
+                    if target_os == 1 { emit_a64_syscall_nr(4) } else { emit_a64_syscall_nr(64) }
+                    emit_a64_svc()
+                }
+
+                uint64 apn_end = out_len
+                uint64 apn_end_d = apn_end - apn_b_end
+                patch_u32(apn_b_end, 0x14000000 | ((apn_end_d / 4) & 0x3FFFFFF))
+            }
+
+            // Emit newline: store '\n' on stack, write 1 byte
+            emit_a64_mov_imm(9, 0x0A)
+            emit_a64_strb(9, 31, a64_var_base + temp_slot_1)
+            emit_a64_add_imm(1, 31, a64_var_base + temp_slot_1)
+            emit_a64_mov_imm(2, 1)
+            if target_os == 2 {
+                emit_a64_mov(19, 1)
+                emit_a64_mov(20, 2)
+                emit_a64_mov_imm(0, 0xFFFFFFFFFFFFFFF5)
+                emit_a64_win_call_iat(1)
+                emit_a64_mov_imm(4, 0)
+                emit_a64_mov_imm(3, 0)
+                emit_a64_mov(2, 20)
+                emit_a64_mov(1, 19)
+                emit_a64_win_call_iat(2)
+            } else {
+                emit_a64_mov_imm(0, 1)
+                if target_os == 1 { emit_a64_syscall_nr(4) } else { emit_a64_syscall_nr(64) }
+                emit_a64_svc()
+            }
+            return
+        }
+
+        // Built-in: str_len(s) → count bytes until null terminator
+        if tok_matches(wct, "str_len", 7) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr_a64(wfa)
+            // x0 = pointer. x9 = copy for scanning
+            emit_a64_mov(9, 0)
+            // loop:
+            uint64 asl_loop = out_len
+            // ldrb w10, [x9]
+            emit_a64_ldrb(10, 9, 0)
+            // cbz w10, done
+            uint64 asl_cbz = out_len
+            emit_a64_cbz(10, 0)
+            // add x9, x9, #1
+            emit_a64_add_imm(9, 9, 1)
+            // b loop
+            uint64 asl_bk = asl_loop - out_len
+            emit_a64_b(asl_bk & 0xFFFFFFFF)
+            // done: len = x9 - x0
+            uint64 asl_done = out_len
+            uint64 asl_fwd = asl_done - asl_cbz
+            patch_u32(asl_cbz, 0xB4000000 | (((asl_fwd / 4) & 0x7FFFF) << 5) | 10)
+            emit_a64_sub(0, 9, 0)
+            return
+        }
+
+        // Built-in: str_eq(a, b) → 1 if equal, 0 if not
+        if tok_matches(wct, "str_eq", 6) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 wa1 = arg1
+            gen_expr_a64(wa1)
+            emit_a64_store_x0(temp_slot_0)
+            uint32 arg2 = ast_next(wa1)
+            uint64 wa2 = arg2
+            gen_expr_a64(wa2)
+            emit_a64_store_x0(temp_slot_1)
+            // x9 = a, x10 = b
+            emit_a64_load_x0(temp_slot_0)
+            emit_a64_mov(9, 0)
+            emit_a64_load_x0(temp_slot_1)
+            emit_a64_mov(10, 0)
+            // loop:
+            uint64 ase_loop = out_len
+            // ldrb w11, [x9]
+            emit_a64_ldrb(11, 9, 0)
+            // ldrb w12, [x10]
+            emit_a64_ldrb(12, 10, 0)
+            // cmp w11, w12
+            emit_a64_cmp(11, 12)
+            // b.ne not_equal
+            uint64 ase_bne = out_len
+            emit_a64_bcond(1, 0)
+            // cbz w11, equal (both null and equal)
+            uint64 ase_cbz = out_len
+            emit_a64_cbz(11, 0)
+            // add x9, x9, #1
+            emit_a64_add_imm(9, 9, 1)
+            // add x10, x10, #1
+            emit_a64_add_imm(10, 10, 1)
+            // b loop
+            uint64 ase_bk = ase_loop - out_len
+            emit_a64_b(ase_bk & 0xFFFFFFFF)
+            // not_equal: mov x0, #0
+            uint64 ase_ne = out_len
+            uint64 ase_ne_d = ase_ne - ase_bne
+            patch_u32(ase_bne, 0x54000000 | (((ase_ne_d / 4) & 0x7FFFF) << 5) | 1)
+            emit_a64_mov_imm(0, 0)
+            // b end
+            uint64 ase_b_end = out_len
+            emit_a64_b(0)
+            // equal: mov x0, #1
+            uint64 ase_eq = out_len
+            uint64 ase_eq_d = ase_eq - ase_cbz
+            patch_u32(ase_cbz, 0xB4000000 | (((ase_eq_d / 4) & 0x7FFFF) << 5) | 11)
+            emit_a64_mov_imm(0, 1)
+            // end:
+            uint64 ase_end = out_len
+            uint64 ase_end_d = ase_end - ase_b_end
+            patch_u32(ase_b_end, 0x14000000 | ((ase_end_d / 4) & 0x3FFFFFF))
+            return
+        }
+
+        // Built-in: dealloc(ptr) — no-op (evaluate and discard)
+        if tok_matches(wct, "dealloc", 7) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr_a64(wfa)
+            return
+        }
+
+        // Built-in: memcpy(dst, src, len) → returns dst
+        if tok_matches(wct, "memcpy", 6) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 wa1 = arg1
+            gen_expr_a64(wa1)
+            emit_a64_store_x0(temp_slot_0)
+            uint32 arg2 = ast_next(wa1)
+            uint64 wa2 = arg2
+            gen_expr_a64(wa2)
+            emit_a64_store_x0(temp_slot_1)
+            uint32 arg3 = ast_next(wa2)
+            uint64 wa3 = arg3
+            gen_expr_a64(wa3)
+            // x0 = len. x9 = dst, x10 = src
+            emit_a64_mov(11, 0)
+            emit_a64_load_x0(temp_slot_0)
+            emit_a64_mov(9, 0)
+            emit_a64_load_x0(temp_slot_1)
+            emit_a64_mov(10, 0)
+            // loop: cbz x11, done
+            uint64 amc_loop = out_len
+            uint64 amc_cbz = out_len
+            emit_a64_cbz(11, 0)
+            // ldrb w12, [x10]
+            emit_a64_ldrb(12, 10, 0)
+            // strb w12, [x9]
+            emit_a64_strb(12, 9, 0)
+            // add x9, x9, #1
+            emit_a64_add_imm(9, 9, 1)
+            // add x10, x10, #1
+            emit_a64_add_imm(10, 10, 1)
+            // sub x11, x11, #1
+            emit_a64(0xD1000400 | (11 << 5) | 11)
+            // b loop
+            uint64 amc_bk = amc_loop - out_len
+            emit_a64_b(amc_bk & 0xFFFFFFFF)
+            // done:
+            uint64 amc_done = out_len
+            uint64 amc_fwd = amc_done - amc_cbz
+            patch_u32(amc_cbz, 0xB4000000 | (((amc_fwd / 4) & 0x7FFFF) << 5) | 11)
+            // Return dst in x0
+            emit_a64_load_x0(temp_slot_0)
+            return
+        }
+
+        // Built-in: memset(dst, val, len) → returns dst
+        if tok_matches(wct, "memset", 6) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 wa1 = arg1
+            gen_expr_a64(wa1)
+            emit_a64_store_x0(temp_slot_0)
+            uint32 arg2 = ast_next(wa1)
+            uint64 wa2 = arg2
+            gen_expr_a64(wa2)
+            emit_a64_store_x0(temp_slot_1)
+            uint32 arg3 = ast_next(wa2)
+            uint64 wa3 = arg3
+            gen_expr_a64(wa3)
+            // x0 = len. x9 = dst, x10 = val
+            emit_a64_mov(11, 0)
+            emit_a64_load_x0(temp_slot_0)
+            emit_a64_mov(9, 0)
+            emit_a64_load_x0(temp_slot_1)
+            emit_a64_mov(10, 0)
+            // loop: cbz x11, done
+            uint64 ams_loop = out_len
+            uint64 ams_cbz = out_len
+            emit_a64_cbz(11, 0)
+            // strb w10, [x9]
+            emit_a64_strb(10, 9, 0)
+            // add x9, x9, #1
+            emit_a64_add_imm(9, 9, 1)
+            // sub x11, x11, #1
+            emit_a64(0xD1000400 | (11 << 5) | 11)
+            // b loop
+            uint64 ams_bk = ams_loop - out_len
+            emit_a64_b(ams_bk & 0xFFFFFFFF)
+            // done:
+            uint64 ams_done = out_len
+            uint64 ams_fwd = ams_done - ams_cbz
+            patch_u32(ams_cbz, 0xB4000000 | (((ams_fwd / 4) & 0x7FFFF) << 5) | 11)
+            // Return dst in x0
+            emit_a64_load_x0(temp_slot_0)
+            return
+        }
+
         // User-defined function call
         uint32 arg = ast_child(node)
         uint64 warg = arg

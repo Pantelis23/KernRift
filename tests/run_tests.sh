@@ -31,6 +31,36 @@ run_test() {
     rm -f /tmp/krc_test_$$.kr /tmp/krc_test_$$
 }
 
+run_test_output() {
+    local name="$1"
+    local input="$2"
+    local expected_output="$3"
+    local expected_exit="${4:-0}"
+    TOTAL=$((TOTAL + 1))
+
+    printf '%s\n' "$input" > /tmp/krc_test_$$.kr
+    if $KRC /tmp/krc_test_$$.kr -o /tmp/krc_test_$$ > /dev/null 2>&1; then
+        chmod +x /tmp/krc_test_$$
+        local got_output
+        got_output=$(/tmp/krc_test_$$ 2>/dev/null)
+        local got_exit=$?
+        if [ "$got_output" = "$expected_output" ] && [ "$got_exit" = "$expected_exit" ]; then
+            PASS=$((PASS + 1))
+        else
+            if [ "$got_output" != "$expected_output" ]; then
+                echo "FAIL: $name (expected output '$expected_output', got '$got_output')"
+            else
+                echo "FAIL: $name (expected exit $expected_exit, got $got_exit)"
+            fi
+            FAIL=$((FAIL + 1))
+        fi
+    else
+        echo "FAIL: $name (compilation failed)"
+        FAIL=$((FAIL + 1))
+    fi
+    rm -f /tmp/krc_test_$$.kr /tmp/krc_test_$$
+}
+
 echo "=== KernRift Self-Hosted Compiler Test Suite ==="
 echo ""
 
@@ -284,6 +314,47 @@ fn main() {
     p.y = 32
     exit(sum(p))
 }' 42
+
+# --- Builtin: print/println ---
+run_test_output "print_string" 'fn main() { print("hello world"); exit(0) }' "hello world"
+run_test_output "print_int" 'fn main() { print(42); exit(0) }' "42"
+run_test_output "print_zero" 'fn main() { print(0); exit(0) }' "0"
+run_test_output "print_large" 'fn main() { print(123456); exit(0) }' "123456"
+run_test_output "println_string" 'fn main() { println("hello"); exit(0) }' "hello"
+run_test_output "println_int" 'fn main() { println(123); exit(0) }' "123"
+run_test_output "println_multi" 'fn main() { println("abc"); println("def"); exit(0) }' "abc
+def"
+
+# --- Builtin: str_len ---
+run_test "str_len_hello" 'fn main() { uint64 s = "hello"; exit(str_len(s)) }' 5
+run_test "str_len_empty" 'fn main() { uint64 s = ""; exit(str_len(s)) }' 0
+run_test "str_len_one" 'fn main() { uint64 s = "x"; exit(str_len(s)) }' 1
+
+# --- Builtin: str_eq ---
+run_test "str_eq_same" 'fn main() { uint64 a = "foo"; uint64 b = "foo"; exit(str_eq(a, b)) }' 1
+run_test "str_eq_diff" 'fn main() { uint64 a = "foo"; uint64 b = "bar"; exit(str_eq(a, b)) }' 0
+run_test "str_eq_prefix" 'fn main() { uint64 a = "foo"; uint64 b = "foobar"; exit(str_eq(a, b)) }' 0
+run_test "str_eq_empty" 'fn main() { uint64 a = ""; uint64 b = ""; exit(str_eq(a, b)) }' 1
+
+# --- Builtin: dealloc ---
+run_test "dealloc_noop" 'fn main() { uint64 p = alloc(64); dealloc(p); exit(0) }' 0
+
+# --- Builtin: memset ---
+run_test_output "memset_basic" 'fn main() {
+    uint64 buf = alloc(64)
+    memset(buf, 65, 5)
+    write(1, buf, 5)
+    exit(0)
+}' "AAAAA"
+
+# --- Builtin: memcpy ---
+run_test_output "memcpy_basic" 'fn main() {
+    uint64 src = "hello"
+    uint64 dst = alloc(64)
+    memcpy(dst, src, 5)
+    write(1, dst, 5)
+    exit(0)
+}' "hello"
 
 # --- Bootstrap test ---
 echo ""
