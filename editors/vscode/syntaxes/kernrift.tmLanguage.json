@@ -77,8 +77,8 @@
     },
     "annotations": {
       "patterns": [{
-        "name": "meta.annotation.kr",
-        "match": "@(export|ctx|eff|caps)\\b"
+        "name": "keyword.other.attribute.kr",
+        "match": "@(export|ctx|eff|caps)(\\([^)]*\\))?"
       }]
     },
     "functions": {
