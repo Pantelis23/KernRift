@@ -1,0 +1,38 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.singleton.1.6.0.schema.json
+
+PackageIdentifier: Pantelis23.KernRift
+PackageVersion: 1.1.0
+PackageLocale: en-US
+Publisher: Pantelis Christou
+PublisherUrl: https://github.com/Pantelis23
+PackageName: KernRift
+PackageUrl: https://kernrift.org
+License: MIT
+LicenseUrl: https://github.com/Pantelis23/KernRift/blob/main/LICENSE
+ShortDescription: Self-hosted systems language compiler for kernel development
+Description: |-
+  KernRift is a self-hosted systems programming language and compiler designed
+  for kernel development. It compiles to native x86_64 and ARM64 machine code,
+  and supports fat binary output for cross-platform distribution.
+Tags:
+  - compiler
+  - systems-programming
+  - kernel
+  - language
+Moniker: kernrift
+ReleaseNotesUrl: https://github.com/Pantelis23/KernRift/releases/tag/v1.1.0
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/Pantelis23/KernRift/releases/latest/download/krc-windows-x86_64.exe
+    InstallerSha256: PLACEHOLDER_WINDOWS_X86_64_SHA256
+    InstallerType: portable
+    Commands:
+      - krc
+  - Architecture: arm64
+    InstallerUrl: https://github.com/Pantelis23/KernRift/releases/latest/download/krc-windows-arm64.exe
+    InstallerSha256: PLACEHOLDER_WINDOWS_ARM64_SHA256
+    InstallerType: portable
+    Commands:
+      - krc
+ManifestType: singleton
+ManifestVersion: 1.6.0

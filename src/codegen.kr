@@ -2539,6 +2539,226 @@ fn gen_expr(uint64 node) {
             return
         }
 
+        // Signed comparison builtins: signed_lt, signed_gt, signed_le, signed_ge
+        if tok_matches(wct, "signed_lt", 9) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 wa1 = arg1
+            gen_expr(wa1)
+            emit_store_rax_to_stack(temp_slot_0)
+            uint32 arg2 = ast_next(wa1)
+            uint64 wa2 = arg2
+            gen_expr(wa2)
+            // rax = b, compare a < b (signed)
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1) // mov rcx, rax
+            emit_load_rax_from_stack(temp_slot_0)
+            // cmp rax, rcx
+            emit_byte(0x48); emit_byte(0x39); emit_byte(0xC8)
+            // setl al (signed less)
+            emit_byte(0x0F); emit_byte(0x9C); emit_byte(0xC0)
+            // movzx eax, al
+            emit_byte(0x0F); emit_byte(0xB6); emit_byte(0xC0)
+            return
+        }
+        if tok_matches(wct, "signed_gt", 9) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 wa1 = arg1
+            gen_expr(wa1)
+            emit_store_rax_to_stack(temp_slot_0)
+            uint32 arg2 = ast_next(wa1)
+            uint64 wa2 = arg2
+            gen_expr(wa2)
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
+            emit_load_rax_from_stack(temp_slot_0)
+            emit_byte(0x48); emit_byte(0x39); emit_byte(0xC8)
+            // setg al (signed greater)
+            emit_byte(0x0F); emit_byte(0x9F); emit_byte(0xC0)
+            emit_byte(0x0F); emit_byte(0xB6); emit_byte(0xC0)
+            return
+        }
+        if tok_matches(wct, "signed_le", 9) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 wa1 = arg1
+            gen_expr(wa1)
+            emit_store_rax_to_stack(temp_slot_0)
+            uint32 arg2 = ast_next(wa1)
+            uint64 wa2 = arg2
+            gen_expr(wa2)
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
+            emit_load_rax_from_stack(temp_slot_0)
+            emit_byte(0x48); emit_byte(0x39); emit_byte(0xC8)
+            // setle al (signed less or equal)
+            emit_byte(0x0F); emit_byte(0x9E); emit_byte(0xC0)
+            emit_byte(0x0F); emit_byte(0xB6); emit_byte(0xC0)
+            return
+        }
+        if tok_matches(wct, "signed_ge", 9) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 wa1 = arg1
+            gen_expr(wa1)
+            emit_store_rax_to_stack(temp_slot_0)
+            uint32 arg2 = ast_next(wa1)
+            uint64 wa2 = arg2
+            gen_expr(wa2)
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
+            emit_load_rax_from_stack(temp_slot_0)
+            emit_byte(0x48); emit_byte(0x39); emit_byte(0xC8)
+            // setge al (signed greater or equal)
+            emit_byte(0x0F); emit_byte(0x9D); emit_byte(0xC0)
+            emit_byte(0x0F); emit_byte(0xB6); emit_byte(0xC0)
+            return
+        }
+
+        // Bitfield operation builtins
+        // bit_get(val, bit) — (val >> bit) & 1
+        if tok_matches(wct, "bit_get", 7) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 wa1 = arg1
+            gen_expr(wa1)
+            emit_store_rax_to_stack(temp_slot_0)
+            uint32 arg2 = ast_next(wa1)
+            uint64 wa2 = arg2
+            gen_expr(wa2)
+            // rax = bit position, move to rcx for shift
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1) // mov rcx, rax
+            emit_load_rax_from_stack(temp_slot_0)
+            // shr rax, cl
+            emit_byte(0x48); emit_byte(0xD3); emit_byte(0xE8)
+            // and rax, 1
+            emit_byte(0x48); emit_byte(0x83); emit_byte(0xE0); emit_byte(0x01)
+            return
+        }
+        // bit_set(val, bit) — val | (1 << bit)
+        if tok_matches(wct, "bit_set", 7) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 wa1 = arg1
+            gen_expr(wa1)
+            emit_store_rax_to_stack(temp_slot_0)
+            uint32 arg2 = ast_next(wa1)
+            uint64 wa2 = arg2
+            gen_expr(wa2)
+            // rax = bit, move to rcx
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1) // mov rcx, rax
+            // mov rax, 1
+            emit_mov_rax_imm(1)
+            // shl rax, cl
+            emit_byte(0x48); emit_byte(0xD3); emit_byte(0xE0)
+            // or rax, [temp_slot_0]
+            emit_store_rax_to_stack(temp_slot_1)
+            emit_load_rax_from_stack(temp_slot_0)
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1) // mov rcx, rax
+            emit_load_rax_from_stack(temp_slot_1)
+            // or rax, rcx
+            emit_byte(0x48); emit_byte(0x09); emit_byte(0xC8)
+            return
+        }
+        // bit_clear(val, bit) — val & ~(1 << bit)
+        if tok_matches(wct, "bit_clear", 9) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 wa1 = arg1
+            gen_expr(wa1)
+            emit_store_rax_to_stack(temp_slot_0)
+            uint32 arg2 = ast_next(wa1)
+            uint64 wa2 = arg2
+            gen_expr(wa2)
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1) // mov rcx, rax
+            emit_mov_rax_imm(1)
+            // shl rax, cl
+            emit_byte(0x48); emit_byte(0xD3); emit_byte(0xE0)
+            // not rax
+            emit_byte(0x48); emit_byte(0xF7); emit_byte(0xD0)
+            // and rax, [temp_slot_0]
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1) // mov rcx, rax
+            emit_load_rax_from_stack(temp_slot_0)
+            // and rax, rcx
+            emit_byte(0x48); emit_byte(0x21); emit_byte(0xC8)
+            return
+        }
+        // bit_range(val, start, width) — (val >> start) & ((1 << width) - 1)
+        if tok_matches(wct, "bit_range", 9) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 wa1 = arg1
+            gen_expr(wa1)
+            emit_store_rax_to_stack(temp_slot_0) // val
+            uint32 arg2 = ast_next(wa1)
+            uint64 wa2 = arg2
+            gen_expr(wa2)
+            emit_store_rax_to_stack(temp_slot_1) // start
+            uint32 arg3 = ast_next(wa2)
+            uint64 wa3 = arg3
+            gen_expr(wa3)
+            // rax = width, compute mask = (1 << width) - 1
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1) // mov rcx, rax (width)
+            emit_mov_rax_imm(1)
+            emit_byte(0x48); emit_byte(0xD3); emit_byte(0xE0) // shl rax, cl
+            emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC8) // dec rax
+            emit_store_rax_to_stack(temp_slot_1 + 8) // save mask (borrow extra slot)
+            // Load val, shift right by start
+            emit_load_rax_from_stack(temp_slot_1) // start
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1) // mov rcx, rax
+            emit_load_rax_from_stack(temp_slot_0) // val
+            emit_byte(0x48); emit_byte(0xD3); emit_byte(0xE8) // shr rax, cl
+            // and with mask
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1) // mov rcx, rax
+            emit_load_rax_from_stack(temp_slot_1 + 8) // mask
+            emit_byte(0x48); emit_byte(0x21); emit_byte(0xC8) // and rax, rcx
+            return
+        }
+        // bit_insert(val, start, width, bits) — (val & ~(mask << start)) | ((bits & mask) << start)
+        if tok_matches(wct, "bit_insert", 10) != 0 {
+            // Allocate extra temps
+            uint64 bi_extra = var_count * 8
+            var_count = var_count + 4
+            var_frame_size = var_count * 8
+            uint64 birem = var_frame_size & 15
+            if birem != 0 { var_frame_size = var_frame_size + 16 - birem }
+            uint32 arg1 = ast_child(node)
+            uint64 wa1 = arg1
+            gen_expr(wa1)
+            emit_store_rax_to_stack(bi_extra) // slot0 = val
+            uint32 arg2 = ast_next(wa1)
+            uint64 wa2 = arg2
+            gen_expr(wa2)
+            emit_store_rax_to_stack(bi_extra + 8) // slot1 = start
+            uint32 arg3 = ast_next(wa2)
+            uint64 wa3 = arg3
+            gen_expr(wa3)
+            emit_store_rax_to_stack(bi_extra + 16) // slot2 = width
+            uint32 arg4 = ast_next(wa3)
+            uint64 wa4 = arg4
+            gen_expr(wa4)
+            emit_store_rax_to_stack(bi_extra + 24) // slot3 = bits
+            // Compute mask = (1 << width) - 1
+            emit_load_rax_from_stack(bi_extra + 16) // width
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1) // mov rcx, rax
+            emit_mov_rax_imm(1)
+            emit_byte(0x48); emit_byte(0xD3); emit_byte(0xE0) // shl rax, cl
+            emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC8) // dec rax → mask
+            emit_store_rax_to_stack(bi_extra + 16) // reuse slot2 for mask
+            // Compute (bits & mask) << start
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1) // mov rcx, rax (mask)
+            emit_load_rax_from_stack(bi_extra + 24) // bits
+            emit_byte(0x48); emit_byte(0x21); emit_byte(0xC8) // and rax, rcx → masked bits
+            emit_store_rax_to_stack(bi_extra + 24) // save masked bits
+            emit_load_rax_from_stack(bi_extra + 8) // start
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1) // mov rcx, rax (start)
+            emit_load_rax_from_stack(bi_extra + 24) // masked bits
+            emit_byte(0x48); emit_byte(0xD3); emit_byte(0xE0) // shl rax, cl → shifted bits
+            emit_store_rax_to_stack(bi_extra + 24) // save shifted bits
+            // Compute ~(mask << start)
+            emit_load_rax_from_stack(bi_extra + 16) // mask
+            emit_byte(0x48); emit_byte(0xD3); emit_byte(0xE0) // shl rax, cl (rcx still = start)
+            emit_byte(0x48); emit_byte(0xF7); emit_byte(0xD0) // not rax → ~(mask << start)
+            // and with val: val & ~(mask << start)
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1) // mov rcx, rax
+            emit_load_rax_from_stack(bi_extra) // val
+            emit_byte(0x48); emit_byte(0x21); emit_byte(0xC8) // and rax, rcx → cleared val
+            // or with shifted bits
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1) // mov rcx, rax
+            emit_load_rax_from_stack(bi_extra + 24) // shifted bits
+            emit_byte(0x48); emit_byte(0x09); emit_byte(0xC8) // or rax, rcx
+            return
+        }
+
         // User-defined function call
         // Evaluate args directly into registers (avoids push/pop clobbering [rsp-8])
         uint32 arg = ast_child(node)
@@ -2642,6 +2862,195 @@ fn gen_expr(uint64 node) {
 
         return
     }
+}
+
+// Match asm instruction text: compare src bytes at offset against a keyword
+fn asm_match(uint64 src, uint64 off, uint64 kw, uint64 kwlen) -> uint64 {
+    uint64 i = 0
+    while i < kwlen {
+        uint64 sa = src + off + i
+        uint64 sc = 0
+        unsafe { *(sa as uint8) -> sc }
+        uint64 ka = kw + i
+        uint64 kc = 0
+        unsafe { *(ka as uint8) -> kc }
+        if sc != kc { return 0 }
+        i = i + 1
+    }
+    return 1
+}
+
+// Parse a hex byte from two ASCII chars at src+off. Returns byte value.
+fn asm_parse_hex_byte(uint64 src, uint64 off) -> uint64 {
+    uint64 a1 = src + off
+    uint64 c1 = 0
+    unsafe { *(a1 as uint8) -> c1 }
+    uint64 a2 = src + off + 1
+    uint64 c2 = 0
+    unsafe { *(a2 as uint8) -> c2 }
+    uint64 hi = 0
+    if c1 >= 48 && c1 <= 57 { hi = c1 - 48 }
+    if c1 >= 97 && c1 <= 102 { hi = c1 - 87 }
+    if c1 >= 65 && c1 <= 70 { hi = c1 - 55 }
+    uint64 lo = 0
+    if c2 >= 48 && c2 <= 57 { lo = c2 - 48 }
+    if c2 >= 97 && c2 <= 102 { lo = c2 - 87 }
+    if c2 >= 65 && c2 <= 70 { lo = c2 - 55 }
+    return hi * 16 + lo
+}
+
+// Emit x86_64 assembly from a string literal token
+fn asm_emit_x86(uint64 str_tok) {
+    // Get string content (skip opening quote)
+    uint64 tstart = tok_text_start(str_tok)
+    uint64 tlen = tok_text_len(str_tok)
+    // String token includes quotes: "content"
+    uint64 sptr = cg_source + tstart + 1
+    uint64 slen = tlen - 2
+    if slen == 0 { return }
+
+    // Check for raw hex bytes: "0x0F 0x01 ..."
+    uint64 fc = 0
+    unsafe { *(sptr as uint8) -> fc }
+    if fc == 48 && slen >= 4 {
+        uint64 sc = 0
+        uint64 sptr1 = sptr + 1
+        unsafe { *(sptr1 as uint8) -> sc }
+        if sc == 120 {
+            // Parse hex bytes
+            uint64 hp = 0
+            while hp < slen {
+                uint64 hc = 0
+                uint64 haddr = sptr + hp
+                unsafe { *(haddr as uint8) -> hc }
+                if hc == 48 {
+                    uint64 haddr2 = sptr + hp + 1
+                    uint64 hc2 = 0
+                    unsafe { *(haddr2 as uint8) -> hc2 }
+                    if hc2 == 120 {
+                        uint64 bv = asm_parse_hex_byte(sptr, hp + 2)
+                        uint8 bv8 = bv
+                        emit_byte(bv8)
+                        hp = hp + 4
+                    } else {
+                        hp = hp + 1
+                    }
+                } else {
+                    hp = hp + 1
+                }
+            }
+            return
+        }
+    }
+
+    // Simple x86_64 instructions
+    if asm_match(sptr, 0, "nop", 3) != 0 && slen == 3 { emit_byte(0x90); return }
+    if asm_match(sptr, 0, "ret", 3) != 0 && slen == 3 { emit_byte(0xC3); return }
+    if asm_match(sptr, 0, "hlt", 3) != 0 && slen == 3 { emit_byte(0xF4); return }
+    if asm_match(sptr, 0, "cli", 3) != 0 && slen == 3 { emit_byte(0xFA); return }
+    if asm_match(sptr, 0, "sti", 3) != 0 && slen == 3 { emit_byte(0xFB); return }
+    if asm_match(sptr, 0, "int3", 4) != 0 && slen == 4 { emit_byte(0xCC); return }
+    if asm_match(sptr, 0, "cpuid", 5) != 0 && slen == 5 { emit_byte(0x0F); emit_byte(0xA2); return }
+    if asm_match(sptr, 0, "rdmsr", 5) != 0 && slen == 5 { emit_byte(0x0F); emit_byte(0x32); return }
+    if asm_match(sptr, 0, "wrmsr", 5) != 0 && slen == 5 { emit_byte(0x0F); emit_byte(0x30); return }
+    if asm_match(sptr, 0, "iretq", 5) != 0 && slen == 5 { emit_byte(0x48); emit_byte(0xCF); return }
+    if asm_match(sptr, 0, "syscall", 7) != 0 && slen == 7 { emit_byte(0x0F); emit_byte(0x05); return }
+    if asm_match(sptr, 0, "pushfq", 6) != 0 && slen == 6 { emit_byte(0x9C); return }
+    if asm_match(sptr, 0, "popfq", 5) != 0 && slen == 5 { emit_byte(0x9D); return }
+    if asm_match(sptr, 0, "cld", 3) != 0 && slen == 3 { emit_byte(0xFC); return }
+    if asm_match(sptr, 0, "std", 3) != 0 && slen == 3 { emit_byte(0xFD); return }
+    // I/O instructions
+    if asm_match(sptr, 0, "in al, dx", 9) != 0 { emit_byte(0xEC); return }
+    if asm_match(sptr, 0, "in ax, dx", 9) != 0 { emit_byte(0x66); emit_byte(0xED); return }
+    if asm_match(sptr, 0, "in eax, dx", 10) != 0 { emit_byte(0xED); return }
+    if asm_match(sptr, 0, "out dx, al", 10) != 0 { emit_byte(0xEE); return }
+    if asm_match(sptr, 0, "out dx, ax", 10) != 0 { emit_byte(0x66); emit_byte(0xEF); return }
+    if asm_match(sptr, 0, "out dx, eax", 11) != 0 { emit_byte(0xEF); return }
+    if asm_match(sptr, 0, "inb", 3) != 0 && slen == 3 { emit_byte(0xEC); return }
+    if asm_match(sptr, 0, "outb", 4) != 0 && slen == 4 { emit_byte(0xEE); return }
+    if asm_match(sptr, 0, "inw", 3) != 0 && slen == 3 { emit_byte(0x66); emit_byte(0xED); return }
+    if asm_match(sptr, 0, "outw", 4) != 0 && slen == 4 { emit_byte(0x66); emit_byte(0xEF); return }
+    if asm_match(sptr, 0, "ind", 3) != 0 && slen == 3 { emit_byte(0xED); return }
+    if asm_match(sptr, 0, "outd", 4) != 0 && slen == 4 { emit_byte(0xEF); return }
+    // Control register moves
+    if asm_match(sptr, 0, "mov cr0, rax", 12) != 0 { emit_byte(0x0F); emit_byte(0x22); emit_byte(0xC0); return }
+    if asm_match(sptr, 0, "mov cr3, rax", 12) != 0 { emit_byte(0x0F); emit_byte(0x22); emit_byte(0xD8); return }
+    if asm_match(sptr, 0, "mov cr4, rax", 12) != 0 { emit_byte(0x0F); emit_byte(0x22); emit_byte(0xE0); return }
+    if asm_match(sptr, 0, "mov rax, cr0", 12) != 0 { emit_byte(0x0F); emit_byte(0x20); emit_byte(0xC0); return }
+    if asm_match(sptr, 0, "mov rax, cr3", 12) != 0 { emit_byte(0x0F); emit_byte(0x20); emit_byte(0xD8); return }
+    if asm_match(sptr, 0, "mov rax, cr4", 12) != 0 { emit_byte(0x0F); emit_byte(0x20); emit_byte(0xE0); return }
+    // Privileged instructions
+    if asm_match(sptr, 0, "lgdt [rax]", 10) != 0 { emit_byte(0x0F); emit_byte(0x01); emit_byte(0x10); return }
+    if asm_match(sptr, 0, "lidt [rax]", 10) != 0 { emit_byte(0x0F); emit_byte(0x01); emit_byte(0x18); return }
+    if asm_match(sptr, 0, "invlpg [rax]", 12) != 0 { emit_byte(0x0F); emit_byte(0x01); emit_byte(0x38); return }
+    if asm_match(sptr, 0, "ltr ax", 6) != 0 { emit_byte(0x0F); emit_byte(0x00); emit_byte(0xD8); return }
+    if asm_match(sptr, 0, "swapgs", 6) != 0 && slen == 6 { emit_byte(0x0F); emit_byte(0x01); emit_byte(0xF8); return }
+    // Unrecognized — skip silently (no error to allow forward compat)
+}
+
+// Emit ARM64 assembly from a string literal token
+fn asm_emit_a64(uint64 str_tok) {
+    uint64 tstart = tok_text_start(str_tok)
+    uint64 tlen = tok_text_len(str_tok)
+    uint64 sptr = cg_source + tstart + 1
+    uint64 slen = tlen - 2
+    if slen == 0 { return }
+
+    // Check for raw hex word: "0xXXXXXXXX"
+    uint64 fc = 0
+    unsafe { *(sptr as uint8) -> fc }
+    if fc == 48 && slen >= 4 {
+        uint64 sc = 0
+        uint64 sptr1 = sptr + 1
+        unsafe { *(sptr1 as uint8) -> sc }
+        if sc == 120 {
+            // Parse hex word (4 bytes LE)
+            uint64 val = 0
+            uint64 hi = 2
+            while hi < slen {
+                uint64 haddr = sptr + hi
+                uint64 hc = 0
+                unsafe { *(haddr as uint8) -> hc }
+                if hc == 32 { hi = hi + 1; continue }
+                uint64 d = 0
+                if hc >= 48 && hc <= 57 { d = hc - 48 }
+                if hc >= 97 && hc <= 102 { d = hc - 87 }
+                if hc >= 65 && hc <= 70 { d = hc - 55 }
+                val = val * 16 + d
+                hi = hi + 1
+            }
+            emit_a64(val)
+            return
+        }
+    }
+
+    // Simple ARM64 instructions
+    if asm_match(sptr, 0, "nop", 3) != 0 && slen == 3 { emit_a64(0xD503201F); return }
+    if asm_match(sptr, 0, "wfi", 3) != 0 && slen == 3 { emit_a64(0xD503207F); return }
+    if asm_match(sptr, 0, "wfe", 3) != 0 && slen == 3 { emit_a64(0xD503205F); return }
+    if asm_match(sptr, 0, "sev", 3) != 0 && slen == 3 { emit_a64(0xD503209F); return }
+    if asm_match(sptr, 0, "isb", 3) != 0 && slen == 3 { emit_a64(0xD5033FDF); return }
+    if asm_match(sptr, 0, "dsb sy", 6) != 0 { emit_a64(0xD5033F9F); return }
+    if asm_match(sptr, 0, "dmb sy", 6) != 0 { emit_a64(0xD5033FBF); return }
+    if asm_match(sptr, 0, "dsb ish", 7) != 0 { emit_a64(0xD5033B9F); return }
+    if asm_match(sptr, 0, "dmb ish", 7) != 0 { emit_a64(0xD5033BBF); return }
+    if asm_match(sptr, 0, "ret", 3) != 0 && slen == 3 { emit_a64(0xD65F03C0); return }
+    if asm_match(sptr, 0, "eret", 4) != 0 && slen == 4 { emit_a64(0xD69F03E0); return }
+    // Supervisor call: svc #N (16-bit imm)
+    if asm_match(sptr, 0, "svc #", 5) != 0 {
+        uint64 imm = 0
+        uint64 si = 5
+        while si < slen {
+            uint64 saddr = sptr + si
+            uint64 sch = 0
+            unsafe { *(saddr as uint8) -> sch }
+            if sch >= 48 && sch <= 57 { imm = imm * 10 + sch - 48 }
+            si = si + 1
+        }
+        emit_a64(0xD4000001 | (imm << 5))
+        return
+    }
+    // Unrecognized — skip silently
 }
 
 // Generate code for a statement
@@ -3143,6 +3552,25 @@ fn gen_stmt(uint64 node) {
         return
     }
 
+    // Inline assembly: asm("instruction") or asm { "instr1"; "instr2"; }
+    if kind == 43 {
+        uint32 single_tok = ast_data1(node)
+        uint64 ws = single_tok
+        if ws != 0 {
+            asm_emit_x86(ws)
+        }
+        uint32 child_str = ast_child(node)
+        uint64 wcs = child_str
+        while wcs != 0 {
+            uint32 stk = ast_data1(wcs)
+            uint64 wstk = stk
+            asm_emit_x86(wstk)
+            uint32 nxt = ast_next(wcs)
+            wcs = nxt
+        }
+        return
+    }
+
     // Expression statement (e.g. function call)
     if kind == 16 {
         uint32 expr_child = ast_child(node)
@@ -3169,6 +3597,11 @@ fn gen_block(uint64 block_node) {
 fn gen_function(uint64 fn_node) {
     uint32 name_tok = ast_data1(fn_node)
 
+    // Check annotation flags: bit 0 = noreturn, bit 1 = naked
+    uint32 ann_flags = ast_data4(fn_node)
+    uint64 is_naked = ann_flags & 2
+    uint64 is_noreturn = ann_flags & 1
+
     // Reset variable table for this function
     var_reset()
 
@@ -3185,8 +3618,9 @@ fn gen_function(uint64 fn_node) {
     fn_register(name_tok, out_len)
 
     // For main function: emit _start trampoline that stores argc/argv to statics
+    // Skip in freestanding mode
     uint64 wnt = name_tok
-    if tok_matches(wnt, "main", 4) != 0 && target_os == 2 {
+    if tok_matches(wnt, "main", 4) != 0 && target_os == 2 && freestanding == 0 {
         // Windows: call GetCommandLineA, store raw pointer in cli_argv static.
         // Set cli_argc to 0 as a signal for main() to parse later.
         // The actual parsing is done in KernRift code (win_init_args in main.kr).
@@ -3205,7 +3639,7 @@ fn gen_function(uint64 fn_node) {
             emit_static_store(argc_off_w)
         }
     }
-    if tok_matches(wnt, "main", 4) != 0 && target_os == 0 {
+    if tok_matches(wnt, "main", 4) != 0 && target_os == 0 && freestanding == 0 {
         // mov rax, [rsp]       ; rax = argc
         emit_byte(0x48); emit_byte(0x8B); emit_byte(0x04); emit_byte(0x24)
         // Store to cli_argc static
@@ -3237,15 +3671,18 @@ fn gen_function(uint64 fn_node) {
     // Pre-scan body to count local variables
     // (For simplicity, emit a placeholder frame setup and patch later)
     uint64 prologue_start = out_len
-
-    // push rbx
-    emit_byte(0x53)
-    // sub rsp, FRAME_SIZE (placeholder)
-    emit_byte(0x48)
-    emit_byte(0x81)
-    emit_byte(0xEC)
     uint64 frame_patch = out_len
-    emit_u32_le(0)
+
+    if is_naked == 0 {
+        // push rbx
+        emit_byte(0x53)
+        // sub rsp, FRAME_SIZE (placeholder)
+        emit_byte(0x48)
+        emit_byte(0x81)
+        emit_byte(0xEC)
+        frame_patch = out_len
+        emit_u32_le(0)
+    }
 
     // Spill params to stack
     // SysV:    param 0=rdi, 1=rsi, 2=rdx, 3=rcx, 4=r8, 5=r9
@@ -3344,9 +3781,28 @@ fn gen_function(uint64 fn_node) {
         ri = ri + 1
     }
 
+    // For @naked functions, skip epilogue entirely
+    if is_naked != 0 {
+        return
+    }
+
+    // Stack size warning
+    if var_frame_size > 4096 {
+        write(2, "warning: large stack frame (", 28)
+        uint8[32] fsb
+        uint64 fsl = fmt_uint(fsb, var_frame_size)
+        write(2, fsb, fsl)
+        write(2, " bytes) in function '", 21)
+        uint64 fns = tok_text_start(name_tok)
+        uint64 fnl = tok_text_len(name_tok)
+        write(2, cg_source + fns, fnl)
+        write(2, "'\n", 2)
+    }
+
     // For main: auto-insert exit(0) so programs don't segfault on return
+    // Skip when in freestanding mode
     uint64 wnt_ep = name_tok
-    if tok_matches(wnt_ep, "main", 4) != 0 {
+    if tok_matches(wnt_ep, "main", 4) != 0 && freestanding == 0 {
         // mov edi, 0 (exit code)
         emit_mov_rax_imm(0)
         if target_os == 2 {

@@ -356,6 +356,126 @@ run_test_output "memcpy_basic" 'fn main() {
     exit(0)
 }' "hello"
 
+# --- Kernel Features ---
+
+# Inline assembly: nop (should compile and run without crashing)
+run_test "asm_nop" 'fn main() { asm("nop"); exit(42) }' 42
+
+# Inline assembly: multi-line block
+run_test "asm_block" 'fn main() { asm { "nop"; "nop"; "nop" }; exit(7) }' 7
+
+# Inline assembly: raw hex bytes (x86: 0x90 = nop)
+run_test "asm_hex" 'fn main() { asm("0x90"); exit(5) }' 5
+
+# Signed comparisons: signed_lt with negative-like values
+run_test "signed_lt_true" 'fn main() {
+    uint64 a = 0xFFFFFFFFFFFFFFFF
+    uint64 b = 1
+    uint64 r = signed_lt(a, b)
+    exit(r)
+}' 1
+
+run_test "signed_lt_false" 'fn main() {
+    uint64 a = 5
+    uint64 b = 3
+    uint64 r = signed_lt(a, b)
+    exit(r)
+}' 0
+
+run_test "signed_gt_true" 'fn main() {
+    uint64 a = 1
+    uint64 b = 0xFFFFFFFFFFFFFFFF
+    uint64 r = signed_gt(a, b)
+    exit(r)
+}' 1
+
+run_test "signed_le_true" 'fn main() {
+    uint64 a = 5
+    uint64 b = 5
+    uint64 r = signed_le(a, b)
+    exit(r)
+}' 1
+
+run_test "signed_ge_true" 'fn main() {
+    uint64 a = 0xFFFFFFFFFFFFFFFF
+    uint64 b = 0xFFFFFFFFFFFFFFFF
+    uint64 r = signed_ge(a, b)
+    exit(r)
+}' 1
+
+# Bitfield operations
+run_test "bit_get_1" 'fn main() {
+    uint64 v = 0xFF
+    uint64 r = bit_get(v, 3)
+    exit(r)
+}' 1
+
+run_test "bit_get_0" 'fn main() {
+    uint64 v = 0xF0
+    uint64 r = bit_get(v, 2)
+    exit(r)
+}' 0
+
+run_test "bit_set" 'fn main() {
+    uint64 v = 0
+    v = bit_set(v, 3)
+    exit(v)
+}' 8
+
+run_test "bit_clear" 'fn main() {
+    uint64 v = 0xFF
+    v = bit_clear(v, 3)
+    exit(v & 0xFF)
+}' 247
+
+run_test "bit_range" 'fn main() {
+    uint64 v = 0xAB
+    uint64 r = bit_range(v, 4, 4)
+    exit(r)
+}' 10
+
+run_test "bit_insert" 'fn main() {
+    uint64 v = 0x00
+    v = bit_insert(v, 4, 4, 0xF)
+    exit(v)
+}' 240
+
+# @naked function (no prologue/epilogue, just asm)
+run_test "naked_fn" '@naked fn raw_exit() {
+    asm("0x48 0xC7 0xC7 0x2A 0x00 0x00 0x00")
+    asm("0x48 0xC7 0xC0 0x3C 0x00 0x00 0x00")
+    asm("0x0F 0x05")
+}
+fn main() { raw_exit() }' 42
+
+# @noreturn annotation (should compile fine)
+run_test "noreturn_fn" '@noreturn fn die() { exit(99) }
+fn main() { die() }' 99
+
+# volatile block (same as unsafe)
+run_test "volatile_block" 'fn main() {
+    uint64 buf = alloc(64)
+    uint64 val = 0
+    unsafe { *(buf as uint64) = 42 }
+    volatile { *(buf as uint64) -> val }
+    exit(val)
+}' 42
+
+# @packed struct annotation (should parse without error)
+run_test "packed_struct" '@packed struct Reg { uint8 a; uint32 b }
+fn main() {
+    uint8[16] buf
+    exit(0)
+}' 0
+
+# @section annotation (should parse without error)
+run_test "section_attr" '@section(".text.init") fn early_init() { exit(0) }
+fn main() { early_init() }' 0
+
+# --freestanding flag (should compile, main has no auto-exit, so explicit exit needed)
+# Can't easily test this without a linker, just test that it parses
+# run_test "freestanding" handled by CLI flag test below
+
 # --- Bootstrap test ---
 echo ""
 echo "--- Bootstrap test ---"

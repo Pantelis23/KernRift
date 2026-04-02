@@ -5,6 +5,17 @@ All notable changes to `kernriftc` are documented in this file.
 ## Unreleased
 
 ### Added
+- **Kernel-first features**: 10 features for bare-metal and kernel development:
+  - **Inline assembly**: `asm("nop")` and `asm { "cli"; "sti" }` with x86_64 privileged instructions (cr0/cr3/cr4, lgdt, lidt, invlpg, cpuid, wrmsr, rdmsr, in/out, swapgs, iretq) and ARM64 system instructions (wfi, wfe, sev, isb, dsb, dmb, svc, eret). Raw hex byte emission for arbitrary encodings.
+  - **@naked functions**: No prologue/epilogue — pure assembly bodies for ISR entry points.
+  - **@noreturn functions**: Marks diverging functions (epilogue omitted).
+  - **@packed structs**: No alignment padding between fields.
+  - **@section attribute**: Place functions in specific linker sections (stored for future linker script support).
+  - **Signed comparisons**: `signed_lt()`, `signed_gt()`, `signed_le()`, `signed_ge()` builtins using x86 setl/setg and ARM64 CSET LT/GT.
+  - **Bitfield operations**: `bit_get()`, `bit_set()`, `bit_clear()`, `bit_range()`, `bit_insert()` builtins for hardware register manipulation.
+  - **Volatile blocks**: `volatile { ... }` as explicit MMIO intent (same codegen as unsafe, forward-compatible with future optimizer).
+  - **Stack size warnings**: Compile-time warning when a function's stack frame exceeds 4096 bytes.
+  - **Freestanding mode**: `--freestanding` flag disables _start trampoline, auto-exit, and OS-specific syscall wrappers.
 - **Self-contained toolchain**: `kernriftc` now produces native executables for all major platforms without any external tools.
   - Native ELF executable writer (`--emit=elfexe`) — no longer needs `ld`.
   - Native `.a` archive writer (`--emit=staticlib`) — no longer needs `ar`.

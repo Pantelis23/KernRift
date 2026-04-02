@@ -1,6 +1,14 @@
 #!/bin/sh
 # KernRift Installer — download and install krc + kr from GitHub releases
 # Usage: curl -sSf https://raw.githubusercontent.com/Pantelis23/KernRift/main/install.sh | sh
+#
+# Alternative installation methods:
+#   Homebrew (macOS/Linux):  brew install kernrift
+#   Scoop (Windows):         scoop bucket add kernrift https://github.com/Pantelis23/KernRift && scoop install kernrift
+#   Winget (Windows):        winget install Pantelis23.KernRift
+#   AUR (Arch Linux):        yay -S kernrift
+#   PowerShell (Windows):    irm https://raw.githubusercontent.com/Pantelis23/KernRift/main/install.ps1 | iex
+#
 set -e
 
 REPO="Pantelis23/KernRift"

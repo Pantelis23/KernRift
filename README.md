@@ -8,6 +8,7 @@ A self-hosted systems language compiler for kernel-first development. KernRift c
 - **Dual architecture** — x86_64 and AArch64 from a single source
 - **Fat binaries** — default output is KrboFat (both architectures, LZ4-compressed)
 - **Zero dependencies** — static executables, no libc, no linker
+- **Kernel-first** — inline assembly, `@naked` functions, `@packed` structs, signed comparisons, volatile memory, bitfield ops, `--freestanding` mode
 - **Kernel safety** — context checks, effect tracking, lock graphs, capabilities
 - **Living compiler** — pattern detection, fitness scoring, auto-fix suggestions
 - **Cross-compilation** — compile for any target from any host
@@ -42,7 +43,7 @@ krc lc program.kr
 
 | Platform | CPU | Time |
 |----------|-----|------|
-| Linux x86_64 | AMD Ryzen 9 7900X | 20ms |
+| Linux x86_64 | AMD Ryzen 9 7900X | 24ms |
 | Windows 11 x86_64 | Intel Core Ultra 9 275HX | 44ms |
 | Linux ARM64 | ARM Cortex-A72 (Pi 400) | 192ms |
 
@@ -53,7 +54,31 @@ krc lc program.kr
 curl -sSf https://raw.githubusercontent.com/Pantelis23/KernRift/main/install.sh | sh
 ```
 
-This installs `krc` and `kr` to `~/.local/bin/` and the standard library to `~/.local/share/kernrift/`.
+**Homebrew** (macOS / Linux):
+```bash
+brew install kernrift
+```
+
+**Scoop** (Windows):
+```powershell
+scoop bucket add kernrift https://github.com/Pantelis23/KernRift
+scoop install kernrift
+```
+
+**Winget** (Windows):
+```powershell
+winget install Pantelis23.KernRift
+```
+
+**AUR** (Arch Linux):
+```bash
+yay -S kernrift
+```
+
+**Windows** (PowerShell):
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1
+```
 
 **From source** (requires [bootstrap compiler](https://github.com/Pantelis23/KernRift-bootstrap)):
 ```bash
@@ -61,10 +86,7 @@ cargo install --git https://github.com/Pantelis23/KernRift-bootstrap kernriftc
 make build && make install
 ```
 
-**Windows:**
-```powershell
-powershell -ExecutionPolicy Bypass -File install.ps1
-```
+This installs `krc` and `kr` to `~/.local/bin/` and the standard library to `~/.local/share/kernrift/`.
 
 ## Language
 
@@ -106,7 +128,35 @@ fn main() {
 }
 ```
 
-Types: `uint8/16/32/64`, `int8/16/32/64`, `bool` (`true`/`false`), `char`, structs, enums, arrays. Control: `if/else`, `while`, `for..in`, `break/continue`, `match`. Functions up to 8 args with method syntax (`fn Struct.method`). Imports (`import "file.kr"`) with recursive dependency resolution and stdlib search paths, type aliases (`type Size = uint64`), nested struct access (`a.b.c`). Unsafe pointer access for kernel memory operations.
+Types: `uint8/16/32/64`, `int8/16/32/64`, `bool` (`true`/`false`), `char`, structs, enums, arrays. Control: `if/else`, `while`, `for..in`, `break/continue`, `match`. Functions up to 8 args with method syntax (`fn Struct.method`). Imports (`import "file.kr"`) with recursive dependency resolution and stdlib search paths, type aliases (`type Size = uint64`), nested struct access (`a.b.c`). Unsafe and volatile pointer access for kernel memory operations.
+
+## Kernel Features
+
+KernRift is designed for kernel and driver development:
+
+```kr
+// Inline assembly — emit raw machine instructions
+@naked fn isr_entry() {
+    asm { "cli"; "0x48 0x89 0xE5" }   // raw hex bytes also supported
+    asm("iretq")
+}
+
+// Signed comparisons for kernel arithmetic
+if signed_lt(offset, 0) { panic() }
+
+// Bitfield operations for hardware registers
+uint64 flags = bit_range(cr0, 0, 16)    // extract bits 0-15
+flags = bit_set(flags, 31)               // set bit 31
+cr0 = bit_insert(cr0, 0, 16, flags)     // insert back
+
+// Volatile memory access (same as unsafe, explicit intent)
+volatile { *(mmio_addr as uint32) -> status }
+
+// Freestanding mode — no _start, no auto-exit, no syscalls
+// krc --freestanding kernel.kr -o kernel.elf
+```
+
+Annotations: `@noreturn`, `@naked` (no prologue/epilogue), `@packed` (no padding), `@section(".text.init")`. Stack frames >4KB emit a compile-time warning.
 
 ## Standard Library
 
@@ -133,7 +183,7 @@ A VS Code extension (v0.2.0) is available on the VS Code Marketplace:
 
 ## Architecture
 
-10,000+ lines of KernRift across 12 source files + 7 stdlib modules (828 lines). Self-compiles to a 263KB native binary in 20ms (AMD Ryzen 9 7900X). 70 tests, bootstrap fixed point verified on 3 platforms.
+11,000+ lines of KernRift across 12 source files + 7 stdlib modules (828 lines). Self-compiles to a 298KB native binary in 24ms (AMD Ryzen 9 7900X). 89 tests, bootstrap fixed point verified on 3 platforms.
 
 | File | Purpose |
 |------|---------|

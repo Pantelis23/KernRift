@@ -1,0 +1,61 @@
+# Maintainer: Pantelis Christou <pantelis@kernrift.org>
+pkgname=kernrift
+pkgver=1.1.0
+pkgrel=1
+pkgdesc="Self-hosted systems language compiler for kernel development"
+arch=('x86_64' 'aarch64')
+url="https://kernrift.org"
+license=('MIT')
+depends=()
+provides=('krc' 'kr')
+
+_base="https://github.com/Pantelis23/KernRift/releases/latest/download"
+_raw="https://raw.githubusercontent.com/Pantelis23/KernRift/main"
+
+source_x86_64=(
+    "krc::${_base}/krc-linux-x86_64"
+    "kr::${_base}/kr"
+    "string.kr::${_raw}/std/string.kr"
+    "io.kr::${_raw}/std/io.kr"
+    "math.kr::${_raw}/std/math.kr"
+    "fmt.kr::${_raw}/std/fmt.kr"
+    "mem.kr::${_raw}/std/mem.kr"
+    "vec.kr::${_raw}/std/vec.kr"
+    "map.kr::${_raw}/std/map.kr"
+    "LICENSE::${_raw}/LICENSE"
+)
+
+source_aarch64=(
+    "krc::${_base}/krc-linux-arm64"
+    "kr::${_base}/kr"
+    "string.kr::${_raw}/std/string.kr"
+    "io.kr::${_raw}/std/io.kr"
+    "math.kr::${_raw}/std/math.kr"
+    "fmt.kr::${_raw}/std/fmt.kr"
+    "mem.kr::${_raw}/std/mem.kr"
+    "vec.kr::${_raw}/std/vec.kr"
+    "map.kr::${_raw}/std/map.kr"
+    "LICENSE::${_raw}/LICENSE"
+)
+
+# Update these after release with: sha256sum <file>
+sha256sums_x86_64=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
+sha256sums_aarch64=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
+
+package() {
+    # Install krc compiler
+    install -Dm755 "$srcdir/krc" "$pkgdir/usr/bin/krc"
+
+    # Install kr runner
+    install -Dm755 "$srcdir/kr" "$pkgdir/usr/bin/kr"
+
+    # Install standard library
+    local stddir="$pkgdir/usr/share/kernrift/std"
+    install -dm755 "$stddir"
+    for mod in string io math fmt mem vec map; do
+        install -Dm644 "$srcdir/${mod}.kr" "$stddir/${mod}.kr"
+    done
+
+    # Install license
+    install -Dm644 "$srcdir/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

@@ -28,13 +28,19 @@ instructions; there are no hidden costs.
 15. [Tail Calls](#15-tail-calls)
 16. [Critical Blocks](#16-critical-blocks)
 17. [Unsafe Blocks](#17-unsafe-blocks)
-18. [Port I/O Intrinsics](#18-port-io-intrinsics)
-19. [Syscall Intrinsic](#19-syscall-intrinsic)
-20. [Built-in Host Functions](#20-built-in-host-functions)
-21. [Slice Indexing](#21-slice-indexing)
-22. [Compiler CLI Reference](#22-compiler-cli-reference)
-23. [Adaptive Surface & Living Compiler](#23-adaptive-surface--living-compiler)
-24. [Binary Artifact Formats](#24-binary-artifact-formats)
+18. [Inline Assembly](#18-inline-assembly)
+19. [Kernel Annotations](#19-kernel-annotations)
+20. [Signed Comparisons](#20-signed-comparisons)
+21. [Bitfield Operations](#21-bitfield-operations)
+22. [Volatile Blocks](#22-volatile-blocks)
+23. [Freestanding Mode](#23-freestanding-mode)
+24. [Port I/O Intrinsics](#24-port-io-intrinsics)
+25. [Syscall Intrinsic](#25-syscall-intrinsic)
+26. [Built-in Host Functions](#26-built-in-host-functions)
+27. [Slice Indexing](#27-slice-indexing)
+28. [Compiler CLI Reference](#28-compiler-cli-reference)
+29. [Adaptive Surface & Living Compiler](#29-adaptive-surface--living-compiler)
+30. [Binary Artifact Formats](#30-binary-artifact-formats)
 
 ---
 
@@ -840,7 +846,197 @@ unsafe block.
 
 ---
 
-## 18. Port I/O Intrinsics
+## 18. Inline Assembly
+
+The `asm` statement emits raw machine instructions at the call site.
+
+### Single instruction
+
+```kr
+asm("nop")
+asm("cli")
+asm("sti")
+```
+
+### Multi-line block
+
+```kr
+asm {
+    "cli";
+    "mov cr0, rax";
+    "sti"
+}
+```
+
+### Raw hex bytes
+
+When the assembler doesn't recognize a mnemonic, use raw hex:
+
+```kr
+asm("0x0F 0x01 0xD9")   // VMMCALL — x86 only
+asm("0xD503201F")        // NOP — ARM64
+```
+
+### Supported x86_64 instructions
+
+| Category | Instructions |
+|----------|-------------|
+| Basic | `nop`, `ret`, `hlt`, `int3`, `iretq` |
+| Interrupts | `cli`, `sti` |
+| System | `cpuid`, `rdmsr`, `wrmsr`, `lgdt [rax]`, `lidt [rax]`, `invlpg [rax]`, `ltr ax`, `swapgs` |
+| Control regs | `mov cr0, rax`, `mov cr3, rax`, `mov cr4, rax`, `mov rax, cr0`, `mov rax, cr3`, `mov rax, cr4` |
+| I/O | `in al, dx`, `out dx, al`, `inw`, `outw`, `ind`, `outd` |
+
+### Supported ARM64 instructions
+
+| Category | Instructions |
+|----------|-------------|
+| Basic | `nop`, `ret`, `eret` |
+| Wait | `wfi`, `wfe`, `sev` |
+| Barriers | `isb`, `dsb sy`, `dsb ish`, `dmb sy`, `dmb ish` |
+| Supervisor | `svc #N` (16-bit immediate) |
+
+---
+
+## 19. Kernel Annotations
+
+### `@naked`
+
+Naked functions have no compiler-generated prologue or epilogue. Use for
+interrupt service routines and other entry points that manage their own stack:
+
+```kr
+@naked fn isr_handler() {
+    asm { "cli"; "nop"; "iretq" }
+}
+```
+
+### `@noreturn`
+
+Marks functions that never return (diverging functions). The compiler omits
+the epilogue:
+
+```kr
+@noreturn fn panic() {
+    write(2, "kernel panic\n", 13)
+    asm("cli")
+    while true { asm("hlt") }
+}
+```
+
+### `@packed`
+
+Packed structs have no alignment padding between fields:
+
+```kr
+@packed struct DeviceRegs {
+    uint8 status
+    uint32 data
+    uint8 control
+}
+```
+
+### `@section`
+
+Places a function in a specific linker section (parsed and stored for future
+linker script support):
+
+```kr
+@section(".text.init") fn early_init() { ... }
+```
+
+---
+
+## 20. Signed Comparisons
+
+All standard comparison operators (`<`, `<=`, `>`, `>=`) use unsigned
+comparison. For signed arithmetic (needed in kernel offset calculations,
+temperature readings, etc.), use the signed comparison builtins:
+
+```kr
+uint64 a = 0xFFFFFFFFFFFFFFFF   // -1 in two's complement
+uint64 b = 1
+
+if signed_lt(a, b) { ... }     // true: -1 < 1
+if signed_gt(b, a) { ... }     // true: 1 > -1
+if signed_le(a, a) { ... }     // true: -1 <= -1
+if signed_ge(b, a) { ... }     // true: 1 >= -1
+```
+
+These emit `setl`/`setg`/`setle`/`setge` on x86_64 and `CSET LT`/`GT`/`LE`/`GE`
+on ARM64.
+
+---
+
+## 21. Bitfield Operations
+
+Hardware registers often pack multiple fields into a single word. KernRift
+provides builtins for bit-level manipulation:
+
+| Builtin | Signature | Operation |
+|---------|-----------|-----------|
+| `bit_get(val, bit)` | `(uint64, uint64) -> uint64` | Extract single bit: `(val >> bit) & 1` |
+| `bit_set(val, bit)` | `(uint64, uint64) -> uint64` | Set single bit: `val \| (1 << bit)` |
+| `bit_clear(val, bit)` | `(uint64, uint64) -> uint64` | Clear single bit: `val & ~(1 << bit)` |
+| `bit_range(val, start, width)` | `(uint64, uint64, uint64) -> uint64` | Extract bit range: `(val >> start) & ((1 << width) - 1)` |
+| `bit_insert(val, start, width, bits)` | `(uint64, uint64, uint64, uint64) -> uint64` | Insert bit range: `(val & ~(mask << start)) \| ((bits & mask) << start)` |
+
+Example:
+
+```kr
+uint64 cr0 = 0
+cr0 = bit_set(cr0, 0)          // set PE (Protection Enable)
+cr0 = bit_set(cr0, 31)         // set PG (Paging)
+uint64 pe = bit_get(cr0, 0)    // 1
+
+uint64 flags = bit_range(status_reg, 4, 4)   // extract bits 7:4
+status_reg = bit_insert(status_reg, 4, 4, 0xF) // set bits 7:4 to 0xF
+```
+
+---
+
+## 22. Volatile Blocks
+
+`volatile { ... }` is syntactically and semantically identical to `unsafe { ... }`
+in the current compiler (no optimizer to defeat). It serves as documentation of
+intent — the programmer is performing a memory-mapped I/O access that must not
+be elided or reordered by future optimization passes:
+
+```kr
+volatile { *(mmio_base as uint32) -> status }
+volatile { *(mmio_base as uint32) = 0x01 }
+```
+
+---
+
+## 23. Freestanding Mode
+
+`krc --freestanding` produces a binary suitable for bare-metal environments:
+
+- No `_start` trampoline (no argc/argv setup)
+- No automatic `exit(0)` at end of `main`
+- No OS-specific syscall wrappers
+
+```sh
+krc --freestanding --arch=x86_64 kernel.kr -o kernel.elf
+```
+
+Use this for kernel entry points, bootloaders, and embedded firmware where the
+runtime environment is set up by the programmer.
+
+### Stack size warnings
+
+The compiler emits a warning to stderr when a function's stack frame exceeds
+4096 bytes. This catches accidental large local allocations that could overflow
+a kernel stack:
+
+```
+warning: large stack frame (13696 bytes) in function 'gen_expr'
+```
+
+---
+
+## 24. Port I/O Intrinsics
 
 KernRift provides built-in intrinsics for x86 port-mapped I/O.  These emit
 native `IN` and `OUT` instructions directly — no `extern fn` declarations,
@@ -888,7 +1084,7 @@ error: port I/O intrinsics are x86_64-only (ARM has no port-mapped I/O)
 
 ---
 
-## 19. Syscall Intrinsic
+## 25. Syscall Intrinsic
 
 The `@syscall` intrinsic issues a raw system call to the host kernel.  It is
 available in `@ctx(host)` functions and maps to the platform-appropriate
@@ -929,7 +1125,7 @@ set.
 
 ---
 
-## 20. Built-in Host Functions
+## 26. Built-in Host Functions
 
 When a function is annotated with `@ctx(host)`, nine built-in functions are
 available without any `extern fn` declaration.  The compiler maps these to
@@ -988,7 +1184,7 @@ additional capabilities beyond `@ctx(host)`.
 
 ---
 
-## 21. Slice Indexing
+## 27. Slice Indexing
 
 Slices support element access via bracket notation.  Both reads and writes
 are supported.
@@ -1033,7 +1229,7 @@ fn fill([uint8] buf, uint64 n, uint8 val) {
 
 ---
 
-## 22. Compiler CLI Reference
+## 28. Compiler CLI Reference
 
 ### Default compilation
 
@@ -1140,7 +1336,7 @@ memory, runs the entry function, and flushes `print()` output to stdout.
 
 ---
 
-## 23. Adaptive Surface & Living Compiler
+## 29. Adaptive Surface & Living Compiler
 
 KernRift's compiler has a built-in mechanism for evolving the language without
 breaking existing code.  Every attribute alias or shorthand goes through a
@@ -1265,7 +1461,7 @@ is idiomatic and no suggestions are available.
 
 ---
 
-## 24. Binary Artifact Formats
+## 30. Binary Artifact Formats
 
 ### `.krbo` — KernRift binary object
 

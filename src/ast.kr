@@ -48,6 +48,9 @@ enum AstKind {
     Compare = 38       // data1=operator_tok, child=lhs, data2=rhs_idx
     LogicalAnd = 39    // child=lhs, data1=rhs_idx
     LogicalOr = 40     // child=lhs, data1=rhs_idx
+
+    // Inline assembly
+    AsmBlock = 43      // data1=first_str_tok, child=linked list of string nodes (each StrLit)
 }
 
 // ---------------------------------------------------------------------------

@@ -88,6 +88,8 @@ fn tok_kind_name(uint64 kind) -> uint64 {
     if kind == 83 { return "'uint64'" }
     if kind == 88 { return "'match'" }
     if kind == 89 { return "'type'" }
+    if kind == 90 { return "'asm'" }
+    if kind == 91 { return "'volatile'" }
     return "token"
 }
 
@@ -608,6 +610,89 @@ fn parse_stmt() -> uint64 {
         return outer_block
     }
 
+    // Asm block: asm("instruction") or asm { "instr1"; "instr2"; ... }
+    if kind == 90 {
+        advance_tok()
+        uint64 asm_node = ast_alloc(43)
+        if cur_kind() == 10 {
+            // Single-line: asm("string")
+            advance_tok()
+            uint64 str_tok = expect(3)
+            expect(11)
+            uint32 st32 = str_tok
+            ast_set_data1(asm_node, st32)
+        } else if cur_kind() == 12 {
+            // Multi-line: asm { "str1"; "str2"; ... }
+            advance_tok()
+            uint64 first_str = 0
+            uint64 last_str = 0
+            while cur_kind() != 13 && cur_kind() != 0 {
+                uint64 s_tok = expect(3)
+                uint64 s_node = ast_alloc(31)
+                uint32 st = s_tok
+                ast_set_data1(s_node, st)
+                if first_str == 0 {
+                    first_str = s_node
+                } else {
+                    uint32 sn = s_node
+                    ast_set_next(last_str, sn)
+                }
+                last_str = s_node
+                eat(18)
+            }
+            expect(13)
+            if first_str != 0 {
+                uint32 fs = first_str
+                ast_set_child(asm_node, fs)
+            }
+        }
+        return asm_node
+    }
+
+    // Volatile block: volatile { ... } — treated same as unsafe for now
+    if kind == 91 {
+        advance_tok()
+        expect(12)
+        expect(22)
+        expect(10)
+        uint64 addr_expr = parse_expr()
+        expect(1)
+        uint32 type_kind = cur_kind()
+        advance_tok()
+        uint64 type_size = 8
+        if type_kind == 80 { type_size = 1 }
+        if type_kind == 82 { type_size = 4 }
+        if type_kind == 83 { type_size = 8 }
+        expect(11)
+        if cur_kind() == 20 {
+            advance_tok()
+            uint64 dest_tok = advance_tok()
+            expect(13)
+            uint64 node = ast_alloc(41)
+            uint32 ts = type_size
+            ast_set_data1(node, ts)
+            uint32 ae = addr_expr
+            ast_set_child(node, ae)
+            uint32 dt = dest_tok
+            ast_set_data2(node, dt)
+            return node
+        }
+        if cur_kind() == 34 {
+            advance_tok()
+            uint64 val_expr = parse_expr()
+            expect(13)
+            uint64 node = ast_alloc(42)
+            uint32 ts = type_size
+            ast_set_data1(node, ts)
+            uint32 ae = addr_expr
+            ast_set_child(node, ae)
+            uint32 ve = val_expr
+            ast_set_data2(node, ve)
+            return node
+        }
+        expect(13)
+    }
+
     // Unsafe block: unsafe { *(addr as TYPE) -> val } or unsafe { *(addr as TYPE) = val }
     if kind == 76 {
         advance_tok()
@@ -864,10 +949,43 @@ fn parse_module() -> uint64 {
     while cur_kind() != 0 {
         uint32 kind = cur_kind()
 
-        // Skip annotations (@export, @ctx, etc)
+        // Parse annotations (@export, @noreturn, @naked, @packed, @section, etc)
+        uint64 ann_noreturn = 0
+        uint64 ann_naked = 0
+        uint64 ann_packed = 0
         while kind == 21 {
             advance_tok()
+            // Read annotation name
+            uint64 ann_tok = p_tok_pos
             advance_tok()
+            // Check for known annotations
+            uint64 ann_start = tok_start_at(ann_tok)
+            uint64 ann_len_v = tok_len_at(ann_tok)
+            // Check noreturn (8 chars)
+            if ann_len_v == 8 {
+                uint64 ann_a = src_ptr + ann_start
+                uint64 ann_ch = 0
+                unsafe { *(ann_a as uint8) -> ann_ch }
+                if ann_ch == 110 { ann_noreturn = 1 }
+            }
+            // Check naked (5 chars, starts with 'n')
+            if ann_len_v == 5 {
+                uint64 ann_a2 = src_ptr + ann_start
+                uint64 ann_ch2 = 0
+                unsafe { *(ann_a2 as uint8) -> ann_ch2 }
+                uint64 ann_a3 = src_ptr + ann_start + 1
+                uint64 ann_ch3 = 0
+                unsafe { *(ann_a3 as uint8) -> ann_ch3 }
+                if ann_ch2 == 110 && ann_ch3 == 97 { ann_naked = 1 }
+            }
+            // Check packed (6 chars, starts with 'p')
+            if ann_len_v == 6 {
+                uint64 ann_a4 = src_ptr + ann_start
+                uint64 ann_ch4 = 0
+                unsafe { *(ann_a4 as uint8) -> ann_ch4 }
+                if ann_ch4 == 112 { ann_packed = 1 }
+            }
+            // Skip annotation arguments if present: @section("...")
             if eat(10) != 0 {
                 while cur_kind() != 11 && cur_kind() != 0 {
                     advance_tok()
@@ -879,6 +997,11 @@ fn parse_module() -> uint64 {
 
         if kind == 60 {
             uint64 fn_node = parse_fn_decl()
+            // Store annotation flags in data4: bit 0 = noreturn, bit 1 = naked
+            uint32 ann_flags = ann_noreturn | (ann_naked << 1)
+            if ann_flags != 0 {
+                ast_set_data4(fn_node, ann_flags)
+            }
             ast_append_child(mod_node, fn_node)
         } else if kind == 70 {
             // const TYPE name = value — treat as static
