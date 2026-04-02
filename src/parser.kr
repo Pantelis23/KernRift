@@ -200,6 +200,39 @@ fn parse_primary() -> uint64 {
         uint64 tok = advance_tok()
         uint32 t32 = tok
 
+        // Generic call: ident<Type>(args...) or ident<T, U>(args...)
+        // Lookahead: if < is followed by tokens ending with > then (, skip the <...>
+        if cur_kind() == 37 {
+            uint64 la = p_tok_pos + 1
+            uint64 is_generic = 0
+            while tok_kind_at(la) != 0 {
+                if tok_kind_at(la) == 39 {
+                    if tok_kind_at(la + 1) == 10 {
+                        is_generic = 1
+                    }
+                    la = la + 1
+                    break
+                }
+                // Only type keywords, identifiers, and commas allowed inside <...>
+                uint32 lk = tok_kind_at(la)
+                if is_type_keyword(lk) != 0 || lk == 1 || lk == 16 {
+                    la = la + 1
+                } else {
+                    break
+                }
+            }
+            if is_generic != 0 {
+                // Skip < ... > tokens
+                advance_tok()
+                while cur_kind() != 39 && cur_kind() != 0 {
+                    advance_tok()
+                }
+                if cur_kind() == 39 {
+                    advance_tok()
+                }
+            }
+        }
+
         // Function call: ident(args...)
         if cur_kind() == 10 {
             advance_tok()
@@ -910,6 +943,18 @@ fn parse_param_list() -> uint64 {
 fn parse_fn_decl() -> uint64 {
     expect(60)
     uint64 name_tok = expect(1)
+
+    // Generic type parameters: fn name<T>(...) or fn name<T, U>(...)
+    // Skip the <...> — generics are purely syntactic (all types are uint64)
+    if cur_kind() == 37 {
+        advance_tok()
+        while cur_kind() != 39 && cur_kind() != 0 {
+            advance_tok()
+        }
+        if cur_kind() == 39 {
+            advance_tok()
+        }
+    }
 
     // Method syntax: fn StructName.method(...) -> registered as method
     if cur_kind() == 17 {

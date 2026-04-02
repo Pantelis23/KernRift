@@ -700,6 +700,53 @@ else
 fi
 rm -f /tmp/krc_obj_$$.kr /tmp/krc_obj_$$.o /tmp/krc_obj_c_$$.o
 
+# --- Generics (monomorphization) ---
+run_test "generic_fn_single" 'fn max_gen<T>(T a, T b) -> T {
+    if a > b { return a }
+    return b
+}
+fn main() {
+    uint64 r = max_gen<uint64>(30, 42)
+    exit(r)
+}' 42
+
+run_test "generic_fn_identity" 'fn identity<T>(T x) -> T { return x }
+fn main() {
+    uint64 r = identity<uint64>(7)
+    exit(r)
+}' 7
+
+run_test "generic_fn_chain" 'fn max_gen<T>(T a, T b) -> T {
+    if a > b { return a }
+    return b
+}
+fn identity<T>(T x) -> T { return x }
+fn main() {
+    uint64 r = max_gen<uint64>(30, 42)
+    uint64 s = identity<uint64>(r)
+    exit(s)
+}' 42
+
+run_test "generic_call_uint32" 'fn add_one<T>(T x) -> T { return x + 1 }
+fn main() {
+    uint32 r = add_one<uint32>(41)
+    exit(r)
+}' 42
+
+run_test "generic_multi_param" 'fn pick_first<T, U>(T a, U b) -> T { return a }
+fn main() {
+    uint64 r = pick_first<uint64, uint32>(42, 99)
+    exit(r)
+}' 42
+
+run_test "generic_no_conflict_lt" 'fn id<T>(T x) -> T { return x }
+fn main() {
+    uint64 a = 3
+    uint64 b = 5
+    if a < b { exit(id<uint64>(42)) }
+    exit(0)
+}' 42
+
 # --- Bootstrap test ---
 echo ""
 echo "--- Bootstrap test ---"
