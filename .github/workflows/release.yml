@@ -27,12 +27,28 @@ jobs:
           make build
           make dist
 
+      - name: Build Windows binaries
+        run: |
+          ./build/krc2 --arch=x86_64 --emit=pe build/krc.kr -o dist/krc-windows-x86_64.exe
+          ./build/krc2 --arch=arm64  --emit=pe build/krc.kr -o dist/krc-windows-arm64.exe
+          echo "  krc-windows-x86_64.exe"
+          echo "  krc-windows-arm64.exe"
+
       - name: Verify binaries
         run: |
           echo "=== Distribution ==="
           ls -la dist/
           file dist/krc-linux-x86_64
           file dist/krc-linux-arm64
+          file dist/krc-windows-x86_64.exe
+          file dist/krc-windows-arm64.exe
+
+      - name: Generate SHA256SUMS
+        run: |
+          cd dist
+          sha256sum krc-linux-x86_64 krc-linux-arm64 \
+                    krc-windows-x86_64.exe krc-windows-arm64.exe \
+                    krc.krbo krc-source.kr > SHA256SUMS
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
@@ -40,6 +56,26 @@ jobs:
           files: |
             dist/krc-linux-x86_64
             dist/krc-linux-arm64
+            dist/krc-windows-x86_64.exe
+            dist/krc-windows-arm64.exe
             dist/krc.krbo
             dist/krc-source.kr
+            dist/SHA256SUMS
           generate_release_notes: true
+
+  winget-release:
+    name: Submit winget manifest
+    needs: build-release
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Submit to winget-pkgs
+        uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: Pantelis23.KernRift
+          version: ${{ github.ref_name }}
+          release-tag: ${{ github.ref_name }}
+          installers-regex: 'krc-windows-(x86_64|arm64)\.exe$'
+          token: ${{ secrets.WINGET_TOKEN }}

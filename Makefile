@@ -89,6 +89,11 @@ dist: build/krc2
 	./build/krc2 --arch=arm64 build/krc.kr -o $(DIST_DIR)/krc-linux-arm64 2>/dev/null
 	chmod +x $(DIST_DIR)/krc-linux-arm64
 	@echo "  krc-linux-arm64"
+	@# Windows PE (cross-compiled)
+	./build/krc2 --arch=x86_64 --emit=pe build/krc.kr -o $(DIST_DIR)/krc-windows-x86_64.exe 2>/dev/null
+	@echo "  krc-windows-x86_64.exe"
+	./build/krc2 --arch=arm64 --emit=pe build/krc.kr -o $(DIST_DIR)/krc-windows-arm64.exe 2>/dev/null
+	@echo "  krc-windows-arm64.exe"
 	@# Fat binary (default)
 	./build/krc2 build/krc.kr -o $(DIST_DIR)/krc.krbo 2>/dev/null
 	@echo "  krc.krbo (x86_64 + arm64)"

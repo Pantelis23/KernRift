@@ -1,50 +1,47 @@
 # KernRift Self-Hosted Compiler Installer for Windows
-# Run: powershell -ExecutionPolicy Bypass -File install.ps1
+# Run: irm https://raw.githubusercontent.com/Pantelis23/KernRift/main/install.ps1 | iex
 
 $ErrorActionPreference = "Stop"
-$Version = "1.0.0"
+$Repo = "Pantelis23/KernRift"
 $InstallDir = "$env:LOCALAPPDATA\KernRift\bin"
 
 Write-Host "=== KernRift Self-Hosted Compiler Installer ==="
-Write-Host "Version: $Version"
-Write-Host "Platform: Windows x86_64"
+
+# Architecture detection
+$arch = [System.Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITECTURE")
+$ArchName = switch ($arch) {
+    "AMD64" { "x86_64" }
+    "ARM64" { "arm64" }
+    default {
+        Write-Host "error: unsupported architecture: $arch" -ForegroundColor Red
+        exit 1
+    }
+}
+
+Write-Host "Platform: windows $ArchName"
 Write-Host "Install to: $InstallDir"
 Write-Host ""
-
-# Architecture check
-$arch = [System.Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITECTURE")
-if ($arch -ne "AMD64" -and $arch -ne "ARM64") {
-    Write-Host "error: unsupported architecture: $arch" -ForegroundColor Red
-    exit 1
-}
 
 # Create install directory
 if (!(Test-Path $InstallDir)) {
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 }
 
-# Check for prebuilt binary
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Binary = ""
+# Download from GitHub releases
+$BinaryName = "krc-windows-$ArchName.exe"
+$Url = "https://github.com/$Repo/releases/latest/download/$BinaryName"
+$Dest = "$InstallDir\krc.exe"
 
-if (Test-Path "$ScriptDir\dist\krc-windows-x86_64.exe") {
-    $Binary = "$ScriptDir\dist\krc-windows-x86_64.exe"
-}
-
-if ($Binary) {
-    Write-Host "Found prebuilt binary: $Binary"
-    Copy-Item $Binary "$InstallDir\krc.exe"
-} else {
-    Write-Host "No prebuilt Windows binary found."
+Write-Host "Downloading $BinaryName..."
+try {
+    Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing
+} catch {
+    Write-Host "error: download failed: $_" -ForegroundColor Red
     Write-Host ""
-    Write-Host "To install on Windows:"
-    Write-Host "  1. Install the Rust KernRift compiler:"
-    Write-Host "     cargo install --git https://github.com/Pantelis23/KernRift kernriftc"
-    Write-Host "  2. Build the self-hosted compiler:"
-    Write-Host "     kernriftc --emit=hostexe build\krc.kr -o krc.exe"
-    Write-Host "  3. Copy krc.exe to $InstallDir"
-    Write-Host ""
-    Write-Host "Or download a prebuilt binary from GitHub Releases."
+    Write-Host "Alternatively, build from source:"
+    Write-Host "  cargo install --git https://github.com/Pantelis23/KernRift-bootstrap kernriftc"
+    Write-Host "  kernriftc --emit=hostexe build\krc.kr -o krc.exe"
+    Write-Host "  Copy-Item krc.exe $InstallDir\krc.exe"
     exit 1
 }
 
@@ -57,7 +54,7 @@ if ($UserPath -notlike "*$InstallDir*") {
 }
 
 Write-Host ""
-Write-Host "Installed: $InstallDir\krc.exe"
+Write-Host "Installed: $Dest"
 Write-Host ""
 Write-Host "Usage:"
 Write-Host "  krc program.kr                  # compile to fat binary"
