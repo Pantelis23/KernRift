@@ -16,22 +16,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Rust (for bootstrap)
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install bootstrap compiler
-        run: cargo install --git https://github.com/Pantelis23/KernRift-bootstrap kernriftc --locked
-
       - name: Bootstrap build/krc2
         run: |
           mkdir -p build
-          # Concatenate all sources, stripping import lines (kernriftc takes a single file)
+          curl -sL -o build/krc-bootstrap \
+            https://github.com/Pantelis23/KernRift/releases/latest/download/krc-linux-x86_64
+          chmod +x build/krc-bootstrap
           cat src/lexer.kr src/ast.kr src/parser.kr src/codegen.kr \
               src/codegen_aarch64.kr src/format_macho.kr src/format_pe.kr \
               src/format_archive.kr src/analysis.kr src/living.kr \
-              src/runtime.kr src/main.kr \
-            | grep -v '^import ' > build/krc.kr
-          kernriftc --emit=hostexe build/krc.kr -o build/krc2
+              src/runtime.kr src/main.kr > build/krc.kr
+          ./build/krc-bootstrap --arch=x86_64 build/krc.kr -o build/krc2
           chmod +x build/krc2
 
       - name: Create distribution
