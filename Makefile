@@ -44,6 +44,11 @@ build/krc2: build/krc.kr
 		exit 1; \
 	fi
 
+# Build using the import system (no cat needed)
+build-import: build/krc2
+	./build/krc2 --arch=x86_64 src/main.kr -o build/krc-import
+	chmod +x build/krc-import
+
 # Run test suite
 test: build/krc2
 	@echo "=== Running test suite ==="

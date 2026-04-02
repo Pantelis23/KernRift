@@ -1,3 +1,15 @@
+import "lexer.kr"
+import "ast.kr"
+import "parser.kr"
+import "codegen.kr"
+import "codegen_aarch64.kr"
+import "format_macho.kr"
+import "format_pe.kr"
+import "format_archive.kr"
+import "analysis.kr"
+import "living.kr"
+import "runtime.kr"
+
 // KernRift self-hosted compiler — main
 
 // Windows command line parser: called from main() when cli_argc == 0xFFFFFFFF
@@ -73,14 +85,211 @@ fn str_eq_full(uint64 a, uint64 b) -> uint64 {
     return str_starts_with(a, b, la)
 }
 
+// Import system state
+static uint64 imp_buf = 0
+static uint64 imp_buf_len = 0
+static uint64 imp_buf_cap = 0
+static uint64 imp_seen = 0
+static uint64 imp_seen_count = 0
+
+fn imp_init() {
+    imp_buf_cap = 4194304
+    imp_buf = alloc(imp_buf_cap)
+    imp_buf_len = 0
+    imp_seen = alloc(16384)
+    imp_seen_count = 0
+}
+
+fn imp_is_seen(uint64 path) -> uint64 {
+    uint64 plen = str_len(path)
+    uint64 i = 0
+    while i < imp_seen_count {
+        uint64 entry = imp_seen + i * 256
+        if str_starts_with(entry, path, plen) != 0 {
+            uint64 elen = str_len(entry)
+            if elen == plen { return 1 }
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+fn imp_mark_seen(uint64 path) {
+    uint64 plen = str_len(path)
+    uint64 entry = imp_seen + imp_seen_count * 256
+    uint64 i = 0
+    while i < plen && i < 255 {
+        uint64 sp = path + i
+        uint64 dp = entry + i
+        uint64 ch = 0
+        unsafe { *(sp as uint8) -> ch }
+        uint8 cb = ch
+        unsafe { *(dp as uint8) = cb }
+        i = i + 1
+    }
+    uint64 tp = entry + i
+    uint8 z = 0
+    unsafe { *(tp as uint8) = z }
+    imp_seen_count = imp_seen_count + 1
+}
+
+fn imp_append(uint64 src, uint64 len) {
+    uint64 i = 0
+    while i < len {
+        uint64 sp = src + i
+        uint64 dp = imp_buf + imp_buf_len
+        uint64 b = 0
+        unsafe { *(sp as uint8) -> b }
+        uint8 bb = b
+        unsafe { *(dp as uint8) = bb }
+        imp_buf_len = imp_buf_len + 1
+        i = i + 1
+    }
+    // Add newline separator
+    uint64 np = imp_buf + imp_buf_len
+    uint8 nl = 10
+    unsafe { *(np as uint8) = nl }
+    imp_buf_len = imp_buf_len + 1
+}
+
+fn imp_dir_of(uint64 path) -> uint64 {
+    // Find last '/' in path, return length including the slash
+    uint64 len = str_len(path)
+    uint64 last_slash = 0
+    uint64 i = 0
+    while i < len {
+        uint64 pp = path + i
+        uint64 ch = 0
+        unsafe { *(pp as uint8) -> ch }
+        if ch == 47 { last_slash = i + 1 }
+        i = i + 1
+    }
+    return last_slash
+}
+
+fn imp_resolve(uint64 base_path, uint64 name, uint64 name_len) -> uint64 {
+    uint64 dir_len = imp_dir_of(base_path)
+    uint64 result = alloc(dir_len + name_len + 1)
+    uint64 i = 0
+    while i < dir_len {
+        uint64 sp = base_path + i
+        uint64 dp = result + i
+        uint64 ch = 0
+        unsafe { *(sp as uint8) -> ch }
+        uint8 cb = ch
+        unsafe { *(dp as uint8) = cb }
+        i = i + 1
+    }
+    uint64 j = 0
+    while j < name_len {
+        uint64 sp = name + j
+        uint64 dp = result + dir_len + j
+        uint64 ch = 0
+        unsafe { *(sp as uint8) -> ch }
+        uint8 cb = ch
+        unsafe { *(dp as uint8) = cb }
+        j = j + 1
+    }
+    uint64 tp = result + dir_len + name_len
+    uint8 z = 0
+    unsafe { *(tp as uint8) = z }
+    return result
+}
+
+fn imp_check_import_line(uint64 buf, uint64 size, uint64 pos) -> uint64 {
+    // Check if buf[pos..] starts with: import "filename"
+    // Returns 0 if not import, or the position just past the opening quote
+    if pos + 8 >= size { return 0 }
+    uint64 bp = buf + pos
+    uint64 c0 = 0; uint64 c1 = 0; uint64 c2 = 0; uint64 c3 = 0; uint64 c4 = 0; uint64 c5 = 0
+    unsafe { *(bp as uint8) -> c0 }
+    uint64 bp1 = bp + 1; unsafe { *(bp1 as uint8) -> c1 }
+    uint64 bp2 = bp + 2; unsafe { *(bp2 as uint8) -> c2 }
+    uint64 bp3 = bp + 3; unsafe { *(bp3 as uint8) -> c3 }
+    uint64 bp4 = bp + 4; unsafe { *(bp4 as uint8) -> c4 }
+    uint64 bp5 = bp + 5; unsafe { *(bp5 as uint8) -> c5 }
+    // "import" = 105 109 112 111 114 116
+    if c0 != 105 || c1 != 109 || c2 != 112 || c3 != 111 || c4 != 114 || c5 != 116 { return 0 }
+    // Skip whitespace after "import"
+    uint64 p = pos + 6
+    uint64 ch = 0
+    uint64 pp = buf + p
+    if p < size { unsafe { *(pp as uint8) -> ch } }
+    while p < size && (ch == 32 || ch == 9) {
+        p = p + 1
+        pp = buf + p
+        if p < size { unsafe { *(pp as uint8) -> ch } }
+    }
+    // Expect opening quote
+    if ch != 34 { return 0 }
+    p = p + 1
+    return p
+}
+
+fn imp_process(uint64 file_path) {
+    if imp_is_seen(file_path) != 0 { return }
+    imp_mark_seen(file_path)
+
+    uint64 fd = file_open(file_path, 0)
+    uint64 size = file_size(fd)
+    uint64 tmp = alloc(size + 1)
+    file_read(fd, tmp, size)
+    file_close(fd)
+
+    // Scan for import lines at the beginning
+    uint64 pos = 0
+    while pos < size {
+        // Skip whitespace/newlines
+        uint64 ch = 0
+        uint64 pp = tmp + pos
+        if pos < size { unsafe { *(pp as uint8) -> ch } }
+        while pos < size && (ch == 32 || ch == 9 || ch == 13 || ch == 10) {
+            pos = pos + 1
+            pp = tmp + pos
+            if pos < size { unsafe { *(pp as uint8) -> ch } }
+        }
+        if pos >= size { break }
+
+        // Check if this line starts with "import"
+        uint64 name_start = imp_check_import_line(tmp, size, pos)
+        if name_start != 0 {
+            // Extract filename between quotes
+            uint64 ns = name_start
+            uint64 ne = ns
+            uint64 qch = 0
+            uint64 qp = tmp + ne
+            if ne < size { unsafe { *(qp as uint8) -> qch } }
+            while ne < size && qch != 34 {
+                ne = ne + 1
+                qp = tmp + ne
+                if ne < size { unsafe { *(qp as uint8) -> qch } }
+            }
+            uint64 name_len = ne - ns
+            uint64 name_ptr = tmp + ns
+            // Resolve full path
+            uint64 full_path = imp_resolve(file_path, name_ptr, name_len)
+            // Recurse
+            imp_process(full_path)
+            // Skip past closing quote and rest of line
+            pos = ne + 1
+        }
+        if name_start == 0 {
+            // Not an import — stop scanning for imports (only imports at top of file)
+            break
+        }
+    }
+
+    // Append entire file content (including import lines — parser ignores them)
+    imp_append(tmp, size)
+}
+
 // arch: 0=x86_64, 1=arm64
 // emit: 0=elfexe, 1=machoexe, 2=peexe
 fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode) {
-    uint64 fd = file_open(input_path, 0)
-    uint64 size = file_size(fd)
-    uint64 source = alloc(size + 1)
-    file_read(fd, source, size)
-    file_close(fd)
+    imp_init()
+    imp_process(input_path)
+    uint64 source = imp_buf
+    uint64 size = imp_buf_len
 
     uint64 max_tok = 65536
     uint64 my_tokens = alloc(max_tok * 16)
@@ -271,11 +480,10 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
 
 // Produce KrboFat: compile for both x86_64 and ARM64, LZ4-compress, wrap in fat binary
 fn compile_fat(uint64 input_path, uint64 output_path) {
-    uint64 fd = file_open(input_path, 0)
-    uint64 size = file_size(fd)
-    uint64 source = alloc(size + 1)
-    file_read(fd, source, size)
-    file_close(fd)
+    imp_init()
+    imp_process(input_path)
+    uint64 source = imp_buf
+    uint64 size = imp_buf_len
 
     uint64 max_tok = 65536
     uint64 my_tokens = alloc(max_tok * 16)
@@ -583,11 +791,10 @@ fn main() {
     }
 
     if mode == 1 {
-        uint64 fd = file_open(input_path, 0)
-        uint64 size = file_size(fd)
-        uint64 source = alloc(size + 1)
-        file_read(fd, source, size)
-        file_close(fd)
+        imp_init()
+        imp_process(input_path)
+        uint64 source = imp_buf
+        uint64 size = imp_buf_len
         uint64 max_tok = 65536
         uint64 my_tokens = alloc(max_tok * 16)
         lexer_init(source, size, my_tokens, max_tok)
@@ -611,11 +818,10 @@ fn main() {
     }
 
     if mode == 2 {
-        uint64 fd = file_open(input_path, 0)
-        uint64 size = file_size(fd)
-        uint64 source = alloc(size + 1)
-        file_read(fd, source, size)
-        file_close(fd)
+        imp_init()
+        imp_process(input_path)
+        uint64 source = imp_buf
+        uint64 size = imp_buf_len
         uint64 max_tok = 65536
         uint64 my_tokens = alloc(max_tok * 16)
         lexer_init(source, size, my_tokens, max_tok)
