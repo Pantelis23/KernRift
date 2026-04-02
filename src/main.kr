@@ -447,6 +447,10 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
     parser_init(my_tokens, tcount)
     uint64 root = parse_module()
 
+    // Dead code elimination: scan AST for reachable functions
+    dce_init()
+    dce_scan(root)
+
     // Emit headers based on format
     uint64 header_size = 120
     if emit_mode == 0 {
@@ -475,16 +479,19 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
 
     uint64 text_start = codegen_output_len()
 
-    // Generate code for each function
+    // Generate code for each function (skip dead functions via DCE)
     uint32 child = ast_child(root)
     uint64 wchild = child
     while wchild != 0 {
         uint32 ck = ast_kind(wchild)
         if ck == 2 {
-            if arch == 0 {
-                gen_function(wchild)
-            } else {
-                gen_function_a64(wchild)
+            uint32 fn_name = ast_data1(wchild)
+            if dce_is_live(fn_name) != 0 {
+                if arch == 0 {
+                    gen_function(wchild)
+                } else {
+                    gen_function_a64(wchild)
+                }
             }
         }
         uint32 nxt = ast_next(wchild)
@@ -712,6 +719,10 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     parser_init(my_tokens, saved_tcount)
     uint64 root = parse_module()
 
+    // Dead code elimination
+    dce_init()
+    dce_scan(root)
+
     uint64 x86_buf = alloc(1048576)
     uint64 x86_len = 0
 
@@ -724,7 +735,10 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     uint64 wchild = child
     while wchild != 0 {
         uint32 ck = ast_kind(wchild)
-        if ck == 2 { gen_function(wchild) }
+        if ck == 2 {
+            uint32 fn_name = ast_data1(wchild)
+            if dce_is_live(fn_name) != 0 { gen_function(wchild) }
+        }
         uint32 nxt = ast_next(wchild)
         wchild = nxt
     }
@@ -779,6 +793,10 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     parser_init(my_tokens, saved_tcount)
     uint64 root2 = parse_module()
 
+    // Re-run DCE for fresh AST
+    dce_init()
+    dce_scan(root2)
+
     emit_elf_header_a64()
     emit_program_header_a64(0)
     uint64 text_start_a64 = codegen_output_len()
@@ -787,7 +805,10 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     uint64 wchild2 = child2
     while wchild2 != 0 {
         uint32 ck2 = ast_kind(wchild2)
-        if ck2 == 2 { gen_function_a64(wchild2) }
+        if ck2 == 2 {
+            uint32 fn_name2 = ast_data1(wchild2)
+            if dce_is_live(fn_name2) != 0 { gen_function_a64(wchild2) }
+        }
         uint32 nxt2 = ast_next(wchild2)
         wchild2 = nxt2
     }

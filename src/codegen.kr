@@ -4084,6 +4084,305 @@ fn resolve_fnaddr_fixups() {
 }
 
 // ---------------------------------------------------------------------------
+// Dead Code Elimination (DCE) — AST-level
+// ---------------------------------------------------------------------------
+
+// DCE live set: token indices of functions that are reachable
+// [name_tok(4)] × 2048
+static uint64 dce_table = 0
+static uint64 dce_count = 0
+
+// DCE function map: maps function name tok → function AST node index
+// [name_tok(4), fn_node(4)] × 1024
+static uint64 dce_fn_map = 0
+static uint64 dce_fn_map_count = 0
+
+// DCE enabled flag (0 = disabled, 1 = enabled)
+static uint64 dce_enabled = 0
+
+@export
+fn dce_init() {
+    dce_table = alloc(2048 * 4)
+    dce_count = 0
+    dce_fn_map = alloc(1024 * 8)
+    dce_fn_map_count = 0
+    dce_enabled = 1
+}
+
+// Check if a function name token is already in the live set
+fn dce_has(uint64 name_tok) -> uint64 {
+    uint64 i = 0
+    while i < dce_count {
+        uint64 entry = dce_table + i * 4
+        uint32 stored = 0
+        unsafe { *(entry as uint32) -> stored }
+        uint64 ws = stored
+        if tok_text_eq(ws, name_tok) != 0 { return 1 }
+        i = i + 1
+    }
+    return 0
+}
+
+// Add a function name token to the live set (if not already present)
+// Returns 1 if newly added, 0 if already present
+fn dce_add(uint64 name_tok) -> uint64 {
+    if dce_has(name_tok) != 0 { return 0 }
+    uint64 entry = dce_table + dce_count * 4
+    uint32 nt = name_tok
+    unsafe { *(entry as uint32) = nt }
+    dce_count = dce_count + 1
+    return 1
+}
+
+// Add a function name by string (for fn_addr string literals)
+// str_tok is a string literal token — content is between quotes
+fn dce_add_by_str(uint64 str_tok) {
+    uint64 sstart = tok_text_start(str_tok)
+    uint64 slen = tok_text_len(str_tok)
+    // Skip quotes: "name" -> name
+    uint64 name_start = sstart + 1
+    uint64 name_len = slen - 2
+    // Search function map for matching name
+    uint64 i = 0
+    while i < dce_fn_map_count {
+        uint64 fentry = dce_fn_map + i * 8
+        uint32 fn_name_tok = 0
+        unsafe { *(fentry as uint32) -> fn_name_tok }
+        uint64 wfn = fn_name_tok
+        uint64 fn_start = tok_text_start(wfn)
+        uint64 fn_len = tok_text_len(wfn)
+        if fn_len == name_len {
+            uint64 eq = 1
+            uint64 ci = 0
+            while ci < name_len {
+                uint64 ca = cg_source + name_start + ci
+                uint64 cb = cg_source + fn_start + ci
+                uint64 va = 0
+                uint64 vb = 0
+                unsafe { *(ca as uint8) -> va }
+                unsafe { *(cb as uint8) -> vb }
+                if va != vb { eq = 0 }
+                ci = ci + 1
+            }
+            if eq != 0 {
+                dce_add(wfn)
+                return
+            }
+        }
+        i = i + 1
+    }
+    // Not found in function map — might be a builtin, ignore
+}
+
+// Register a function in the DCE function map
+fn dce_register_fn(uint64 name_tok, uint64 fn_node) {
+    uint64 entry = dce_fn_map + dce_fn_map_count * 8
+    uint32 nt = name_tok
+    unsafe { *(entry as uint32) = nt }
+    uint64 e4 = entry + 4
+    uint32 nd = fn_node
+    unsafe { *(e4 as uint32) = nd }
+    dce_fn_map_count = dce_fn_map_count + 1
+}
+
+// Look up function AST node by name token
+fn dce_lookup_fn(uint64 name_tok) -> uint64 {
+    uint64 i = 0
+    while i < dce_fn_map_count {
+        uint64 entry = dce_fn_map + i * 8
+        uint32 stored = 0
+        unsafe { *(entry as uint32) -> stored }
+        uint64 ws = stored
+        if tok_text_eq(ws, name_tok) != 0 {
+            uint64 e4 = entry + 4
+            uint32 nd = 0
+            unsafe { *(e4 as uint32) -> nd }
+            return nd
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+// Recursively scan an AST node for Call and fn_addr references
+fn dce_scan_node(uint64 node) {
+    if node == 0 { return }
+    uint32 kind = ast_kind(node)
+
+    // Call node: add callee to live set
+    if kind == 35 {
+        uint32 callee_tok = ast_data1(node)
+        uint64 wct = callee_tok
+        // Check if this is fn_addr("name")
+        if tok_matches(wct, "fn_addr", 7) != 0 {
+            // First argument is a string literal with the target function name
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            if wfa != 0 {
+                uint32 str_tok = ast_data1(wfa)
+                dce_add_by_str(str_tok)
+            }
+        } else {
+            // Regular call — add callee name to live set
+            dce_add(wct)
+        }
+    }
+
+    // Recurse into children
+    uint32 ch = ast_child(node)
+    uint64 wch = ch
+    while wch != 0 {
+        dce_scan_node(wch)
+        uint32 nxt = ast_next(wch)
+        wch = nxt
+    }
+
+    // FnDecl: data3=body block
+    if kind == 2 {
+        uint32 body = ast_data3(node)
+        uint64 wb = body
+        if wb != 0 { dce_scan_node(wb) }
+    }
+
+    // For nodes that store sub-node indices in data1/data2
+    // If: data1=then_body, data2=else_body
+    if kind == 13 {
+        uint32 then_body = ast_data1(node)
+        uint64 wtb = then_body
+        if wtb != 0 { dce_scan_node(wtb) }
+        uint32 else_body = ast_data2(node)
+        uint64 web = else_body
+        if web != 0 { dce_scan_node(web) }
+    }
+    // While: data1=body
+    if kind == 14 {
+        uint32 body = ast_data1(node)
+        uint64 wb = body
+        if wb != 0 { dce_scan_node(wb) }
+    }
+    // Match: data1=first_arm
+    if kind == 19 {
+        uint32 arm = ast_data1(node)
+        uint64 wa = arm
+        while wa != 0 {
+            dce_scan_node(wa)
+            uint32 nxt = ast_next(wa)
+            wa = nxt
+        }
+    }
+    // MatchArm: data1=value_expr, data2=body_block
+    if kind == 20 {
+        uint32 val_expr = ast_data1(node)
+        uint64 wve = val_expr
+        if wve != 0 { dce_scan_node(wve) }
+        uint32 body_block = ast_data2(node)
+        uint64 wbb = body_block
+        if wbb != 0 { dce_scan_node(wbb) }
+    }
+    // BinOp: data2=rhs_idx
+    if kind == 33 {
+        uint32 rhs = ast_data2(node)
+        uint64 wr = rhs
+        if wr != 0 { dce_scan_node(wr) }
+    }
+    // Compare: data2=rhs_idx
+    if kind == 38 {
+        uint32 rhs = ast_data2(node)
+        uint64 wr = rhs
+        if wr != 0 { dce_scan_node(wr) }
+    }
+    // LogicalAnd: data1=op_tok, child=lhs, data2=rhs_idx
+    if kind == 39 {
+        uint32 rhs = ast_data2(node)
+        uint64 wr = rhs
+        if wr != 0 { dce_scan_node(wr) }
+    }
+    // LogicalOr: data1=op_tok, child=lhs, data2=rhs_idx
+    if kind == 40 {
+        uint32 rhs = ast_data2(node)
+        uint64 wr = rhs
+        if wr != 0 { dce_scan_node(wr) }
+    }
+    // Index: data1=array_name_tok (NOT a node), child=index_expr (handled above),
+    //        data2=rhs_value (when used as assignment, 0 otherwise)
+    if kind == 37 {
+        uint32 idx_rhs = ast_data2(node)
+        uint64 wir = idx_rhs
+        if wir != 0 { dce_scan_node(wir) }
+    }
+    // FieldAccess: data3=value_expr (when used as assignment)
+    if kind == 36 {
+        uint32 fa_val = ast_data3(node)
+        uint64 wfv = fa_val
+        if wfv != 0 { dce_scan_node(wfv) }
+    }
+    // PtrStore: data2=val_expr (a node)
+    if kind == 42 {
+        uint32 ps_val = ast_data2(node)
+        uint64 wpv = ps_val
+        if wpv != 0 { dce_scan_node(wpv) }
+    }
+}
+
+// Main DCE entry point: scan module, build live set with transitive closure
+@export
+fn dce_scan(uint64 mod_node) {
+    // Phase 1: Build function map from module children
+    uint32 child = ast_child(mod_node)
+    uint64 wchild = child
+    while wchild != 0 {
+        uint32 ck = ast_kind(wchild)
+        if ck == 2 {
+            uint32 name_tok = ast_data1(wchild)
+            dce_register_fn(name_tok, wchild)
+            // Seed with main and @export functions
+            uint64 wnt = name_tok
+            if tok_matches(wnt, "main", 4) != 0 {
+                dce_add(wnt)
+            }
+            // Check if @export (data4 bit 2)
+            uint32 ann = ast_data4(wchild)
+            uint64 is_exp = ann & 4
+            if is_exp != 0 {
+                dce_add(wnt)
+            }
+        }
+        uint32 nxt = ast_next(wchild)
+        wchild = nxt
+    }
+
+    // Phase 2: Transitive closure — scan bodies of live functions
+    // Keep iterating until no new functions are added
+    uint64 prev_count = 0
+    while prev_count != dce_count {
+        prev_count = dce_count
+        uint64 i = 0
+        // Scan from the beginning each time (simple but correct)
+        while i < dce_count {
+            uint64 entry = dce_table + i * 4
+            uint32 live_tok = 0
+            unsafe { *(entry as uint32) -> live_tok }
+            uint64 wlt = live_tok
+            // Find the function body
+            uint64 fn_node = dce_lookup_fn(wlt)
+            if fn_node != 0 {
+                // Scan the function body (children after params)
+                dce_scan_node(fn_node)
+            }
+            i = i + 1
+        }
+    }
+}
+
+// Check if a function should be kept (is in the live set)
+@export
+fn dce_is_live(uint64 name_tok) -> uint64 {
+    if dce_enabled == 0 { return 1 }
+    if dce_count == 0 { return 1 }
+    return dce_has(name_tok)
+}
+
+// ---------------------------------------------------------------------------
 // ELF emission
 // ---------------------------------------------------------------------------
 

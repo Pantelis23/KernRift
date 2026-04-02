@@ -522,6 +522,123 @@ fn main() {
     exit(r)
 }' 42
 
+# --- Dead Code Elimination test ---
+echo ""
+echo "--- DCE test ---"
+TOTAL=$((TOTAL + 1))
+
+# Program with an unused function — DCE should eliminate it
+cat > /tmp/krc_dce_unused_$$.kr << 'KRSRC'
+fn unused_big() -> uint64 {
+    uint64 a = 1
+    uint64 b = 2
+    uint64 c = 3
+    uint64 d = 4
+    uint64 e = 5
+    uint64 f = a + b + c + d + e
+    uint64 g = f * 2
+    uint64 h = g + f
+    uint64 i = h * g + f
+    uint64 j = i + h + g + f + e + d + c + b + a
+    return j
+}
+fn unused_big2() -> uint64 {
+    uint64 a = 10
+    uint64 b = 20
+    uint64 c = 30
+    uint64 d = 40
+    uint64 e = 50
+    uint64 f = a + b + c + d + e
+    uint64 g = f * 3
+    uint64 h = g + f
+    uint64 i = h * g + f
+    uint64 j = i + h + g + f + e + d + c + b + a
+    return j
+}
+fn unused_big3() -> uint64 {
+    uint64 a = 100
+    uint64 b = 200
+    uint64 c = 300
+    uint64 d = 400
+    uint64 e = 500
+    uint64 f = a + b + c + d + e
+    uint64 g = f * 4
+    uint64 h = g + f
+    uint64 i = h * g + f
+    uint64 j = i + h + g + f + e + d + c + b + a
+    return j
+}
+fn main() { exit(42) }
+KRSRC
+
+# Same program but all functions are called
+cat > /tmp/krc_dce_used_$$.kr << 'KRSRC'
+fn used_big() -> uint64 {
+    uint64 a = 1
+    uint64 b = 2
+    uint64 c = 3
+    uint64 d = 4
+    uint64 e = 5
+    uint64 f = a + b + c + d + e
+    uint64 g = f * 2
+    uint64 h = g + f
+    uint64 i = h * g + f
+    uint64 j = i + h + g + f + e + d + c + b + a
+    return j
+}
+fn used_big2() -> uint64 {
+    uint64 a = 10
+    uint64 b = 20
+    uint64 c = 30
+    uint64 d = 40
+    uint64 e = 50
+    uint64 f = a + b + c + d + e
+    uint64 g = f * 3
+    uint64 h = g + f
+    uint64 i = h * g + f
+    uint64 j = i + h + g + f + e + d + c + b + a
+    return j
+}
+fn used_big3() -> uint64 {
+    uint64 a = 100
+    uint64 b = 200
+    uint64 c = 300
+    uint64 d = 400
+    uint64 e = 500
+    uint64 f = a + b + c + d + e
+    uint64 g = f * 4
+    uint64 h = g + f
+    uint64 i = h * g + f
+    uint64 j = i + h + g + f + e + d + c + b + a
+    return j
+}
+fn main() {
+    uint64 r = used_big() + used_big2() + used_big3()
+    exit(r & 0xFF)
+}
+KRSRC
+
+if $KRC /tmp/krc_dce_unused_$$.kr -o /tmp/krc_dce_small_$$ > /dev/null 2>&1 && \
+   $KRC /tmp/krc_dce_used_$$.kr -o /tmp/krc_dce_large_$$ > /dev/null 2>&1; then
+    chmod +x /tmp/krc_dce_small_$$ /tmp/krc_dce_large_$$
+    small_size=$(wc -c < /tmp/krc_dce_small_$$)
+    large_size=$(wc -c < /tmp/krc_dce_large_$$)
+    # Verify the unused-function binary is smaller (DCE removed dead code)
+    # Also verify the unused-function binary runs correctly
+    /tmp/krc_dce_small_$$ > /dev/null 2>&1; small_exit=$?
+    if [ "$small_size" -lt "$large_size" ] && [ "$small_exit" = "42" ]; then
+        PASS=$((PASS + 1))
+        echo "  dce_eliminates_unused: PASS (unused=$small_size < used=$large_size bytes, exit=$small_exit)"
+    else
+        echo "  dce_eliminates_unused: FAIL (unused=$small_size vs used=$large_size, exit=$small_exit)"
+        FAIL=$((FAIL + 1))
+    fi
+else
+    echo "  dce_eliminates_unused: FAIL (compilation failed)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f /tmp/krc_dce_unused_$$.kr /tmp/krc_dce_used_$$.kr /tmp/krc_dce_small_$$ /tmp/krc_dce_large_$$
+
 # --- Bootstrap test ---
 echo ""
 echo "--- Bootstrap test ---"

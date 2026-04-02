@@ -953,6 +953,7 @@ fn parse_module() -> uint64 {
         uint64 ann_noreturn = 0
         uint64 ann_naked = 0
         uint64 ann_packed = 0
+        uint64 ann_export = 0
         while kind == 21 {
             advance_tok()
             // Read annotation name
@@ -984,6 +985,8 @@ fn parse_module() -> uint64 {
                 uint64 ann_ch4 = 0
                 unsafe { *(ann_a4 as uint8) -> ann_ch4 }
                 if ann_ch4 == 112 { ann_packed = 1 }
+                // Check export (6 chars, starts with 'e' = 101)
+                if ann_ch4 == 101 { ann_export = 1 }
             }
             // Skip annotation arguments if present: @section("...")
             if eat(10) != 0 {
@@ -997,8 +1000,8 @@ fn parse_module() -> uint64 {
 
         if kind == 60 {
             uint64 fn_node = parse_fn_decl()
-            // Store annotation flags in data4: bit 0 = noreturn, bit 1 = naked
-            uint32 ann_flags = ann_noreturn | (ann_naked << 1)
+            // Store annotation flags in data4: bit 0 = noreturn, bit 1 = naked, bit 2 = export
+            uint32 ann_flags = ann_noreturn | (ann_naked << 1) | (ann_export << 2)
             if ann_flags != 0 {
                 ast_set_data4(fn_node, ann_flags)
             }
