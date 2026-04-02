@@ -1,0 +1,84 @@
+// KernRift Standard Library — I/O Operations
+
+// Read entire file into a string (allocates buffer, returns pointer)
+// Returns 0 on failure
+fn read_file(uint64 path) -> uint64 {
+    uint64 fd = file_open(path, 0)
+    uint64 size = file_size(fd)
+    if size == 0 { file_close(fd); return 0 }
+    uint64 buf = alloc(size + 1)
+    file_read(fd, buf, size)
+    file_close(fd)
+    // Null-terminate
+    uint64 tp = buf + size
+    uint8 z = 0
+    unsafe { *(tp as uint8) = z }
+    return buf
+}
+
+// Write string to file (creates/overwrites)
+fn write_file(uint64 path, uint64 content) {
+    uint64 len = str_len(content)
+    uint64 fd = file_open(path, 1)
+    file_write(fd, content, len)
+    file_close(fd)
+}
+
+// Append string to file
+fn append_file(uint64 path, uint64 content) {
+    // Read existing content
+    uint64 existing = read_file(path)
+    uint64 new_content = content
+    if existing != 0 {
+        new_content = str_cat(existing, content)
+    }
+    write_file(path, new_content)
+}
+
+// Read a line from stdin (up to max_len bytes)
+// Returns allocated string
+fn read_line(uint64 max_len) -> uint64 {
+    uint64 buf = alloc(max_len + 1)
+    uint64 i = 0
+    uint8[1] byte_buf
+    while i < max_len {
+        file_read(0, byte_buf, 1)
+        uint64 ch = byte_buf[0]
+        if ch == 10 { break }
+        if ch == 0 { break }
+        uint64 p = buf + i
+        uint8 cb = ch
+        unsafe { *(p as uint8) = cb }
+        i = i + 1
+    }
+    uint64 tp = buf + i
+    uint8 z = 0
+    unsafe { *(tp as uint8) = z }
+    return buf
+}
+
+// Print a number followed by newline
+fn print_int(uint64 val) {
+    println(val)
+}
+
+// Print a string followed by newline
+fn print_line(uint64 s) {
+    println(s)
+}
+
+// Print formatted: "name = value\n"
+fn print_kv(uint64 key, uint64 val) {
+    print(key)
+    print(" = ")
+    println(val)
+}
+
+// Print N spaces (indentation)
+fn print_indent(uint64 n) {
+    uint64 i = 0
+    while i < n {
+        print(" ")
+        i = i + 1
+    }
+}

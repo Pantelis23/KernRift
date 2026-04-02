@@ -1,0 +1,123 @@
+// KernRift Standard Library — Formatting
+
+// Format integer as hex string: fmt_hex(255) → "0xFF"
+fn fmt_hex(uint64 val) -> uint64 {
+    if val == 0 {
+        uint64 r = alloc(4)
+        uint8 z0 = 48; uint8 z1 = 120; uint8 z2 = 48; uint8 z3 = 0
+        unsafe { *(r as uint8) = z0 }
+        uint64 r1 = r + 1; unsafe { *(r1 as uint8) = z1 }
+        uint64 r2 = r + 2; unsafe { *(r2 as uint8) = z2 }
+        uint64 r3 = r + 3; unsafe { *(r3 as uint8) = z3 }
+        return r
+    }
+    uint8[16] buf
+    uint64 len = 0
+    uint64 tmp = val
+    while tmp > 0 {
+        uint64 digit = tmp & 0xF
+        uint8 ch = 0
+        if digit < 10 { ch = digit + 48 }
+        else { ch = digit - 10 + 97 }
+        buf[len] = ch
+        len = len + 1
+        tmp = tmp >> 4
+    }
+    uint64 result = alloc(len + 3)
+    uint8 p0 = 48; uint8 p1 = 120
+    unsafe { *(result as uint8) = p0 }
+    uint64 rp1 = result + 1
+    unsafe { *(rp1 as uint8) = p1 }
+    uint64 i = 0
+    while i < len {
+        uint64 si = len - 1 - i
+        uint64 dp = result + 2 + i
+        uint64 bv = buf[si]
+        uint8 bb = bv
+        unsafe { *(dp as uint8) = bb }
+        i = i + 1
+    }
+    uint64 tp = result + 2 + len
+    uint8 z = 0
+    unsafe { *(tp as uint8) = z }
+    return result
+}
+
+// Format integer as binary: fmt_bin(10) → "0b1010"
+fn fmt_bin(uint64 val) -> uint64 {
+    if val == 0 {
+        uint64 r = alloc(4)
+        uint8 z0 = 48; uint8 z1 = 98; uint8 z2 = 48; uint8 z3 = 0
+        unsafe { *(r as uint8) = z0 }
+        uint64 r1 = r + 1; unsafe { *(r1 as uint8) = z1 }
+        uint64 r2 = r + 2; unsafe { *(r2 as uint8) = z2 }
+        uint64 r3 = r + 3; unsafe { *(r3 as uint8) = z3 }
+        return r
+    }
+    uint8[64] buf
+    uint64 len = 0
+    uint64 tmp = val
+    while tmp > 0 {
+        uint8 bit = tmp & 1
+        buf[len] = bit + 48
+        len = len + 1
+        tmp = tmp >> 1
+    }
+    uint64 result = alloc(len + 3)
+    uint8 p0 = 48; uint8 p1 = 98
+    unsafe { *(result as uint8) = p0 }
+    uint64 rp1 = result + 1
+    unsafe { *(rp1 as uint8) = p1 }
+    uint64 i = 0
+    while i < len {
+        uint64 si = len - 1 - i
+        uint64 dp = result + 2 + i
+        uint64 bv = buf[si]
+        uint8 bb = bv
+        unsafe { *(dp as uint8) = bb }
+        i = i + 1
+    }
+    uint64 tp = result + 2 + len
+    uint8 z = 0
+    unsafe { *(tp as uint8) = z }
+    return result
+}
+
+// Pad string on the left: pad_left("42", 5, ' ') → "   42"
+fn pad_left(uint64 s, uint64 width, uint64 pad_char) -> uint64 {
+    uint64 slen = str_len(s)
+    if slen >= width { return str_copy(s) }
+    uint64 pad_count = width - slen
+    uint64 result = alloc(width + 1)
+    uint8 pc = pad_char
+    uint64 i = 0
+    while i < pad_count {
+        uint64 p = result + i
+        unsafe { *(p as uint8) = pc }
+        i = i + 1
+    }
+    memcpy(result + pad_count, s, slen)
+    uint64 tp = result + width
+    uint8 z = 0
+    unsafe { *(tp as uint8) = z }
+    return result
+}
+
+// Pad string on the right: pad_right("42", 5, ' ') → "42   "
+fn pad_right(uint64 s, uint64 width, uint64 pad_char) -> uint64 {
+    uint64 slen = str_len(s)
+    if slen >= width { return str_copy(s) }
+    uint64 result = alloc(width + 1)
+    memcpy(result, s, slen)
+    uint8 pc = pad_char
+    uint64 i = slen
+    while i < width {
+        uint64 p = result + i
+        unsafe { *(p as uint8) = pc }
+        i = i + 1
+    }
+    uint64 tp = result + width
+    uint8 z = 0
+    unsafe { *(tp as uint8) = z }
+    return result
+}

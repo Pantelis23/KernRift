@@ -1,0 +1,55 @@
+// KernRift Standard Library — Memory Operations
+
+// Reallocate: grow a buffer, copy existing content
+fn realloc(uint64 ptr, uint64 old_size, uint64 new_size) -> uint64 {
+    uint64 new_buf = alloc(new_size)
+    uint64 copy_size = old_size
+    if new_size < old_size { copy_size = new_size }
+    memcpy(new_buf, ptr, copy_size)
+    return new_buf
+}
+
+// Compare two memory regions, returns 0 if equal
+fn memcmp(uint64 a, uint64 b, uint64 len) -> uint64 {
+    uint64 i = 0
+    while i < len {
+        uint64 pa = a + i
+        uint64 pb = b + i
+        uint64 ca = 0
+        uint64 cb = 0
+        unsafe { *(pa as uint8) -> ca }
+        unsafe { *(pb as uint8) -> cb }
+        if ca != cb { return 1 }
+        i = i + 1
+    }
+    return 0
+}
+
+// Zero a memory region
+fn memzero(uint64 ptr, uint64 len) {
+    memset(ptr, 0, len)
+}
+
+// Simple bump allocator for arena-style allocation
+static uint64 arena_buf = 0
+static uint64 arena_pos = 0
+static uint64 arena_cap = 0
+
+fn arena_init(uint64 size) {
+    arena_buf = alloc(size)
+    arena_pos = 0
+    arena_cap = size
+}
+
+fn arena_alloc(uint64 size) -> uint64 {
+    // Align to 8 bytes
+    uint64 aligned = (size + 7) & ~7
+    if arena_pos + aligned > arena_cap { return 0 }
+    uint64 result = arena_buf + arena_pos
+    arena_pos = arena_pos + aligned
+    return result
+}
+
+fn arena_reset() {
+    arena_pos = 0
+}
