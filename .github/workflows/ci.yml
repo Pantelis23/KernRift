@@ -152,15 +152,6 @@ jobs:
           [ "$X64_EXIT" -eq 42 ] && echo "PASS: macOS x86_64" || { echo "FAIL: macOS x86_64 (got $X64_EXIT)"; FAIL=1; }
           exit $FAIL
 
-      - name: Run macOS x86_64 binary (via Rosetta 2)
-        run: |
-          chmod +x /tmp/bins/cross-macos-x64
-          codesign --force -s - /tmp/bins/cross-macos-x64
-          arch -x86_64 /tmp/bins/cross-macos-x64
-          EXIT_CODE=$?
-          echo "Exit code: $EXIT_CODE"
-          [ "$EXIT_CODE" -eq 42 ] && echo "PASS: macOS x86_64 exit(42) via Rosetta" || { echo "FAIL: expected 42, got $EXIT_CODE"; exit 1; }
-
   test-windows-x64:
     name: Test (Windows x86_64)
     needs: build-test
