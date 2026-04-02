@@ -15,8 +15,8 @@ A self-hosted systems language compiler for kernel-first development. KernRift c
 ## Quickstart
 
 ```bash
-# Install (gets both krc compiler and kr runner)
-bash install.sh
+# Install (gets krc compiler, kr runner, and stdlib)
+curl -sSf https://raw.githubusercontent.com/Pantelis23/KernRift/main/install.sh | sh
 
 # Compile to fat binary (default: x86_64 + ARM64, LZ4-compressed)
 krc hello.kr -o hello.krbo
@@ -42,16 +42,18 @@ krc lc program.kr
 
 | Platform | CPU | Time |
 |----------|-----|------|
-| Linux x86_64 | AMD Ryzen 9 7900X | 16ms |
+| Linux x86_64 | AMD Ryzen 9 7900X | 20ms |
 | Windows 11 x86_64 | Intel Core Ultra 9 275HX | 44ms |
 | Linux ARM64 | ARM Cortex-A72 (Pi 400) | 192ms |
 
 ## Install
 
-**Linux / macOS** (installs both `krc` and `kr`):
+**Linux / macOS** (installs `krc`, `kr`, and stdlib to `~/.local/`):
 ```bash
-bash install.sh
+curl -sSf https://raw.githubusercontent.com/Pantelis23/KernRift/main/install.sh | sh
 ```
+
+This installs `krc` and `kr` to `~/.local/bin/` and the standard library to `~/.local/share/kernrift/`.
 
 **From source** (requires [bootstrap compiler](https://github.com/Pantelis23/KernRift-bootstrap)):
 ```bash
@@ -67,7 +69,8 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 ## Language
 
 ```kr
-import "utils.kr"
+import "std/string.kr"
+import "std/io.kr"
 
 struct Point {
     uint64 x
@@ -92,6 +95,10 @@ fn main() {
     p.x = fib(10)
     p.y = 42
 
+    uint64 buf = alloc(64)
+    uint64 s = int_to_str(p.sum(), buf)
+    println(s)
+
     match p.x {
         55 => { exit(p.sum()) }
     }
@@ -99,11 +106,34 @@ fn main() {
 }
 ```
 
-Types: `uint8/16/32/64`, `int8/16/32/64`, `bool` (`true`/`false`), `char`, structs, enums, arrays. Control: `if/else`, `while`, `for..in`, `break/continue`, `match`. Functions up to 8 args with method syntax (`fn Struct.method`). Imports (`import "file.kr"`), type aliases (`type Size = uint64`), nested struct access (`a.b.c`). Unsafe pointer access for kernel memory operations.
+Types: `uint8/16/32/64`, `int8/16/32/64`, `bool` (`true`/`false`), `char`, structs, enums, arrays. Control: `if/else`, `while`, `for..in`, `break/continue`, `match`. Functions up to 8 args with method syntax (`fn Struct.method`). Imports (`import "file.kr"`) with recursive dependency resolution and stdlib search paths, type aliases (`type Size = uint64`), nested struct access (`a.b.c`). Unsafe pointer access for kernel memory operations.
+
+## Standard Library
+
+7 modules (828 lines) in `std/`:
+
+| Module | Functions |
+|--------|-----------|
+| `std/string.kr` | `str_cat`, `str_copy`, `str_starts`, `str_ends`, `str_find_byte`, `str_contains`, `str_sub`, `str_at`, `str_to_int`, `int_to_str`, `str_repeat`, `str_trim` |
+| `std/io.kr` | `read_file`, `write_file`, `append_file`, `read_line`, `print_kv`, `print_indent` |
+| `std/math.kr` | `min`, `max`, `abs`, `clamp`, `pow`, `sqrt_int`, `gcd`, `is_prime` |
+| `std/fmt.kr` | `fmt_hex`, `fmt_bin`, `pad_left`, `pad_right` |
+| `std/mem.kr` | `realloc`, `memcmp`, `memzero`, `arena_init`, `arena_alloc`, `arena_reset` |
+| `std/vec.kr` | `vec_new`, `push`, `get`, `set`, `pop`, `remove`, `contains` |
+| `std/map.kr` | `map_new`, `set`, `get`, `has` |
+
+Import with `import "std/string.kr"` etc. The compiler searches `~/.local/share/kernrift/` automatically.
+
+## Editor Support
+
+A VS Code extension (v0.2.0) is available on the VS Code Marketplace:
+
+- Syntax highlighting (TextMate grammar)
+- LSP server with diagnostics (`krc check`), completions, hover docs, and go-to-definition
 
 ## Architecture
 
-8,753 lines, 12 source files with imports. Self-compiles to 234KB in 16ms (AMD Ryzen 9 7900X). 53 tests, bootstrap fixed point verified on 3 platforms.
+10,000+ lines of KernRift across 12 source files + 7 stdlib modules (828 lines). Self-compiles to a 255KB native binary in 20ms (AMD Ryzen 9 7900X). 70 tests, bootstrap fixed point verified on 3 platforms.
 
 | File | Purpose |
 |------|---------|
@@ -114,6 +144,7 @@ Types: `uint8/16/32/64`, `int8/16/32/64`, `bool` (`true`/`false`), `char`, struc
 | `analysis.kr` | Safety passes |
 | `living.kr` | Pattern detection + fitness |
 | `format_*.kr` | ELF, Mach-O, PE, AR, KRBO, KrboFat |
+| `std/*.kr` | Standard library (7 modules, 828 lines) |
 
 ## Bootstrap
 

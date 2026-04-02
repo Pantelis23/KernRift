@@ -3,8 +3,8 @@
 ## Install
 
 ```bash
-# Linux / macOS (auto-detects x86_64 or ARM64)
-bash install.sh
+# Linux / macOS (installs krc, kr, and stdlib to ~/.local/)
+curl -sSf https://raw.githubusercontent.com/Pantelis23/KernRift/main/install.sh | sh
 
 # Or download directly (x86_64)
 curl -L -o krc https://github.com/Pantelis23/KernRift/releases/latest/download/krc-linux-x86_64
@@ -12,6 +12,8 @@ curl -L -o kr  https://github.com/Pantelis23/KernRift/releases/latest/download/k
 chmod +x krc kr
 sudo mv krc kr /usr/local/bin/
 ```
+
+This installs `krc` and `kr` to `~/.local/bin/` and the standard library to `~/.local/share/kernrift/`.
 
 ## Your First Program
 
@@ -135,3 +137,62 @@ krc lc module.kr        # living compiler patterns + fitness score
 | Windows ARM64 | Yes | Yes | -- |
 | macOS x86_64 | Yes | WIP | -- |
 | macOS ARM64 | Yes | WIP | -- |
+
+## Standard Library
+
+KernRift ships with a standard library (`std/`) that provides common utilities. Import any module with `import "std/module.kr"`. The compiler automatically searches `~/.local/share/kernrift/` for stdlib files.
+
+### Usage examples
+
+```kr
+import "std/string.kr"
+import "std/vec.kr"
+import "std/math.kr"
+
+fn main() {
+    // String operations
+    uint64 buf = alloc(256)
+    uint64 s = int_to_str(42, buf)
+    println(s)
+
+    // Dynamic arrays
+    uint64 v = vec_new(8)
+    push(v, 10)
+    push(v, 20)
+    push(v, 30)
+    uint64 val = get(v, 1)  // 20
+
+    // Math
+    uint64 m = max(10, 20)  // 20
+    uint64 g = gcd(48, 18)  // 6
+
+    exit(0)
+}
+```
+
+### Available modules
+
+| Module | Key functions |
+|--------|---------------|
+| `std/string.kr` | `str_cat`, `str_copy`, `str_starts`, `str_ends`, `str_find_byte`, `str_contains`, `str_sub`, `str_at`, `str_to_int`, `int_to_str`, `str_repeat`, `str_trim` |
+| `std/io.kr` | `read_file`, `write_file`, `append_file`, `read_line`, `print_kv`, `print_indent` |
+| `std/math.kr` | `min`, `max`, `abs`, `clamp`, `pow`, `sqrt_int`, `gcd`, `is_prime` |
+| `std/fmt.kr` | `fmt_hex`, `fmt_bin`, `pad_left`, `pad_right` |
+| `std/mem.kr` | `realloc`, `memcmp`, `memzero`, `arena_init`, `arena_alloc`, `arena_reset` |
+| `std/vec.kr` | `vec_new`, `push`, `get`, `set`, `pop`, `remove`, `contains` |
+| `std/map.kr` | `map_new`, `set`, `get`, `has` |
+
+## Editor Setup
+
+### VS Code
+
+Install the **KernRift** extension from the VS Code Marketplace (v0.2.0). It provides:
+
+- **Syntax highlighting** via TextMate grammar
+- **LSP server** with:
+  - Diagnostics (powered by `krc check`)
+  - Completions for keywords, builtins, and imported symbols
+  - Hover documentation
+  - Go-to-definition
+
+The extension activates automatically for `.kr` files.

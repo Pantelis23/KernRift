@@ -14,7 +14,7 @@ make build       # bootstrap → krc → krc2 (self-compiled)
 ## Test
 
 ```sh
-make test        # 53 tests (arithmetic, control flow, functions, structs, imports, match, etc.)
+make test        # 70 tests (arithmetic, control flow, functions, structs, imports, match, stdlib, etc.)
 make bootstrap   # verify krc3 == krc4 (fixed point)
 ```
 
@@ -38,6 +38,18 @@ All compiler source is in `src/`:
 | `living.kr` | Living compiler (7 patterns, CI gating) |
 | `format_*.kr` | Output formats (ELF, Mach-O, PE, AR, KRBO) |
 | `main.kr` | CLI and compilation driver |
+
+Standard library modules are in `std/` (7 modules, 828 lines):
+
+| Module | Purpose |
+|--------|---------|
+| `std/string.kr` | String manipulation (cat, copy, find, sub, trim, int conversion) |
+| `std/io.kr` | File I/O helpers (read_file, write_file, read_line) |
+| `std/math.kr` | Math utilities (min, max, clamp, pow, sqrt, gcd, primes) |
+| `std/fmt.kr` | Formatting (hex, binary, padding) |
+| `std/mem.kr` | Memory management (realloc, memcmp, arena allocator) |
+| `std/vec.kr` | Dynamic array |
+| `std/map.kr` | Hash map |
 
 ## Guidelines
 
