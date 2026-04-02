@@ -1964,18 +1964,13 @@ fn gen_expr(uint64 node) {
             if target_os == 2 { emit_mov_rcx_rax() } else { emit_mov_rdi_rax() }
         }
 
-        // Windows: allocate shadow space before internal calls
-        if target_os == 2 {
-            emit_win_alloc_stack(0x20)
-        }
-
         // emit: call rel32 (placeholder)
         emit_byte(0xE8)
         uint64 fixup_off = out_len
         emit_u32_le(0)
 
-        // Windows: free shadow space after call
-        if target_os == 2 {
+        // (No shadow space for internal calls — we control both caller and callee)
+        if 0 == 1 {
             emit_win_free_stack(0x20)
         }
 
