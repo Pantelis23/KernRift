@@ -415,45 +415,95 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
         uint64 main_off = find_main_offset()
         uint64 pe_entry = 0x1000 + main_off - text_start
         patch_u32(0x68, pe_entry)
-        // PE: patch .text section sizes (include code + statics + strings)
-        // text_size includes everything generated: code + statics + strings
-        uint64 text_aligned = (text_size + 0x1FF) & ~0x1FF
-        // Pad .text to file alignment
-        while codegen_output_len() < header_size + text_aligned {
-            emit_byte(0)
-        }
-        // Emit .idata section — RVA must be after .text
-        uint64 text_va_size = (text_size + 0xFFF) & ~0xFFF
-        uint64 idata_rva = 0x1000 + text_va_size
-        uint64 iat_rva_val = emit_pe_idata(idata_rva)
-        pe_iat_rva = iat_rva_val
-        // Patch .text section header: VirtualSize and RawSize
-        // .text section header starts at offset 0x198 in PE32+ (DOS=64 + PE_sig=4 + COFF=20 + Optional=240 = 328 = 0x148)
-        // Section headers at 0x148: .text at 0x148, .idata at 0x148+40=0x170
-        // .text VirtualSize at 0x148+8, RawSize at 0x148+16, RawOffset at 0x148+20
-        uint64 text_hdr = 0x148
-        patch_u32(text_hdr + 8, text_size)
-        patch_u32(text_hdr + 16, text_aligned)
-        // .idata section header: VirtualAddress and RawOffset
-        uint64 idata_hdr = 0x170
-        patch_u32(idata_hdr + 12, idata_rva)              // VirtualAddress
-        uint64 idata_file_off = header_size + text_aligned
-        patch_u32(idata_hdr + 20, idata_file_off)         // PointerToRawData
-        // Import directory in data directories (offset 0xD0 = opt_hdr + 0x78 + 8)
-        // Data directory[1] = import: RVA at 0xD0, size at 0xD4
-        patch_u32(0xD0, idata_rva)
-        // SizeOfCode
-        patch_u32(0x5C, text_aligned)
-        // ImageSize = headers + text_va + idata_va (each section-aligned to 0x1000)
-        uint64 image_size = 0x1000 + text_va_size + 0x1000
-        patch_u32(0x90, image_size)
-        // Resolve Windows IAT fixups
-        if target_os == 2 {
-            if arch == 0 {
-                resolve_win_iat_fixups(text_start, iat_rva_val)
-            } else {
-                resolve_a64_win_iat_fixups(text_start, iat_rva_val)
-            }
+
+        uint64 text_aligned = 0
+        uint64 text_va_size = 0
+        uint64 idata_rva = 0
+
+        if arch == 1 {
+            // ARM64 PE: separate .data section for statics (W^X enforcement)
+            // .text = code + strings only (RX)
+            // .data = statics (RW)
+            // .idata = imports (RW)
+            uint64 code_end = data_start  // data_start from earlier = end of code
+            uint64 code_with_strings = codegen_output_len() - text_start
+            // Rewind: remove statics from output (they were emitted into .text)
+            // We can't rewind, but we can just note where code+strings end vs statics begin
+            // Actually, statics are already in the buffer. We'll re-emit them into .data.
+            // For the .text section, include code + statics + strings (the whole text_size)
+            // but mark it as RX. Then emit .data with a copy of statics.
+            text_aligned = (text_size + 0x1FF) & ~0x1FF
+            while codegen_output_len() < header_size + text_aligned { emit_byte(0) }
+            // Emit .data section: re-emit statics
+            uint64 data_file_off = codegen_output_len()
+            emit_static_data()
+            uint64 data_raw_size = codegen_output_len() - data_file_off
+            uint64 data_aligned = (data_raw_size + 0x1FF) & ~0x1FF
+            if data_aligned == 0 { data_aligned = 0x200 }
+            while codegen_output_len() < data_file_off + data_aligned { emit_byte(0) }
+            // Re-resolve static fixups to point into .data
+            text_va_size = (text_size + 0xFFF) & ~0xFFF
+            uint64 data_rva = 0x1000 + text_va_size
+            uint64 data_va_size = (data_raw_size + 0xFFF) & ~0xFFF
+            if data_va_size == 0 { data_va_size = 0x1000 }
+            // Static fixups: re-resolve with data_file_off as the new base
+            resolve_static_fixups_a64(data_file_off)
+            // Emit .idata
+            idata_rva = 0x1000 + text_va_size + data_va_size
+            uint64 iat_rva_val = emit_pe_idata(idata_rva)
+            pe_iat_rva = iat_rva_val
+            // Patch .text header at 0x148
+            uint64 t_hdr = 0x148
+            patch_u32(t_hdr + 8, text_size)        // VirtualSize
+            patch_u32(t_hdr + 16, text_aligned)     // RawSize
+            // Patch .data header at 0x170
+            uint64 d_hdr = 0x170
+            patch_u32(d_hdr + 8, data_raw_size)     // VirtualSize
+            patch_u32(d_hdr + 12, data_rva)          // VirtualAddress
+            patch_u32(d_hdr + 16, data_aligned)      // RawSize
+            patch_u32(d_hdr + 20, data_file_off)     // PointerToRawData
+            // Patch .idata header at 0x198
+            uint64 i_hdr = 0x198
+            uint64 idata_file_off = data_file_off + data_aligned
+            patch_u32(i_hdr + 8, pe_idata_size())    // VirtualSize
+            patch_u32(i_hdr + 12, idata_rva)          // VirtualAddress
+            patch_u32(i_hdr + 16, pe_idata_size())    // RawSize
+            patch_u32(i_hdr + 20, idata_file_off)     // PointerToRawData
+            // Patch import directory RVA
+            patch_u32(0xD0, idata_rva)
+            // Patch SizeOfCode
+            patch_u32(0x5C, text_aligned)
+            // Patch ImageSize
+            uint64 image_size = 0x1000 + text_va_size + data_va_size + 0x1000
+            patch_u32(0x90, image_size)
+            // Resolve ARM64 IAT fixups
+            resolve_a64_win_iat_fixups(text_start, iat_rva_val)
+        } else {
+            // x86_64 PE: statics in .text (RWX) — x86_64 allows this
+            text_aligned = (text_size + 0x1FF) & ~0x1FF
+            while codegen_output_len() < header_size + text_aligned { emit_byte(0) }
+            text_va_size = (text_size + 0xFFF) & ~0xFFF
+            idata_rva = 0x1000 + text_va_size
+            uint64 iat_rva_val = emit_pe_idata(idata_rva)
+            pe_iat_rva = iat_rva_val
+            // Patch .text header at 0x148
+            uint64 text_hdr = 0x148
+            patch_u32(text_hdr + 8, text_size)
+            patch_u32(text_hdr + 16, text_aligned)
+            // Patch .idata header at 0x170
+            uint64 idata_hdr = 0x170
+            patch_u32(idata_hdr + 12, idata_rva)
+            uint64 idata_file_off = header_size + text_aligned
+            patch_u32(idata_hdr + 20, idata_file_off)
+            // Import directory RVA
+            patch_u32(0xD0, idata_rva)
+            // SizeOfCode
+            patch_u32(0x5C, text_aligned)
+            // ImageSize
+            uint64 image_size = 0x1000 + text_va_size + 0x1000
+            patch_u32(0x90, image_size)
+            // Resolve x86_64 IAT fixups
+            resolve_win_iat_fixups(text_start, iat_rva_val)
         }
     }
 

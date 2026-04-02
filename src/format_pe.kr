@@ -266,7 +266,7 @@ fn emit_pe_headers_a64(uint64 code_size) -> uint64 {
     emit_u32_le(0x40)
     emit_byte(0x50); emit_byte(0x45); emit_byte(0); emit_byte(0)
     emit_u16_le(0xAA64)     // ARM64
-    emit_u16_le(2)
+    emit_u16_le(3)          // 3 sections: .text + .data + .idata
     emit_u32_le(0); emit_u32_le(0); emit_u32_le(0)
     emit_u16_le(240); emit_u16_le(0x0022)
     emit_u16_le(0x020B); emit_byte(14); emit_byte(0)
@@ -287,18 +287,24 @@ fn emit_pe_headers_a64(uint64 code_size) -> uint64 {
         else { emit_u32_le(0); emit_u32_le(0) }
         i = i + 1
     }
-    // .text
+    // .text (RX only — ARM64 W^X enforcement)
     emit_byte(0x2E); emit_byte(0x74); emit_byte(0x65); emit_byte(0x78)
     emit_byte(0x74); emit_byte(0); emit_byte(0); emit_byte(0)
-    emit_u32_le(text_aligned); emit_u32_le(0x1000); emit_u32_le(text_aligned)
+    emit_u32_le(0); emit_u32_le(0x1000); emit_u32_le(0)  // VirtSize+RawSize patched later
     emit_u32_le(0x200); emit_u32_le(0); emit_u32_le(0)
-    emit_u16_le(0); emit_u16_le(0); emit_u32_le(0xE0000020)
+    emit_u16_le(0); emit_u16_le(0); emit_u32_le(0x60000020)  // CODE|EXECUTE|READ (no write)
+    // .data (RW — for static variables)
+    emit_byte(0x2E); emit_byte(0x64); emit_byte(0x61); emit_byte(0x74)
+    emit_byte(0x61); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_u32_le(0); emit_u32_le(0); emit_u32_le(0)  // all patched later
+    emit_u32_le(0); emit_u32_le(0); emit_u32_le(0)
+    emit_u16_le(0); emit_u16_le(0); emit_u32_le(0xC0000040)  // INITIALIZED_DATA|READ|WRITE
     // .idata
     emit_byte(0x2E); emit_byte(0x69); emit_byte(0x64); emit_byte(0x61)
     emit_byte(0x74); emit_byte(0x61); emit_byte(0); emit_byte(0)
-    emit_u32_le(idata_size); emit_u32_le(0x2000); emit_u32_le(idata_size)
-    emit_u32_le(0x200 + text_aligned); emit_u32_le(0); emit_u32_le(0)
-    emit_u16_le(0); emit_u16_le(0); emit_u32_le(0xC0000040)
+    emit_u32_le(0); emit_u32_le(0); emit_u32_le(0)  // patched later
+    emit_u32_le(0); emit_u32_le(0); emit_u32_le(0)
+    emit_u16_le(0); emit_u16_le(0); emit_u32_le(0xC0000040)  // INITIALIZED_DATA|READ|WRITE
     while out_len < 0x200 { emit_byte(0) }
     return 0x200
 }
