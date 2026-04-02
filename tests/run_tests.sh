@@ -476,6 +476,52 @@ fn main() { early_init() }' 0
 # Can't easily test this without a linker, just test that it parses
 # run_test "freestanding" handled by CLI flag test below
 
+# --- Function Pointers ---
+
+# fn_addr + call_ptr basic
+run_test "fn_ptr_basic" 'fn add(uint64 a, uint64 b) -> uint64 { return a + b }
+fn main() {
+    uint64 fp = fn_addr("add")
+    uint64 r = call_ptr(fp, 30, 12)
+    exit(r)
+}' 42
+
+# fn_ptr dispatch table
+run_test "fn_ptr_dispatch" 'fn h0() -> uint64 { return 10 }
+fn h1() -> uint64 { return 20 }
+fn h2() -> uint64 { return 12 }
+fn main() {
+    uint64 t = alloc(24)
+    uint64 a = fn_addr("h0")
+    uint64 b = fn_addr("h1")
+    uint64 c = fn_addr("h2")
+    unsafe { *(t as uint64) = a }
+    uint64 t8 = t + 8
+    unsafe { *(t8 as uint64) = b }
+    uint64 t16 = t + 16
+    unsafe { *(t16 as uint64) = c }
+    uint64 fp = 0
+    unsafe { *(t as uint64) -> fp }
+    uint64 r = call_ptr(fp)
+    uint64 fp2 = 0
+    uint64 tb = t + 8
+    unsafe { *(tb as uint64) -> fp2 }
+    r = r + call_ptr(fp2)
+    uint64 fp3 = 0
+    uint64 tc = t + 16
+    unsafe { *(tc as uint64) -> fp3 }
+    r = r + call_ptr(fp3)
+    exit(r)
+}' 42
+
+# fn_ptr no args
+run_test "fn_ptr_noargs" 'fn get42() -> uint64 { return 42 }
+fn main() {
+    uint64 fp = fn_addr("get42")
+    uint64 r = call_ptr(fp)
+    exit(r)
+}' 42
+
 # --- Bootstrap test ---
 echo ""
 echo "--- Bootstrap test ---"

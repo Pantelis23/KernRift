@@ -494,8 +494,10 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
     // Resolve call fixups
     if arch == 0 {
         resolve_fixups()
+        resolve_fnaddr_fixups()
     } else {
         resolve_fixups_a64()
+        resolve_fnaddr_fixups_a64()
     }
 
     // Emit static + string data
@@ -727,6 +729,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
         wchild = nxt
     }
     resolve_fixups()
+    resolve_fnaddr_fixups()
     uint64 data_start = codegen_output_len()
     emit_static_data()
     resolve_static_fixups(data_start)
@@ -789,6 +792,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
         wchild2 = nxt2
     }
     resolve_fixups_a64()
+    resolve_fnaddr_fixups_a64()
     uint64 data_start_a64 = codegen_output_len()
     emit_static_data()
     resolve_static_fixups_a64(data_start_a64)

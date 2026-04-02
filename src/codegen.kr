@@ -52,6 +52,11 @@ static uint64 break_fixup_count = 0
 static uint64 fixup_table = 0
 static uint64 fixup_count = 0
 
+// fn_addr fixup table: LEA instructions that need patching to function addresses
+// [patch_offset(4), str_tok(4)] × 256
+static uint64 fnaddr_fixup_table = 0
+static uint64 fnaddr_fixup_count = 0
+
 // Static variable table: maps name token → data offset in data section
 // [name_tok_idx(4), data_offset(4)] × 256
 static uint64 static_table = 0
@@ -144,6 +149,8 @@ fn codegen_init(uint64 capacity, uint64 source, uint64 tokens) {
     a64_win_iat_fixup_count = 0
     type_alias_table = alloc(64 * 8)
     type_alias_count = 0
+    fnaddr_fixup_table = alloc(256 * 8)
+    fnaddr_fixup_count = 0
 }
 
 // ---------------------------------------------------------------------------
@@ -2539,6 +2546,132 @@ fn gen_expr(uint64 node) {
             return
         }
 
+        // fn_addr("name") — get address of a named function
+        if tok_matches(wct, "fn_addr", 7) != 0 {
+            uint32 name_arg = ast_child(node)
+            uint64 wna = name_arg
+            // The argument is a string literal with the function name
+            // Emit: lea rax, [rip + disp32] (0x48 0x8D 0x05 disp32)
+            emit_byte(0x48)
+            emit_byte(0x8D)
+            emit_byte(0x05)
+            uint64 fnaddr_fixup_off = out_len
+            emit_u32_le(0)
+            // Record in fixup table — we store the token of the string literal
+            // resolve_fixups_fnaddr will handle these
+            uint64 fentry_fa = fnaddr_fixup_table + fnaddr_fixup_count * 8
+            uint32 fa_off = fnaddr_fixup_off
+            unsafe { *(fentry_fa as uint32) = fa_off }
+            uint64 fe4_fa = fentry_fa + 4
+            uint32 fa_tok = name_arg
+            // We need the string content, which is data1 of the IntLit/StrLit node
+            uint32 str_tok = ast_data1(wna)
+            unsafe { *(fe4_fa as uint32) = str_tok }
+            fnaddr_fixup_count = fnaddr_fixup_count + 1
+            return
+        }
+
+        // call_ptr(fn_ptr, args...) — indirect call through function pointer
+        if tok_matches(wct, "call_ptr", 8) != 0 {
+            rax_invalidate()
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+
+            // First arg is the function pointer
+            // Remaining args are the actual call arguments
+            uint32 call_arg = ast_next(wfa)
+            uint64 wca = call_arg
+            uint64 arg_count = 0
+            uint64 wtmp = wca
+            while wtmp != 0 {
+                arg_count = arg_count + 1
+                uint32 nt2 = ast_next(wtmp)
+                wtmp = nt2
+            }
+
+            // Allocate temp slots: 1 for fn_ptr + arg_count for args
+            uint64 ptr_slot = var_count * 8
+            var_count = var_count + 1
+            uint64 arg_slots_base = var_count * 8
+            uint64 ac = 0
+            while ac < arg_count {
+                var_count = var_count + 1
+                ac = ac + 1
+            }
+            var_frame_size = var_count * 8
+            uint64 cprem = var_frame_size & 15
+            if cprem != 0 { var_frame_size = var_frame_size + 16 - cprem }
+
+            // Evaluate fn_ptr first
+            gen_expr(wfa)
+            emit_store_rax_to_stack(ptr_slot)
+
+            // Evaluate call arguments
+            uint64 weval = wca
+            uint64 ai = 0
+            while weval != 0 {
+                gen_expr(weval)
+                emit_store_rax_to_stack(arg_slots_base + ai * 8)
+                ai = ai + 1
+                uint32 anxt = ast_next(weval)
+                weval = anxt
+            }
+
+            // Load args into registers
+            if target_os == 2 {
+                // Windows x64: rcx, rdx, r8, r9
+                if arg_count >= 4 {
+                    emit_load_rax_from_stack(arg_slots_base + 24)
+                    emit_byte(0x49); emit_byte(0x89); emit_byte(0xC1) // mov r9, rax
+                }
+                if arg_count >= 3 {
+                    emit_load_rax_from_stack(arg_slots_base + 16)
+                    emit_mov_r8_rax()
+                }
+                if arg_count >= 2 {
+                    emit_load_rax_from_stack(arg_slots_base + 8)
+                    emit_mov_rdx_rax()
+                }
+                if arg_count >= 1 {
+                    emit_load_rax_from_stack(arg_slots_base)
+                    emit_mov_rcx_rax()
+                }
+            } else {
+                // SysV: rdi, rsi, rdx, rcx, r8, r9
+                if arg_count >= 6 {
+                    emit_load_rax_from_stack(arg_slots_base + 40)
+                    emit_byte(0x49); emit_byte(0x89); emit_byte(0xC1) // mov r9, rax
+                }
+                if arg_count >= 5 {
+                    emit_load_rax_from_stack(arg_slots_base + 32)
+                    emit_byte(0x49); emit_byte(0x89); emit_byte(0xC0) // mov r8, rax
+                }
+                if arg_count >= 4 {
+                    emit_load_rax_from_stack(arg_slots_base + 24)
+                    emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1) // mov rcx, rax
+                }
+                if arg_count >= 3 {
+                    emit_load_rax_from_stack(arg_slots_base + 16)
+                    emit_mov_rdx_rax()
+                }
+                if arg_count >= 2 {
+                    emit_load_rax_from_stack(arg_slots_base + 8)
+                    emit_mov_rsi_rax()
+                }
+                if arg_count >= 1 {
+                    emit_load_rax_from_stack(arg_slots_base)
+                    emit_mov_rdi_rax()
+                }
+            }
+
+            // Load fn_ptr into rax, then call rax
+            emit_load_rax_from_stack(ptr_slot)
+            // call rax: FF D0
+            emit_byte(0xFF)
+            emit_byte(0xD0)
+            return
+        }
+
         // Signed comparison builtins: signed_lt, signed_gt, signed_le, signed_ge
         if tok_matches(wct, "signed_lt", 9) != 0 {
             uint32 arg1 = ast_child(node)
@@ -3873,6 +4006,76 @@ fn resolve_fixups() {
             uint64 ts = tok_text_start(wtt)
             uint64 tl = tok_text_len(wtt)
             write(2, cg_source + ts, tl)
+            write(2, "'\n", 2)
+            exit(1)
+        }
+        i = i + 1
+    }
+}
+
+// Resolve fn_addr fixups: LEA rax, [rip + disp32] → patch disp to function address
+fn resolve_fnaddr_fixups() {
+    uint64 i = 0
+    while i < fnaddr_fixup_count {
+        uint64 fentry = fnaddr_fixup_table + i * 8
+        uint32 patch_off = 0
+        unsafe { *(fentry as uint32) -> patch_off }
+        uint64 fe4 = fentry + 4
+        uint32 str_tok = 0
+        unsafe { *(fe4 as uint32) -> str_tok }
+
+        // The str_tok is a string literal token — content is between quotes
+        uint64 wst = str_tok
+        uint64 sstart = tok_text_start(wst)
+        uint64 slen = tok_text_len(wst)
+        // Skip quotes: "name" → name
+        uint64 name_start = sstart + 1
+        uint64 name_len = slen - 2
+
+        // Search function table for matching name
+        uint64 found = 0
+        uint64 target_off = 0
+        uint64 fi = 0
+        while fi < fn_count {
+            uint64 fentry2 = fn_table + fi * 8
+            uint32 fn_name_tok = 0
+            unsafe { *(fentry2 as uint32) -> fn_name_tok }
+            uint64 wfn = fn_name_tok
+            uint64 fn_start = tok_text_start(wfn)
+            uint64 fn_len = tok_text_len(wfn)
+            if fn_len == name_len {
+                // Compare bytes
+                uint64 eq = 1
+                uint64 ci = 0
+                while ci < name_len {
+                    uint64 ca = cg_source + name_start + ci
+                    uint64 cb = cg_source + fn_start + ci
+                    uint64 va = 0
+                    uint64 vb = 0
+                    unsafe { *(ca as uint8) -> va }
+                    unsafe { *(cb as uint8) -> vb }
+                    if va != vb { eq = 0 }
+                    ci = ci + 1
+                }
+                if eq != 0 {
+                    uint64 fe4_2 = fentry2 + 4
+                    uint32 foff = 0
+                    unsafe { *(fe4_2 as uint32) -> foff }
+                    target_off = foff
+                    found = 1
+                }
+            }
+            fi = fi + 1
+        }
+
+        if found != 0 {
+            uint64 wpo = patch_off
+            // LEA uses RIP-relative: disp = target - (patch_off + 4)
+            uint64 disp = target_off - wpo - 4
+            patch_u32(wpo, disp)
+        } else {
+            write(2, "error: fn_addr: undefined function '", 36)
+            write(2, cg_source + name_start, name_len)
             write(2, "'\n", 2)
             exit(1)
         }

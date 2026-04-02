@@ -1534,6 +1534,86 @@ fn gen_expr_a64(uint64 node) {
             return
         }
 
+        // fn_addr("name") — get address of a named function
+        if tok_matches(wct, "fn_addr", 7) != 0 {
+            uint32 name_arg = ast_child(node)
+            uint64 wna = name_arg
+            // Emit: ADRP x0, #0 + ADD x0, x0, #0 (8 bytes, patched later)
+            uint64 fnaddr_a64_off = out_len
+            emit_a64(0x90000000)  // ADRP x0, #0 (placeholder)
+            emit_a64(0x91000000)  // ADD x0, x0, #0 (placeholder)
+            // Record fixup
+            uint64 fentry_fa = fnaddr_fixup_table + fnaddr_fixup_count * 8
+            uint32 fa_off = fnaddr_a64_off
+            unsafe { *(fentry_fa as uint32) = fa_off }
+            uint64 fe4_fa = fentry_fa + 4
+            uint32 str_tok = ast_data1(wna)
+            unsafe { *(fe4_fa as uint32) = str_tok }
+            fnaddr_fixup_count = fnaddr_fixup_count + 1
+            return
+        }
+
+        // call_ptr(fn_ptr, args...) — indirect call through function pointer
+        if tok_matches(wct, "call_ptr", 8) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+
+            uint32 call_arg = ast_next(wfa)
+            uint64 wca = call_arg
+            uint64 arg_count = 0
+            uint64 wtmp = wca
+            while wtmp != 0 {
+                arg_count = arg_count + 1
+                uint32 nt2 = ast_next(wtmp)
+                wtmp = nt2
+            }
+
+            // Allocate temp slots
+            uint64 ptr_slot = var_count * 8
+            var_count = var_count + 1
+            uint64 arg_slots_base = var_count * 8
+            uint64 ac = 0
+            while ac < arg_count {
+                var_count = var_count + 1
+                ac = ac + 1
+            }
+            var_frame_size = var_count * 8
+            uint64 cprem = var_frame_size & 15
+            if cprem != 0 { var_frame_size = var_frame_size + 16 - cprem }
+
+            // Evaluate fn_ptr
+            gen_expr_a64(wfa)
+            emit_a64_store_x0(ptr_slot)
+
+            // Evaluate call args
+            uint64 weval = wca
+            uint64 ai = 0
+            while weval != 0 {
+                gen_expr_a64(weval)
+                emit_a64_store_x0(arg_slots_base + ai * 8)
+                ai = ai + 1
+                uint32 anxt = ast_next(weval)
+                weval = anxt
+            }
+
+            // Load args into x0-x7
+            if arg_count >= 8 { emit_a64_load_x0(arg_slots_base + 56); emit_a64_mov(7, 0) }
+            if arg_count >= 7 { emit_a64_load_x0(arg_slots_base + 48); emit_a64_mov(6, 0) }
+            if arg_count >= 6 { emit_a64_load_x0(arg_slots_base + 40); emit_a64_mov(5, 0) }
+            if arg_count >= 5 { emit_a64_load_x0(arg_slots_base + 32); emit_a64_mov(4, 0) }
+            if arg_count >= 4 { emit_a64_load_x0(arg_slots_base + 24); emit_a64_mov(3, 0) }
+            if arg_count >= 3 { emit_a64_load_x0(arg_slots_base + 16); emit_a64_mov(2, 0) }
+            if arg_count >= 2 { emit_a64_load_x0(arg_slots_base + 8); emit_a64_mov(1, 0) }
+            if arg_count >= 1 { emit_a64_load_x0(arg_slots_base) }
+
+            // Load fn_ptr into x9, then BLR x9
+            emit_a64_load_x0(ptr_slot)
+            emit_a64_mov(9, 0)
+            // BLR x9 = 0xD63F0120
+            emit_a64(0xD63F0120)
+            return
+        }
+
         // Signed comparison builtins
         if tok_matches(wct, "signed_lt", 9) != 0 {
             uint32 arg1 = ast_child(node)
@@ -2396,6 +2476,82 @@ fn resolve_fixups_a64() {
             uint64 disp = target_off - wpo
             // Patch BL instruction: BL rel26
             patch_u32(wpo, 0x94000000 | ((disp / 4) & 0x3FFFFFF))
+        }
+        i = i + 1
+    }
+}
+
+// Resolve fn_addr fixups for ARM64: ADRP+ADD → patch to function address
+fn resolve_fnaddr_fixups_a64() {
+    uint64 i = 0
+    while i < fnaddr_fixup_count {
+        uint64 fentry = fnaddr_fixup_table + i * 8
+        uint32 patch_off = 0
+        unsafe { *(fentry as uint32) -> patch_off }
+        uint64 fe4 = fentry + 4
+        uint32 str_tok = 0
+        unsafe { *(fe4 as uint32) -> str_tok }
+
+        uint64 wst = str_tok
+        uint64 sstart = tok_text_start(wst)
+        uint64 slen = tok_text_len(wst)
+        uint64 name_start = sstart + 1
+        uint64 name_len = slen - 2
+
+        // Search function table
+        uint64 found = 0
+        uint64 target_off = 0
+        uint64 fi = 0
+        while fi < fn_count {
+            uint64 fentry2 = fn_table + fi * 8
+            uint32 fn_name_tok = 0
+            unsafe { *(fentry2 as uint32) -> fn_name_tok }
+            uint64 wfn = fn_name_tok
+            uint64 fn_start = tok_text_start(wfn)
+            uint64 fn_len = tok_text_len(wfn)
+            if fn_len == name_len {
+                uint64 eq = 1
+                uint64 ci = 0
+                while ci < name_len {
+                    uint64 ca = cg_source + name_start + ci
+                    uint64 cb = cg_source + fn_start + ci
+                    uint64 va = 0
+                    uint64 vb = 0
+                    unsafe { *(ca as uint8) -> va }
+                    unsafe { *(cb as uint8) -> vb }
+                    if va != vb { eq = 0 }
+                    ci = ci + 1
+                }
+                if eq != 0 {
+                    uint64 fe4_2 = fentry2 + 4
+                    uint32 foff = 0
+                    unsafe { *(fe4_2 as uint32) -> foff }
+                    target_off = foff
+                    found = 1
+                }
+            }
+            fi = fi + 1
+        }
+
+        if found != 0 {
+            uint64 wpo = patch_off
+            // For ARM64, ADRP+ADD is PC-relative
+            // ADRP uses page-aligned PC-relative addressing
+            // For simplicity in flat binary: use ADR x0, target (if within ±1MB)
+            // ADR: bits [31]=0, [30:29]=immlo, [28:24]=10000, [23:5]=immhi, [4:0]=Rd
+            uint64 disp = target_off - wpo
+            uint64 immlo = (disp >> 0) & 3
+            uint64 immhi = (disp >> 2) & 0x7FFFF
+            // ADR x0, disp
+            uint32 adr_instr = 0x10000000 | (immlo << 29) | (immhi << 5) | 0
+            patch_u32(wpo, adr_instr)
+            // NOP the second instruction (ADD)
+            patch_u32(wpo + 4, 0xD503201F)
+        } else {
+            write(2, "error: fn_addr: undefined function '", 36)
+            write(2, cg_source + name_start, name_len)
+            write(2, "'\n", 2)
+            exit(1)
         }
         i = i + 1
     }
