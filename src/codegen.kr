@@ -767,6 +767,7 @@ fn fn_lookup(uint64 name_tok) -> uint64 {
 
 // emit: mov rax, imm64
 fn emit_mov_rax_imm(uint64 val) {
+    rax_invalidate()
     if val == 0 {
         // xor eax, eax (2 bytes, zero-extends to rax)
         emit_byte(0x31)
@@ -786,6 +787,14 @@ fn emit_mov_rax_imm(uint64 val) {
 }
 
 // emit: mov [rsp+off], rax
+// Register cache: tracks if rax already holds a stack slot value
+// rax_cache = 0 means not cached, rax_cache = offset+1 means rax holds [rsp+offset]
+static uint64 rax_cache = 0
+
+fn rax_invalidate() {
+    rax_cache = 0
+}
+
 fn emit_store_rax_to_stack(uint64 offset) {
     emit_byte(0x48)
     emit_byte(0x89)
@@ -802,10 +811,14 @@ fn emit_store_rax_to_stack(uint64 offset) {
         emit_byte(0x24)
         emit_u32_le(offset)
     }
+    // After store, rax still holds the value for this offset
+    rax_cache = offset + 1
 }
 
-// emit: mov rax, [rsp+off]
+// emit: mov rax, [rsp+off] — skipped if rax already holds this value
 fn emit_load_rax_from_stack(uint64 offset) {
+    // Check cache: if rax already holds [rsp+offset], skip the load
+    if rax_cache == offset + 1 { return }
     emit_byte(0x48)
     emit_byte(0x8B)
     if offset == 0 {
@@ -821,10 +834,12 @@ fn emit_load_rax_from_stack(uint64 offset) {
         emit_byte(0x24)
         emit_u32_le(offset)
     }
+    rax_cache = offset + 1
 }
 
 // emit: push rax
 fn emit_push_rax() {
+    rax_invalidate()
     emit_byte(0x50)
 }
 
@@ -835,6 +850,7 @@ fn emit_pop_rcx() {
 
 // emit: add rax, rcx
 fn emit_add_rax_rcx() {
+    rax_invalidate()
     emit_byte(0x48)
     emit_byte(0x01)
     emit_byte(0xC8)
@@ -842,6 +858,7 @@ fn emit_add_rax_rcx() {
 
 // emit: sub rax, rcx  (rax = rax - rcx)
 fn emit_sub_rax_rcx() {
+    rax_invalidate()
     emit_byte(0x48)
     emit_byte(0x29)
     emit_byte(0xC8)
@@ -849,6 +866,7 @@ fn emit_sub_rax_rcx() {
 
 // emit: imul rax, rcx
 fn emit_mul_rax_rcx() {
+    rax_invalidate()
     emit_byte(0x48)
     emit_byte(0x0F)
     emit_byte(0xAF)
@@ -935,6 +953,7 @@ fn emit_mov_r9_imm(uint64 val) {
 // call qword [rip + disp32] — IAT indirect call
 // Emits FF 15 <disp32>, stores fixup for later patching
 fn emit_win_call_iat(uint64 slot) {
+    rax_invalidate()
     emit_byte(0xFF)
     emit_byte(0x15)
     uint64 patch_off = out_len
@@ -944,6 +963,7 @@ fn emit_win_call_iat(uint64 slot) {
 
 // neg rax
 fn emit_neg_rax() {
+    rax_invalidate()
     emit_byte(0x48)
     emit_byte(0xF7)
     emit_byte(0xD8)
@@ -951,6 +971,7 @@ fn emit_neg_rax() {
 
 // sub rax, imm8
 fn emit_sub_rax_imm8(uint64 val) {
+    rax_invalidate()
     emit_byte(0x48)
     emit_byte(0x83)
     emit_byte(0xE8)
@@ -1000,6 +1021,7 @@ fn resolve_win_iat_fixups(uint64 text_start, uint64 iat_rva) {
 
 // emit: cmp rcx, rax + setCC al + movzx eax, al
 fn emit_compare(uint64 op_tok_kind) {
+    rax_invalidate()
     // cmp rax, rcx  (computes rax - rcx, sets flags for lhs vs rhs)
     emit_byte(0x48)
     emit_byte(0x39)
@@ -1029,6 +1051,8 @@ fn emit_compare(uint64 op_tok_kind) {
 // Generate code for an expression. Result is in %rax.
 @export
 fn gen_expr(uint64 node) {
+    // Invalidate rax cache — gen_expr will put a new value in rax
+    rax_invalidate()
     uint32 kind = ast_kind(node)
 
     // Unary operator: !, -, ~
