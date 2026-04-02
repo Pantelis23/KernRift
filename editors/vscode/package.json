@@ -1,9 +1,14 @@
 {
   "name": "kernrift",
   "displayName": "KernRift",
-  "description": "Language support for KernRift (.kr files)",
+  "description": "Language support for KernRift systems language (.kr files)",
   "version": "0.1.0",
   "publisher": "Pantelis23",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Pantelis23/KernRift"
+  },
   "engines": { "vscode": "^1.80.0" },
   "categories": ["Programming Languages"],
   "contributes": {
