@@ -220,8 +220,8 @@ jobs:
           Run-Test "add"    "bins\win-arm-add.exe" 42
           # Static test skipped: ARM64 PE statics use absolute MOVZ/MOVK which
           # breaks under ASLR. Needs ADRP+ADD for position-independent access.
-          # Run-Test "static" "bins\win-arm-static.exe" 3
-          Write-Host "=== Windows ARM64: $pass passed, $fail failed (static skipped: ASLR) ==="
+          Run-Test "static" "bins\win-arm-static.exe" 3
+          Write-Host "=== Windows ARM64: $pass passed, $fail failed ==="
           exit $fail
 
       - name: Test hello world output

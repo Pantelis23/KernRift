@@ -446,10 +446,15 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
             uint64 data_rva = 0x1000 + text_va_size
             uint64 data_va_size = (data_raw_size + 0xFFF) & ~0xFFF
             if data_va_size == 0 { data_va_size = 0x1000 }
-            // Static fixups: re-resolve for .data section VA
-            // a64_compute_va(X) = 0x140000E00 + X for PE
-            // We need: 0x140000E00 + data_base + offset = 0x140000000 + data_rva + offset
-            // So: data_base = data_rva - 0xE00
+            // Static fixups: re-resolve for .data section
+            // For PE ADRP: the resolve function uses a64_compute_va which adds 0x140000E00.
+            // We need target_va = 0x140000000 + data_rva + offset.
+            // Pass data_rva - 0xE00 so that a64_compute_va(base + offset) = correct VA.
+            // BUT for ADRP mode, code_va is also computed via a64_compute_va — which IS correct
+            // for code in .text. So we need data_start such that:
+            // a64_compute_va(data_start + offset) = 0x140000000 + data_rva + offset
+            // 0x140000E00 + data_start + offset = 0x140000000 + data_rva + offset
+            // data_start = data_rva - 0xE00
             uint64 data_va_base = data_rva - 0xE00
             resolve_static_fixups_a64(data_va_base)
             // Emit .idata
