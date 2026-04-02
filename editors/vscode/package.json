@@ -1,0 +1,22 @@
+{
+  "name": "kernrift",
+  "displayName": "KernRift",
+  "description": "Language support for KernRift (.kr files)",
+  "version": "0.1.0",
+  "publisher": "Pantelis23",
+  "engines": { "vscode": "^1.80.0" },
+  "categories": ["Programming Languages"],
+  "contributes": {
+    "languages": [{
+      "id": "kernrift",
+      "aliases": ["KernRift", "kr"],
+      "extensions": [".kr"],
+      "configuration": "./language-configuration.json"
+    }],
+    "grammars": [{
+      "language": "kernrift",
+      "scopeName": "source.kr",
+      "path": "./syntaxes/kernrift.tmLanguage.json"
+    }]
+  }
+}
