@@ -7,10 +7,17 @@
     { "include": "#strings" },
     { "include": "#chars" },
     { "include": "#numbers" },
+    { "include": "#annotations" },
+    { "include": "#import-statement" },
+    { "include": "#function-definition" },
+    { "include": "#struct-definition" },
+    { "include": "#enum-definition" },
+    { "include": "#type-alias" },
+    { "include": "#variable-declaration" },
     { "include": "#keywords" },
     { "include": "#types" },
-    { "include": "#annotations" },
-    { "include": "#functions" },
+    { "include": "#function-call" },
+    { "include": "#field-access" },
     { "include": "#operators" }
   ],
   "repository": {
@@ -49,66 +56,184 @@
         }
       ]
     },
-    "keywords": {
-      "patterns": [
-        {
-          "name": "keyword.control.kr",
-          "match": "\\b(if|else|while|for|in|break|continue|return|match|import)\\b"
-        },
-        {
-          "name": "keyword.declaration.kr",
-          "match": "\\b(fn|struct|enum|static|const|type|unsafe)\\b"
-        },
-        {
-          "name": "constant.language.kr",
-          "match": "\\b(true|false)\\b"
-        },
-        {
-          "name": "keyword.other.kr",
-          "match": "\\b(extern|export)\\b"
-        }
-      ]
-    },
-    "types": {
-      "patterns": [{
-        "name": "storage.type.kr",
-        "match": "\\b(uint8|uint16|uint32|uint64|int8|int16|int32|int64|u8|u16|u32|u64|i8|i16|i32|i64|bool|char|addr|byte)\\b"
-      }]
-    },
     "annotations": {
       "patterns": [{
         "name": "keyword.other.attribute.kr",
         "match": "@(export|ctx|eff|caps)(\\([^)]*\\))?"
       }]
     },
-    "functions": {
+    "import-statement": {
+      "patterns": [{
+        "match": "\\b(import)\\s+(\"[^\"]*\")",
+        "captures": {
+          "1": { "name": "keyword.control.import.kr" },
+          "2": { "name": "string.quoted.double.module.kr" }
+        }
+      }]
+    },
+    "function-definition": {
       "patterns": [
         {
-          "name": "entity.name.function.kr",
-          "match": "\\b(exit|write|alloc|file_open|file_read|file_write|file_close|file_size)\\b"
+          "comment": "Method definition: fn Struct.method(...)",
+          "match": "\\b(fn)\\s+([A-Z][a-zA-Z0-9_]*)\\.([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(",
+          "captures": {
+            "1": { "name": "keyword.declaration.fn.kr" },
+            "2": { "name": "entity.name.type.struct.kr" },
+            "3": { "name": "entity.name.function.method.kr" }
+          }
         },
         {
-          "comment": "Function definition",
-          "match": "\\b(fn)\\s+([a-zA-Z_][a-zA-Z0-9_]*(?:\\.[a-zA-Z_][a-zA-Z0-9_]*)?)",
+          "comment": "Function definition: fn name(...)",
+          "match": "\\b(fn)\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(",
           "captures": {
-            "1": { "name": "keyword.declaration.kr" },
+            "1": { "name": "keyword.declaration.fn.kr" },
             "2": { "name": "entity.name.function.definition.kr" }
           }
         },
         {
-          "comment": "Function call",
-          "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*\\(",
+          "comment": "Return type arrow",
+          "match": "->",
+          "name": "punctuation.separator.arrow.kr"
+        }
+      ]
+    },
+    "struct-definition": {
+      "patterns": [{
+        "match": "\\b(struct)\\s+([A-Z][a-zA-Z0-9_]*)",
+        "captures": {
+          "1": { "name": "keyword.declaration.struct.kr" },
+          "2": { "name": "entity.name.type.struct.kr" }
+        }
+      }]
+    },
+    "enum-definition": {
+      "patterns": [{
+        "match": "\\b(enum)\\s+([A-Z][a-zA-Z0-9_]*)",
+        "captures": {
+          "1": { "name": "keyword.declaration.enum.kr" },
+          "2": { "name": "entity.name.type.enum.kr" }
+        }
+      }]
+    },
+    "type-alias": {
+      "patterns": [{
+        "match": "\\b(type)\\s+([A-Z][a-zA-Z0-9_]*)\\s*(=)",
+        "captures": {
+          "1": { "name": "keyword.declaration.type.kr" },
+          "2": { "name": "entity.name.type.alias.kr" },
+          "3": { "name": "keyword.operator.assignment.kr" }
+        }
+      }]
+    },
+    "variable-declaration": {
+      "patterns": [{
+        "comment": "Type followed by variable name: uint64 name",
+        "match": "\\b(uint8|uint16|uint32|uint64|int8|int16|int32|int64|u8|u16|u32|u64|i8|i16|i32|i64|bool|char|addr|byte)\\s+([a-z_][a-zA-Z0-9_]*)\\b",
+        "captures": {
+          "1": { "name": "storage.type.kr" },
+          "2": { "name": "variable.other.kr" }
+        }
+      },
+      {
+        "comment": "Struct type variable: Point name",
+        "match": "\\b([A-Z][a-zA-Z0-9_]*)\\s+([a-z_][a-zA-Z0-9_]*)\\b",
+        "captures": {
+          "1": { "name": "entity.name.type.struct.kr" },
+          "2": { "name": "variable.other.kr" }
+        }
+      }]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.kr",
+          "match": "\\b(if|else|while|for|in|break|continue|return|match)\\b"
+        },
+        {
+          "name": "keyword.declaration.kr",
+          "match": "\\b(fn|struct|enum|static|const|type|unsafe|import)\\b"
+        },
+        {
+          "name": "constant.language.boolean.kr",
+          "match": "\\b(true|false)\\b"
+        },
+        {
+          "name": "keyword.other.kr",
+          "match": "\\b(extern|export)\\b"
+        },
+        {
+          "name": "variable.language.self.kr",
+          "match": "\\b(self)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "storage.type.primitive.kr",
+          "match": "\\b(uint8|uint16|uint32|uint64|int8|int16|int32|int64|u8|u16|u32|u64|i8|i16|i32|i64|bool|char|addr|byte)\\b"
+        },
+        {
+          "comment": "Capitalized names as types (structs, enums, aliases)",
+          "name": "entity.name.type.kr",
+          "match": "\\b([A-Z][a-zA-Z0-9_]*)\\b"
+        }
+      ]
+    },
+    "function-call": {
+      "patterns": [
+        {
+          "comment": "Built-in function call",
+          "match": "\\b(exit|write|alloc|file_open|file_read|file_write|file_close|file_size)\\s*\\(",
+          "captures": {
+            "1": { "name": "support.function.builtin.kr" }
+          }
+        },
+        {
+          "comment": "Regular function call",
+          "match": "\\b([a-z_][a-zA-Z0-9_]*)\\s*\\(",
           "captures": {
             "1": { "name": "entity.name.function.call.kr" }
           }
         }
       ]
     },
-    "operators": {
+    "field-access": {
       "patterns": [{
-        "name": "keyword.operator.kr",
-        "match": "=>|&&|\\|\\||==|!=|<=|>=|<<|>>|\\+=|-=|\\*=|/=|[+\\-*/%&|^~!<>=]"
+        "comment": "Enum/struct member access: Name.field",
+        "match": "\\.([a-zA-Z_][a-zA-Z0-9_]*)",
+        "captures": {
+          "1": { "name": "variable.other.member.kr" }
+        }
       }]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.fat-arrow.kr",
+          "match": "=>"
+        },
+        {
+          "name": "keyword.operator.comparison.kr",
+          "match": "==|!=|<=|>=|<|>"
+        },
+        {
+          "name": "keyword.operator.logical.kr",
+          "match": "&&|\\|\\||!"
+        },
+        {
+          "name": "keyword.operator.arithmetic.kr",
+          "match": "\\+=|-=|\\*=|/=|<<|>>|[+\\-*/%]"
+        },
+        {
+          "name": "keyword.operator.bitwise.kr",
+          "match": "[&|^~]"
+        },
+        {
+          "name": "keyword.operator.assignment.kr",
+          "match": "="
+        }
+      ]
     }
   }
 }
