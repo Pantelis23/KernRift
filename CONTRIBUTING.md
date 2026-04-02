@@ -14,7 +14,7 @@ make build       # bootstrap → krc → krc2 (self-compiled)
 ## Test
 
 ```sh
-make test        # 45 tests (arithmetic, control flow, functions, structs, etc.)
+make test        # 53 tests (arithmetic, control flow, functions, structs, imports, match, etc.)
 make bootstrap   # verify krc3 == krc4 (fixed point)
 ```
 

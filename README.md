@@ -28,12 +28,23 @@ kr hello.krbo
 krc --arch=x86_64 hello.kr -o hello
 krc --arch=arm64 hello.kr -o hello
 
+# Multi-file projects — imports resolved automatically
+krc main.kr -o program    # main.kr can import "utils.kr", etc.
+
 # Safety analysis
 krc check module.kr
 
 # Living compiler
 krc lc program.kr
 ```
+
+### Self-compilation times
+
+| Platform | CPU | Time |
+|----------|-----|------|
+| Linux x86_64 | AMD Ryzen 9 7900X | 16ms |
+| Windows 11 x86_64 | Intel Core Ultra 9 275HX | 44ms |
+| Linux ARM64 | ARM Cortex-A72 (Pi 400) | 192ms |
 
 ## Install
 
@@ -56,10 +67,18 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 ## Language
 
 ```kr
+import "utils.kr"
+
 struct Point {
     uint64 x
     uint64 y
 }
+
+fn Point.sum(Point self) -> uint64 {
+    return self.x + self.y
+}
+
+type Size = uint64
 
 fn fib(uint64 n) -> uint64 {
     if n <= 1 { return n }
@@ -72,15 +91,19 @@ fn main() {
     Point p
     p.x = fib(10)
     p.y = 42
-    exit(p.x + p.y)  // 55 + 42 = 97
+
+    match p.x {
+        55 => { exit(p.sum()) }
+    }
+    exit(0)
 }
 ```
 
-Types: `uint8/16/32/64`, `int8/16/32/64`, structs, enums, arrays. Control: `if/else`, `while`, `for`, `break/continue`. Functions up to 8 args. Unsafe pointer access for kernel memory operations.
+Types: `uint8/16/32/64`, `int8/16/32/64`, `bool` (`true`/`false`), `char`, structs, enums, arrays. Control: `if/else`, `while`, `for..in`, `break/continue`, `match`. Functions up to 8 args with method syntax (`fn Struct.method`). Imports (`import "file.kr"`), type aliases (`type Size = uint64`), nested struct access (`a.b.c`). Unsafe pointer access for kernel memory operations.
 
 ## Architecture
 
-7,300+ lines, 12 source files, 226 functions. Self-compiles to ~194 KB in 12ms.
+8,753 lines, 12 source files with imports. Self-compiles to 234KB in 16ms (AMD Ryzen 9 7900X). 53 tests, bootstrap fixed point verified on 3 platforms.
 
 | File | Purpose |
 |------|---------|
@@ -107,10 +130,10 @@ The [bootstrap compiler](https://github.com/Pantelis23/KernRift-bootstrap) is on
 |----------|---------|-----|-----------|
 | Linux x86_64 | ✅ | ✅ | ✅ |
 | Linux ARM64 | ✅ | ✅ | ✅ |
-| macOS x86_64 | ✅ | WIP | — |
-| macOS ARM64 | ✅ | WIP | — |
 | Windows x86_64 | ✅ | ✅ | ✅ |
-| Windows ARM64 | ✅ | ✅ | — |
+| Windows ARM64 | ✅ | ✅ | -- |
+| macOS x86_64 | ✅ | WIP | -- |
+| macOS ARM64 | ✅ | WIP | -- |
 
 ## License
 
