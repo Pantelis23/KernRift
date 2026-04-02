@@ -231,6 +231,15 @@ fn imp_process(uint64 file_path) {
     imp_mark_seen(file_path)
 
     uint64 fd = file_open(file_path, 0)
+    // Check for error: fd >= 0xFFFFFFFF means open failed
+    if fd >= 0xFFFFFFFF {
+        uint64 msg = "error: cannot open import: "
+        write(2, msg, 27)
+        write(2, file_path, str_len(file_path))
+        uint64 nl = "\n"
+        write(2, nl, 1)
+        exit(1)
+    }
     uint64 size = file_size(fd)
     uint64 tmp = alloc(size + 1)
     file_read(fd, tmp, size)
