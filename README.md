@@ -70,6 +70,12 @@ scoop install kernrift
 winget install Pantelis23.KernRift
 ```
 
+**Debian/Ubuntu** (.deb):
+```bash
+curl -sSLO https://github.com/Pantelis23/KernRift/releases/latest/download/kernrift_2.1.0_amd64.deb
+sudo dpkg -i kernrift_2.1.0_amd64.deb
+```
+
 **AUR** (Arch Linux):
 ```bash
 yay -S kernrift
