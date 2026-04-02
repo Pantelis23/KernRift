@@ -23,16 +23,17 @@ static uint64 IAT_ReadFile = 4
 static uint64 IAT_CloseHandle = 5
 static uint64 IAT_VirtualAlloc = 6
 static uint64 IAT_GetCommandLineA = 7
-static uint64 IAT_ENTRY_COUNT = 8
+static uint64 IAT_GetFileSizeEx = 8
+static uint64 IAT_ENTRY_COUNT = 9
 
 // Compute .idata section size
 fn pe_idata_size() -> uint64 {
     // IDT: 1 entry (20 bytes) + null terminator (20 bytes) = 40
-    // ILT: 8 entries × 8 + null (8) = 72
-    // IAT: same = 72
-    // Hint/Name table: 8 × 20 = 160
+    // ILT: 9 entries × 8 + null (8) = 80
+    // IAT: same = 80
+    // Hint/Name table: 9 × 20 = 180
     // DLL name: "kernel32.dll\0" = 16
-    // Total: 40 + 72 + 72 + 160 + 16 = 360, round up to 0x200 = 512
+    // Total: 40 + 80 + 80 + 180 + 16 = 396, round up to 0x200 = 512
     return 512
 }
 
@@ -42,12 +43,12 @@ fn pe_idata_size() -> uint64 {
 fn emit_pe_idata(uint64 idata_rva) -> uint64 {
     uint64 base = out_len
 
-    // Layout offsets within .idata (8 IAT entries, 20-byte hint/name slots):
+    // Layout offsets within .idata (9 IAT entries, 20-byte hint/name slots):
     uint64 idt_off = 0
     uint64 ilt_off = 40
-    uint64 iat_off = 112
-    uint64 hints_off = 184
-    uint64 dllname_off = 344
+    uint64 iat_off = 120
+    uint64 hints_off = 200
+    uint64 dllname_off = 380
 
     // IDT entry for kernel32.dll (20 bytes)
     emit_u32_le(idata_rva + ilt_off)     // OriginalFirstThunk → ILT
@@ -62,7 +63,7 @@ fn emit_pe_idata(uint64 idata_rva) -> uint64 {
 
     // ILT: 8 entries + null (each is 8 bytes = RVA to hint/name)
     uint64 h = 0
-    while h < 8 {
+    while h < 9 {
         emit_u64_le(idata_rva + hints_off + h * 20)
         h = h + 1
     }
@@ -70,7 +71,7 @@ fn emit_pe_idata(uint64 idata_rva) -> uint64 {
 
     // IAT: identical to ILT (loader patches this at runtime)
     h = 0
-    while h < 8 {
+    while h < 9 {
         emit_u64_le(idata_rva + hints_off + h * 20)
         h = h + 1
     }
@@ -134,6 +135,14 @@ fn emit_pe_idata(uint64 idata_rva) -> uint64 {
     emit_byte(110); emit_byte(100); emit_byte(76); emit_byte(105)  // ndLi
     emit_byte(110); emit_byte(101); emit_byte(65); emit_byte(0)    // neA\0
     emit_byte(0); emit_byte(0)                                      // pad
+
+    // 8: GetFileSizeEx
+    emit_u16_le(0)
+    emit_byte(71); emit_byte(101); emit_byte(116); emit_byte(70)   // GetF
+    emit_byte(105); emit_byte(108); emit_byte(101); emit_byte(83)  // ileS
+    emit_byte(105); emit_byte(122); emit_byte(101); emit_byte(69)  // izeE
+    emit_byte(120); emit_byte(0)                                    // x\0
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)         // pad
 
     // DLL name: "kernel32.dll\0"
     emit_byte(107); emit_byte(101); emit_byte(114); emit_byte(110)

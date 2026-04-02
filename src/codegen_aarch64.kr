@@ -1058,7 +1058,7 @@ fn gen_expr_a64(uint64 node) {
                 emit_a64_mov_imm(1, 0)
                 emit_a64_mov(2, 31)
                 emit_a64_mov_imm(3, 2)
-                emit_a64_win_call_iat(7)
+                emit_a64_win_call_iat(8)
                 // Read size from [sp]
                 emit_a64_ldr(20, 31, 0)
                 // Rewind: SetFilePointerEx(handle, 0, NULL, FILE_BEGIN=0)
@@ -1066,7 +1066,7 @@ fn gen_expr_a64(uint64 node) {
                 emit_a64_mov_imm(1, 0)
                 emit_a64_mov_imm(2, 0)
                 emit_a64_mov_imm(3, 0)
-                emit_a64_win_call_iat(7)
+                emit_a64_win_call_iat(8)
                 // Restore stack
                 emit_a64_add_sp_imm(16)
                 // Result in x0
