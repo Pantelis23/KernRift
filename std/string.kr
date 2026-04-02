@@ -89,7 +89,7 @@ fn str_contains(uint64 haystack, uint64 needle) -> uint64 {
     uint64 i = 0
     while i <= hlen - nlen {
         uint64 j = 0
-        uint64 match = 1
+        uint64 found = 1
         while j < nlen {
             uint64 hp = haystack + i + j
             uint64 np = needle + j
@@ -97,10 +97,10 @@ fn str_contains(uint64 haystack, uint64 needle) -> uint64 {
             uint64 nc = 0
             unsafe { *(hp as uint8) -> hc }
             unsafe { *(np as uint8) -> nc }
-            if hc != nc { match = 0; j = nlen }
+            if hc != nc { found = 0; j = nlen }
             j = j + 1
         }
-        if match != 0 { return 1 }
+        if found != 0 { return 1 }
         i = i + 1
     }
     return 0

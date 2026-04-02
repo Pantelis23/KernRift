@@ -285,7 +285,7 @@ fn imp_init_search_paths() {
     if home != 0 {
         uint64 hlen = str_len(home)
         uint64 suffix = "/.local/share/kernrift/"
-        uint64 slen = 22
+        uint64 slen = 23
         uint64 full = alloc(hlen + slen + 1)
         memcpy(full, home, hlen)
         memcpy(full + hlen, suffix, slen)
