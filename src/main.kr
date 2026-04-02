@@ -506,6 +506,11 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
 
     // Patch headers
     uint64 entry_off = find_main_offset()
+    if entry_off == 0xFFFFFFFF {
+        write(2, "error: no 'main' function found\n", 32)
+        write(2, "Every KernRift program needs: fn main() { ... }\n", 49)
+        exit(1)
+    }
     if emit_mode == 0 {
         // ELF entry point
         uint64 entry_va = 0x400000 + entry_off
@@ -717,6 +722,11 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     resolve_string_fixups(str_start)
     uint64 text_size = codegen_output_len() - text_start
     uint64 entry_off = find_main_offset()
+    if entry_off == 0xFFFFFFFF {
+        write(2, "error: no 'main' function found\n", 32)
+        write(2, "Every KernRift program needs: fn main() { ... }\n", 49)
+        exit(1)
+    }
     uint64 entry_va = 0x400000 + entry_off
     patch_u32(24, entry_va & 0xFFFFFFFF)
     patch_u32(28, (entry_va >> 32) & 0xFFFFFFFF)

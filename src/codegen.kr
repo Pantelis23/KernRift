@@ -3375,7 +3375,7 @@ fn find_main_offset() -> uint64 {
         }
         i = i + 1
     }
-    return 0
+    return 0xFFFFFFFF
 }
 
 // Resolve call fixups
