@@ -446,8 +446,12 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
             uint64 data_rva = 0x1000 + text_va_size
             uint64 data_va_size = (data_raw_size + 0xFFF) & ~0xFFF
             if data_va_size == 0 { data_va_size = 0x1000 }
-            // Static fixups: re-resolve with data_file_off as the new base
-            resolve_static_fixups_a64(data_file_off)
+            // Static fixups: re-resolve for .data section VA
+            // a64_compute_va(X) = 0x140000E00 + X for PE
+            // We need: 0x140000E00 + data_base + offset = 0x140000000 + data_rva + offset
+            // So: data_base = data_rva - 0xE00
+            uint64 data_va_base = data_rva - 0xE00
+            resolve_static_fixups_a64(data_va_base)
             // Emit .idata
             idata_rva = 0x1000 + text_va_size + data_va_size
             uint64 iat_rva_val = emit_pe_idata(idata_rva)
