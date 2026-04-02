@@ -62,8 +62,8 @@
           "comment": "Annotation with args: @ctx(thread, boot)",
           "match": "(@)(export|ctx|eff|caps)(\\()([^)]*)(\\))",
           "captures": {
-            "1": { "name": "keyword.operator.decorator.kr" },
-            "2": { "name": "entity.name.tag.kr" },
+            "1": { "name": "constant.character.kr" },
+            "2": { "name": "support.function.kr" },
             "3": { "name": "punctuation.brackets.round.kr" },
             "4": { "name": "variable.parameter.kr" },
             "5": { "name": "punctuation.brackets.round.kr" }
@@ -73,8 +73,8 @@
           "comment": "Annotation without args: @export",
           "match": "(@)(export|ctx|eff|caps)\\b",
           "captures": {
-            "1": { "name": "keyword.operator.decorator.kr" },
-            "2": { "name": "entity.name.tag.kr" }
+            "1": { "name": "constant.character.kr" },
+            "2": { "name": "support.function.kr" }
           }
         }
       ]

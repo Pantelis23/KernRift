@@ -2,7 +2,7 @@
   "name": "kernrift",
   "displayName": "KernRift",
   "description": "Language support for KernRift systems language (.kr files)",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "publisher": "Pantelis23",
   "license": "MIT",
   "repository": {
