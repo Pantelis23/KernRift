@@ -45,6 +45,17 @@ try {
     exit 1
 }
 
+# Download kr runner
+$KrBinaryName = "kr-windows-$ArchName.exe"
+$KrUrl = "https://github.com/$Repo/releases/latest/download/$KrBinaryName"
+$KrDest = "$InstallDir\kr.exe"
+Write-Host "Downloading $KrBinaryName..."
+try {
+    Invoke-WebRequest -Uri $KrUrl -OutFile $KrDest -UseBasicParsing
+} catch {
+    Write-Host "warning: could not download kr runner: $_" -ForegroundColor Yellow
+}
+
 # Add to PATH if not already there
 $UserPath = [Environment]::GetEnvironmentVariable("PATH", "User")
 if ($UserPath -notlike "*$InstallDir*") {
@@ -55,6 +66,7 @@ if ($UserPath -notlike "*$InstallDir*") {
 
 Write-Host ""
 Write-Host "Installed: $Dest"
+Write-Host "Installed: $KrDest"
 Write-Host ""
 Write-Host "Usage:"
 Write-Host "  krc program.kr                  # compile to fat binary"

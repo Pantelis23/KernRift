@@ -32,27 +32,31 @@ jobs:
       - name: Create distribution
         run: make dist
 
-      - name: Build Windows binaries
+      - name: Build Windows and kr binaries
         run: |
+          # krc for Windows
           ./build/krc2 --arch=x86_64 --emit=pe build/krc.kr -o dist/krc-windows-x86_64.exe
           ./build/krc2 --arch=arm64  --emit=pe build/krc.kr -o dist/krc-windows-arm64.exe
-          echo "  krc-windows-x86_64.exe"
-          echo "  krc-windows-arm64.exe"
+          # kr runner (Linux)
+          ./build/krc2 --arch=x86_64 src/runner.kr -o dist/kr-linux-x86_64
+          ./build/krc2 --arch=arm64  src/runner.kr -o dist/kr-linux-arm64
+          chmod +x dist/kr-linux-x86_64 dist/kr-linux-arm64
+          # kr runner (Windows)
+          ./build/krc2 --arch=x86_64 --emit=pe src/runner.kr -o dist/kr-windows-x86_64.exe
+          ./build/krc2 --arch=arm64  --emit=pe src/runner.kr -o dist/kr-windows-arm64.exe
 
       - name: Verify binaries
         run: |
           echo "=== Distribution ==="
           ls -la dist/
-          file dist/krc-linux-x86_64
-          file dist/krc-linux-arm64
-          file dist/krc-windows-x86_64.exe
-          file dist/krc-windows-arm64.exe
 
       - name: Generate SHA256SUMS
         run: |
           cd dist
           sha256sum krc-linux-x86_64 krc-linux-arm64 \
                     krc-windows-x86_64.exe krc-windows-arm64.exe \
+                    kr-linux-x86_64 kr-linux-arm64 \
+                    kr-windows-x86_64.exe kr-windows-arm64.exe \
                     krc.krbo krc-source.kr > SHA256SUMS
 
       - name: Upload release assets
@@ -63,6 +67,10 @@ jobs:
             dist/krc-linux-arm64
             dist/krc-windows-x86_64.exe
             dist/krc-windows-arm64.exe
+            dist/kr-linux-x86_64
+            dist/kr-linux-arm64
+            dist/kr-windows-x86_64.exe
+            dist/kr-windows-arm64.exe
             dist/krc.krbo
             dist/krc-source.kr
             dist/SHA256SUMS
