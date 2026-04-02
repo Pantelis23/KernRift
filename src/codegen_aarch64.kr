@@ -1586,9 +1586,22 @@ fn gen_function_a64(uint64 fn_node) {
 
     fn_register(name_tok, out_len)
 
-    // For main: emit _start trampoline to store argc/argv to statics
-    // Only on Linux ELF — macOS LC_MAIN and PE entry don't have argc/argv on stack
+    // For main: platform-specific _start trampoline
     uint64 wnt_a64 = name_tok
+    if tok_matches(wnt_a64, "main", 4) != 0 && target_os == 2 {
+        // Windows ARM64: call GetCommandLineA, store raw ptr + sentinel
+        emit_a64_win_call_iat(7)       // GetCommandLineA → x0 = cmdline
+        uint64 argv_off_w = static_lookup_by_name("cli_argv", 8)
+        if argv_off_w != 0xFFFFFFFF {
+            emit_a64_static_store(argv_off_w)
+        }
+        // Set cli_argc = 0xFFFFFFFF as "needs parsing" sentinel
+        emit_a64_mov_imm(0, 0xFFFFFFFF)
+        uint64 argc_off_w = static_lookup_by_name("cli_argc", 8)
+        if argc_off_w != 0xFFFFFFFF {
+            emit_a64_static_store(argc_off_w)
+        }
+    }
     if tok_matches(wnt_a64, "main", 4) != 0 && target_os == 0 {
         // ldr x0, [sp]        ; x0 = argc
         emit_a64_ldr(0, 31, 0)
