@@ -2892,6 +2892,22 @@ fn gen_expr(uint64 node) {
             return
         }
 
+        // Built-in: get_target_os() → compile-time OS constant (0=Linux, 1=macOS, 2=Windows)
+        if tok_matches(wct, "get_target_os", 13) != 0 {
+            emit_mov_rax_imm(target_os)
+            return
+        }
+
+        // Built-in: get_arch_id() → compile-time arch ID (1=x86_64 Linux, 2=arm64 Linux, 3=x86_64 Win, 4=arm64 Win)
+        if tok_matches(wct, "get_arch_id", 11) != 0 {
+            if target_os == 2 {
+                emit_mov_rax_imm(3)
+            } else {
+                emit_mov_rax_imm(1)
+            }
+            return
+        }
+
         // User-defined function call
         // Evaluate args directly into registers (avoids push/pop clobbering [rsp-8])
         uint32 arg = ast_child(node)

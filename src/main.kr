@@ -1099,6 +1099,20 @@ fn main() {
             uint8 z = 0
             unsafe { *(tp as uint8) = z }
             output_path = out
+        } else if get_target_os() == 2 {
+            // Windows default: input.kr → input.exe
+            uint64 out = alloc(base_len + 5)
+            memcpy(out, input_path, base_len)
+            uint64 ep = out + base_len
+            // ".exe\0"
+            uint8 e0 = 46; uint8 e1 = 101; uint8 e2 = 120; uint8 e3 = 101
+            unsafe { *(ep as uint8) = e0 }
+            uint64 ep1 = ep + 1; unsafe { *(ep1 as uint8) = e1 }
+            uint64 ep2 = ep + 2; unsafe { *(ep2 as uint8) = e2 }
+            uint64 ep3 = ep + 3; unsafe { *(ep3 as uint8) = e3 }
+            uint64 ep4 = ep + 4; uint8 z = 0
+            unsafe { *(ep4 as uint8) = z }
+            output_path = out
         } else {
             // Fat binary: input.kr → input.krbo
             uint64 out = alloc(base_len + 6)
@@ -1201,9 +1215,20 @@ fn main() {
     }
 
     // Default: produce fat binary unless --arch or --emit specified
+    // On Windows: default to native PE output instead of fat binary
     // When running under Rust runtime (cli_argc=0), produce single-arch ELF
     if arch_set == 0 && emit_set == 0 && cli_argc > 0 {
-        compile_fat(input_path, output_path)
+        uint64 self_os = get_target_os()
+        if self_os == 2 {
+            // Windows: compile to native PE for this arch
+            uint64 self_arch_id = get_arch_id()
+            uint64 default_arch = 0
+            if self_arch_id == 4 { default_arch = 1 }
+            target_os = 2
+            compile(input_path, output_path, default_arch, 2)
+        } else {
+            compile_fat(input_path, output_path)
+        }
     } else {
         compile(input_path, output_path, arch, emit_mode)
     }

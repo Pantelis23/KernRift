@@ -1,0 +1,14 @@
+{
+  "iconDefinitions": {
+    "_kr": {
+      "iconPath": "./icons/kr-file.svg"
+    }
+  },
+  "fileExtensions": {
+    "kr": "_kr",
+    "krbo": "_kr"
+  },
+  "languageIds": {
+    "kernrift": "_kr"
+  }
+}

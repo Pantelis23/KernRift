@@ -1804,6 +1804,22 @@ fn gen_expr_a64(uint64 node) {
             return
         }
 
+        // Built-in: get_target_os() → compile-time OS constant (0=Linux, 1=macOS, 2=Windows)
+        if tok_matches(wct, "get_target_os", 13) != 0 {
+            emit_a64_mov_imm(0, target_os)
+            return
+        }
+
+        // Built-in: get_arch_id() → compile-time arch ID (1=x86_64 Linux, 2=arm64 Linux, 3=x86_64 Win, 4=arm64 Win)
+        if tok_matches(wct, "get_arch_id", 11) != 0 {
+            if target_os == 2 {
+                emit_a64_mov_imm(0, 4)
+            } else {
+                emit_a64_mov_imm(0, 2)
+            }
+            return
+        }
+
         // User-defined function call
         uint32 arg = ast_child(node)
         uint64 warg = arg
