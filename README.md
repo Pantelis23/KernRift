@@ -43,7 +43,7 @@ krc lc program.kr
 
 | Platform | CPU | Time |
 |----------|-----|------|
-| Linux x86_64 | AMD Ryzen 9 7900X | 24ms |
+| Linux x86_64 | AMD Ryzen 9 7900X | 45ms |
 | Windows 11 x86_64 | Intel Core Ultra 9 275HX | 44ms |
 | Linux ARM64 | ARM Cortex-A72 (Pi 400) | 192ms |
 
@@ -202,7 +202,7 @@ A VS Code extension (v0.2.3) is available on the VS Code Marketplace:
 
 ## Architecture
 
-13,000+ lines of KernRift across 14 source files + 7 stdlib modules (828 lines). Self-compiles to a 298KB native binary in 24ms (AMD Ryzen 9 7900X). 89 tests, bootstrap fixed point verified on 3 platforms.
+13,000+ lines of KernRift across 14 source files + 7 stdlib modules (828 lines). Self-compiles to a 345 KB native binary in 45ms, or a 1.9 MB universal fat binary (6 slices) in 232ms (AMD Ryzen 9 7900X). 100 tests, bootstrap fixed point verified on 3 platforms.
 
 | File | Purpose |
 |------|---------|
