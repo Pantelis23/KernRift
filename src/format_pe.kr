@@ -101,7 +101,7 @@ fn emit_pe_idata(uint64 idata_rva) -> uint64 {
     emit_byte(0)
     emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
     emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
-    emit_byte(0); emit_byte(0)
+    emit_byte(0)
 
     // 2: GetModuleHandleA (16 chars)
     emit_u16_le(0)
