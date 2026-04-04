@@ -616,6 +616,14 @@ fn gen_expr_a64(uint64 node) {
             uint64 soff = static_lookup(tok)
             if soff != 0xFFFFFFFF {
                 emit_a64_static_load(soff)
+            } else {
+                uint64 id_len = tok_text_len(tok)
+                if id_len != 0 {
+                    write(2, "error: use of undeclared identifier '", 37)
+                    write(2, cg_source + tok_text_start(tok), id_len)
+                    write(2, "'\n", 2)
+                    exit(1)
+                }
             }
         }
         return
