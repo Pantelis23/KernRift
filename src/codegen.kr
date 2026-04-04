@@ -2892,6 +2892,30 @@ fn gen_expr(uint64 node) {
             return
         }
 
+        // Built-in: get_module_path(buf, size) → exe path length (Windows only, returns 0 on Linux)
+        if tok_matches(wct, "get_module_path", 15) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 wa1 = arg1
+            gen_expr(wa1)
+            emit_store_rax_to_stack(temp_slot_0)
+            uint32 arg2 = ast_next(wa1)
+            uint64 wa2 = arg2
+            gen_expr(wa2)
+            if target_os == 2 {
+                // Windows: GetModuleFileNameA(NULL, buf, size)
+                emit_mov_r8_rax()
+                emit_load_rax_from_stack(temp_slot_0)
+                emit_mov_rdx_rax()
+                emit_byte(0x48); emit_byte(0x31); emit_byte(0xC9)
+                emit_win_alloc_stack(0x20)
+                emit_win_call_iat(12)
+                emit_win_free_stack(0x20)
+            } else {
+                emit_mov_rax_imm(0)
+            }
+            return
+        }
+
         // Built-in: exec_process(path) → CreateProcessA+Wait+Exit on Windows, execve on Linux
         if tok_matches(wct, "exec_process", 12) != 0 {
             uint32 first_arg = ast_child(node)
@@ -2974,10 +2998,12 @@ fn gen_expr(uint64 node) {
             return
         }
 
-        // Built-in: get_arch_id() → compile-time arch ID (1=x86_64 Linux, 2=arm64 Linux, 3=x86_64 Win, 4=arm64 Win)
+        // Built-in: get_arch_id() → compile-time arch ID
         if tok_matches(wct, "get_arch_id", 11) != 0 {
             if target_os == 2 {
                 emit_mov_rax_imm(3)
+            } else if target_os == 1 {
+                emit_mov_rax_imm(5)
             } else {
                 emit_mov_rax_imm(1)
             }

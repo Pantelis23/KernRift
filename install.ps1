@@ -56,6 +56,22 @@ try {
     Write-Host "warning: could not download kr runner: $_" -ForegroundColor Yellow
 }
 
+# Download standard library
+$StdDir = "$env:LOCALAPPDATA\KernRift\std"
+if (!(Test-Path $StdDir)) {
+    New-Item -ItemType Directory -Path $StdDir -Force | Out-Null
+}
+Write-Host "Installing standard library..."
+foreach ($mod in @("string", "io", "math", "fmt", "mem", "vec", "map")) {
+    $modUrl = "https://raw.githubusercontent.com/Pantelis23/KernRift/main/std/$mod.kr"
+    try {
+        Invoke-WebRequest -Uri $modUrl -OutFile "$StdDir\$mod.kr" -UseBasicParsing
+    } catch {
+        Write-Host "warning: could not download std/$mod.kr" -ForegroundColor Yellow
+    }
+}
+Write-Host "Standard library: $StdDir"
+
 # Add to PATH if not already there
 $UserPath = [Environment]::GetEnvironmentVariable("PATH", "User")
 if ($UserPath -notlike "*$InstallDir*") {

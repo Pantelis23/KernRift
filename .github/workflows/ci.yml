@@ -58,7 +58,7 @@ jobs:
           assert d[:8] == b'KRBOFAT\x00', 'not a fat binary'
           import struct
           count = struct.unpack_from('<I', d, 12)[0]
-          assert count == 4, f'expected 4 arches, got {count}'
+          assert count == 6, f'expected 6 arches, got {count}'
           print(f'Fat binary OK: {count} architectures, {len(d)} bytes')
           "
 

@@ -28,16 +28,17 @@ static uint64 IAT_GetFileSizeEx = 8
 static uint64 IAT_CreateProcessA = 9
 static uint64 IAT_WaitForSingleObject = 10
 static uint64 IAT_GetExitCodeProcess = 11
-static uint64 IAT_ENTRY_COUNT = 12
+static uint64 IAT_GetModuleFileNameA = 12
+static uint64 IAT_ENTRY_COUNT = 13
 
 // Compute .idata section size
 fn pe_idata_size() -> uint64 {
     // IDT: 1 entry (20 bytes) + null terminator (20 bytes) = 40
-    // ILT: 12 entries x 8 + null (8) = 104
-    // IAT: same = 104
-    // Hint/Name table: 12 x 24 = 288
+    // ILT: 13 entries x 8 + null (8) = 112
+    // IAT: same = 112
+    // Hint/Name table: 13 x 24 = 312
     // DLL name: "kernel32.dll\0" = 16
-    // Total: 40 + 104 + 104 + 288 + 16 = 552, round up to 0x400 = 1024
+    // Total: 40 + 112 + 112 + 312 + 16 = 592, round up to 0x400 = 1024
     return 1024
 }
 
@@ -47,12 +48,12 @@ fn pe_idata_size() -> uint64 {
 fn emit_pe_idata(uint64 idata_rva) -> uint64 {
     uint64 base = out_len
 
-    // Layout offsets within .idata (12 IAT entries, 24-byte hint/name slots):
+    // Layout offsets within .idata (13 IAT entries, 24-byte hint/name slots):
     uint64 idt_off = 0
     uint64 ilt_off = 40
-    uint64 iat_off = 144
-    uint64 hints_off = 248
-    uint64 dllname_off = 536
+    uint64 iat_off = 152
+    uint64 hints_off = 264
+    uint64 dllname_off = 576
 
     // IDT entry for kernel32.dll (20 bytes)
     emit_u32_le(idata_rva + ilt_off)     // OriginalFirstThunk -> ILT
@@ -65,9 +66,9 @@ fn emit_pe_idata(uint64 idata_rva) -> uint64 {
     uint64 z = 0
     while z < 20 { emit_byte(0); z = z + 1 }
 
-    // ILT: 12 entries + null (each is 8 bytes = RVA to hint/name)
+    // ILT: 13 entries + null (each is 8 bytes = RVA to hint/name)
     uint64 h = 0
-    while h < 12 {
+    while h < 13 {
         emit_u64_le(idata_rva + hints_off + h * 24)
         h = h + 1
     }
@@ -75,7 +76,7 @@ fn emit_pe_idata(uint64 idata_rva) -> uint64 {
 
     // IAT: identical to ILT (loader patches this at runtime)
     h = 0
-    while h < 12 {
+    while h < 13 {
         emit_u64_le(idata_rva + hints_off + h * 24)
         h = h + 1
     }
@@ -180,6 +181,15 @@ fn emit_pe_idata(uint64 idata_rva) -> uint64 {
     emit_byte(111); emit_byte(100); emit_byte(101); emit_byte(80)  // odeP
     emit_byte(114); emit_byte(111); emit_byte(99); emit_byte(101)  // roce
     emit_byte(115); emit_byte(115); emit_byte(0)                    // ss\0
+    emit_byte(0); emit_byte(0); emit_byte(0)
+
+    // 12: GetModuleFileNameA
+    emit_u16_le(0)
+    emit_byte(71); emit_byte(101); emit_byte(116); emit_byte(77)   // GetM
+    emit_byte(111); emit_byte(100); emit_byte(117); emit_byte(108) // odul
+    emit_byte(101); emit_byte(70); emit_byte(105); emit_byte(108) // eFil
+    emit_byte(101); emit_byte(78); emit_byte(97); emit_byte(109)  // eNam
+    emit_byte(101); emit_byte(65); emit_byte(0)                    // eA\0
     emit_byte(0); emit_byte(0); emit_byte(0)
 
     // DLL name: "kernel32.dll\0"
