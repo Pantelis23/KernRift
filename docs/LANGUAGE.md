@@ -1127,7 +1127,7 @@ set.
 
 ## 26. Built-in Host Functions
 
-When a function is annotated with `@ctx(host)`, nine built-in functions are
+When a function is annotated with `@ctx(host)`, thirteen built-in functions are
 available without any `extern fn` declaration.  The compiler maps these to
 `__kr_*` symbols provided by the KernRift host runtime.
 
@@ -1144,6 +1144,10 @@ available without any `extern fn` declaration.  The compiler maps these to
 | `str_copy(dst, src)`                         | Copy a null-terminated string from `src` to `dst`. |
 | `str_cat(dst, src)`                          | Append `src` to the end of `dst`.                  |
 | `str_len(s) -> uint64`                       | Return the length of null-terminated string `s`.   |
+| `get_target_os() -> uint64`                  | Return the target OS identifier (e.g. `1` = Linux, `2` = Windows, `3` = macOS). |
+| `get_arch_id() -> uint64`                    | Return the target architecture (`1` = x86-64, `2` = AArch64). |
+| `exec_process(path) -> uint32`               | Spawn and wait on an executable at `path`. Returns the exit code. |
+| `get_module_path(buf, size) -> uint64`        | Write the path of the current module into `buf` (up to `size` bytes). Returns bytes written. |
 
 ### Example
 
@@ -1169,6 +1173,11 @@ fn main() {
 These functions are only available in `@ctx(host)` code.  Using them in
 kernel contexts (`boot`, `thread`, `irq`, `nmi`) is a compile-time error.
 
+> **Note:** The compiler performs undeclared identifier detection during
+> semantic analysis.  Any call to a name that is not a declared function,
+> a built-in host function, or an imported symbol is reported as an error
+> before code generation begins.
+
 ### Module capabilities
 
 Host functions require the appropriate module capabilities:
@@ -1176,8 +1185,9 @@ Host functions require the appropriate module capabilities:
 | Capability | Required for                        |
 |------------|-------------------------------------|
 | `Stdout`   | `write`                             |
-| `Env`      | `getenv`                            |
-| `Process`  | `exec`, `exit`                      |
+| `Env`      | `getenv`, `get_target_os`, `get_arch_id` |
+| `Process`  | `exec`, `exec_process`, `exit`      |
+| `Fs`       | `get_module_path`                   |
 
 `alloc`, `dealloc`, `str_copy`, `str_cat`, and `str_len` do not require
 additional capabilities beyond `@ctx(host)`.

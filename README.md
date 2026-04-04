@@ -1,15 +1,15 @@
 # KernRift
 
-A self-hosted systems language compiler for kernel-first development. KernRift compiles itself — no Rust, no C, no external toolchain. It produces native executables for x86_64 and AArch64, with LZ4-compressed fat binaries as the default output. The `kr` runner executes `.krbo` fat binaries on any supported platform.
+A self-hosted systems language compiler for kernel-first development. KernRift compiles itself — no Rust, no C, no external toolchain. It produces native executables for x86_64 and AArch64 on Linux, Windows, and macOS, with BCJ+LZ4-compressed fat binaries as the default output (6 platform slices per `.krbo`). The `kr` runner (or `kr.exe` on Windows) executes `.krbo` fat binaries on any supported platform.
 
 ## Features
 
 - **Self-hosting** — the compiler compiles itself to a fixed point
-- **Dual architecture** — x86_64 and AArch64 from a single source
-- **Fat binaries** — default output is KrboFat (both architectures, LZ4-compressed)
+- **Triple-platform** — Linux, Windows, and macOS from a single source (x86_64 + ARM64 each)
+- **Fat binaries** — default output is KrboFat (6 platform slices, BCJ+LZ4-compressed)
 - **Zero dependencies** — static executables, no libc, no linker
 - **Kernel-first** — inline assembly, `@naked` functions, `@packed` structs, signed comparisons, volatile memory, bitfield ops, `--freestanding` mode
-- **Kernel safety** — context checks, effect tracking, lock graphs, capabilities
+- **Kernel safety** — context checks, effect tracking, lock graphs, capabilities, undeclared identifier detection
 - **Living compiler** — pattern detection, fitness scoring, auto-fix suggestions
 - **Cross-compilation** — compile for any target from any host
 
@@ -19,7 +19,7 @@ A self-hosted systems language compiler for kernel-first development. KernRift c
 # Install (gets krc compiler, kr runner, and stdlib)
 curl -sSf https://raw.githubusercontent.com/Pantelis23/KernRift/main/install.sh | sh
 
-# Compile to fat binary (default: x86_64 + ARM64, LZ4-compressed)
+# Compile to fat binary (default: 6 platform slices, BCJ+LZ4-compressed)
 krc hello.kr -o hello.krbo
 
 # Run on any platform
@@ -92,7 +92,7 @@ cargo install --git https://github.com/Pantelis23/KernRift-bootstrap kernriftc
 make build && make install
 ```
 
-This installs `krc` and `kr` to `~/.local/bin/` and the standard library to `~/.local/share/kernrift/`.
+This installs `krc` and `kr` to `~/.local/bin/` and the standard library to `~/.local/share/kernrift/`. On Windows, `install.ps1` installs `krc.exe` and `kr.exe` to `%LOCALAPPDATA%\KernRift\`.
 
 ## Language
 
@@ -164,6 +164,19 @@ volatile { *(mmio_addr as uint32) -> status }
 
 Annotations: `@noreturn`, `@naked` (no prologue/epilogue), `@packed` (no padding), `@section(".text.init")`. Stack frames >4KB emit a compile-time warning.
 
+## Built-in Functions
+
+These are compiler intrinsics — no import needed, available on all platforms:
+
+| Category | Functions |
+|----------|-----------|
+| Core | `alloc(size)`, `dealloc(ptr, size)`, `exit(code)`, `print(arg)`, `println(arg)` |
+| I/O | `write(fd, buf, len)`, `file_open(path, flags)`, `file_read(fd, buf, len)`, `file_write(fd, buf, len)`, `file_close(fd)`, `file_size(fd)` |
+| Memory | `memcpy(dst, src, len)`, `memset(dst, val, len)`, `str_len(s)`, `str_eq(a, b)` |
+| Signed cmp | `signed_lt(a, b)`, `signed_gt(a, b)`, `signed_le(a, b)`, `signed_ge(a, b)` |
+| Bitfield | `bit_get(v, n)`, `bit_set(v, n)`, `bit_clear(v, n)`, `bit_range(v, lo, hi)`, `bit_insert(v, lo, hi, bits)` |
+| Meta | `fn_addr(name)`, `call_ptr(addr, ...)`, `get_module_path()`, `exec_process(path, args)`, `get_target_os()`, `get_arch_id()` |
+
 ## Standard Library
 
 7 modules (828 lines) in `std/`:
@@ -182,14 +195,14 @@ Import with `import "std/string.kr"` etc. The compiler searches `~/.local/share/
 
 ## Editor Support
 
-A VS Code extension (v0.2.0) is available on the VS Code Marketplace:
+A VS Code extension (v0.2.3) is available on the VS Code Marketplace:
 
 - Syntax highlighting (TextMate grammar)
 - LSP server with diagnostics (`krc check`), completions, hover docs, and go-to-definition
 
 ## Architecture
 
-11,000+ lines of KernRift across 12 source files + 7 stdlib modules (828 lines). Self-compiles to a 298KB native binary in 24ms (AMD Ryzen 9 7900X). 89 tests, bootstrap fixed point verified on 3 platforms.
+13,000+ lines of KernRift across 14 source files + 7 stdlib modules (828 lines). Self-compiles to a 298KB native binary in 24ms (AMD Ryzen 9 7900X). 89 tests, bootstrap fixed point verified on 3 platforms.
 
 | File | Purpose |
 |------|---------|
@@ -197,8 +210,9 @@ A VS Code extension (v0.2.0) is available on the VS Code Marketplace:
 | `parser.kr` | Recursive descent + Pratt precedence |
 | `codegen.kr` | x86_64 code generation |
 | `codegen_aarch64.kr` | AArch64 code generation |
-| `analysis.kr` | Safety passes |
+| `analysis.kr` | Safety passes (incl. undeclared identifier detection) |
 | `living.kr` | Pattern detection + fitness |
+| `bcj.kr` | BCJ filters (x86_64 + AArch64) for compression |
 | `format_*.kr` | ELF, Mach-O, PE, AR, KRBO, KrboFat |
 | `std/*.kr` | Standard library (7 modules, 828 lines) |
 

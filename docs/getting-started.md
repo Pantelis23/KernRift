@@ -2,8 +2,9 @@
 
 ## Install
 
+### Linux / macOS
+
 ```bash
-# Linux / macOS (installs krc, kr, and stdlib to ~/.local/)
 curl -sSf https://raw.githubusercontent.com/Pantelis23/KernRift/main/install.sh | sh
 
 # Or download directly (x86_64)
@@ -14,6 +15,14 @@ sudo mv krc kr /usr/local/bin/
 ```
 
 This installs `krc` and `kr` to `~/.local/bin/` and the standard library to `~/.local/share/kernrift/`.
+
+### Windows
+
+```powershell
+irm https://raw.githubusercontent.com/Pantelis23/KernRift/main/install.ps1 | iex
+```
+
+This installs `krc.exe` and `kr.exe` to `%LOCALAPPDATA%\KernRift\bin\` and the standard library to `%LOCALAPPDATA%\KernRift\share\`. The installer adds the bin directory to your `PATH` automatically.
 
 ## Your First Program
 
@@ -28,7 +37,7 @@ fn main() {
 Save as `hello.kr` and compile:
 
 ```bash
-krc hello.kr -o hello.krbo        # fat binary (x86_64 + ARM64, LZ4-compressed)
+krc hello.kr -o hello.krbo        # fat binary (6 slices, LZ4-compressed)
 kr hello.krbo                     # run on any platform
 
 krc --arch=x86_64 hello.kr -o hello   # native x86_64 ELF
@@ -186,7 +195,7 @@ fn main() {
 
 ### VS Code
 
-Install the **KernRift** extension from the VS Code Marketplace (v0.2.0). It provides:
+Install the **KernRift** extension from the VS Code Marketplace (v0.2.3). It provides:
 
 - **Syntax highlighting** via TextMate grammar
 - **LSP server** with:
