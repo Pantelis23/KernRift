@@ -47,15 +47,7 @@ fn lz4_decompress_frame_r(uint64 input, uint64 input_len, uint64 output) -> uint
 }
 
 fn detect_arch_r() -> uint64 {
-    uint64 fd = file_open("/proc/self/exe", 0)
-    if fd < 0 { return 0 }
-    uint8[20] hdr
-    file_read(fd, hdr, 20)
-    file_close(fd)
-    uint64 machine = hdr[18]
-    if machine == 0x3E { return 1 }
-    if machine == 0xB7 { return 2 }
-    return 0
+    return get_arch_id()
 }
 
 static uint64 cli_argc = 0
@@ -97,11 +89,14 @@ fn main() {
     uint64 host_arch = detect_arch_r()
 
     if is_fat == 0 {
-        // Not fat — write as-is (probably a raw ELF)
+        // Not fat — write as-is
+        uint64 raw_os = get_target_os()
         uint64 tmp = "/tmp/.kr-exec"
+        if raw_os == 2 { tmp = ".\\kr-run.exe" }
         uint64 tfd = file_open(tmp, 1)
         file_write(tfd, data, fsize)
         file_close(tfd)
+        if raw_os == 2 { exec_process(tmp) }
         exit(0)
     }
 
@@ -146,12 +141,19 @@ fn main() {
     uint64 comp_data = data + slice_offset
     uint64 decomp_size = lz4_decompress_frame_r(comp_data, slice_comp_size, binary)
 
-    // Write to temp
+    // Write to temp and execute
+    uint64 host_os = get_target_os()
     uint64 tmp_path = "/tmp/.kr-exec"
+    if host_os == 2 {
+        tmp_path = ".\\kr-run.exe"
+    }
     uint64 tfd = file_open(tmp_path, 1)
     file_write(tfd, binary, decomp_size)
     file_close(tfd)
 
-    // Signal success — the shell wrapper handles chmod+exec
+    if host_os == 2 {
+        exec_process(tmp_path)
+    }
+    // Linux/macOS: signal success — the shell wrapper handles chmod+exec
     exit(0)
 }

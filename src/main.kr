@@ -745,7 +745,8 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     // Save token count for reuse
     uint64 saved_tcount = tcount
 
-    // === Compile x86_64 ===
+    // === Compile x86_64 ELF (Linux) ===
+    target_os = 0
     ast_init(65536)
     codegen_init(1048576, source, my_tokens)
     parser_init(my_tokens, saved_tcount)
@@ -876,35 +877,219 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
         ai = ai + 1
     }
 
-    // === LZ4 compress both ===
+    // === Compile x86_64 PE (Windows) ===
+    target_os = 2
+    out_len = 0
+    fn_count = 0
+    fixup_count = 0
+    static_fixup_count = 0
+    str_fixup_count = 0
+    str_len = 0
+    win_iat_fixup_count = 0
+    fnaddr_fixup_count = 0
+
+    ast_init(65536)
+    parser_init(my_tokens, saved_tcount)
+    uint64 root3 = parse_module()
+    dce_init()
+    dce_scan(root3)
+
+    uint64 header3 = emit_pe_headers_x64(0)
+    uint64 text_start3 = codegen_output_len()
+
+    uint32 child3 = ast_child(root3)
+    uint64 wchild3 = child3
+    while wchild3 != 0 {
+        uint32 ck3 = ast_kind(wchild3)
+        if ck3 == 2 {
+            uint32 fn_name3 = ast_data1(wchild3)
+            if dce_is_live(fn_name3) != 0 { gen_function(wchild3) }
+        }
+        uint32 nxt3 = ast_next(wchild3)
+        wchild3 = nxt3
+    }
+    resolve_fixups()
+    resolve_fnaddr_fixups()
+    uint64 data_start3 = codegen_output_len()
+    emit_static_data()
+    resolve_static_fixups(data_start3)
+    uint64 str_start3 = codegen_output_len()
+    emit_string_data()
+    resolve_string_fixups(str_start3)
+    uint64 text_size3 = codegen_output_len() - text_start3
+
+    uint64 main_off3 = find_main_offset()
+    uint64 pe_entry3 = 0x1000 + main_off3 - text_start3
+    patch_u32(0x68, pe_entry3)
+    uint64 text_aligned3 = (text_size3 + 0x1FF) & ~0x1FF
+    while codegen_output_len() < header3 + text_aligned3 { emit_byte(0) }
+    uint64 text_va_size3 = (text_size3 + 0xFFF) & ~0xFFF
+    uint64 idata_rva3 = 0x1000 + text_va_size3
+    uint64 iat_rva_val3 = emit_pe_idata(idata_rva3)
+    pe_iat_rva = iat_rva_val3
+    patch_u32(0x148 + 8, text_size3)
+    patch_u32(0x148 + 16, text_aligned3)
+    patch_u32(0x170 + 12, idata_rva3)
+    uint64 idata_file_off3 = header3 + text_aligned3
+    patch_u32(0x170 + 20, idata_file_off3)
+    patch_u32(0xD0, idata_rva3)
+    patch_u32(0x5C, text_aligned3)
+    uint64 image_size3 = 0x1000 + text_va_size3 + 0x1000
+    patch_u32(0x90, image_size3)
+    resolve_win_iat_fixups(text_start3, iat_rva_val3)
+
+    uint64 pe_x86_len = codegen_output_len()
+    uint64 pe_x86_buf = alloc(pe_x86_len)
+    uint64 pxi = 0
+    while pxi < pe_x86_len {
+        uint64 sp = out_buf + pxi
+        uint64 dp = pe_x86_buf + pxi
+        uint64 bv = 0
+        unsafe { *(sp as uint8) -> bv }
+        uint8 bb = bv
+        unsafe { *(dp as uint8) = bb }
+        pxi = pxi + 1
+    }
+
+    // === Compile ARM64 PE (Windows) ===
+    out_len = 0
+    fn_count = 0
+    fixup_count = 0
+    static_fixup_count = 0
+    str_fixup_count = 0
+    str_len = 0
+    a64_win_iat_fixup_count = 0
+    fnaddr_fixup_count = 0
+
+    ast_init(65536)
+    parser_init(my_tokens, saved_tcount)
+    uint64 root4 = parse_module()
+    dce_init()
+    dce_scan(root4)
+
+    uint64 header4 = emit_pe_headers_a64(0)
+    uint64 text_start4 = codegen_output_len()
+
+    uint32 child4 = ast_child(root4)
+    uint64 wchild4 = child4
+    while wchild4 != 0 {
+        uint32 ck4 = ast_kind(wchild4)
+        if ck4 == 2 {
+            uint32 fn_name4 = ast_data1(wchild4)
+            if dce_is_live(fn_name4) != 0 { gen_function_a64(wchild4) }
+        }
+        uint32 nxt4 = ast_next(wchild4)
+        wchild4 = nxt4
+    }
+    resolve_fixups_a64()
+    resolve_fnaddr_fixups_a64()
+    uint64 data_start4 = codegen_output_len()
+    emit_static_data()
+    resolve_static_fixups_a64(data_start4)
+    uint64 str_start4 = codegen_output_len()
+    emit_string_data()
+    resolve_string_fixups_a64(str_start4)
+    uint64 text_size4 = codegen_output_len() - text_start4
+
+    uint64 main_off4 = find_main_offset()
+    uint64 pe_entry4 = 0x1000 + main_off4 - text_start4
+    patch_u32(0x68, pe_entry4)
+
+    // ARM64 PE: separate .data section (W^X)
+    uint64 text_aligned4 = (text_size4 + 0x1FF) & ~0x1FF
+    while codegen_output_len() < header4 + text_aligned4 { emit_byte(0) }
+    uint64 data_file_off4 = codegen_output_len()
+    emit_static_data()
+    uint64 data_raw_size4 = codegen_output_len() - data_file_off4
+    uint64 data_aligned4 = (data_raw_size4 + 0x1FF) & ~0x1FF
+    if data_aligned4 == 0 { data_aligned4 = 0x200 }
+    while codegen_output_len() < data_file_off4 + data_aligned4 { emit_byte(0) }
+    uint64 text_va_size4 = (text_size4 + 0xFFF) & ~0xFFF
+    uint64 data_rva4 = 0x1000 + text_va_size4
+    uint64 data_va_size4 = (data_raw_size4 + 0xFFF) & ~0xFFF
+    if data_va_size4 == 0 { data_va_size4 = 0x1000 }
+    uint64 data_va_base4 = data_rva4 - 0xE00
+    resolve_static_fixups_a64(data_va_base4)
+    uint64 idata_rva4 = 0x1000 + text_va_size4 + data_va_size4
+    uint64 iat_rva_val4 = emit_pe_idata(idata_rva4)
+    pe_iat_rva = iat_rva_val4
+    // Patch .text header at 0x148
+    patch_u32(0x148 + 8, text_size4)
+    patch_u32(0x148 + 16, text_aligned4)
+    // Patch .data header at 0x170
+    patch_u32(0x170 + 8, data_raw_size4)
+    patch_u32(0x170 + 12, data_rva4)
+    patch_u32(0x170 + 16, data_aligned4)
+    patch_u32(0x170 + 20, data_file_off4)
+    // Patch .idata header at 0x198
+    uint64 idata_file_off4 = data_file_off4 + data_aligned4
+    patch_u32(0x198 + 8, pe_idata_size())
+    patch_u32(0x198 + 12, idata_rva4)
+    patch_u32(0x198 + 16, pe_idata_size())
+    patch_u32(0x198 + 20, idata_file_off4)
+    patch_u32(0xD0, idata_rva4)
+    patch_u32(0x5C, text_aligned4)
+    uint64 image_size4 = 0x1000 + text_va_size4 + data_va_size4 + 0x1000
+    patch_u32(0x90, image_size4)
+    resolve_a64_win_iat_fixups(text_start4, iat_rva_val4)
+
+    uint64 pe_a64_len = codegen_output_len()
+    uint64 pe_a64_buf = alloc(pe_a64_len)
+    uint64 pai = 0
+    while pai < pe_a64_len {
+        uint64 sp = out_buf + pai
+        uint64 dp = pe_a64_buf + pai
+        uint64 bv = 0
+        unsafe { *(sp as uint8) -> bv }
+        uint8 bb = bv
+        unsafe { *(dp as uint8) = bb }
+        pai = pai + 1
+    }
+
+    // Reset target_os for fat binary emission
+    target_os = 0
+
+    // === LZ4 compress all 4 ===
     uint64 x86_comp = alloc(x86_len + 256)
     uint64 x86_comp_len = lz4_compress_frame(x86_buf, x86_len, x86_comp)
 
     uint64 a64_comp = alloc(a64_len + 256)
     uint64 a64_comp_len = lz4_compress_frame(a64_buf, a64_len, a64_comp)
 
+    uint64 pe_x86_comp = alloc(pe_x86_len + 256)
+    uint64 pe_x86_comp_len = lz4_compress_frame(pe_x86_buf, pe_x86_len, pe_x86_comp)
+
+    uint64 pe_a64_comp = alloc(pe_a64_len + 256)
+    uint64 pe_a64_comp_len = lz4_compress_frame(pe_a64_buf, pe_a64_len, pe_a64_comp)
+
     // === Emit KrboFat v2 ===
     out_len = 0
     // Header: 16 bytes
-    emit_krbofat_v2_header(2)
-    // Entry 0: x86_64
-    uint64 data_offset = 16 + 2 * 48
+    emit_krbofat_v2_header(4)
+    // 4 entries x 48 bytes = 192
+    uint64 data_offset = 16 + 4 * 48
     // Pad to 16 bytes
     uint64 pad = (16 - (data_offset & 15)) & 15
     data_offset = data_offset + pad
     uint64 x86_data_off = data_offset
-    uint64 a64_data_off = data_offset + x86_comp_len
+    uint64 a64_data_off = x86_data_off + x86_comp_len
+    uint64 pe_x86_data_off = a64_data_off + a64_comp_len
+    uint64 pe_a64_data_off = pe_x86_data_off + pe_x86_comp_len
 
     emit_krbofat_v2_entry_hdr(1, 1, x86_data_off, x86_comp_len, x86_len)
     emit_krbofat_v2_entry_rt(0, 0)
     emit_krbofat_v2_entry_hdr(2, 1, a64_data_off, a64_comp_len, a64_len)
+    emit_krbofat_v2_entry_rt(0, 0)
+    emit_krbofat_v2_entry_hdr(3, 1, pe_x86_data_off, pe_x86_comp_len, pe_x86_len)
+    emit_krbofat_v2_entry_rt(0, 0)
+    emit_krbofat_v2_entry_hdr(4, 1, pe_a64_data_off, pe_a64_comp_len, pe_a64_len)
     emit_krbofat_v2_entry_rt(0, 0)
 
     // Padding
     uint64 pi = 0
     while pi < pad { emit_byte(0); pi = pi + 1 }
 
-    // Compressed x86_64 blob
+    // Compressed x86_64 ELF blob
     xi = 0
     while xi < x86_comp_len {
         uint64 p = x86_comp + xi
@@ -915,7 +1100,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
         xi = xi + 1
     }
 
-    // Compressed ARM64 blob
+    // Compressed ARM64 ELF blob
     ai = 0
     while ai < a64_comp_len {
         uint64 p = a64_comp + ai
@@ -924,6 +1109,28 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
         uint8 bb = bv
         emit_byte(bb)
         ai = ai + 1
+    }
+
+    // Compressed x86_64 PE blob
+    pxi = 0
+    while pxi < pe_x86_comp_len {
+        uint64 p = pe_x86_comp + pxi
+        uint64 bv = 0
+        unsafe { *(p as uint8) -> bv }
+        uint8 bb = bv
+        emit_byte(bb)
+        pxi = pxi + 1
+    }
+
+    // Compressed ARM64 PE blob
+    pai = 0
+    while pai < pe_a64_comp_len {
+        uint64 p = pe_a64_comp + pai
+        uint64 bv = 0
+        unsafe { *(p as uint8) -> bv }
+        uint8 bb = bv
+        emit_byte(bb)
+        pai = pai + 1
     }
 
     codegen_write_output(output_path)
@@ -936,6 +1143,14 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     msg = ") + arm64("
     write(1, msg, 10)
     nl = fmt_uint(nb, a64_len)
+    write(1, nb, nl)
+    msg = ") + win-x64("
+    write(1, msg, 12)
+    nl = fmt_uint(nb, pe_x86_len)
+    write(1, nb, nl)
+    msg = ") + win-arm("
+    write(1, msg, 12)
+    nl = fmt_uint(nb, pe_a64_len)
     write(1, nb, nl)
     msg = ") -> "
     write(1, msg, 5)
@@ -1099,20 +1314,6 @@ fn main() {
             uint8 z = 0
             unsafe { *(tp as uint8) = z }
             output_path = out
-        } else if get_target_os() == 2 {
-            // Windows default: input.kr → input.exe
-            uint64 out = alloc(base_len + 5)
-            memcpy(out, input_path, base_len)
-            uint64 ep = out + base_len
-            // ".exe\0"
-            uint8 e0 = 46; uint8 e1 = 101; uint8 e2 = 120; uint8 e3 = 101
-            unsafe { *(ep as uint8) = e0 }
-            uint64 ep1 = ep + 1; unsafe { *(ep1 as uint8) = e1 }
-            uint64 ep2 = ep + 2; unsafe { *(ep2 as uint8) = e2 }
-            uint64 ep3 = ep + 3; unsafe { *(ep3 as uint8) = e3 }
-            uint64 ep4 = ep + 4; uint8 z = 0
-            unsafe { *(ep4 as uint8) = z }
-            output_path = out
         } else {
             // Fat binary: input.kr → input.krbo
             uint64 out = alloc(base_len + 6)
@@ -1218,17 +1419,7 @@ fn main() {
     // On Windows: default to native PE output instead of fat binary
     // When running under Rust runtime (cli_argc=0), produce single-arch ELF
     if arch_set == 0 && emit_set == 0 && cli_argc > 0 {
-        uint64 self_os = get_target_os()
-        if self_os == 2 {
-            // Windows: compile to native PE for this arch
-            uint64 self_arch_id = get_arch_id()
-            uint64 default_arch = 0
-            if self_arch_id == 4 { default_arch = 1 }
-            target_os = 2
-            compile(input_path, output_path, default_arch, 2)
-        } else {
-            compile_fat(input_path, output_path)
-        }
+        compile_fat(input_path, output_path)
     } else {
         compile(input_path, output_path, arch, emit_mode)
     }

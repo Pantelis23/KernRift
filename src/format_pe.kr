@@ -2,7 +2,8 @@
 //
 // PE32+ with .text + .idata sections for Windows x86_64 and AArch64
 // Import table provides: ExitProcess, GetStdHandle, WriteFile,
-// CreateFileA, ReadFile, CloseHandle, VirtualAlloc
+// CreateFileA, ReadFile, CloseHandle, VirtualAlloc, GetCommandLineA,
+// GetFileSizeEx, CreateProcessA, WaitForSingleObject, GetExitCodeProcess
 
 // ---------------------------------------------------------------------------
 // PE import table (IAT) layout
@@ -11,7 +12,7 @@
 //   Import Directory Table (IDT): one entry per DLL + null terminator
 //   Import Lookup Table (ILT): one entry per function + null terminator
 //   Import Address Table (IAT): same as ILT, patched by loader
-//   Hint/Name entries: hint(2) + name string + padding
+//   Hint/Name entries: hint(2) + name string + padding (24 bytes each)
 //   DLL name string
 
 // IAT slot indices (used by codegen to generate indirect calls)
@@ -24,17 +25,20 @@ static uint64 IAT_CloseHandle = 5
 static uint64 IAT_VirtualAlloc = 6
 static uint64 IAT_GetCommandLineA = 7
 static uint64 IAT_GetFileSizeEx = 8
-static uint64 IAT_ENTRY_COUNT = 9
+static uint64 IAT_CreateProcessA = 9
+static uint64 IAT_WaitForSingleObject = 10
+static uint64 IAT_GetExitCodeProcess = 11
+static uint64 IAT_ENTRY_COUNT = 12
 
 // Compute .idata section size
 fn pe_idata_size() -> uint64 {
     // IDT: 1 entry (20 bytes) + null terminator (20 bytes) = 40
-    // ILT: 9 entries × 8 + null (8) = 80
-    // IAT: same = 80
-    // Hint/Name table: 9 × 20 = 180
+    // ILT: 12 entries x 8 + null (8) = 104
+    // IAT: same = 104
+    // Hint/Name table: 12 x 24 = 288
     // DLL name: "kernel32.dll\0" = 16
-    // Total: 40 + 80 + 80 + 180 + 16 = 396, round up to 0x200 = 512
-    return 512
+    // Total: 40 + 104 + 104 + 288 + 16 = 552, round up to 0x400 = 1024
+    return 1024
 }
 
 // Emit the .idata section content at the current output position
@@ -43,48 +47,48 @@ fn pe_idata_size() -> uint64 {
 fn emit_pe_idata(uint64 idata_rva) -> uint64 {
     uint64 base = out_len
 
-    // Layout offsets within .idata (9 IAT entries, 20-byte hint/name slots):
+    // Layout offsets within .idata (12 IAT entries, 24-byte hint/name slots):
     uint64 idt_off = 0
     uint64 ilt_off = 40
-    uint64 iat_off = 120
-    uint64 hints_off = 200
-    uint64 dllname_off = 380
+    uint64 iat_off = 144
+    uint64 hints_off = 248
+    uint64 dllname_off = 536
 
     // IDT entry for kernel32.dll (20 bytes)
-    emit_u32_le(idata_rva + ilt_off)     // OriginalFirstThunk → ILT
+    emit_u32_le(idata_rva + ilt_off)     // OriginalFirstThunk -> ILT
     emit_u32_le(0)                        // TimeDateStamp
     emit_u32_le(0)                        // ForwarderChain
-    emit_u32_le(idata_rva + dllname_off)  // Name → "kernel32.dll"
-    emit_u32_le(idata_rva + iat_off)      // FirstThunk → IAT
+    emit_u32_le(idata_rva + dllname_off)  // Name -> "kernel32.dll"
+    emit_u32_le(idata_rva + iat_off)      // FirstThunk -> IAT
 
     // Null IDT terminator (20 bytes)
     uint64 z = 0
     while z < 20 { emit_byte(0); z = z + 1 }
 
-    // ILT: 8 entries + null (each is 8 bytes = RVA to hint/name)
+    // ILT: 12 entries + null (each is 8 bytes = RVA to hint/name)
     uint64 h = 0
-    while h < 9 {
-        emit_u64_le(idata_rva + hints_off + h * 20)
+    while h < 12 {
+        emit_u64_le(idata_rva + hints_off + h * 24)
         h = h + 1
     }
     emit_u64_le(0)  // null terminator
 
     // IAT: identical to ILT (loader patches this at runtime)
     h = 0
-    while h < 9 {
-        emit_u64_le(idata_rva + hints_off + h * 20)
+    while h < 12 {
+        emit_u64_le(idata_rva + hints_off + h * 24)
         h = h + 1
     }
     emit_u64_le(0)
 
-    // Hint/Name entries (16 bytes each, padded)
-    // Hint/Name entries (20 bytes each, padded)
-    // 0: ExitProcess (hint=0, "ExitProcess\0" + pad)
+    // Hint/Name entries (24 bytes each, padded)
+    // 0: ExitProcess
     emit_u16_le(0)
     emit_byte(69); emit_byte(120); emit_byte(105); emit_byte(116)
     emit_byte(80); emit_byte(114); emit_byte(111); emit_byte(99)
     emit_byte(101); emit_byte(115); emit_byte(115); emit_byte(0)
     emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
 
     // 1: GetStdHandle
     emit_u16_le(0)
@@ -92,13 +96,15 @@ fn emit_pe_idata(uint64 idata_rva) -> uint64 {
     emit_byte(116); emit_byte(100); emit_byte(72); emit_byte(97)
     emit_byte(110); emit_byte(100); emit_byte(108); emit_byte(101)
     emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
 
     // 2: WriteFile
     emit_u16_le(0)
     emit_byte(87); emit_byte(114); emit_byte(105); emit_byte(116)
     emit_byte(101); emit_byte(70); emit_byte(105); emit_byte(108)
     emit_byte(101); emit_byte(0)
-    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
 
     // 3: CreateFileA
     emit_u16_le(0)
@@ -106,13 +112,15 @@ fn emit_pe_idata(uint64 idata_rva) -> uint64 {
     emit_byte(116); emit_byte(101); emit_byte(70); emit_byte(105)
     emit_byte(108); emit_byte(101); emit_byte(65); emit_byte(0)
     emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
 
     // 4: ReadFile
     emit_u16_le(0)
     emit_byte(82); emit_byte(101); emit_byte(97); emit_byte(100)
     emit_byte(70); emit_byte(105); emit_byte(108); emit_byte(101)
     emit_byte(0); emit_byte(0)
-    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
 
     // 5: CloseHandle
     emit_u16_le(0)
@@ -120,6 +128,7 @@ fn emit_pe_idata(uint64 idata_rva) -> uint64 {
     emit_byte(101); emit_byte(72); emit_byte(97); emit_byte(110)
     emit_byte(100); emit_byte(108); emit_byte(101); emit_byte(0)
     emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
 
     // 6: VirtualAlloc
     emit_u16_le(0)
@@ -127,6 +136,7 @@ fn emit_pe_idata(uint64 idata_rva) -> uint64 {
     emit_byte(117); emit_byte(97); emit_byte(108); emit_byte(65)
     emit_byte(108); emit_byte(108); emit_byte(111); emit_byte(99)
     emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
 
     // 7: GetCommandLineA
     emit_u16_le(0)
@@ -134,7 +144,7 @@ fn emit_pe_idata(uint64 idata_rva) -> uint64 {
     emit_byte(111); emit_byte(109); emit_byte(109); emit_byte(97)  // omma
     emit_byte(110); emit_byte(100); emit_byte(76); emit_byte(105)  // ndLi
     emit_byte(110); emit_byte(101); emit_byte(65); emit_byte(0)    // neA\0
-    emit_byte(0); emit_byte(0)                                      // pad
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
 
     // 8: GetFileSizeEx
     emit_u16_le(0)
@@ -142,7 +152,35 @@ fn emit_pe_idata(uint64 idata_rva) -> uint64 {
     emit_byte(105); emit_byte(108); emit_byte(101); emit_byte(83)  // ileS
     emit_byte(105); emit_byte(122); emit_byte(101); emit_byte(69)  // izeE
     emit_byte(120); emit_byte(0)                                    // x\0
-    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)         // pad
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0)
+
+    // 9: CreateProcessA
+    emit_u16_le(0)
+    emit_byte(67); emit_byte(114); emit_byte(101); emit_byte(97)   // Crea
+    emit_byte(116); emit_byte(101); emit_byte(80); emit_byte(114)  // tePr
+    emit_byte(111); emit_byte(99); emit_byte(101); emit_byte(115)  // oces
+    emit_byte(115); emit_byte(65); emit_byte(0)                     // sA\0
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0)
+
+    // 10: WaitForSingleObject
+    emit_u16_le(0)
+    emit_byte(87); emit_byte(97); emit_byte(105); emit_byte(116)   // Wait
+    emit_byte(70); emit_byte(111); emit_byte(114); emit_byte(83)   // ForS
+    emit_byte(105); emit_byte(110); emit_byte(103); emit_byte(108) // ingl
+    emit_byte(101); emit_byte(79); emit_byte(98); emit_byte(106)   // eObj
+    emit_byte(101); emit_byte(99); emit_byte(116); emit_byte(0)    // ect\0
+    emit_byte(0); emit_byte(0)
+
+    // 11: GetExitCodeProcess
+    emit_u16_le(0)
+    emit_byte(71); emit_byte(101); emit_byte(116); emit_byte(69)   // GetE
+    emit_byte(120); emit_byte(105); emit_byte(116); emit_byte(67)  // xitC
+    emit_byte(111); emit_byte(100); emit_byte(101); emit_byte(80)  // odeP
+    emit_byte(114); emit_byte(111); emit_byte(99); emit_byte(101)  // roce
+    emit_byte(115); emit_byte(115); emit_byte(0)                    // ss\0
+    emit_byte(0); emit_byte(0); emit_byte(0)
 
     // DLL name: "kernel32.dll\0"
     emit_byte(107); emit_byte(101); emit_byte(114); emit_byte(110)
@@ -150,8 +188,8 @@ fn emit_pe_idata(uint64 idata_rva) -> uint64 {
     emit_byte(46); emit_byte(100); emit_byte(108); emit_byte(108)
     emit_byte(0)
 
-    // Pad to 512 bytes
-    while out_len - base < 512 { emit_byte(0) }
+    // Pad to 1024 bytes
+    while out_len - base < 1024 { emit_byte(0) }
 
     // Return IAT RVA (for call [rip+disp] to use)
     return idata_rva + iat_off
