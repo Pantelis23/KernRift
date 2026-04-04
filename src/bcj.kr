@@ -1,0 +1,115 @@
+// x86_64 BCJ (Branch/Call/Jump) Filter for Extreme Compression
+// Normalizes E8 (CALL) and E9 (JMP) relative offsets to absolute addresses.
+// Because we use a blind scan, the operation MUST be perfectly symmetric.
+
+@export
+fn filter_x86_64_bcj(uint64 buf, uint64 size, uint64 is_encode) {
+    // We need at least 5 bytes to find a CALL/JMP + rel32
+    if size < 5 { return }
+    
+    uint64 limit = size - 4
+    uint64 i = 0
+    
+    while i < limit {
+        uint64 p = buf + i
+        uint8 op = 0
+        unsafe { *(p as uint8) -> op }
+        
+        // 0xE8 = CALL, 0xE9 = JMP
+        if op == 0xE8 || op == 0xE9 {
+            // Read the 32-bit relative offset
+            uint64 p_rel = p + 1
+            uint32 rel32 = 0
+            unsafe { *(p_rel as uint32) -> rel32 }
+            
+            uint32 new_rel32 = 0
+            
+            // The offset is relative to the NEXT instruction (i + 5)
+            // We use 32-bit modular arithmetic to ensure perfect reversibility
+            uint32 current_ip = i + 5
+            
+            if is_encode != 0 {
+                // Encode: Relative -> Absolute
+                new_rel32 = rel32 + current_ip
+            } else {
+                // Decode: Absolute -> Relative
+                new_rel32 = rel32 - current_ip
+            }
+            
+            // Write the transformed 32-bit value back
+            unsafe { *(p_rel as uint32) = new_rel32 }
+            
+            // Skip the next 4 bytes since we just transformed them
+            i += 4
+        }
+        
+        i += 1
+    }
+}
+// AArch64 BCJ (Branch/Call/Jump) Filter for Extreme LZ4 Compression
+// Converts relative branch offsets to absolute virtual addresses before compression,
+// and restores them after decompression. This makes function calls to the same target
+// look identical in the byte stream, supercharging LZ4's dictionary match finder.
+
+@export
+fn filter_aarch64_bcj(uint64 buf, uint64 size, uint64 is_encode) {
+    uint64 i = 0
+    // Iterate over 4-byte instructions
+    while i < size {
+        uint64 p = buf + i
+        uint32 insn = 0
+        unsafe { *(p as uint32) -> insn }
+        
+        // AArch64 B (Branch) and BL (Branch with Link) share the top 6 bits (31:26)
+        // B:  000101 (0x14) -> 0x14000000
+        // BL: 100101 (0x94) -> 0x94000000
+        // Mask: 111111 (0xFC) -> 0xFC000000
+        
+        uint32 op_mask = insn & 0xFC000000
+        if op_mask == 0x14000000 || op_mask == 0x94000000 {
+            // Extract the 26-bit immediate (rel26)
+            uint32 imm26 = insn & 0x03FFFFFF
+            
+            // Sign-extend the 26-bit immediate to 32 bits
+            // Check bit 25 (the sign bit): 0x02000000
+            uint32 is_negative = imm26 & 0x02000000
+            if is_negative != 0 {
+                // Pad the top 6 bits with 1s
+                imm26 = imm26 | 0xFC000000
+            }
+            
+            // The actual offset in bytes is imm26 * 4
+            // (But we can just do the math on the 32-bit word directly to avoid overflow)
+            uint32 offset_bytes = imm26 << 2
+            
+            uint32 new_imm26 = 0
+            
+            if is_encode != 0 {
+                // Encode: Relative offset -> Absolute Address
+                // target_addr = current_offset + relative_offset
+                uint32 current_offset = i
+                uint32 target_addr = current_offset + offset_bytes
+                
+                // Convert back to 26-bit immediate (divided by 4)
+                new_imm26 = (target_addr >> 2) & 0x03FFFFFF
+            } else {
+                // Decode: Absolute Address -> Relative offset
+                // relative_offset = target_addr - current_offset
+                uint32 current_offset = i
+                
+                // The 'offset_bytes' currently holds the Absolute Address we packed earlier
+                uint32 target_addr = offset_bytes
+                uint32 restored_offset_bytes = target_addr - current_offset
+                
+                // Convert back to 26-bit immediate (divided by 4)
+                new_imm26 = (restored_offset_bytes >> 2) & 0x03FFFFFF
+            }
+            
+            // Reconstruct the instruction and write it back
+            uint32 new_insn = op_mask | new_imm26
+            unsafe { *(p as uint32) = new_insn }
+        }
+        
+        i = i + 4
+    }
+}

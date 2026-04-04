@@ -24,7 +24,7 @@ jobs:
           chmod +x build/krc-bootstrap
           cat src/lexer.kr src/ast.kr src/parser.kr src/codegen.kr \
               src/codegen_aarch64.kr src/format_macho.kr src/format_pe.kr \
-              src/format_archive.kr src/analysis.kr src/living.kr \
+              src/format_archive.kr src/bcj.kr src/analysis.kr src/living.kr \
               src/runtime.kr src/main.kr > build/krc.kr
           ./build/krc-bootstrap --arch=x86_64 build/krc.kr -o build/krc2
           chmod +x build/krc2
@@ -37,13 +37,14 @@ jobs:
           # krc for Windows
           ./build/krc2 --arch=x86_64 --emit=pe build/krc.kr -o dist/krc-windows-x86_64.exe
           ./build/krc2 --arch=arm64  --emit=pe build/krc.kr -o dist/krc-windows-arm64.exe
-          # kr runner (Linux)
-          ./build/krc2 --arch=x86_64 src/runner.kr -o dist/kr-linux-x86_64
-          ./build/krc2 --arch=arm64  src/runner.kr -o dist/kr-linux-arm64
+          # kr runner (merge bcj.kr + runner.kr)
+          cat src/bcj.kr src/runner.kr > build/kr.kr
+          ./build/krc2 --arch=x86_64 build/kr.kr -o dist/kr-linux-x86_64
+          ./build/krc2 --arch=arm64  build/kr.kr -o dist/kr-linux-arm64
           chmod +x dist/kr-linux-x86_64 dist/kr-linux-arm64
           # kr runner (Windows)
-          ./build/krc2 --arch=x86_64 --emit=pe src/runner.kr -o dist/kr-windows-x86_64.exe
-          ./build/krc2 --arch=arm64  --emit=pe src/runner.kr -o dist/kr-windows-arm64.exe
+          ./build/krc2 --arch=x86_64 --emit=pe build/kr.kr -o dist/kr-windows-x86_64.exe
+          ./build/krc2 --arch=arm64  --emit=pe build/kr.kr -o dist/kr-windows-arm64.exe
 
       - name: Verify binaries
         run: |

@@ -791,7 +791,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     // === Compile x86_64 ELF (Linux) ===
     target_os = 0
     ast_init(65536)
-    codegen_init(1048576, source, my_tokens)
+    codegen_init(4194304, source, my_tokens)
     parser_init(my_tokens, saved_tcount)
     uint64 root = parse_module()
 
@@ -1220,6 +1220,16 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
 
     // Reset target_os for fat binary emission
     target_os = 0
+
+    // === BCJ filter before compression ===
+    // x86_64 slices: filter E8/E9 CALL/JMP
+    filter_x86_64_bcj(x86_buf, x86_len, 1)
+    filter_x86_64_bcj(pe_x86_buf, pe_x86_len, 1)
+    filter_x86_64_bcj(macho_x86_buf, macho_x86_len, 1)
+    // arm64 slices: filter B/BL instructions
+    filter_aarch64_bcj(a64_buf, a64_len, 1)
+    filter_aarch64_bcj(pe_a64_buf, pe_a64_len, 1)
+    filter_aarch64_bcj(macho_a64_buf, macho_a64_len, 1)
 
     // === LZ4 compress all 6 ===
     uint64 x86_comp = alloc(x86_len + 256)
