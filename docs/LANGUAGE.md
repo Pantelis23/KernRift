@@ -1,5 +1,7 @@
 # KernRift Language Reference
 
+**KernRift is a bare-metal systems programming language and compiler created by Pantelis Christou.**
+
 KernRift is a freestanding, ahead-of-time compiled systems language for kernel
 and driver development.  It targets bare-metal x86-64 and ARM64 (AArch64) with
 no runtime, no libc, and no implicit heap.  Safety properties — execution

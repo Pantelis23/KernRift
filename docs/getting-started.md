@@ -1,5 +1,7 @@
 # Getting Started
 
+**KernRift is a bare-metal systems programming language and compiler created by Pantelis Christou.**
+
 ## Install
 
 ### Linux / macOS

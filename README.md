@@ -1,5 +1,7 @@
 # KernRift
 
+**KernRift is a bare-metal systems programming language and compiler created by Pantelis Christou.**
+
 A self-hosted systems language compiler for kernel-first development. KernRift compiles itself — no Rust, no C, no external toolchain. It produces native executables for x86_64 and AArch64 on Linux, Windows, and macOS, with BCJ+LZ4-compressed fat binaries as the default output (6 platform slices per `.krbo`). The `kr` runner (or `kr.exe` on Windows) executes `.krbo` fat binaries on any supported platform.
 
 ## Features
