@@ -7,7 +7,7 @@ All notable changes to `kernriftc` are documented in this file.
 ### Added
 - **Universal fat binary**: `.krbo` now contains 6 slices — Linux ELF (x86_64 + arm64), Windows PE (x86_64 + arm64), macOS Mach-O (x86_64 + arm64). One binary runs everywhere.
 - **BCJ compression filters**: x86_64 and AArch64 Branch/Call/Jump filters normalize instruction offsets before LZ4 compression, yielding ~9% better compression on real binaries.
-- **Hybrid IAT**: Windows PE binaries use only 3 loader-resolved imports (GetProcAddress, LoadLibraryA, GetModuleHandleA). All other APIs are resolved dynamically at startup via GetProcAddress. Adding new Windows APIs is now a single line of code.
+- **Loader-resolved IAT**: Windows PE binaries have all 13 API imports (ExitProcess, GetStdHandle, WriteFile, CreateFileA, ReadFile, CloseHandle, VirtualAlloc, GetCommandLineA, GetFileSizeEx, CreateProcessA, WaitForSingleObject, GetExitCodeProcess, GetModuleFileNameA) resolved directly by the Windows PE loader at startup — no runtime GetProcAddress resolver needed.
 - **Windows `kr` runner**: `kr.exe` extracts and executes Windows PE slices from `.krbo` fat binaries using CreateProcessA.
 - **Windows stdlib support**: `install.ps1` downloads the standard library to `%LOCALAPPDATA%\KernRift\std\`. The compiler discovers stdlib via `GetModuleFileNameA` relative to its own path.
 - **New built-in functions**: `get_target_os()`, `get_arch_id()`, `exec_process(path)`, `get_module_path(buf, size)` — compile-time platform detection and cross-platform process execution.
