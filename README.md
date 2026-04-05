@@ -47,7 +47,7 @@ krc lc program.kr
 |----------|-----|------|
 | Linux x86_64 | AMD Ryzen 9 7900X | 45ms |
 | Windows 11 x86_64 | Intel Core Ultra 9 275HX | 44ms |
-| Linux ARM64 | ARM Cortex-A72 (Pi 400) | 192ms |
+| Linux ARM64 | ARM Cortex-A72 (Pi 400) | 512ms |
 
 ## Install
 
