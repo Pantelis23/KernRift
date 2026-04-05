@@ -204,7 +204,7 @@ A VS Code extension (v0.2.3) is available on the VS Code Marketplace:
 
 ## Architecture
 
-13,000+ lines of KernRift across 14 source files + 7 stdlib modules (828 lines). Self-compiles to a 350 KB native binary in 45ms, or a 1.96 MB universal fat binary (6 slices) in 232ms (AMD Ryzen 9 7900X). 102 tests, bootstrap fixed point verified on 3 platforms.
+13,000+ lines of KernRift across 14 source files + 7 stdlib modules (828 lines). Self-compiles to a 345 KB native binary in 45ms, or a 1.9 MB universal fat binary (6 slices) in 232ms (AMD Ryzen 9 7900X). 100 tests, bootstrap fixed point verified on 3 platforms.
 
 | File | Purpose |
 |------|---------|
