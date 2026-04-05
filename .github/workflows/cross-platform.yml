@@ -217,6 +217,7 @@ jobs:
       - name: Test file I/O (write + read back)
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Continue'
           & bins\win-x64-fileio.exe
           $code = $LASTEXITCODE
           if ($code -eq 8) {
@@ -229,12 +230,11 @@ jobs:
       - name: Self-compilation on Windows
         shell: pwsh
         run: |
-          # Stage 1: cross-compiled compiler compiles itself on Windows
+          $ErrorActionPreference = 'Continue'
           & bins\krc-win-x64.exe --emit=pe bins\krc-source.kr -o krc-self1.exe 2>&1
           if ($LASTEXITCODE -ne 0) { Write-Host "FAIL: self-compile stage 1"; exit 1 }
           Write-Host "Stage 1: OK (compiled on Windows)"
 
-          # Stage 2: self-compiled compiler compiles a test program
           Set-Content -Path test.kr -Value 'fn main() { println("self-compiled!"); exit(42) }'
           & .\krc-self1.exe --emit=pe test.kr -o test-self.exe 2>&1
           if ($LASTEXITCODE -ne 0) { Write-Host "FAIL: self-compile stage 2"; exit 1 }
@@ -297,6 +297,7 @@ jobs:
       - name: Test file I/O (write + read back)
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Continue'
           & bins\win-arm-fileio.exe
           $code = $LASTEXITCODE
           if ($code -eq 8) {

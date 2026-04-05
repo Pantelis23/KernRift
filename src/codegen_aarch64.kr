@@ -867,9 +867,12 @@ fn gen_expr_a64(uint64 node) {
                 emit_a64_win_call_iat(1)
                 // x0 = handle from GetStdHandle, save to x19
                 emit_a64_mov(19, 0)
-                // Set up WriteFile(handle, buf, len, NULL, NULL) args in reverse
+                // WriteFile(handle, buf, len, &bytesWritten, NULL)
+                uint64 bw_slot2 = wr_extra + 8
+                emit_a64_mov_imm(0, 0)
+                emit_a64_store_x0(bw_slot2)
                 emit_a64_mov_imm(4, 0)
-                emit_a64_mov_imm(3, 0)
+                emit_a64_add_imm(3, 31, a64_var_base + bw_slot2)
                 emit_a64_load_x0(wr_extra)
                 emit_a64_mov(2, 0)
                 emit_a64_load_x0(temp_slot_1)
@@ -993,19 +996,25 @@ fn gen_expr_a64(uint64 node) {
             uint64 wa3 = arg3
             gen_expr_a64(wa3)
             if target_os == 2 {
-                // Windows ARM64: ReadFile(handle, buf, len, NULL, NULL)
-                // x0 = len at this point; save it
+                // Windows ARM64: ReadFile(handle, buf, len, &bytesRead, NULL)
                 uint64 rd_extra = var_frame_size
                 emit_a64_store_x0(rd_extra)
-                // Load args in reverse order to avoid clobbering x0
+                uint64 br_slot_a64 = rd_extra + 8
+                // Zero bytesRead slot
+                emit_a64_mov_imm(0, 0)
+                emit_a64_store_x0(br_slot_a64)
+                // Set up args: x4=NULL, x3=&bytesRead, x2=len, x1=buf, x0=handle
                 emit_a64_mov_imm(4, 0)
-                emit_a64_mov_imm(3, 0)
+                // add x3, sp, #(a64_var_base + br_slot_a64) — pointer to bytesRead
+                emit_a64_add_imm(3, 31, a64_var_base + br_slot_a64)
                 emit_a64_load_x0(rd_extra)
                 emit_a64_mov(2, 0)
                 emit_a64_load_x0(temp_slot_1)
                 emit_a64_mov(1, 0)
                 emit_a64_load_x0(temp_slot_0)
                 emit_a64_win_call_iat(4)
+                // Load bytesRead (not the BOOL return)
+                emit_a64_load_x0(br_slot_a64)
             } else {
                 emit_a64_mov(2, 0)
                 emit_a64_load_x0(temp_slot_1)
@@ -1031,13 +1040,14 @@ fn gen_expr_a64(uint64 node) {
             uint64 wa3 = arg3
             gen_expr_a64(wa3)
             if target_os == 2 {
-                // Windows ARM64: WriteFile(handle, buf, len, NULL, NULL)
-                // x0 = len at this point; save it
+                // Windows ARM64: WriteFile(handle, buf, len, &bytesWritten, NULL)
                 uint64 fw_extra = var_frame_size
                 emit_a64_store_x0(fw_extra)
-                // Load args in reverse order to avoid clobbering x0
+                uint64 bw_slot = fw_extra + 8
+                emit_a64_mov_imm(0, 0)
+                emit_a64_store_x0(bw_slot)
                 emit_a64_mov_imm(4, 0)
-                emit_a64_mov_imm(3, 0)
+                emit_a64_add_imm(3, 31, a64_var_base + bw_slot)
                 emit_a64_load_x0(fw_extra)
                 emit_a64_mov(2, 0)
                 emit_a64_load_x0(temp_slot_1)
