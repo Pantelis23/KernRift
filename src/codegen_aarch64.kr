@@ -415,7 +415,7 @@ fn resolve_a64_win_iat_fixups(uint64 text_start, uint64 iat_rva) {
 // a64_var_base: offset where variables start on the AArch64 stack frame
 // After saved registers: x29(8) + x30(8) + x19(8) + x20(8) = 32 bytes
 // Initialized in codegen_init
-static uint64 a64_var_base = 0
+static uint64 a64_var_base = 32
 
 // Store x0 to variable slot on stack
 fn emit_a64_store_x0(uint64 var_offset) {
@@ -2646,11 +2646,14 @@ fn gen_function_a64(uint64 fn_node) {
         wparam = pnxt
     }
 
-    // Prologue — placeholder for frame allocation, patched later
+    // Prologue — for large frames (>4080) we split: pre_sub + prologue_sub
+    uint64 pre_sub_patch = out_len
+    if is_naked == 0 {
+        emit_a64(0xD503201F)  // NOP (patched to SUB SP if frame > 4080)
+    }
     uint64 prologue_start = out_len
     if is_naked == 0 {
-        // For large frames: sub sp, sp, #FRAME (placeholder, 4 bytes)
-        emit_a64(0xD1000000)
+        emit_a64(0xD1000000)  // SUB SP, SP, #imm (patched)
         // stp x29, x30, [sp] (no pre-index, frame already allocated)
         emit_a64(0xA9007BFD)
         // mov x29, sp
@@ -2728,6 +2731,8 @@ fn gen_function_a64(uint64 fn_node) {
     // add sp, sp, #FRAME (placeholder, patched)
     uint64 epilogue_add = out_len
     emit_a64(0x91000000)
+    uint64 post_add_patch = out_len
+    emit_a64(0xD503201F)  // NOP (patched to ADD SP if frame > 4080)
     // ret
     emit_a64_ret()
 
@@ -2736,12 +2741,26 @@ fn gen_function_a64(uint64 fn_node) {
     uint64 fmod = frame & 15
     if fmod != 0 { frame = frame + 16 - fmod }
 
-    // Patch prologue: sub sp, sp, #frame
-    // SUB SP, SP, #imm12: 0xD1000000 | (imm12 << 10) | (31 << 5) | 31
-    patch_u32(prologue_start, 0xD1000000 | (frame << 10) | (31 << 5) | 31)
-
-    // Patch epilogue: add sp, sp, #frame
-    patch_u32(epilogue_add, 0x91000000 | (frame << 10) | (31 << 5) | 31)
+    if frame > 4080 {
+        // Split: pre_sub does (frame>>12)*4096 via LSL#12, prologue_sub does remainder
+        uint64 hi = frame >> 12
+        uint64 lo = frame & 0xFFF
+        // Ensure lo is 16-aligned
+        uint64 lmod = lo & 15
+        if lmod != 0 { lo = lo + 16 - lmod; hi = (frame - lo) >> 12 }
+        // pre_sub: SUB SP, SP, #hi, LSL #12 (0xD1400000)
+        patch_u32(pre_sub_patch, 0xD1400000 | (hi << 10) | (31 << 5) | 31)
+        // prologue: SUB SP, SP, #lo
+        patch_u32(prologue_start, 0xD1000000 | (lo << 10) | (31 << 5) | 31)
+        // Epilogue: ADD SP, SP, #lo then ADD SP, SP, #hi, LSL #12 (0x91400000)
+        patch_u32(epilogue_add, 0x91000000 | (lo << 10) | (31 << 5) | 31)
+        patch_u32(post_add_patch, 0x91400000 | (hi << 10) | (31 << 5) | 31)
+    } else {
+        // pre_sub stays NOP, prologue does the full frame
+        patch_u32(prologue_start, 0xD1000000 | (frame << 10) | (31 << 5) | 31)
+        // epilogue does the full frame, post_add stays NOP
+        patch_u32(epilogue_add, 0x91000000 | (frame << 10) | (31 << 5) | 31)
+    }
 }
 
 // ---------------------------------------------------------------------------

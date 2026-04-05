@@ -4020,6 +4020,11 @@ fn gen_function(uint64 fn_node) {
         if argc_off_w != 0xFFFFFFFF {
             emit_static_store(argc_off_w)
         }
+        // PE entry: RSP is 16-byte aligned (no return address pushed).
+        // The normal function prologue assumes entry via 'call' (RSP ≡ 8 mod 16).
+        // Subtract 8 to simulate the missing return address so that push rbx +
+        // sub rsp,frame leaves RSP 16-aligned for all subsequent API calls.
+        emit_byte(0x48); emit_byte(0x83); emit_byte(0xEC); emit_byte(0x08)
     }
     if tok_matches(wnt, "main", 4) != 0 && target_os == 0 && freestanding == 0 {
         // mov rax, [rsp]       ; rax = argc
