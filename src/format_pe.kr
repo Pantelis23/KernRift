@@ -1,13 +1,20 @@
 // KernRift self-hosted compiler — PE/COFF output format (Windows)
 //
-// Hybrid IAT: 3 loader-resolved entries (GetProcAddress, LoadLibraryA,
-// GetModuleHandleA) + 13 resolver slots filled by _start via GetProcAddress.
-// No hint/name entries needed for dynamic APIs — names live in .text strings.
+// PE32+ with .text + .idata sections for Windows x86_64 and AArch64
+// Import table provides: ExitProcess, GetStdHandle, WriteFile,
+// CreateFileA, ReadFile, CloseHandle, VirtualAlloc
 
 // ---------------------------------------------------------------------------
-// IAT slot indices for codegen (unchanged from user perspective)
-// emit_win_call_iat(slot) adds +4 internally to skip boot+null slots
+// PE import table (IAT) layout
 // ---------------------------------------------------------------------------
+// .idata section contains:
+//   Import Directory Table (IDT): one entry per DLL + null terminator
+//   Import Lookup Table (ILT): one entry per function + null terminator
+//   Import Address Table (IAT): same as ILT, patched by loader
+//   Hint/Name entries: hint(2) + name string + padding
+//   DLL name string
+
+// IAT slot indices (used by codegen to generate indirect calls)
 static uint64 IAT_ExitProcess = 0
 static uint64 IAT_GetStdHandle = 1
 static uint64 IAT_WriteFile = 2
@@ -23,94 +30,167 @@ static uint64 IAT_GetExitCodeProcess = 11
 static uint64 IAT_GetModuleFileNameA = 12
 static uint64 IAT_ENTRY_COUNT = 13
 
-// Bootstrap IAT slots (loader-resolved, used only by _start resolver)
-static uint64 IAT_BOOT_GetProcAddress = 0
-static uint64 IAT_BOOT_LoadLibraryA = 1
-static uint64 IAT_BOOT_GetModuleHandleA = 2
-static uint64 IAT_BOOT_COUNT = 3
-static uint64 IAT_RESOLVER_BASE = 4
-static uint64 IAT_TOTAL_SLOTS = 17
-
 // Compute .idata section size
 fn pe_idata_size() -> uint64 {
-    // IDT: 20 + 20 (null) = 40
-    // ILT: 3 x 8 + 8 (null) = 32
-    // IAT: 17 x 8 + 8 (null) = 144
-    // Hints: 3 x 24 = 72
-    // DLL name: 16
-    // Total: 304, round to 0x200 = 512
-    return 512
+    // IDT: 1 entry (20 bytes) + null terminator (20 bytes) = 40
+    // ILT: 9 entries × 8 + null (8) = 80
+    // IAT: same = 80
+    // Hint/Name table: 9 × 20 = 180
+    // DLL name: "kernel32.dll\0" = 16
+    // Total: 40 + 80 + 80 + 180 + 16 = 396, round up to 0x200 = 512
+    return 1024
 }
 
-// Emit the .idata section content
-// Returns the RVA of the IAT (for code to reference via call [rip+disp])
+// Emit the .idata section content at the current output position
+// Returns the RVA of the IAT (for code to reference)
 @export
 fn emit_pe_idata(uint64 idata_rva) -> uint64 {
     uint64 base = out_len
 
-    // Layout offsets within .idata:
+    // Layout offsets within .idata (9 IAT entries, 20-byte hint/name slots):
     uint64 idt_off = 0
     uint64 ilt_off = 40
-    uint64 iat_off = 72
-    uint64 hints_off = 216
-    uint64 dllname_off = 288
+    uint64 iat_off = 152
+    uint64 hints_off = 264
+    uint64 dllname_off = 576
 
     // IDT entry for kernel32.dll (20 bytes)
-    emit_u32_le(idata_rva + ilt_off)     // OriginalFirstThunk -> ILT
+    emit_u32_le(idata_rva + ilt_off)     // OriginalFirstThunk → ILT
     emit_u32_le(0)                        // TimeDateStamp
     emit_u32_le(0)                        // ForwarderChain
-    emit_u32_le(idata_rva + dllname_off)  // Name -> "kernel32.dll"
-    emit_u32_le(idata_rva + iat_off)      // FirstThunk -> IAT
+    emit_u32_le(idata_rva + dllname_off)  // Name → "kernel32.dll"
+    emit_u32_le(idata_rva + iat_off)      // FirstThunk → IAT
 
     // Null IDT terminator (20 bytes)
     uint64 z = 0
     while z < 20 { emit_byte(0); z = z + 1 }
 
-    // ILT: 3 entries + null (each 8 bytes = RVA to hint/name)
-    emit_u64_le(idata_rva + hints_off + 0)    // GetProcAddress
-    emit_u64_le(idata_rva + hints_off + 24)   // LoadLibraryA
-    emit_u64_le(idata_rva + hints_off + 48)   // GetModuleHandleA
+    // ILT: 8 entries + null (each is 8 bytes = RVA to hint/name)
+    uint64 h = 0
+    while h < 13 {
+        emit_u64_le(idata_rva + hints_off + h * 24)
+        h = h + 1
+    }
     emit_u64_le(0)  // null terminator
 
-    // IAT: 3 loader-resolved entries (mirror ILT) + null + 13 resolver slots + null
-    // Loader resolves [0..2], stops at [3]=null. [4..16] filled by _start resolver.
-    emit_u64_le(idata_rva + hints_off + 0)    // [0] GetProcAddress (loader patches)
-    emit_u64_le(idata_rva + hints_off + 24)   // [1] LoadLibraryA (loader patches)
-    emit_u64_le(idata_rva + hints_off + 48)   // [2] GetModuleHandleA (loader patches)
-    emit_u64_le(0)                             // [3] null sentinel
-    // [4..16] resolver slots — zeroed, filled by _start
-    uint64 rs = 0
-    while rs < 13 { emit_u64_le(0); rs = rs + 1 }
-    emit_u64_le(0)  // trailing null (for safety)
+    // IAT: identical to ILT (loader patches this at runtime)
+    h = 0
+    while h < 13 {
+        emit_u64_le(idata_rva + hints_off + h * 24)
+        h = h + 1
+    }
+    emit_u64_le(0)
 
-    // Hint/Name entries (24 bytes each) — only 3 bootstrap functions
-    // 0: GetProcAddress (14 chars)
+    // Hint/Name entries (16 bytes each, padded)
+    // Hint/Name entries (20 bytes each, padded)
+    // 0: ExitProcess (11 chars) — 2+12+10=24
     emit_u16_le(0)
-    emit_byte(71); emit_byte(101); emit_byte(116); emit_byte(80)   // GetP
-    emit_byte(114); emit_byte(111); emit_byte(99); emit_byte(65)   // rocA
-    emit_byte(100); emit_byte(100); emit_byte(114); emit_byte(101) // ddre
-    emit_byte(115); emit_byte(115); emit_byte(0)                    // ss\0
+    emit_byte(69); emit_byte(120); emit_byte(105); emit_byte(116)
+    emit_byte(80); emit_byte(114); emit_byte(111); emit_byte(99)
+    emit_byte(101); emit_byte(115); emit_byte(115); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+
+    // 1: GetStdHandle (12 chars) — 2+13+9=24
+    emit_u16_le(0)
+    emit_byte(71); emit_byte(101); emit_byte(116); emit_byte(83)
+    emit_byte(116); emit_byte(100); emit_byte(72); emit_byte(97)
+    emit_byte(110); emit_byte(100); emit_byte(108); emit_byte(101)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+
+    // 2: WriteFile (9 chars) — 2+10+12=24
+    emit_u16_le(0)
+    emit_byte(87); emit_byte(114); emit_byte(105); emit_byte(116)
+    emit_byte(101); emit_byte(70); emit_byte(105); emit_byte(108)
+    emit_byte(101); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+
+    // 3: CreateFileA (11 chars) — 2+12+10=24
+    emit_u16_le(0)
+    emit_byte(67); emit_byte(114); emit_byte(101); emit_byte(97)
+    emit_byte(116); emit_byte(101); emit_byte(70); emit_byte(105)
+    emit_byte(108); emit_byte(101); emit_byte(65); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+
+    // 4: ReadFile (8 chars) — 2+9+13=24
+    emit_u16_le(0)
+    emit_byte(82); emit_byte(101); emit_byte(97); emit_byte(100)
+    emit_byte(70); emit_byte(105); emit_byte(108); emit_byte(101)
+    emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+
+    // 5: CloseHandle (11 chars) — 2+12+10=24
+    emit_u16_le(0)
+    emit_byte(67); emit_byte(108); emit_byte(111); emit_byte(115)
+    emit_byte(101); emit_byte(72); emit_byte(97); emit_byte(110)
+    emit_byte(100); emit_byte(108); emit_byte(101); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+
+    // 6: VirtualAlloc (12 chars) — 2+13+9=24
+    emit_u16_le(0)
+    emit_byte(86); emit_byte(105); emit_byte(114); emit_byte(116)
+    emit_byte(117); emit_byte(97); emit_byte(108); emit_byte(65)
+    emit_byte(108); emit_byte(108); emit_byte(111); emit_byte(99)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+
+    // 7: GetCommandLineA (15 chars) — 2+16+6=24
+    emit_u16_le(0)
+    emit_byte(71); emit_byte(101); emit_byte(116); emit_byte(67)
+    emit_byte(111); emit_byte(109); emit_byte(109); emit_byte(97)
+    emit_byte(110); emit_byte(100); emit_byte(76); emit_byte(105)
+    emit_byte(110); emit_byte(101); emit_byte(65); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+
+    // 8: GetFileSizeEx (13 chars) — 2+14+8=24
+    emit_u16_le(0)
+    emit_byte(71); emit_byte(101); emit_byte(116); emit_byte(70)
+    emit_byte(105); emit_byte(108); emit_byte(101); emit_byte(83)
+    emit_byte(105); emit_byte(122); emit_byte(101); emit_byte(69)
+    emit_byte(120); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+
+    // 9: CreateProcessA (14 chars) — 2+15+7=24
+    emit_u16_le(0)
+    emit_byte(67); emit_byte(114); emit_byte(101); emit_byte(97)
+    emit_byte(116); emit_byte(101); emit_byte(80); emit_byte(114)
+    emit_byte(111); emit_byte(99); emit_byte(101); emit_byte(115)
+    emit_byte(115); emit_byte(65); emit_byte(0)
     emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
     emit_byte(0); emit_byte(0); emit_byte(0)
 
-    // 1: LoadLibraryA (12 chars)
+    // 10: WaitForSingleObject (19 chars) — 2+20+2=24
     emit_u16_le(0)
-    emit_byte(76); emit_byte(111); emit_byte(97); emit_byte(100)   // Load
-    emit_byte(76); emit_byte(105); emit_byte(98); emit_byte(114)   // Libr
-    emit_byte(97); emit_byte(114); emit_byte(121); emit_byte(65)   // aryA
-    emit_byte(0)
-    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
-    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
-    emit_byte(0)
+    emit_byte(87); emit_byte(97); emit_byte(105); emit_byte(116)
+    emit_byte(70); emit_byte(111); emit_byte(114); emit_byte(83)
+    emit_byte(105); emit_byte(110); emit_byte(103); emit_byte(108)
+    emit_byte(101); emit_byte(79); emit_byte(98); emit_byte(106)
+    emit_byte(101); emit_byte(99); emit_byte(116); emit_byte(0)
+    emit_byte(0); emit_byte(0)
 
-    // 2: GetModuleHandleA (16 chars)
+    // 11: GetExitCodeProcess (18 chars) — 2+19+3=24
     emit_u16_le(0)
-    emit_byte(71); emit_byte(101); emit_byte(116); emit_byte(77)   // GetM
-    emit_byte(111); emit_byte(100); emit_byte(117); emit_byte(108) // odul
-    emit_byte(101); emit_byte(72); emit_byte(97); emit_byte(110)   // eHan
-    emit_byte(100); emit_byte(108); emit_byte(101); emit_byte(65)  // dleA
-    emit_byte(0)
-    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_byte(71); emit_byte(101); emit_byte(116); emit_byte(69)
+    emit_byte(120); emit_byte(105); emit_byte(116); emit_byte(67)
+    emit_byte(111); emit_byte(100); emit_byte(101); emit_byte(80)
+    emit_byte(114); emit_byte(111); emit_byte(99); emit_byte(101)
+    emit_byte(115); emit_byte(115); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0)
+
+    // 12: GetModuleFileNameA (18 chars) — 2+19+3=24
+    emit_u16_le(0)
+    emit_byte(71); emit_byte(101); emit_byte(116); emit_byte(77)
+    emit_byte(111); emit_byte(100); emit_byte(117); emit_byte(108)
+    emit_byte(101); emit_byte(70); emit_byte(105); emit_byte(108)
+    emit_byte(101); emit_byte(78); emit_byte(97); emit_byte(109)
+    emit_byte(101); emit_byte(65); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0)
 
     // DLL name: "kernel32.dll\0"
     emit_byte(107); emit_byte(101); emit_byte(114); emit_byte(110)
@@ -119,9 +199,9 @@ fn emit_pe_idata(uint64 idata_rva) -> uint64 {
     emit_byte(0)
 
     // Pad to 512 bytes
-    while out_len - base < 512 { emit_byte(0) }
+    while out_len - base < 1024 { emit_byte(0) }
 
-    // Return IAT RVA
+    // Return IAT RVA (for call [rip+disp] to use)
     return idata_rva + iat_off
 }
 
@@ -179,11 +259,12 @@ fn emit_pe_headers_x64(uint64 code_size) -> uint64 {
     emit_u32_le(0); emit_u32_le(16)
 
     // Data directories
+    // Import table at index 1
     i = 0
     while i < 16 {
         if i == 1 {
-            emit_u32_le(idata_rva)
-            emit_u32_le(idata_size)
+            emit_u32_le(idata_rva)   // Import Directory RVA
+            emit_u32_le(idata_size)  // Import Directory Size
         } else {
             emit_u32_le(0)
             emit_u32_le(0)
@@ -200,7 +281,7 @@ fn emit_pe_headers_x64(uint64 code_size) -> uint64 {
     emit_u32_le(0x200)
     emit_u32_le(0); emit_u32_le(0)
     emit_u16_le(0); emit_u16_le(0)
-    emit_u32_le(0xE0000020)  // CODE|EXECUTE|READ|WRITE
+    emit_u32_le(0xE0000020)  // CODE|EXECUTE|READ|WRITE (statics in .text)
 
     // .idata section header
     emit_byte(0x2E); emit_byte(0x69); emit_byte(0x64); emit_byte(0x61)
@@ -212,7 +293,7 @@ fn emit_pe_headers_x64(uint64 code_size) -> uint64 {
     emit_u32_le(idata_file_off)
     emit_u32_le(0); emit_u32_le(0)
     emit_u16_le(0); emit_u16_le(0)
-    emit_u32_le(0xC0000040)  // INITIALIZED_DATA|READ|WRITE
+    emit_u32_le(0xC0000040)  // INITIALIZED_DATA|READ
 
     // Pad to file alignment
     while out_len < 0x200 { emit_byte(0) }
@@ -220,9 +301,10 @@ fn emit_pe_headers_x64(uint64 code_size) -> uint64 {
     return 0x200
 }
 
-// PE AArch64 variant
+// PE AArch64 variant (same structure, different machine type)
 @export
 fn emit_pe_headers_a64(uint64 code_size) -> uint64 {
+    // Same as x64 but with machine=0xAA64
     uint64 text_aligned = (code_size + 0x1FF) & ~0x1FF
     uint64 idata_size = pe_idata_size()
 
@@ -243,7 +325,7 @@ fn emit_pe_headers_a64(uint64 code_size) -> uint64 {
     emit_u16_le(6); emit_u16_le(0); emit_u16_le(0); emit_u16_le(0)
     emit_u16_le(6); emit_u16_le(0); emit_u32_le(0)
     emit_u32_le(0x3000); emit_u32_le(0x200); emit_u32_le(0)
-    emit_u16_le(3); emit_u16_le(0x8160)
+    emit_u16_le(3); emit_u16_le(0x8160)  // DYNAMIC_BASE + NX_COMPAT + HIGH_ENTROPY_VA
     emit_u64_le(0x100000); emit_u64_le(0x1000)
     emit_u64_le(0x100000); emit_u64_le(0x1000)
     emit_u32_le(0); emit_u32_le(16)
@@ -256,21 +338,21 @@ fn emit_pe_headers_a64(uint64 code_size) -> uint64 {
     // .text (RX only — ARM64 W^X enforcement)
     emit_byte(0x2E); emit_byte(0x74); emit_byte(0x65); emit_byte(0x78)
     emit_byte(0x74); emit_byte(0); emit_byte(0); emit_byte(0)
-    emit_u32_le(0); emit_u32_le(0x1000); emit_u32_le(0)
+    emit_u32_le(0); emit_u32_le(0x1000); emit_u32_le(0)  // VirtSize+RawSize patched later
     emit_u32_le(0x200); emit_u32_le(0); emit_u32_le(0)
-    emit_u16_le(0); emit_u16_le(0); emit_u32_le(0x60000020)
-    // .data (RW)
+    emit_u16_le(0); emit_u16_le(0); emit_u32_le(0x60000020)  // CODE|EXECUTE|READ (no write)
+    // .data (RW — for static variables)
     emit_byte(0x2E); emit_byte(0x64); emit_byte(0x61); emit_byte(0x74)
     emit_byte(0x61); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_u32_le(0); emit_u32_le(0); emit_u32_le(0)  // all patched later
     emit_u32_le(0); emit_u32_le(0); emit_u32_le(0)
-    emit_u32_le(0); emit_u32_le(0); emit_u32_le(0)
-    emit_u16_le(0); emit_u16_le(0); emit_u32_le(0xC0000040)
+    emit_u16_le(0); emit_u16_le(0); emit_u32_le(0xC0000040)  // INITIALIZED_DATA|READ|WRITE
     // .idata
     emit_byte(0x2E); emit_byte(0x69); emit_byte(0x64); emit_byte(0x61)
     emit_byte(0x74); emit_byte(0x61); emit_byte(0); emit_byte(0)
+    emit_u32_le(0); emit_u32_le(0); emit_u32_le(0)  // patched later
     emit_u32_le(0); emit_u32_le(0); emit_u32_le(0)
-    emit_u32_le(0); emit_u32_le(0); emit_u32_le(0)
-    emit_u16_le(0); emit_u16_le(0); emit_u32_le(0xC0000040)
+    emit_u16_le(0); emit_u16_le(0); emit_u32_le(0xC0000040)  // INITIALIZED_DATA|READ|WRITE
     while out_len < 0x200 { emit_byte(0) }
     return 0x200
 }
