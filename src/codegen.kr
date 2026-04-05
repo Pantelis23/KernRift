@@ -957,19 +957,9 @@ fn emit_mov_r9_imm(uint64 val) {
     emit_u32_le(val)
 }
 
-// call qword [rip + disp32] — IAT indirect call (dynamic slots)
-// slot 0-12 maps to IAT[4..16] (skip bootstrap+null)
+// call qword [rip + disp32] — IAT indirect call
+// All 13 entries are loader-resolved; slot 0-12 maps directly to IAT[0..12]
 fn emit_win_call_iat(uint64 slot) {
-    rax_invalidate()
-    emit_byte(0xFF)
-    emit_byte(0x15)
-    uint64 patch_off = out_len
-    emit_u32_le(0)
-    win_fixup_add(patch_off, slot + 4)
-}
-
-// call qword [rip + disp32] — bootstrap IAT call (loader-resolved slots 0-2)
-fn emit_win_call_iat_boot(uint64 slot) {
     rax_invalidate()
     emit_byte(0xFF)
     emit_byte(0x15)
@@ -1035,15 +1025,6 @@ fn emit_lea_rcx_str(uint64 str_offset) {
     unsafe { *(fe4 as uint32) = so }
     str_fixup_count = str_fixup_count + 1
     emit_u32_le(0)
-}
-
-// Emit one API resolution: lea rdx,name + mov rcx,rbx + call GetProcAddress + store to IAT
-fn emit_resolve_one(uint64 str_off, uint64 iat_slot) {
-    emit_lea_rdx_str(str_off)
-    // mov rcx, rbx
-    emit_byte(0x48); emit_byte(0x89); emit_byte(0xD9)
-    emit_win_call_iat_boot(0)
-    emit_win_store_iat(iat_slot)
 }
 
 // neg rax
@@ -1811,20 +1792,33 @@ fn gen_expr(uint64 node) {
             uint64 wa3 = arg3
             gen_expr(wa3)
             if target_os == 2 {
-                // Windows: ReadFile(handle, buf, len, NULL, NULL)
+                // Windows: ReadFile(handle, buf, len, &bytesRead, NULL)
+                // Use a frame slot for bytesRead output
                 uint64 extra_tmp = var_frame_size
                 emit_store_rax_to_stack(extra_tmp)
+                uint64 br_slot = extra_tmp + 8
+                // Zero bytesRead slot
+                emit_mov_rax_imm(0)
+                emit_store_rax_to_stack(br_slot)
+                // Set up ReadFile parameters
                 emit_load_rax_from_stack(temp_slot_0)
-                emit_mov_rcx_rax()
+                emit_mov_rcx_rax()                      // rcx = handle
                 emit_load_rax_from_stack(temp_slot_1)
-                emit_mov_rdx_rax()
+                emit_mov_rdx_rax()                      // rdx = buf
                 emit_load_rax_from_stack(extra_tmp)
-                emit_mov_r8_rax()
-                emit_mov_r9_imm(0)
+                // r8d = nNumberOfBytesToRead (truncate to 32-bit)
+                // mov r8d, eax
+                emit_byte(0x41); emit_byte(0x89); emit_byte(0xC0)
+                // lea r9, [rsp + br_slot]
+                emit_byte(0x4C); emit_byte(0x8D); emit_byte(0x4C); emit_byte(0x24)
+                uint8 br8 = br_slot
+                emit_byte(br8)
                 emit_win_alloc_stack(0x30)
-                emit_win_stack_arg5(0)
-                emit_win_call_iat(4)
+                emit_win_stack_arg5(0)                  // lpOverlapped = NULL
+                emit_win_call_iat(4)                    // call ReadFile
                 emit_win_free_stack(0x30)
+                // Return bytesRead (not the BOOL)
+                emit_load_rax_from_stack(br_slot)
             } else {
                 emit_mov_rdx_rax()
                 emit_load_rax_from_stack(temp_slot_1)
@@ -1852,7 +1846,7 @@ fn gen_expr(uint64 node) {
             uint64 wa3 = arg3
             gen_expr(wa3)
             if target_os == 2 {
-                // Windows: WriteFile(handle, buf, len, NULL, NULL)
+                // Windows: WriteFile(handle, buf, len, &bytesWritten, NULL)
                 uint64 extra_tmp = var_frame_size
                 emit_store_rax_to_stack(extra_tmp)
                 emit_load_rax_from_stack(temp_slot_0)
@@ -1861,8 +1855,11 @@ fn gen_expr(uint64 node) {
                 emit_mov_rdx_rax()
                 emit_load_rax_from_stack(extra_tmp)
                 emit_mov_r8_rax()
-                emit_mov_r9_imm(0)
                 emit_win_alloc_stack(0x30)
+                // zero [rsp+0x28] for bytesWritten output
+                emit_byte(0xC7); emit_byte(0x44); emit_byte(0x24); emit_byte(0x28); emit_u32_le(0)
+                // lea r9, [rsp+0x28] — point to bytesWritten
+                emit_byte(0x4C); emit_byte(0x8D); emit_byte(0x4C); emit_byte(0x24); emit_byte(0x28)
                 emit_win_stack_arg5(0)
                 emit_win_call_iat(2)
                 emit_win_free_stack(0x30)
@@ -2029,8 +2026,8 @@ fn gen_expr(uint64 node) {
                 gen_expr(wfa)
                 // Save value in temp_slot_0
                 emit_store_rax_to_stack(temp_slot_0)
-                // Allocate 24 bytes of extra temp space for digit buffer
-                // We'll use [rsp + temp_slot_1] as our 20-byte digit buffer
+                // Use var_frame_size as digit buffer (20 bytes, past all locals)
+                uint64 digit_buf = var_frame_size
                 // Strategy: divide by 10 repeatedly, store digits in reverse
                 // Use rcx as digit count, rbx as buffer end pointer
 
@@ -2043,26 +2040,26 @@ fn gen_expr(uint64 node) {
                 emit_u32_le(0)
 
                 // Zero case: write "0"
-                // mov byte [rsp + temp_slot_1], '0' (0x30)
+                // mov byte [rsp + digit_buf], '0' (0x30)
                 emit_byte(0xC6)
-                if temp_slot_1 < 128 {
+                if digit_buf < 128 {
                     emit_byte(0x44); emit_byte(0x24)
-                    uint8 ts1z = temp_slot_1
+                    uint8 ts1z = digit_buf
                     emit_byte(ts1z)
                 } else {
                     emit_byte(0x84); emit_byte(0x24)
-                    emit_u32_le(temp_slot_1)
+                    emit_u32_le(digit_buf)
                 }
                 emit_byte(0x30)
-                // lea rsi, [rsp + temp_slot_1]
+                // lea rsi, [rsp + digit_buf]
                 emit_byte(0x48); emit_byte(0x8D)
-                if temp_slot_1 < 128 {
+                if digit_buf < 128 {
                     emit_byte(0x74); emit_byte(0x24)
-                    uint8 ts1a = temp_slot_1
+                    uint8 ts1a = digit_buf
                     emit_byte(ts1a)
                 } else {
                     emit_byte(0xB4); emit_byte(0x24)
-                    emit_u32_le(temp_slot_1)
+                    emit_u32_le(digit_buf)
                 }
                 if target_os == 2 {
                     // Windows WriteFile for "0"
@@ -2072,15 +2069,15 @@ fn gen_expr(uint64 node) {
                     emit_win_call_iat(1)
                     emit_win_free_stack(0x20)
                     emit_mov_rcx_rax()
-                    // lea rdx, [rsp + temp_slot_1]
+                    // lea rdx, [rsp + digit_buf]
                     emit_byte(0x48); emit_byte(0x8D)
-                    if temp_slot_1 < 128 {
+                    if digit_buf < 128 {
                         emit_byte(0x54); emit_byte(0x24)
-                        uint8 ts1b = temp_slot_1
+                        uint8 ts1b = digit_buf
                         emit_byte(ts1b)
                     } else {
                         emit_byte(0x94); emit_byte(0x24)
-                        emit_u32_le(temp_slot_1)
+                        emit_u32_le(digit_buf)
                     }
                     emit_mov_rax_imm(1)
                     emit_mov_r8_rax()
@@ -2111,9 +2108,9 @@ fn gen_expr(uint64 node) {
                 // Non-zero: convert integer to decimal string
                 // Load value from temp_slot_0 into rax
                 emit_load_rax_from_stack(temp_slot_0)
-                // lea rdi, [rsp + temp_slot_1 + 19] — point to end of 20-byte buffer
+                // lea rdi, [rsp + digit_buf + 19] — point to end of 20-byte buffer
                 emit_byte(0x48); emit_byte(0x8D)
-                uint64 buf_end_off = temp_slot_1 + 19
+                uint64 buf_end_off = digit_buf + 19
                 if buf_end_off < 128 {
                     emit_byte(0x7C); emit_byte(0x24)
                     uint8 beo = buf_end_off
@@ -2155,8 +2152,7 @@ fn gen_expr(uint64 node) {
                 emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC7)
                 // Now write(1, rdi, rcx)
                 if target_os == 2 {
-                    // Save rdi and rcx
-                    emit_push_rax()
+                    // Save rdi (buf) and rcx (count) — 2 pushes = 16 bytes (preserves alignment)
                     // push rdi
                     emit_byte(0x57)
                     // push rcx
@@ -2177,7 +2173,6 @@ fn gen_expr(uint64 node) {
                     emit_win_stack_arg5(0)
                     emit_win_call_iat(2)
                     emit_win_free_stack(0x30)
-                    emit_pop_rcx()
                 } else {
                     // write(1, rdi, rcx)
                     // mov rsi, rdi
@@ -2253,6 +2248,8 @@ fn gen_expr(uint64 node) {
                 // Integer: same as print integer path
                 gen_expr(wfa)
                 emit_store_rax_to_stack(temp_slot_0)
+                // Use var_frame_size as digit buffer (20 bytes, past all locals)
+                uint64 digit_buf2 = var_frame_size
 
                 emit_byte(0x48); emit_byte(0x85); emit_byte(0xC0)
                 // jnz non_zero (near jump, 4-byte displacement)
@@ -2262,23 +2259,23 @@ fn gen_expr(uint64 node) {
 
                 // Zero case
                 emit_byte(0xC6)
-                if temp_slot_1 < 128 {
+                if digit_buf2 < 128 {
                     emit_byte(0x44); emit_byte(0x24)
-                    uint8 ts1z2 = temp_slot_1
+                    uint8 ts1z2 = digit_buf2
                     emit_byte(ts1z2)
                 } else {
                     emit_byte(0x84); emit_byte(0x24)
-                    emit_u32_le(temp_slot_1)
+                    emit_u32_le(digit_buf2)
                 }
                 emit_byte(0x30)
                 emit_byte(0x48); emit_byte(0x8D)
-                if temp_slot_1 < 128 {
+                if digit_buf2 < 128 {
                     emit_byte(0x74); emit_byte(0x24)
-                    uint8 ts1a2 = temp_slot_1
+                    uint8 ts1a2 = digit_buf2
                     emit_byte(ts1a2)
                 } else {
                     emit_byte(0xB4); emit_byte(0x24)
-                    emit_u32_le(temp_slot_1)
+                    emit_u32_le(digit_buf2)
                 }
                 if target_os == 2 {
                     emit_mov_rax_imm(0xFFFFFFFFFFFFFFF5)
@@ -2288,13 +2285,13 @@ fn gen_expr(uint64 node) {
                     emit_win_free_stack(0x20)
                     emit_mov_rcx_rax()
                     emit_byte(0x48); emit_byte(0x8D)
-                    if temp_slot_1 < 128 {
+                    if digit_buf2 < 128 {
                         emit_byte(0x54); emit_byte(0x24)
-                        uint8 ts1b2 = temp_slot_1
+                        uint8 ts1b2 = digit_buf2
                         emit_byte(ts1b2)
                     } else {
                         emit_byte(0x94); emit_byte(0x24)
-                        emit_u32_le(temp_slot_1)
+                        emit_u32_le(digit_buf2)
                     }
                     emit_mov_rax_imm(1)
                     emit_mov_r8_rax()
@@ -2321,7 +2318,7 @@ fn gen_expr(uint64 node) {
 
                 emit_load_rax_from_stack(temp_slot_0)
                 emit_byte(0x48); emit_byte(0x8D)
-                uint64 buf_end_off2 = temp_slot_1 + 19
+                uint64 buf_end_off2 = digit_buf2 + 19
                 if buf_end_off2 < 128 {
                     emit_byte(0x7C); emit_byte(0x24)
                     uint8 beo2 = buf_end_off2
@@ -2350,23 +2347,22 @@ fn gen_expr(uint64 node) {
                 emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC7)
 
                 if target_os == 2 {
-                    emit_push_rax()
-                    emit_byte(0x57)
-                    emit_byte(0x51)
+                    // 2 pushes = 16 bytes (preserves alignment)
+                    emit_byte(0x57)  // push rdi (buf)
+                    emit_byte(0x51)  // push rcx (count)
                     emit_mov_rax_imm(0xFFFFFFFFFFFFFFF5)
                     emit_mov_rcx_rax()
                     emit_win_alloc_stack(0x20)
                     emit_win_call_iat(1)
                     emit_win_free_stack(0x20)
                     emit_mov_rcx_rax()
-                    emit_byte(0x41); emit_byte(0x58)
-                    emit_byte(0x5A)
+                    emit_byte(0x41); emit_byte(0x58)  // pop r8 (count)
+                    emit_byte(0x5A)                    // pop rdx (buf)
                     emit_mov_r9_imm(0)
                     emit_win_alloc_stack(0x30)
                     emit_win_stack_arg5(0)
                     emit_win_call_iat(2)
                     emit_win_free_stack(0x30)
-                    emit_pop_rcx()
                 } else {
                     emit_byte(0x48); emit_byte(0x89); emit_byte(0xFE)
                     emit_byte(0x48); emit_byte(0x89); emit_byte(0xCA)
@@ -3958,57 +3954,12 @@ fn gen_function(uint64 fn_node) {
     // Skip in freestanding mode
     uint64 wnt = name_tok
     if tok_matches(wnt, "main", 4) != 0 && target_os == 2 && freestanding == 0 {
-        // === Hybrid IAT resolver: resolve all dynamic APIs via GetProcAddress ===
-        // Add API name strings to string table
-        uint64 sk32 = resolver_add_str("kernel32.dll")
-        uint64 s0 = resolver_add_str("ExitProcess")
-        uint64 s1 = resolver_add_str("GetStdHandle")
-        uint64 s2 = resolver_add_str("WriteFile")
-        uint64 s3 = resolver_add_str("CreateFileA")
-        uint64 s4 = resolver_add_str("ReadFile")
-        uint64 s5 = resolver_add_str("CloseHandle")
-        uint64 s6 = resolver_add_str("VirtualAlloc")
-        uint64 s7 = resolver_add_str("GetCommandLineA")
-        uint64 s8 = resolver_add_str("GetFileSizeEx")
-        uint64 s9 = resolver_add_str("CreateProcessA")
-        uint64 s10 = resolver_add_str("WaitForSingleObject")
-        uint64 s11 = resolver_add_str("GetExitCodeProcess")
-        uint64 s12 = resolver_add_str("GetModuleFileNameA")
-
-        // push rbx (callee-saved, holds hKernel32)
-        emit_byte(0x53)
-        // sub rsp, 0x28 (shadow space + 16-byte alignment)
-        emit_byte(0x48); emit_byte(0x83); emit_byte(0xEC); emit_byte(0x28)
-        // GetModuleHandleA("kernel32.dll")
-        emit_lea_rcx_str(sk32)
-        emit_win_call_iat_boot(2)
-        // mov rbx, rax (save hKernel32)
-        emit_byte(0x48); emit_byte(0x89); emit_byte(0xC3)
-
-        // Resolve all 13 dynamic APIs
-        emit_resolve_one(s0, 4)    // ExitProcess → IAT[4]
-        emit_resolve_one(s1, 5)    // GetStdHandle → IAT[5]
-        emit_resolve_one(s2, 6)    // WriteFile → IAT[6]
-        emit_resolve_one(s3, 7)    // CreateFileA → IAT[7]
-        emit_resolve_one(s4, 8)    // ReadFile → IAT[8]
-        emit_resolve_one(s5, 9)    // CloseHandle → IAT[9]
-        emit_resolve_one(s6, 10)   // VirtualAlloc → IAT[10]
-        emit_resolve_one(s7, 11)   // GetCommandLineA → IAT[11]
-        emit_resolve_one(s8, 12)   // GetFileSizeEx → IAT[12]
-        emit_resolve_one(s9, 13)   // CreateProcessA → IAT[13]
-        emit_resolve_one(s10, 14)  // WaitForSingleObject → IAT[14]
-        emit_resolve_one(s11, 15)  // GetExitCodeProcess → IAT[15]
-        emit_resolve_one(s12, 16)  // GetModuleFileNameA → IAT[16]
-
-        // add rsp, 0x28
-        emit_byte(0x48); emit_byte(0x83); emit_byte(0xC4); emit_byte(0x28)
-        // pop rbx
-        emit_byte(0x5B)
-
-        // === Now call GetCommandLineA (resolved by the above) ===
-        emit_win_alloc_stack(0x20)
+        // All 13 IAT entries are loader-resolved. Call GetCommandLineA directly.
+        // PE entry: the loader calls us, so RSP ≡ 8 mod 16.
+        // Use 0x28 shadow space (0x20 + 8 alignment) so RSP is 16-aligned before CALL.
+        emit_win_alloc_stack(0x28)
         emit_win_call_iat(7)          // GetCommandLineA → rax = cmdline ptr
-        emit_win_free_stack(0x20)
+        emit_win_free_stack(0x28)
         // Store raw cmdline pointer as cli_argv (will be parsed by win_init_args)
         uint64 argv_off_w = static_lookup_by_name("cli_argv", 8)
         if argv_off_w != 0xFFFFFFFF {
@@ -4020,11 +3971,8 @@ fn gen_function(uint64 fn_node) {
         if argc_off_w != 0xFFFFFFFF {
             emit_static_store(argc_off_w)
         }
-        // PE entry: RSP is 16-byte aligned (no return address pushed).
-        // The normal function prologue assumes entry via 'call' (RSP ≡ 8 mod 16).
-        // Subtract 8 to simulate the missing return address so that push rbx +
-        // sub rsp,frame leaves RSP 16-aligned for all subsequent API calls.
-        emit_byte(0x48); emit_byte(0x83); emit_byte(0xEC); emit_byte(0x08)
+        // RSP is still ≡ 8 mod 16 (same as after a CALL), so the normal
+        // function prologue (push rbx + sub rsp,frame) works correctly.
     }
     if tok_matches(wnt, "main", 4) != 0 && target_os == 0 && freestanding == 0 {
         // mov rax, [rsp]       ; rax = argc

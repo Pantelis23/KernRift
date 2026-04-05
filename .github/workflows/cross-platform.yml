@@ -66,6 +66,27 @@ jobs:
             ./build/krc2 --arch=arm64 --emit=pe /tmp/$t.kr -o /tmp/test-bins/win-arm-$t.exe
           done
 
+          # File I/O test (write + read back)
+          cat > /tmp/fileio.kr << 'KEOF'
+          fn main() {
+              uint64 wfd = file_open("krc_test_io.tmp", 1)
+              uint64 msg = "KernRift"
+              file_write(wfd, msg, 8)
+              file_close(wfd)
+              uint64 buf = alloc(64)
+              uint64 rfd = file_open("krc_test_io.tmp", 0)
+              uint64 n = file_read(rfd, buf, 64)
+              file_close(rfd)
+              exit(n)
+          }
+          KEOF
+          ./build/krc2 --arch=x86_64 --emit=pe /tmp/fileio.kr -o /tmp/test-bins/win-x64-fileio.exe
+          ./build/krc2 --arch=arm64 --emit=pe /tmp/fileio.kr -o /tmp/test-bins/win-arm-fileio.exe
+
+          # Cross-compile full compiler to Windows PE for self-compilation test
+          ./build/krc2 --arch=x86_64 --emit=pe build/krc.kr -o /tmp/test-bins/krc-win-x64.exe
+          cp build/krc.kr /tmp/test-bins/krc-source.kr
+
           ls -la /tmp/test-bins/
 
       - name: Upload test binaries
@@ -193,6 +214,40 @@ jobs:
             exit 1
           }
 
+      - name: Test file I/O (write + read back)
+        shell: pwsh
+        run: |
+          & bins\win-x64-fileio.exe
+          $code = $LASTEXITCODE
+          if ($code -eq 8) {
+            Write-Host "PASS: file I/O (read back 8 bytes)"
+          } else {
+            Write-Host "FAIL: file I/O (expected 8, got $code)"
+            exit 1
+          }
+
+      - name: Self-compilation on Windows
+        shell: pwsh
+        run: |
+          # Stage 1: cross-compiled compiler compiles itself on Windows
+          & bins\krc-win-x64.exe --emit=pe bins\krc-source.kr -o krc-self1.exe 2>&1
+          if ($LASTEXITCODE -ne 0) { Write-Host "FAIL: self-compile stage 1"; exit 1 }
+          Write-Host "Stage 1: OK (compiled on Windows)"
+
+          # Stage 2: self-compiled compiler compiles a test program
+          Set-Content -Path test.kr -Value 'fn main() { println("self-compiled!"); exit(42) }'
+          & .\krc-self1.exe --emit=pe test.kr -o test-self.exe 2>&1
+          if ($LASTEXITCODE -ne 0) { Write-Host "FAIL: self-compile stage 2"; exit 1 }
+
+          & .\test-self.exe
+          $code = $LASTEXITCODE
+          if ($code -eq 42) {
+            Write-Host "PASS: Windows self-compilation chain"
+          } else {
+            Write-Host "FAIL: test-self.exe exit=$code (expected 42)"
+            exit 1
+          }
+
   test-windows-arm64:
     name: Windows ARM64
     needs: build
@@ -236,5 +291,17 @@ jobs:
             Write-Host "PASS: hello world output"
           } else {
             Write-Host "FAIL: hello world output: $output"
+            exit 1
+          }
+
+      - name: Test file I/O (write + read back)
+        shell: pwsh
+        run: |
+          & bins\win-arm-fileio.exe
+          $code = $LASTEXITCODE
+          if ($code -eq 8) {
+            Write-Host "PASS: file I/O (read back 8 bytes)"
+          } else {
+            Write-Host "FAIL: file I/O (expected 8, got $code)"
             exit 1
           }

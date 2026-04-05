@@ -324,20 +324,13 @@ fn a64_win_fixup_add(uint64 patch_off, uint64 slot) {
 //   ADRP X16, #page_delta    ; load page of IAT slot (PC-relative)
 //   LDR  X16, [X16, #lo12]   ; load function pointer from IAT slot
 //   BLR  X16                  ; call
+// call qword via IAT — all 13 entries are loader-resolved; slot 0-12 maps directly
 fn emit_a64_win_call_iat(uint64 slot) {
     uint64 patch_off = out_len
     emit_a64(0x90000010)          // ADRP X16, #0 (placeholder)
     emit_a64(0xF9400210)          // LDR X16, [X16, #0] (placeholder)
     emit_a64_blr(16)
-    a64_win_fixup_add(patch_off, slot + 4)  // +4: skip bootstrap+null
-}
-
-fn emit_a64_win_call_iat_boot(uint64 slot) {
-    uint64 patch_off = out_len
-    emit_a64(0x90000010)          // ADRP X16, #0 (placeholder)
-    emit_a64(0xF9400210)          // LDR X16, [X16, #0] (placeholder)
-    emit_a64_blr(16)
-    a64_win_fixup_add(patch_off, slot)  // raw slot 0-2
+    a64_win_fixup_add(patch_off, slot)
 }
 
 fn emit_a64_win_store_iat(uint64 slot) {
@@ -2455,156 +2448,7 @@ fn gen_function_a64(uint64 fn_node) {
     // For main: platform-specific _start trampoline
     uint64 wnt_a64 = name_tok
     if tok_matches(wnt_a64, "main", 4) != 0 && target_os == 2 && freestanding == 0 {
-        // === Hybrid IAT resolver: resolve all dynamic APIs via GetProcAddress ===
-        uint64 sk32 = resolver_add_str("kernel32.dll")
-        uint64 s0 = resolver_add_str("ExitProcess")
-        uint64 s1 = resolver_add_str("GetStdHandle")
-        uint64 s2 = resolver_add_str("WriteFile")
-        uint64 s3 = resolver_add_str("CreateFileA")
-        uint64 s4 = resolver_add_str("ReadFile")
-        uint64 s5 = resolver_add_str("CloseHandle")
-        uint64 s6 = resolver_add_str("VirtualAlloc")
-        uint64 s7 = resolver_add_str("GetCommandLineA")
-        uint64 s8 = resolver_add_str("GetFileSizeEx")
-        uint64 s9 = resolver_add_str("CreateProcessA")
-        uint64 s10 = resolver_add_str("WaitForSingleObject")
-        uint64 s11 = resolver_add_str("GetExitCodeProcess")
-        uint64 s12 = resolver_add_str("GetModuleFileNameA")
-
-        // stp x29, x30, [sp, #-32]!
-        emit_a64(0xA9BE7BFD)
-        // stp x19, x20, [sp, #16]
-        emit_a64(0xA9014FF3)
-
-        // GetModuleHandleA("kernel32.dll") — load string addr into x0
-        uint64 fe0 = str_fixups + str_fixup_count * 8
-        uint32 cp0 = out_len
-        unsafe { *(fe0 as uint32) = cp0 }
-        uint64 fe04 = fe0 + 4
-        uint32 so0 = sk32
-        unsafe { *(fe04 as uint32) = so0 }
-        str_fixup_count = str_fixup_count + 1
-        emit_a64(0x90000010)  // ADRP X16, #0
-        emit_a64(0x91000200)  // ADD X0, X16, #0
-        emit_a64_win_call_iat_boot(2)
-        // mov x19, x0
-        emit_a64_mov(19, 0)
-
-        // Helper: for each API, load name into x1, set x0=x19, call boot(0), store to IAT
-        // API 0: ExitProcess → IAT[4]
-        uint64 fe1 = str_fixups + str_fixup_count * 8
-        uint32 cp1 = out_len
-        unsafe { *(fe1 as uint32) = cp1 }
-        uint64 fe14 = fe1 + 4; uint32 so1 = s0; unsafe { *(fe14 as uint32) = so1 }
-        str_fixup_count = str_fixup_count + 1
-        emit_a64(0x90000010); emit_a64(0x91000201)  // ADRP X16 + ADD X1, X16, #0
-        emit_a64_mov(0, 19)
-        emit_a64_win_call_iat_boot(0)
-        emit_a64_win_store_iat(4)
-
-        // API 1: GetStdHandle → IAT[5]
-        uint64 fe2 = str_fixups + str_fixup_count * 8
-        cp1 = out_len; unsafe { *(fe2 as uint32) = cp1 }
-        fe14 = fe2 + 4; so1 = s1; unsafe { *(fe14 as uint32) = so1 }
-        str_fixup_count = str_fixup_count + 1
-        emit_a64(0x90000010); emit_a64(0x91000201)
-        emit_a64_mov(0, 19); emit_a64_win_call_iat_boot(0); emit_a64_win_store_iat(5)
-
-        // API 2: WriteFile → IAT[6]
-        uint64 fe3 = str_fixups + str_fixup_count * 8
-        cp1 = out_len; unsafe { *(fe3 as uint32) = cp1 }
-        fe14 = fe3 + 4; so1 = s2; unsafe { *(fe14 as uint32) = so1 }
-        str_fixup_count = str_fixup_count + 1
-        emit_a64(0x90000010); emit_a64(0x91000201)
-        emit_a64_mov(0, 19); emit_a64_win_call_iat_boot(0); emit_a64_win_store_iat(6)
-
-        // API 3: CreateFileA → IAT[7]
-        uint64 fe4a = str_fixups + str_fixup_count * 8
-        cp1 = out_len; unsafe { *(fe4a as uint32) = cp1 }
-        fe14 = fe4a + 4; so1 = s3; unsafe { *(fe14 as uint32) = so1 }
-        str_fixup_count = str_fixup_count + 1
-        emit_a64(0x90000010); emit_a64(0x91000201)
-        emit_a64_mov(0, 19); emit_a64_win_call_iat_boot(0); emit_a64_win_store_iat(7)
-
-        // API 4: ReadFile → IAT[8]
-        uint64 fe5 = str_fixups + str_fixup_count * 8
-        cp1 = out_len; unsafe { *(fe5 as uint32) = cp1 }
-        fe14 = fe5 + 4; so1 = s4; unsafe { *(fe14 as uint32) = so1 }
-        str_fixup_count = str_fixup_count + 1
-        emit_a64(0x90000010); emit_a64(0x91000201)
-        emit_a64_mov(0, 19); emit_a64_win_call_iat_boot(0); emit_a64_win_store_iat(8)
-
-        // API 5: CloseHandle → IAT[9]
-        uint64 fe6 = str_fixups + str_fixup_count * 8
-        cp1 = out_len; unsafe { *(fe6 as uint32) = cp1 }
-        fe14 = fe6 + 4; so1 = s5; unsafe { *(fe14 as uint32) = so1 }
-        str_fixup_count = str_fixup_count + 1
-        emit_a64(0x90000010); emit_a64(0x91000201)
-        emit_a64_mov(0, 19); emit_a64_win_call_iat_boot(0); emit_a64_win_store_iat(9)
-
-        // API 6: VirtualAlloc → IAT[10]
-        uint64 fe7 = str_fixups + str_fixup_count * 8
-        cp1 = out_len; unsafe { *(fe7 as uint32) = cp1 }
-        fe14 = fe7 + 4; so1 = s6; unsafe { *(fe14 as uint32) = so1 }
-        str_fixup_count = str_fixup_count + 1
-        emit_a64(0x90000010); emit_a64(0x91000201)
-        emit_a64_mov(0, 19); emit_a64_win_call_iat_boot(0); emit_a64_win_store_iat(10)
-
-        // API 7: GetCommandLineA → IAT[11]
-        uint64 fe8 = str_fixups + str_fixup_count * 8
-        cp1 = out_len; unsafe { *(fe8 as uint32) = cp1 }
-        fe14 = fe8 + 4; so1 = s7; unsafe { *(fe14 as uint32) = so1 }
-        str_fixup_count = str_fixup_count + 1
-        emit_a64(0x90000010); emit_a64(0x91000201)
-        emit_a64_mov(0, 19); emit_a64_win_call_iat_boot(0); emit_a64_win_store_iat(11)
-
-        // API 8: GetFileSizeEx → IAT[12]
-        uint64 fe9 = str_fixups + str_fixup_count * 8
-        cp1 = out_len; unsafe { *(fe9 as uint32) = cp1 }
-        fe14 = fe9 + 4; so1 = s8; unsafe { *(fe14 as uint32) = so1 }
-        str_fixup_count = str_fixup_count + 1
-        emit_a64(0x90000010); emit_a64(0x91000201)
-        emit_a64_mov(0, 19); emit_a64_win_call_iat_boot(0); emit_a64_win_store_iat(12)
-
-        // API 9: CreateProcessA → IAT[13]
-        uint64 fe10 = str_fixups + str_fixup_count * 8
-        cp1 = out_len; unsafe { *(fe10 as uint32) = cp1 }
-        fe14 = fe10 + 4; so1 = s9; unsafe { *(fe14 as uint32) = so1 }
-        str_fixup_count = str_fixup_count + 1
-        emit_a64(0x90000010); emit_a64(0x91000201)
-        emit_a64_mov(0, 19); emit_a64_win_call_iat_boot(0); emit_a64_win_store_iat(13)
-
-        // API 10: WaitForSingleObject → IAT[14]
-        uint64 fe11 = str_fixups + str_fixup_count * 8
-        cp1 = out_len; unsafe { *(fe11 as uint32) = cp1 }
-        fe14 = fe11 + 4; so1 = s10; unsafe { *(fe14 as uint32) = so1 }
-        str_fixup_count = str_fixup_count + 1
-        emit_a64(0x90000010); emit_a64(0x91000201)
-        emit_a64_mov(0, 19); emit_a64_win_call_iat_boot(0); emit_a64_win_store_iat(14)
-
-        // API 11: GetExitCodeProcess → IAT[15]
-        uint64 fe12 = str_fixups + str_fixup_count * 8
-        cp1 = out_len; unsafe { *(fe12 as uint32) = cp1 }
-        fe14 = fe12 + 4; so1 = s11; unsafe { *(fe14 as uint32) = so1 }
-        str_fixup_count = str_fixup_count + 1
-        emit_a64(0x90000010); emit_a64(0x91000201)
-        emit_a64_mov(0, 19); emit_a64_win_call_iat_boot(0); emit_a64_win_store_iat(15)
-
-        // API 12: GetModuleFileNameA → IAT[16]
-        uint64 fe13 = str_fixups + str_fixup_count * 8
-        cp1 = out_len; unsafe { *(fe13 as uint32) = cp1 }
-        fe14 = fe13 + 4; so1 = s12; unsafe { *(fe14 as uint32) = so1 }
-        str_fixup_count = str_fixup_count + 1
-        emit_a64(0x90000010); emit_a64(0x91000201)
-        emit_a64_mov(0, 19); emit_a64_win_call_iat_boot(0); emit_a64_win_store_iat(16)
-
-        // Restore callee-saved registers
-        // ldp x19, x20, [sp, #16]
-        emit_a64(0xA9414FF3)
-        // ldp x29, x30, [sp], #32
-        emit_a64(0xA8C27BFD)
-
-        // === Now call GetCommandLineA (resolved above) ===
+        // All 13 IAT entries are loader-resolved. Call GetCommandLineA directly.
         emit_a64_win_call_iat(7)       // GetCommandLineA → x0 = cmdline
         uint64 argv_off_w = static_lookup_by_name("cli_argv", 8)
         if argv_off_w != 0xFFFFFFFF {

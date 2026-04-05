@@ -254,7 +254,7 @@ fn emit_pe_headers_x64(uint64 code_size) -> uint64 {
     emit_u32_le(0)
     emit_u16_le(3)           // CONSOLE
     emit_u16_le(0x8100)
-    emit_u64_le(0x100000); emit_u64_le(0x1000)
+    emit_u64_le(0x100000); emit_u64_le(0x100000)  // StackReserve=1MB, StackCommit=1MB
     emit_u64_le(0x100000); emit_u64_le(0x1000)
     emit_u32_le(0); emit_u32_le(16)
 
@@ -326,7 +326,7 @@ fn emit_pe_headers_a64(uint64 code_size) -> uint64 {
     emit_u16_le(6); emit_u16_le(0); emit_u32_le(0)
     emit_u32_le(0x3000); emit_u32_le(0x200); emit_u32_le(0)
     emit_u16_le(3); emit_u16_le(0x8160)  // DYNAMIC_BASE + NX_COMPAT + HIGH_ENTROPY_VA
-    emit_u64_le(0x100000); emit_u64_le(0x1000)
+    emit_u64_le(0x100000); emit_u64_le(0x100000)  // StackReserve=1MB, StackCommit=1MB
     emit_u64_le(0x100000); emit_u64_le(0x1000)
     emit_u32_le(0); emit_u32_le(16)
     i = 0
