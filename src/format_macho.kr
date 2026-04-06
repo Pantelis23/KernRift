@@ -74,8 +74,8 @@ fn emit_macho_headers_a64(uint64 code_size) -> uint64 {
     emit_u32_le(0x0100000C)       // ARM64
     emit_u32_le(0x00000000)
     emit_u32_le(0x00000002)       // MH_EXECUTE
-    emit_u32_le(4)                // ncmds: PAGEZERO + TEXT + DATA + UNIXTHREAD
-    emit_u32_le(504)              // sizeofcmds = 72*3 + 288
+    emit_u32_le(5)                // ncmds: PAGEZERO + TEXT + DATA + LINKEDIT + UNIXTHREAD
+    emit_u32_le(576)              // sizeofcmds = 72*4 + 288
     emit_u32_le(0x00200001)       // flags: MH_NOUNDEFS|MH_PIE
     emit_u32_le(0)
 
@@ -115,8 +115,21 @@ fn emit_macho_headers_a64(uint64 code_size) -> uint64 {
     emit_u32_le(3); emit_u32_le(3)  // maxprot=RW, initprot=RW
     emit_u32_le(0); emit_u32_le(0)
 
-    // LC_UNIXTHREAD — ARM64 thread state (288 bytes, offset 248)
-    // PC at register 32: offset 248 + 16 + 32*8 = 520
+    // __LINKEDIT (72 bytes, offset 248) — for codesign
+    emit_u32_le(0x19); emit_u32_le(72)
+    emit_byte(95); emit_byte(95); emit_byte(76); emit_byte(73)
+    emit_byte(78); emit_byte(75); emit_byte(69); emit_byte(68)
+    emit_byte(73); emit_byte(84); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_u64_le(0)                // vmaddr (patched at 272)
+    emit_u64_le(0)                // vmsize (patched at 280)
+    emit_u64_le(0)                // fileoff (patched at 288)
+    emit_u64_le(0)                // filesize (patched at 296)
+    emit_u32_le(1); emit_u32_le(1)  // maxprot=R, initprot=R
+    emit_u32_le(0); emit_u32_le(0)
+
+    // LC_UNIXTHREAD — ARM64 thread state (288 bytes, offset 320)
+    // PC at register 32: offset 320 + 16 + 32*8 = 592
     emit_u32_le(5)                // cmd = LC_UNIXTHREAD
     emit_u32_le(288)              // cmdsize
     emit_u32_le(6)                // flavor = ARM_THREAD_STATE64
@@ -125,7 +138,7 @@ fn emit_macho_headers_a64(uint64 code_size) -> uint64 {
     uint64 ri = 0
     while ri < 33 {
         if ri == 32 {
-            emit_u64_le(0x100000000 + header_size)  // pc (patched at 520)
+            emit_u64_le(0x100000000 + header_size)  // pc (patched at 592)
         } else {
             emit_u64_le(0)
         }

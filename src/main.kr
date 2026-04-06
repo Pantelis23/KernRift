@@ -711,10 +711,10 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
             patch_u32(320, entry_va & 0xFFFFFFFF)
             patch_u32(324, (entry_va >> 32) & 0xFFFFFFFF)
         } else {
-            // ARM64: LC_UNIXTHREAD — absolute VA at offset 520
+            // ARM64: LC_UNIXTHREAD — absolute VA at offset 592
             uint64 entry_va_arm = 0x100000000 + main_off_macho
-            patch_u32(520, entry_va_arm & 0xFFFFFFFF)
-            patch_u32(524, (entry_va_arm >> 32) & 0xFFFFFFFF)
+            patch_u32(592, entry_va_arm & 0xFFFFFFFF)
+            patch_u32(596, (entry_va_arm >> 32) & 0xFFFFFFFF)
         }
         // ARM64 Mach-O: separate __DATA segment for W^X
         if arch == 1 {
@@ -734,6 +734,17 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
             patch_u32(220, (total_aligned >> 32) & 0xFFFFFFFF)
             patch_u32(224, m_dal & 0xFFFFFFFF)
             patch_u32(228, (m_dal >> 32) & 0xFFFFFFFF)
+            // __LINKEDIT: vmaddr after __DATA, minimal page
+            uint64 m_lva = m_dva + m_dal
+            uint64 m_lfoff = m_dfoff + m_dal
+            patch_u32(272, m_lva & 0xFFFFFFFF)
+            patch_u32(276, (m_lva >> 32) & 0xFFFFFFFF)
+            patch_u32(280, 16384 & 0xFFFFFFFF)
+            patch_u32(284, 0)
+            patch_u32(288, m_lfoff & 0xFFFFFFFF)
+            patch_u32(292, (m_lfoff >> 32) & 0xFFFFFFFF)
+            patch_u32(296, 0)
+            patch_u32(300, 0)
         }
     } else if emit_mode == 2 {
         // PE: patch entry point to main function
@@ -1317,11 +1328,22 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     patch_u32(220, (total_aligned6 >> 32) & 0xFFFFFFFF)
     patch_u32(224, dal6 & 0xFFFFFFFF)
     patch_u32(228, (dal6 >> 32) & 0xFFFFFFFF)
-    // LC_UNIXTHREAD PC at offset 520 (absolute VA)
+    // __LINKEDIT: after __DATA
+    uint64 lva6 = dva6 + dal6
+    uint64 lfoff6 = dfoff6 + dal6
+    patch_u32(272, lva6 & 0xFFFFFFFF)
+    patch_u32(276, (lva6 >> 32) & 0xFFFFFFFF)
+    patch_u32(280, 16384 & 0xFFFFFFFF)
+    patch_u32(284, 0)
+    patch_u32(288, lfoff6 & 0xFFFFFFFF)
+    patch_u32(292, (lfoff6 >> 32) & 0xFFFFFFFF)
+    patch_u32(296, 0)
+    patch_u32(300, 0)
+    // LC_UNIXTHREAD PC at offset 592 (absolute VA)
     uint64 main_off6 = find_main_offset()
     uint64 entry_va6 = 0x100000000 + main_off6
-    patch_u32(520, entry_va6 & 0xFFFFFFFF)
-    patch_u32(524, (entry_va6 >> 32) & 0xFFFFFFFF)
+    patch_u32(592, entry_va6 & 0xFFFFFFFF)
+    patch_u32(596, (entry_va6 >> 32) & 0xFFFFFFFF)
 
     uint64 macho_a64_len = codegen_output_len()
     uint64 macho_a64_buf = alloc(macho_a64_len)
