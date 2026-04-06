@@ -3,6 +3,7 @@
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
 KRC="${KRC:-$DIR/../build/krc}"
+ARCH=$(uname -m)
 PASS=0
 FAIL=0
 TOTAL=0
@@ -364,8 +365,12 @@ run_test "asm_nop" 'fn main() { asm("nop"); exit(42) }' 42
 # Inline assembly: multi-line block
 run_test "asm_block" 'fn main() { asm { "nop"; "nop"; "nop" }; exit(7) }' 7
 
-# Inline assembly: raw hex bytes (x86: 0x90 = nop)
-run_test "asm_hex" 'fn main() { asm("0x90"); exit(5) }' 5
+# Inline assembly: raw hex bytes (x86-only: 0x90 = nop)
+if [ "$ARCH" != "aarch64" ]; then
+    run_test "asm_hex" 'fn main() { asm("0x90"); exit(5) }' 5
+else
+    echo "  asm_hex: SKIP (x86-only)"; PASS=$((PASS+1)); TOTAL=$((TOTAL+1))
+fi
 
 # Signed comparisons: signed_lt with negative-like values
 run_test "signed_lt_true" 'fn main() {
@@ -440,13 +445,17 @@ run_test "bit_insert" 'fn main() {
     exit(v)
 }' 240
 
-# @naked function (no prologue/epilogue, just asm)
-run_test "naked_fn" '@naked fn raw_exit() {
-    asm("0x48 0xC7 0xC7 0x2A 0x00 0x00 0x00")
-    asm("0x48 0xC7 0xC0 0x3C 0x00 0x00 0x00")
-    asm("0x0F 0x05")
-}
-fn main() { raw_exit() }' 42
+# @naked function (x86-only: uses raw x86 machine code bytes)
+if [ "$ARCH" != "aarch64" ]; then
+    run_test "naked_fn" '@naked fn raw_exit() {
+        asm("0x48 0xC7 0xC7 0x2A 0x00 0x00 0x00")
+        asm("0x48 0xC7 0xC0 0x3C 0x00 0x00 0x00")
+        asm("0x0F 0x05")
+    }
+    fn main() { raw_exit() }' 42
+else
+    echo "  naked_fn: SKIP (x86-only)"; PASS=$((PASS+1)); TOTAL=$((TOTAL+1))
+fi
 
 # @noreturn annotation (should compile fine)
 run_test "noreturn_fn" '@noreturn fn die() { exit(99) }
