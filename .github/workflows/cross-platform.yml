@@ -102,8 +102,13 @@ jobs:
           ./build/krc2 --arch=x86_64 --emit=pe /tmp/fileio.kr -o /tmp/test-bins/win-x64-fileio.exe
           ./build/krc2 --arch=arm64 --emit=pe /tmp/fileio.kr -o /tmp/test-bins/win-arm-fileio.exe
 
+          # macOS file I/O tests
+          ./build/krc2 --arch=x86_64 --emit=macho /tmp/fileio.kr -o /tmp/test-bins/macos-x64-fileio
+          ./build/krc2 --arch=arm64 --emit=macho /tmp/fileio.kr -o /tmp/test-bins/macos-arm-fileio
+
           # Cross-compile full compiler for self-compilation tests
           ./build/krc2 --arch=x86_64 --emit=pe build/krc.kr -o /tmp/test-bins/krc-win-x64.exe
+          ./build/krc2 --arch=arm64 --emit=pe build/krc.kr -o /tmp/test-bins/krc-win-arm64.exe
           ./build/krc2 --arch=x86_64 --emit=macho build/krc.kr -o /tmp/test-bins/krc-macos-x64
           cp build/krc.kr /tmp/test-bins/krc-source.kr
 
@@ -149,8 +154,20 @@ jobs:
           run_test "fib10"  bins/macos-x64-fib 55
           run_test "add"    bins/macos-x64-add 42
           run_test "static" bins/macos-x64-static 3
+          run_test "alloc"  bins/macos-x64-alloc_test 42
           echo "=== macOS x86_64: $PASS passed, $FAIL failed ==="
           exit $FAIL
+
+      - name: Test file I/O on macOS (Rosetta)
+        run: |
+          chmod +x bins/macos-x64-fileio
+          set +e; bins/macos-x64-fileio; CODE=$?; set -e
+          if [ "$CODE" -eq 8 ]; then
+            echo "PASS: macOS x86_64 file I/O (read 8 bytes)"
+          else
+            echo "FAIL: macOS x86_64 file I/O (expected 8, got $CODE)"
+            exit 1
+          fi
 
       - name: Self-compilation on macOS (Rosetta)
         continue-on-error: true
@@ -255,6 +272,8 @@ jobs:
           run_test "fib10"  bins/macos-arm-fib 55
           run_test "add"    bins/macos-arm-add 42
           run_test "static" bins/macos-arm-static 3
+          run_test "alloc"  bins/macos-arm-alloc_test 42
+          run_test "fileio" bins/macos-arm-fileio 8
           echo "=== macOS ARM64: $PASS passed, $FAIL failed ==="
           exit $FAIL
 
@@ -379,16 +398,31 @@ jobs:
           }
 
       - name: Test file I/O (write + read back)
-        continue-on-error: true
         shell: pwsh
         run: |
-          $output = & bins\win-arm-fileio.exe 2>&1
-          $code = $LASTEXITCODE
-          Write-Host "stdout: $output"
-          Write-Host "exit: $code"
-          if ($code -eq 8) {
+          $ErrorActionPreference = 'Continue'
+          $r = Start-Process -FilePath bins\win-arm-fileio.exe -Wait -PassThru -NoNewWindow
+          if ($r.ExitCode -eq 8) {
             Write-Host "PASS: file I/O (read back 8 bytes)"
           } else {
             Write-Host "FAIL: file I/O (expected 8, got $($r.ExitCode))"
+            exit 1
+          }
+
+      - name: Self-compilation on Windows ARM64
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Set-Content -Path test.kr -Value 'fn main() { println("ARM64 self-compiled!"); exit(42) }'
+          $r1 = Start-Process -FilePath bins\krc-win-arm64.exe -ArgumentList '--emit=pe','test.kr','-o','test-arm64.exe' -Wait -PassThru -NoNewWindow
+          Write-Host "compile exit: $($r1.ExitCode)"
+          if ($r1.ExitCode -ne 0) { Write-Host "FAIL: ARM64 compile"; exit 1 }
+          $r2 = Start-Process -FilePath .\test-arm64.exe -Wait -PassThru -NoNewWindow
+          Write-Host "run exit: $($r2.ExitCode)"
+          if ($r2.ExitCode -eq 42) {
+            Write-Host "PASS: Windows ARM64 self-compilation"
+          } else {
+            Write-Host "FAIL: Windows ARM64 self-compilation (exit=$($r2.ExitCode))"
             exit 1
           }
