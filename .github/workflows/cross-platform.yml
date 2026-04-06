@@ -412,7 +412,33 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
-          # First test: can the compiler run at all?
+          # Diagnostic: test large alloc + file I/O (simulates compiler startup)
+          Set-Content -Path diag.kr -Value @'
+          static uint64 g_buf = 0
+          fn main() {
+              println("1:start")
+              g_buf = alloc(1048576)
+              println("2:alloc-1MB")
+              uint64 buf2 = alloc(65536)
+              println("3:alloc-64K")
+              uint64 fd = file_open("diag_test.tmp", 1)
+              println("4:opened")
+              uint64 msg = "test"
+              file_write(fd, msg, 4)
+              file_close(fd)
+              println("5:wrote")
+              exit(0)
+          }
+'@
+          $r_diag = Start-Process -FilePath bins\krc-win-arm64.exe -ArgumentList '--emit=pe','diag.kr','-o','diag.exe' -Wait -PassThru -NoNewWindow -RedirectStandardOutput diag_compile_out.txt -RedirectStandardError diag_compile_err.txt
+          Write-Host "diag compile: $($r_diag.ExitCode)"
+          if (Test-Path diag_compile_out.txt) { Get-Content diag_compile_out.txt }
+          if ($r_diag.ExitCode -eq 0) {
+            $r_run = Start-Process -FilePath .\diag.exe -Wait -PassThru -NoNewWindow -RedirectStandardOutput diag_run_out.txt
+            Write-Host "diag run: $($r_run.ExitCode)"
+            if (Test-Path diag_run_out.txt) { Get-Content diag_run_out.txt }
+          }
+          # Now try the simple compile
           Set-Content -Path test.kr -Value 'fn main() { exit(42) }'
           Write-Host "Binary size: $((Get-Item bins\krc-win-arm64.exe).Length)"
           $r0 = Start-Process -FilePath bins\krc-win-arm64.exe -ArgumentList '--emit=pe','test.kr','-o','test-arm64.exe' -Wait -PassThru -NoNewWindow -RedirectStandardError err.txt -RedirectStandardOutput out.txt
