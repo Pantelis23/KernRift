@@ -1658,10 +1658,9 @@ fn gen_expr_a64(uint64 node) {
             if arg_count >= 2 { emit_a64_load_x0(arg_slots_base + 8); emit_a64_mov(1, 0) }
             if arg_count >= 1 { emit_a64_load_x0(arg_slots_base) }
 
-            // Load fn_ptr into x9, then BLR x9
-            emit_a64_load_x0(ptr_slot)
-            emit_a64_mov(9, 0)
-            // BLR x9 = 0xD63F0120
+            // Load fn_ptr into x9 directly (don't clobber x0 which has arg[0])
+            emit_a64_ldr(9, 31, a64_var_base + ptr_slot)
+            // BLR x9
             emit_a64(0xD63F0120)
             return
         }
