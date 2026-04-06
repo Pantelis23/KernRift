@@ -146,11 +146,28 @@ jobs:
       - name: Run tests
         continue-on-error: true
         run: |
+          echo "=== macOS diagnostics ==="
+          sw_vers
+          echo "---"
+          # Debug first binary
+          chmod +x bins/macos-arm-exit42
+          echo "--- file ---"
+          file bins/macos-arm-exit42
+          echo "--- otool -l (load commands) ---"
+          otool -l bins/macos-arm-exit42 2>&1 | head -60
+          echo "--- codesign attempt ---"
+          codesign -s - bins/macos-arm-exit42 2>&1 || echo "codesign FAILED: $?"
+          echo "--- codesign verify ---"
+          codesign -v bins/macos-arm-exit42 2>&1 || echo "verify FAILED"
+          echo "--- run ---"
+          set +e; bins/macos-arm-exit42; echo "exit: $?"; set -e
+          echo "=== end diagnostics ==="
+
           PASS=0; FAIL=0
           run_test() {
             local name="$1" bin="$2" expected="$3"
             chmod +x "$bin"
-            codesign -s - "$bin" 2>/dev/null || true
+            codesign -s - "$bin" 2>&1 || true
             set +e
             OUTPUT=$("$bin" 2>&1)
             CODE=$?
