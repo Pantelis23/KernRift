@@ -75,16 +75,26 @@ jobs:
             ./build/krc2 --arch=arm64 --emit=pe /tmp/$t.kr -o /tmp/test-bins/win-arm-$t.exe
           done
 
-          # File I/O test (write + read back)
+          # File I/O test (write + read back) with diagnostics
           cat > /tmp/fileio.kr << 'KEOF'
           fn main() {
+              println("1:open-write")
               uint64 wfd = file_open("krc_test_io.tmp", 1)
+              print("2:wfd=")
+              println(wfd)
               uint64 msg = "KernRift"
               file_write(wfd, msg, 8)
+              println("3:wrote")
               file_close(wfd)
+              println("4:closed")
               uint64 buf = alloc(64)
+              println("5:alloc")
               uint64 rfd = file_open("krc_test_io.tmp", 0)
+              print("6:rfd=")
+              println(rfd)
               uint64 n = file_read(rfd, buf, 64)
+              print("7:read=")
+              println(n)
               file_close(rfd)
               exit(n)
           }
@@ -372,8 +382,11 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: |
-          $r = Start-Process -FilePath bins\win-arm-fileio.exe -Wait -PassThru -NoNewWindow
-          if ($r.ExitCode -eq 8) {
+          $output = & bins\win-arm-fileio.exe 2>&1
+          $code = $LASTEXITCODE
+          Write-Host "stdout: $output"
+          Write-Host "exit: $code"
+          if ($code -eq 8) {
             Write-Host "PASS: file I/O (read back 8 bytes)"
           } else {
             Write-Host "FAIL: file I/O (expected 8, got $($r.ExitCode))"
