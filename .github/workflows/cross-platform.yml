@@ -442,9 +442,9 @@ jobs:
           base = 0
           evt = DEBUG_EVENT()
           for _ in range(200):
-              if not k32.WaitForDebugEvent(ctypes.byref(evt), 10000): break
+              if not k32.WaitForDebugEvent(ctypes.byref(evt), 30000): print('timeout'); break
               if evt.code == CREATE_PROCESS_DEBUG_EVENT:
-                  base = struct.unpack_from('<Q', evt.u, 16)[0]
+                  base = struct.unpack_from('<Q', evt.u, 24)[0]
                   print(f'Base: 0x{base:X}')
               elif evt.code == EXCEPTION_DEBUG_EVENT:
                   exc_code = struct.unpack_from('<I', evt.u, 0)[0]
@@ -463,6 +463,7 @@ jobs:
               elif evt.code == EXIT_PROCESS_DEBUG_EVENT:
                   print('Process exited normally'); k32.ContinueDebugEvent(evt.pid, evt.tid, DBG_CONTINUE); break
               else:
+                  if evt.code not in (6,7,8): print(f'Event: {evt.code}')
                   k32.ContinueDebugEvent(evt.pid, evt.tid, DBG_CONTINUE)
           k32.TerminateProcess(pi.hProcess, 1)
           "@
