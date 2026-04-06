@@ -167,7 +167,7 @@ fn emit_a64_sub_sp_imm(uint64 imm) {
         emit_a64(insn)
     } else {
         emit_a64_mov_imm(16, imm)
-        emit_a64(0xCB1003FF)
+        emit_a64(0xCB3063FF)
     }
 }
 
@@ -178,7 +178,7 @@ fn emit_a64_add_sp_imm(uint64 imm) {
         emit_a64(insn)
     } else {
         emit_a64_mov_imm(16, imm)
-        emit_a64(0x8B1003FF)
+        emit_a64(0x8B3063FF)
     }
 }
 
@@ -308,8 +308,15 @@ fn emit_a64_add_imm(uint64 rd, uint64 rn, uint64 imm) {
     } else {
         // Large offset: MOVZ rd, #imm then ADD rd, rn, rd
         emit_a64_mov_imm(rd, imm)
-        uint64 insn = 0x8B000000 | (rd << 16) | (rn << 5) | rd
-        emit_a64(insn)
+        if rn == 31 {
+            // SP requires extended register form (shifted form uses XZR for reg 31)
+            // ADD Xd, SP, Xd, UXTX: 0x8B206000 | (Xd << 16) | (31 << 5) | Xd
+            uint64 insn = 0x8B206000 | (rd << 16) | (31 << 5) | rd
+            emit_a64(insn)
+        } else {
+            uint64 insn = 0x8B000000 | (rd << 16) | (rn << 5) | rd
+            emit_a64(insn)
+        }
     }
 }
 
