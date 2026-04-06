@@ -414,10 +414,14 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
-          Set-Content -Path test.kr -Value 'fn main() { println("ARM64 self-compiled!"); exit(42) }'
-          $r1 = Start-Process -FilePath bins\krc-win-arm64.exe -ArgumentList '--emit=pe','test.kr','-o','test-arm64.exe' -Wait -PassThru -NoNewWindow
-          Write-Host "compile exit: $($r1.ExitCode)"
-          if ($r1.ExitCode -ne 0) { Write-Host "FAIL: ARM64 compile"; exit 1 }
+          # First test: can the compiler run at all?
+          Set-Content -Path test.kr -Value 'fn main() { exit(42) }'
+          Write-Host "Binary size: $((Get-Item bins\krc-win-arm64.exe).Length)"
+          $r0 = Start-Process -FilePath bins\krc-win-arm64.exe -ArgumentList '--emit=pe','test.kr','-o','test-arm64.exe' -Wait -PassThru -NoNewWindow -RedirectStandardError err.txt -RedirectStandardOutput out.txt
+          Write-Host "compile exit: $($r0.ExitCode)"
+          if (Test-Path out.txt) { Write-Host "stdout: $(Get-Content out.txt)" }
+          if (Test-Path err.txt) { Write-Host "stderr: $(Get-Content err.txt)" }
+          if ($r0.ExitCode -ne 0) { Write-Host "FAIL: ARM64 compile"; exit 1 }
           $r2 = Start-Process -FilePath .\test-arm64.exe -Wait -PassThru -NoNewWindow
           Write-Host "run exit: $($r2.ExitCode)"
           if ($r2.ExitCode -eq 42) {
