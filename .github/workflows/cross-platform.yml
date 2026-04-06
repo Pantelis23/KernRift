@@ -367,8 +367,8 @@ jobs:
         run: |
           $pass = 0; $fail = 0
           function Run-Test($name, $bin, $expected) {
-            & $bin 2>$null
-            $code = $LASTEXITCODE
+            $r = Start-Process -FilePath $bin -Wait -PassThru -NoNewWindow
+            $code = $r.ExitCode
             if ($code -eq $expected) {
               Write-Host "PASS: $name (exit=$code)"
               $script:pass++
@@ -380,8 +380,6 @@ jobs:
           Run-Test "exit42" "bins\win-arm-exit42.exe" 42
           Run-Test "fib10"  "bins\win-arm-fib.exe" 55
           Run-Test "add"    "bins\win-arm-add.exe" 42
-          # Static test skipped: ARM64 PE statics use absolute MOVZ/MOVK which
-          # breaks under ASLR. Needs ADRP+ADD for position-independent access.
           Run-Test "static" "bins\win-arm-static.exe" 3
           Write-Host "=== Windows ARM64: $pass passed, $fail failed ==="
           exit $fail
