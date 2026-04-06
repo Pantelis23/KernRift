@@ -429,7 +429,7 @@ jobs:
           class PROCESS_INFORMATION(ctypes.Structure):
               _fields_ = [('hProcess',ctypes.c_void_p),('hThread',ctypes.c_void_p),('dwProcessId',ctypes.c_ulong),('dwThreadId',ctypes.c_ulong)]
           class DEBUG_EVENT(ctypes.Structure):
-              _fields_ = [('code',ctypes.c_ulong),('pid',ctypes.c_ulong),('tid',ctypes.c_ulong),('u',ctypes.c_byte*160)]
+              _fields_ = [('code',ctypes.c_ulong),('pid',ctypes.c_ulong),('tid',ctypes.c_ulong),('_pad',ctypes.c_ulong),('u',ctypes.c_byte*160)]
 
           si = STARTUPINFO()
           si.cb = ctypes.sizeof(si)
