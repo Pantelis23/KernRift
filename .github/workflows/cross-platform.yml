@@ -156,7 +156,8 @@ jobs:
           echo 'fn main() { println("macOS self-compiled!"); exit(42) }' > test.kr
           cat test.kr
           ls -la test.kr
-          ./bins/krc-macos-x64 --arch=x86_64 --emit=macho test.kr -o test_out >stdout.txt 2>stderr.txt
+          # Try minimal: just compile, no extra flags
+          ./bins/krc-macos-x64 test.kr -o test_out >stdout.txt 2>stderr.txt
           COMP=$?
           echo "compile exit: $COMP"
           echo "stdout:"; cat stdout.txt
