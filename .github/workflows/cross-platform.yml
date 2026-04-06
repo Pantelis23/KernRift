@@ -412,8 +412,15 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
+          # Test division (fmt_uint uses division loops)
+          $r_div = Start-Process -FilePath bins\win-arm-fib.exe -Wait -PassThru -NoNewWindow
+          Write-Host "fib(10)=$($r_div.ExitCode) (expect 55)"
+          # Test println with integer (uses fmt_uint / division)
+          $r_hello = Start-Process -FilePath bins\win-arm-hello.exe -Wait -PassThru -NoNewWindow -RedirectStandardOutput hello_out.txt
+          Write-Host "hello exit=$($r_hello.ExitCode)"
+          if (Test-Path hello_out.txt) { Write-Host "hello: $(Get-Content hello_out.txt -Raw)" }
           Set-Content -Path test.kr -Value 'fn main() { exit(42) }'
-          # Use Python debug harness to catch crash address
+          # Use Python debug harness to catch crash/hang
           Set-Content -Path debug_crash.py -Value @"
           import ctypes, struct, subprocess, sys
           k32 = ctypes.windll.kernel32
