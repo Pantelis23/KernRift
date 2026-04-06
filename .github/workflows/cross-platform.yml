@@ -138,10 +138,15 @@ jobs:
         run: |
           set +e
           chmod +x bins/krc-macos-x64
+          ls -la bins/krc-macos-x64
+          echo "pwd: $(pwd)"
+          echo "--- compile ---"
           echo 'fn main() { println("macOS self-compiled!"); exit(42) }' > test.kr
+          cat test.kr
           ./bins/krc-macos-x64 --arch=x86_64 --emit=macho test.kr -o test_out 2>&1
           COMP=$?
           echo "compile exit: $COMP"
+          ls -la test_out 2>/dev/null || echo "test_out not created"
           if [ "$COMP" -ne 0 ]; then echo "FAIL: compile stage"; exit 1; fi
           chmod +x test_out
           ./test_out; CODE=$?
@@ -163,6 +168,23 @@ jobs:
         with:
           name: test-bins
           path: bins
+
+      - name: Diagnose ARM64 binary
+        continue-on-error: true
+        run: |
+          set +e
+          chmod +x bins/macos-arm-exit42
+          xattr -cr bins/ 2>/dev/null || true
+          codesign -f -s - bins/macos-arm-exit42 2>&1; echo "codesign: $?"
+          codesign -vvv bins/macos-arm-exit42 2>&1; echo "verify: $?"
+          # Check if the binary even loads
+          echo "--- dyld info ---"
+          otool -L bins/macos-arm-exit42 2>&1 || echo "(no deps)"
+          echo "--- crash log ---"
+          ./bins/macos-arm-exit42 2>&1; echo "exit: $?"
+          # Check Console for crash reason
+          log show --predicate 'process == "macos-arm-exit42" OR process == "kernel" OR process == "amfid"' --last 10s 2>&1 | head -20
+          set -e
 
       - name: Run tests
         continue-on-error: true
