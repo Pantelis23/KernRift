@@ -45,9 +45,10 @@ krc lc program.kr
 
 | Platform | CPU | Time |
 |----------|-----|------|
-| Linux x86_64 | AMD Ryzen 9 7900X | 52ms |
+| Linux x86_64 | AMD Ryzen 9 7900X | 53ms |
+| Linux ARM64 | QEMU on Ryzen 9 7900X | 422ms |
 | Windows 11 x86_64 | Intel Core Ultra 9 275HX | 66ms |
-| Linux ARM64 | ARM Cortex-A72 (Pi 400) | 602ms |
+| Windows 11 ARM64 | GitHub Actions runner | bootstrap verified |
 
 ## Install
 
@@ -204,7 +205,7 @@ A VS Code extension (v0.2.3) is available on the VS Code Marketplace:
 
 ## Architecture
 
-13,000+ lines of KernRift across 14 source files + 7 stdlib modules (828 lines). Self-compiles to a 366 KB native binary in 52ms, or a 2.0 MB universal fat binary (6 slices) in 248ms (AMD Ryzen 9 7900X). 102 tests, bootstrap fixed point verified on 3 platforms.
+14,000+ lines of KernRift across 14 source files + 7 stdlib modules (828 lines). Self-compiles to a 371 KB native binary in 53ms, or a 2.1 MB universal fat binary (6 slices) in 252ms (AMD Ryzen 9 7900X). 105 tests, bootstrap fixed point verified on 4 platforms (Linux x86_64, Linux ARM64, Windows x86_64, Windows ARM64).
 
 | File | Purpose |
 |------|---------|
@@ -229,14 +230,14 @@ The [bootstrap compiler](https://github.com/Pantelis23/KernRift-bootstrap) is on
 
 ## Platforms
 
-| Platform | Compile | Run | Self-host |
-|----------|---------|-----|-----------|
-| Linux x86_64 | ✅ | ✅ | ✅ |
-| Linux ARM64 | ✅ | ✅ | ✅ |
-| Windows x86_64 | ✅ | ✅ | ✅ |
-| Windows ARM64 | ✅ | ✅ | -- |
-| macOS x86_64 | ✅ | WIP | -- |
-| macOS ARM64 | ✅ | WIP | -- |
+| Platform | Compile | Run | Self-host | File I/O | Bootstrap |
+|----------|---------|-----|-----------|----------|-----------|
+| Linux x86_64 | ✅ | ✅ | ✅ | ✅ | ✅ fixed point |
+| Linux ARM64 | ✅ | ✅ | ✅ | ✅ | ✅ fixed point |
+| Windows x86_64 | ✅ | ✅ | ✅ | ✅ | ✅ chain verified |
+| Windows ARM64 | ✅ | ✅ | ✅ | ✅ | ✅ krc3==krc4 |
+| macOS x86_64 | ✅ | ✅ | ✅ | ✅ | — |
+| macOS ARM64 | ✅ | WIP | — | — | — |
 
 ## License
 
