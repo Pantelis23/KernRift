@@ -83,8 +83,9 @@ jobs:
           ./build/krc2 --arch=x86_64 --emit=pe /tmp/fileio.kr -o /tmp/test-bins/win-x64-fileio.exe
           ./build/krc2 --arch=arm64 --emit=pe /tmp/fileio.kr -o /tmp/test-bins/win-arm-fileio.exe
 
-          # Cross-compile full compiler to Windows PE for self-compilation test
+          # Cross-compile full compiler for self-compilation tests
           ./build/krc2 --arch=x86_64 --emit=pe build/krc.kr -o /tmp/test-bins/krc-win-x64.exe
+          ./build/krc2 --arch=x86_64 --emit=macho build/krc.kr -o /tmp/test-bins/krc-macos-x64
           cp build/krc.kr /tmp/test-bins/krc-source.kr
 
           ls -la /tmp/test-bins/
@@ -132,10 +133,25 @@ jobs:
           echo "=== macOS x86_64: $PASS passed, $FAIL failed ==="
           exit $FAIL
 
+      - name: Self-compilation on macOS (Rosetta)
+        run: |
+          chmod +x bins/krc-macos-x64
+          echo 'fn main() { println("macOS self-compiled!"); exit(42) }' > test.kr
+          ./bins/krc-macos-x64 --arch=x86_64 --emit=macho test.kr -o test_out 2>&1
+          if [ $? -ne 0 ]; then echo "FAIL: compile"; exit 1; fi
+          chmod +x test_out
+          set +e; ./test_out; CODE=$?; set -e
+          if [ "$CODE" -eq 42 ]; then
+            echo "PASS: macOS x86_64 self-compilation"
+          else
+            echo "FAIL: macOS x86_64 self-compilation (exit=$CODE)"
+            exit 1
+          fi
+
   test-macos-arm:
     name: macOS ARM64
     needs: build
-    runs-on: macos-latest
+    runs-on: macos-14
     steps:
       - name: Download binaries
         uses: actions/download-artifact@v4
