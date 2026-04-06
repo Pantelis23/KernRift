@@ -147,6 +147,7 @@ fn codegen_init(uint64 capacity, uint64 source, uint64 tokens) {
     win_iat_fixup_count = 0
     a64_win_iat_fixups = alloc(1024 * 8)
     a64_win_iat_fixup_count = 0
+    a64_digit_buf = alloc(32)
     type_alias_table = alloc(64 * 8)
     type_alias_count = 0
     fnaddr_fixup_table = alloc(256 * 8)

@@ -15,6 +15,9 @@
 // Linux syscall: x8=nr, x0-x5=args, svc #0
 // Windows ARM64: IAT indirect calls via MOVZ/MOVK/LDR/BLR sequence
 
+// Static digit buffer for integer print (avoids large stack offsets on ARM64)
+static uint64 a64_digit_buf = 0
+
 // ---------------------------------------------------------------------------
 // ARM64 Windows IAT fixup table
 // ---------------------------------------------------------------------------
@@ -287,10 +290,17 @@ fn emit_a64_adrp(uint64 rd, uint64 imm_hi) {
     emit_a64(insn)
 }
 
-// ADD Xd, Xn, #imm12
-fn emit_a64_add_imm(uint64 rd, uint64 rn, uint64 imm12) {
-    uint64 insn = 0x91000000 | (imm12 << 10) | (rn << 5) | rd
-    emit_a64(insn)
+// ADD Xd, Xn, #imm — handles values > 4095 with two-instruction sequence
+fn emit_a64_add_imm(uint64 rd, uint64 rn, uint64 imm) {
+    if imm <= 4095 {
+        uint64 insn = 0x91000000 | (imm << 10) | (rn << 5) | rd
+        emit_a64(insn)
+    } else {
+        // Large offset: MOVZ rd, #imm then ADD rd, rn, rd
+        emit_a64_mov_imm(rd, imm)
+        uint64 insn = 0x8B000000 | (rd << 16) | (rn << 5) | rd
+        emit_a64(insn)
+    }
 }
 
 // NOP
@@ -1174,15 +1184,16 @@ fn gen_expr_a64(uint64 node) {
                 // Integer: format and print
                 gen_expr_a64(wfa)
                 emit_a64_store_x0(temp_slot_0)
-                // Use var_frame_size as digit buffer (20 bytes, past all locals)
+                // Use stack digit buffer via register (handles large frame offsets)
                 uint64 digit_buf = var_frame_size
                 uint64 apr_cbz2 = out_len
                 emit_a64_cbnz(0, 0)
 
                 // Zero case: write "0"
                 emit_a64_mov_imm(9, 0x30)
-                emit_a64_strb(9, 31, a64_var_base + digit_buf)
-                emit_a64_add_imm(1, 31, a64_var_base + digit_buf)
+                emit_a64_add_imm(8, 31, a64_var_base + digit_buf)
+                emit_a64_strb(9, 8, 0)
+                emit_a64_mov(1, 8)
                 emit_a64_mov_imm(2, 1)
                 if target_os == 2 {
                     emit_a64_mov(19, 1)
@@ -1293,14 +1304,15 @@ fn gen_expr_a64(uint64 node) {
                 // Integer
                 gen_expr_a64(wfa)
                 emit_a64_store_x0(temp_slot_0)
-                // Use var_frame_size as digit buffer (20 bytes, past all locals)
+                // Use stack digit buffer via register (handles large frame offsets)
                 uint64 digit_buf2 = var_frame_size
                 uint64 apn_cbz2 = out_len
                 emit_a64_cbnz(0, 0)
 
                 emit_a64_mov_imm(9, 0x30)
-                emit_a64_strb(9, 31, a64_var_base + digit_buf2)
-                emit_a64_add_imm(1, 31, a64_var_base + digit_buf2)
+                emit_a64_add_imm(8, 31, a64_var_base + digit_buf2)
+                emit_a64_strb(9, 8, 0)
+                emit_a64_mov(1, 8)
                 emit_a64_mov_imm(2, 1)
                 if target_os == 2 {
                     emit_a64_mov(19, 1)
