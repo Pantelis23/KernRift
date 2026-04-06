@@ -46,7 +46,7 @@ chmod +x "$INSTALL_DIR/krc"
 
 # Download kr runner
 echo "Downloading kr..."
-curl -sL -o "$INSTALL_DIR/kr" "$BASE/kr"
+curl -sL -o "$INSTALL_DIR/kr" "$BASE/kr-$OS_NAME-$ARCH_NAME"
 chmod +x "$INSTALL_DIR/kr"
 
 # Download standard library
