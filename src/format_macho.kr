@@ -70,9 +70,9 @@ fn emit_macho_headers_a64(uint64 code_size) -> uint64 {
     emit_u32_le(0x0100000C)       // ARM64
     emit_u32_le(0x00000000)
     emit_u32_le(0x00000002)
-    emit_u32_le(3)                // ncmds
-    emit_u32_le(72 + 72 + 288)   // sizeofcmds = 432
-    emit_u32_le(0x00000001)       // flags (NOUNDEFS)
+    emit_u32_le(4)                // ncmds (PAGEZERO + TEXT + DATA + UNIXTHREAD)
+    emit_u32_le(72 + 72 + 72 + 288)  // sizeofcmds = 504
+    emit_u32_le(0x00200001)       // flags (NOUNDEFS | MH_PIE)
     emit_u32_le(0)
 
     // __PAGEZERO
@@ -85,7 +85,7 @@ fn emit_macho_headers_a64(uint64 code_size) -> uint64 {
     emit_u64_le(0); emit_u64_le(0)
     emit_u32_le(0); emit_u32_le(0); emit_u32_le(0); emit_u32_le(0)
 
-    // __TEXT (RWX)
+    // __TEXT (RX — W^X safe)
     emit_u32_le(0x19); emit_u32_le(72)
     emit_byte(95); emit_byte(95); emit_byte(84); emit_byte(69)
     emit_byte(88); emit_byte(84); emit_byte(0); emit_byte(0)
@@ -95,7 +95,20 @@ fn emit_macho_headers_a64(uint64 code_size) -> uint64 {
     emit_u64_le(0)                // vmsize (patched)
     emit_u64_le(0)
     emit_u64_le(0)                // filesize (patched)
-    emit_u32_le(7); emit_u32_le(7)
+    emit_u32_le(5); emit_u32_le(5)  // maxprot=RX, initprot=RX
+    emit_u32_le(0); emit_u32_le(0)
+
+    // __DATA (RW — statics)
+    emit_u32_le(0x19); emit_u32_le(72)
+    emit_byte(95); emit_byte(95); emit_byte(68); emit_byte(65)
+    emit_byte(84); emit_byte(65); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_u64_le(0)                // vmaddr (patched)
+    emit_u64_le(0)                // vmsize (patched)
+    emit_u64_le(0)                // fileoff (patched)
+    emit_u64_le(0)                // filesize (patched)
+    emit_u32_le(3); emit_u32_le(3)  // maxprot=RW, initprot=RW
     emit_u32_le(0); emit_u32_le(0)
 
     // LC_UNIXTHREAD — ARM64 thread state (288 bytes)
@@ -123,4 +136,5 @@ fn emit_macho_headers_a64(uint64 code_size) -> uint64 {
 // Patch offsets:
 // __TEXT vmsize at 136, filesize at 152
 // x86_64 LC_UNIXTHREAD rip at 176+16+16*8 = 320
-// ARM64 LC_UNIXTHREAD pc at 176+16+32*8 = 448
+// ARM64 __DATA vmaddr at 200, vmsize at 208, fileoff at 216, filesize at 224
+// ARM64 LC_UNIXTHREAD pc at 248+16+32*8 = 520
