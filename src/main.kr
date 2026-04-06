@@ -711,11 +711,12 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
             patch_u32(320, entry_va & 0xFFFFFFFF)
             patch_u32(324, (entry_va >> 32) & 0xFFFFFFFF)
         } else {
-            // ARM64: LC_MAIN entryoff at offset 328 (file offset from __TEXT start)
-            patch_u32(328, main_off_macho & 0xFFFFFFFF)
-            patch_u32(332, (main_off_macho >> 32) & 0xFFFFFFFF)
+            // ARM64: LC_UNIXTHREAD — absolute VA at offset 520
+            uint64 entry_va_arm = 0x100000000 + main_off_macho
+            patch_u32(520, entry_va_arm & 0xFFFFFFFF)
+            patch_u32(524, (entry_va_arm >> 32) & 0xFFFFFFFF)
         }
-        // ARM64 Mach-O: separate __DATA segment for W^X + __LINKEDIT
+        // ARM64 Mach-O: separate __DATA segment for W^X
         if arch == 1 {
             uint64 m_dfoff = codegen_output_len()
             emit_static_data()
@@ -733,17 +734,6 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
             patch_u32(220, (total_aligned >> 32) & 0xFFFFFFFF)
             patch_u32(224, m_dal & 0xFFFFFFFF)
             patch_u32(228, (m_dal >> 32) & 0xFFFFFFFF)
-            // __LINKEDIT: vmaddr after __DATA, fileoff after __DATA, minimal size
-            uint64 m_lva = m_dva + m_dal
-            uint64 m_lfoff = total_aligned + m_dal
-            patch_u32(272, m_lva & 0xFFFFFFFF)
-            patch_u32(276, (m_lva >> 32) & 0xFFFFFFFF)
-            patch_u32(280, 16384 & 0xFFFFFFFF)
-            patch_u32(284, 0)
-            patch_u32(288, m_lfoff & 0xFFFFFFFF)
-            patch_u32(292, (m_lfoff >> 32) & 0xFFFFFFFF)
-            patch_u32(296, 0)
-            patch_u32(300, 0)
         }
     } else if emit_mode == 2 {
         // PE: patch entry point to main function
@@ -1327,21 +1317,11 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     patch_u32(220, (total_aligned6 >> 32) & 0xFFFFFFFF)
     patch_u32(224, dal6 & 0xFFFFFFFF)
     patch_u32(228, (dal6 >> 32) & 0xFFFFFFFF)
-    // __LINKEDIT: vmaddr after __DATA, fileoff after __DATA
-    uint64 lva6 = dva6 + dal6
-    uint64 lfoff6 = total_aligned6 + dal6
-    patch_u32(272, lva6 & 0xFFFFFFFF)
-    patch_u32(276, (lva6 >> 32) & 0xFFFFFFFF)
-    patch_u32(280, 16384 & 0xFFFFFFFF)
-    patch_u32(284, 0)
-    patch_u32(288, lfoff6 & 0xFFFFFFFF)
-    patch_u32(292, (lfoff6 >> 32) & 0xFFFFFFFF)
-    patch_u32(296, 0)
-    patch_u32(300, 0)
-    // LC_MAIN entryoff at offset 328 (file offset from __TEXT start)
+    // LC_UNIXTHREAD PC at offset 520 (absolute VA)
     uint64 main_off6 = find_main_offset()
-    patch_u32(328, main_off6 & 0xFFFFFFFF)
-    patch_u32(332, (main_off6 >> 32) & 0xFFFFFFFF)
+    uint64 entry_va6 = 0x100000000 + main_off6
+    patch_u32(520, entry_va6 & 0xFFFFFFFF)
+    patch_u32(524, (entry_va6 >> 32) & 0xFFFFFFFF)
 
     uint64 macho_a64_len = codegen_output_len()
     uint64 macho_a64_buf = alloc(macho_a64_len)
