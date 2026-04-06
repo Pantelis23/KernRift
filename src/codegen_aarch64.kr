@@ -882,8 +882,13 @@ fn gen_expr_a64(uint64 node) {
             uint64 wa3 = arg3
             gen_expr_a64(wa3)
             if target_os == 2 {
-                // Windows ARM64: GetStdHandle(-(10+fd)) then WriteFile(handle, buf, len, NULL, NULL)
-                // Save len (x0) to extra temp
+                // Windows ARM64: GetStdHandle(-(10+fd)) then WriteFile(handle, buf, len, &bw, NULL)
+                // Save len to temp_slot_0 (reuse — fd no longer needed after GetStdHandle)
+                uint64 wr_len_slot = temp_slot_0
+                uint64 wr_handle_slot = temp_slot_1
+                // temp_slot_0 had fd, temp_slot_1 had buf — save them differently
+                // Actually: at this point x0=len, temp_slot_0=fd, temp_slot_1=buf
+                // We need all three. Use var_frame_size for len only.
                 uint64 wr_extra = var_frame_size
                 emit_a64_store_x0(wr_extra)
                 // GetStdHandle: x0 = -(10 + fd)
@@ -892,19 +897,18 @@ fn gen_expr_a64(uint64 node) {
                 emit_a64_mov_imm(9, 10)
                 emit_a64_sub(0, 0, 9)
                 emit_a64_win_call_iat(1)
-                // x0 = handle from GetStdHandle, save to x19
-                emit_a64_mov(19, 0)
+                // Save handle to temp_slot_0 (fd no longer needed)
+                emit_a64_store_x0(temp_slot_0)
                 // WriteFile(handle, buf, len, &bytesWritten, NULL)
-                uint64 bw_slot2 = wr_extra + 8
-                emit_a64_mov_imm(0, 0)
-                emit_a64_store_x0(bw_slot2)
+                // Use wr_extra+8 carefully — but we can just pass NULL for bytesWritten
+                // since we don't need the count from write()
                 emit_a64_mov_imm(4, 0)
-                emit_a64_add_imm(3, 31, a64_var_base + bw_slot2)
+                emit_a64_mov_imm(3, 0)
                 emit_a64_load_x0(wr_extra)
                 emit_a64_mov(2, 0)
                 emit_a64_load_x0(temp_slot_1)
                 emit_a64_mov(1, 0)
-                emit_a64_mov(0, 19)
+                emit_a64_load_x0(temp_slot_0)
                 emit_a64_win_call_iat(2)
             } else {
                 emit_a64_mov(2, 0)
@@ -1028,24 +1032,28 @@ fn gen_expr_a64(uint64 node) {
             gen_expr_a64(wa3)
             if target_os == 2 {
                 // Windows ARM64: ReadFile(handle, buf, len, &bytesRead, NULL)
+                // Slots: temp_slot_0=handle, temp_slot_1=buf, x0=len
+                // Use temp_slot_1 for bytesRead output (reuse after buf is in x1)
                 uint64 rd_extra = var_frame_size
-                emit_a64_store_x0(rd_extra)
-                uint64 br_slot_a64 = rd_extra + 8
-                // Zero bytesRead slot
+                emit_a64_store_x0(rd_extra)       // save len
+                // Load buf into x1 first (before we reuse temp_slot_1)
+                emit_a64_load_x0(temp_slot_1)
+                emit_a64_mov(1, 0)                 // x1 = buf
+                // Zero temp_slot_1 for bytesRead output (buf is safe in x1)
                 emit_a64_mov_imm(0, 0)
-                emit_a64_store_x0(br_slot_a64)
-                // Set up args: x4=NULL, x3=&bytesRead, x2=len, x1=buf, x0=handle
-                emit_a64_mov_imm(4, 0)
-                // add x3, sp, #(a64_var_base + br_slot_a64) — pointer to bytesRead
-                emit_a64_add_imm(3, 31, a64_var_base + br_slot_a64)
+                emit_a64_store_x0(temp_slot_1)
+                // x3 = &bytesRead (points to temp_slot_1 in our frame)
+                emit_a64_add_imm(3, 31, a64_var_base + temp_slot_1)
+                // x2 = len
                 emit_a64_load_x0(rd_extra)
                 emit_a64_mov(2, 0)
-                emit_a64_load_x0(temp_slot_1)
-                emit_a64_mov(1, 0)
+                // x4 = NULL (lpOverlapped)
+                emit_a64_mov_imm(4, 0)
+                // x0 = handle
                 emit_a64_load_x0(temp_slot_0)
                 emit_a64_win_call_iat(4)
-                // Load bytesRead (not the BOOL return)
-                emit_a64_load_x0(br_slot_a64)
+                // Load bytesRead from temp_slot_1
+                emit_a64_load_x0(temp_slot_1)
             } else {
                 emit_a64_mov(2, 0)
                 emit_a64_load_x0(temp_slot_1)
@@ -1071,14 +1079,11 @@ fn gen_expr_a64(uint64 node) {
             uint64 wa3 = arg3
             gen_expr_a64(wa3)
             if target_os == 2 {
-                // Windows ARM64: WriteFile(handle, buf, len, &bytesWritten, NULL)
+                // Windows ARM64: WriteFile(handle, buf, len, NULL, NULL)
                 uint64 fw_extra = var_frame_size
                 emit_a64_store_x0(fw_extra)
-                uint64 bw_slot = fw_extra + 8
-                emit_a64_mov_imm(0, 0)
-                emit_a64_store_x0(bw_slot)
                 emit_a64_mov_imm(4, 0)
-                emit_a64_add_imm(3, 31, a64_var_base + bw_slot)
+                emit_a64_mov_imm(3, 0)
                 emit_a64_load_x0(fw_extra)
                 emit_a64_mov(2, 0)
                 emit_a64_load_x0(temp_slot_1)
