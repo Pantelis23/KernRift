@@ -419,8 +419,25 @@ jobs:
           $r_hello = Start-Process -FilePath bins\win-arm-hello.exe -Wait -PassThru -NoNewWindow -RedirectStandardOutput hello_out.txt
           Write-Host "hello exit=$($r_hello.ExitCode)"
           if (Test-Path hello_out.txt) { Write-Host "hello: $(Get-Content hello_out.txt -Raw)" }
+          # Test increasingly complex programs
+          Set-Content -Path t1.kr -Value 'fn main() { exit(42) }'
+          Set-Content -Path t2.kr -Value 'fn add(uint64 a, uint64 b) -> uint64 { return a + b }
+          fn main() { uint64 r = add(30, 12); exit(r) }'
+          Set-Content -Path t3.kr -Value 'static uint64 counter = 0
+          fn inc() { counter = counter + 1 }
+          fn main() { inc(); inc(); inc(); exit(counter) }'
+          foreach ($t in @('t1',42),@('t2',42),@('t3',3)) {
+            $name = $t[0]; $expect = $t[1]
+            $rc = Start-Process -FilePath bins\krc-win-arm64.exe -ArgumentList '--emit=pe',"$name.kr",'-o',"$name.exe" -Wait -PassThru -NoNewWindow -RedirectStandardOutput "$name.out" -RedirectStandardError "$name.err"
+            $out = if (Test-Path "$name.out") { Get-Content "$name.out" -Raw } else { "" }
+            $err = if (Test-Path "$name.err") { Get-Content "$name.err" -Raw } else { "" }
+            Write-Host "compile $name exit=$($rc.ExitCode) out=[$out] err=[$err]"
+            if ($rc.ExitCode -eq 0 -and (Test-Path "$name.exe")) {
+              $rr = Start-Process -FilePath ".\$name.exe" -Wait -PassThru -NoNewWindow
+              Write-Host "run $name exit=$($rr.ExitCode) (expect $expect)"
+            }
+          }
           Set-Content -Path test.kr -Value 'fn main() { exit(42) }'
-          # Run compiler with timeout to detect hang vs crash
           $p = Start-Process -FilePath bins\krc-win-arm64.exe -ArgumentList '--emit=pe','test.kr','-o','test-arm64.exe' -PassThru -NoNewWindow -RedirectStandardOutput comp_out.txt -RedirectStandardError comp_err.txt
           $exited = $p.WaitForExit(15000)
           if ($exited) {
