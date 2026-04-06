@@ -412,12 +412,22 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
-          Set-Content -Path test.kr -Value 'fn main() { exit(42) }'
           Write-Host "Binary size: $((Get-Item bins\krc-win-arm64.exe).Length)"
+          # Test 1: run with no args (should print usage/error, not crash)
+          $r_noargs = Start-Process -FilePath bins\krc-win-arm64.exe -Wait -PassThru -NoNewWindow -RedirectStandardError noargs_err.txt -RedirectStandardOutput noargs_out.txt
+          Write-Host "no-args exit: $($r_noargs.ExitCode)"
+          if (Test-Path noargs_out.txt) { Write-Host "no-args stdout: $(Get-Content noargs_out.txt -Raw)" }
+          if (Test-Path noargs_err.txt) { Write-Host "no-args stderr: $(Get-Content noargs_err.txt -Raw)" }
+          # Test 2: run with a nonexistent file
+          $r_bad = Start-Process -FilePath bins\krc-win-arm64.exe -ArgumentList 'nonexistent.kr' -Wait -PassThru -NoNewWindow -RedirectStandardError bad_err.txt -RedirectStandardOutput bad_out.txt
+          Write-Host "bad-file exit: $($r_bad.ExitCode)"
+          if (Test-Path bad_err.txt) { Write-Host "bad-file stderr: $(Get-Content bad_err.txt -Raw)" }
+          # Test 3: actual compile
+          Set-Content -Path test.kr -Value 'fn main() { exit(42) }'
           $r0 = Start-Process -FilePath bins\krc-win-arm64.exe -ArgumentList '--emit=pe','test.kr','-o','test-arm64.exe' -Wait -PassThru -NoNewWindow -RedirectStandardError err.txt -RedirectStandardOutput out.txt
           Write-Host "compile exit: $($r0.ExitCode)"
-          if (Test-Path out.txt) { Write-Host "stdout: $(Get-Content out.txt)" }
-          if (Test-Path err.txt) { Write-Host "stderr: $(Get-Content err.txt)" }
+          if (Test-Path out.txt) { Write-Host "stdout: $(Get-Content out.txt -Raw)" }
+          if (Test-Path err.txt) { Write-Host "stderr: $(Get-Content err.txt -Raw)" }
           if ($r0.ExitCode -ne 0) { Write-Host "FAIL: ARM64 compile"; exit 1 }
           $r2 = Start-Process -FilePath .\test-arm64.exe -Wait -PassThru -NoNewWindow
           Write-Host "run exit: $($r2.ExitCode)"
