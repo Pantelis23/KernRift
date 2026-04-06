@@ -148,17 +148,20 @@ jobs:
         run: |
           echo "=== macOS diagnostics ==="
           sw_vers
-          echo "---"
-          # Debug first binary
+          # Build a reference binary with clang
+          echo 'int main() { return 42; }' > /tmp/ref.c
+          clang -o /tmp/ref_arm64 /tmp/ref.c -arch arm64 -Wl,-no_pie 2>&1 || true
+          echo "--- reference binary headers ---"
+          otool -l /tmp/ref_arm64 2>&1 | grep -A3 "cmd LC_\|segname\|maxprot\|initprot" | head -30
+          echo "--- our binary headers ---"
           chmod +x bins/macos-arm-exit42
-          echo "--- file ---"
-          file bins/macos-arm-exit42
-          echo "--- otool -l (load commands) ---"
-          otool -l bins/macos-arm-exit42 2>&1 | head -60
+          otool -l bins/macos-arm-exit42 2>&1 | grep -A3 "cmd LC_\|segname\|maxprot\|initprot" | head -40
           echo "--- codesign attempt ---"
           codesign -s - bins/macos-arm-exit42 2>&1 || echo "codesign FAILED: $?"
           echo "--- codesign verify ---"
           codesign -v bins/macos-arm-exit42 2>&1 || echo "verify FAILED"
+          echo "--- spctl assess ---"
+          spctl --assess bins/macos-arm-exit42 2>&1 || echo "spctl FAILED"
           echo "--- run ---"
           set +e; bins/macos-arm-exit42; echo "exit: $?"; set -e
           echo "=== end diagnostics ==="
