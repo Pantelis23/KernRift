@@ -957,23 +957,27 @@ fn gen_expr_a64(uint64 node) {
             uint64 wa2 = arg2
             gen_expr_a64(wa2)
             if target_os == 2 {
-                // Windows ARM64: CreateFileA(path, access, share, NULL, disposition, flags, NULL)
-                // x0 = flags argument
+                // Windows ARM64: CreateFileA(path, access, share, NULL, disposition, attrs, NULL)
+                // x0 = flags (0=read, 1=write)
                 emit_a64_store_x0(temp_slot_1)
-                // CreateFileA args: x0=path, x1=access, x2=share, x3=NULL, x4=disposition, x5=flags, x6=NULL
+                // x0 = path
                 emit_a64_load_x0(temp_slot_0)
-                // x1 = GENERIC_READ (0x80000000) by default
-                emit_a64_mov_imm(1, 0x80000000)
-                // x2 = FILE_SHARE_READ = 1
-                emit_a64_mov_imm(2, 1)
+                // x1 = GENERIC_READ|GENERIC_WRITE = 0xC0000000
+                emit_a64_mov_imm(1, 0xC0000000)
+                // x2 = FILE_SHARE_READ|FILE_SHARE_WRITE = 3
+                emit_a64_mov_imm(2, 3)
                 // x3 = NULL (security)
                 emit_a64_mov_imm(3, 0)
-                // x4 = OPEN_EXISTING = 3
-                emit_a64_mov_imm(4, 3)
+                // x4 = disposition: 3-flags (read=3=OPEN_EXISTING, write=2=CREATE_ALWAYS)
+                emit_a64_load_x0(temp_slot_1)
+                emit_a64_neg(0, 0)
+                emit_a64_add_imm(4, 0, 3)
                 // x5 = FILE_ATTRIBUTE_NORMAL = 0x80
                 emit_a64_mov_imm(5, 0x80)
                 // x6 = NULL (template)
                 emit_a64_mov_imm(6, 0)
+                // x0 = path (reload — was clobbered by disposition calc)
+                emit_a64_load_x0(temp_slot_0)
                 emit_a64_win_call_iat(3)
             } else if target_os == 1 {
                 // macOS ARM64: open(path, flags, mode) — no AT_FDCWD
