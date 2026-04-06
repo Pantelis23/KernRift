@@ -442,7 +442,8 @@ jobs:
           base = 0
           evt = DEBUG_EVENT()
           for _ in range(200):
-              if not k32.WaitForDebugEvent(ctypes.byref(evt), 30000): print('timeout'); break
+              if not k32.WaitForDebugEvent(ctypes.byref(evt), 60000): print('timeout'); break
+              print(f'evt={evt.code}', end=' ')
               if evt.code == CREATE_PROCESS_DEBUG_EVENT:
                   base = struct.unpack_from('<Q', evt.u, 24)[0]
                   print(f'Base: 0x{base:X}')
