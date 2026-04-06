@@ -50,9 +50,9 @@ curl -sL -o "$INSTALL_DIR/kr" "$BASE/kr"
 chmod +x "$INSTALL_DIR/kr"
 
 # Download standard library
-STD_DIR="/usr/local/share/kernrift/std"
+STD_DIR="$HOME/.local/share/kernrift/std"
 echo "Installing standard library..."
-sudo mkdir -p "$STD_DIR" 2>/dev/null || mkdir -p "$HOME/.local/share/kernrift/std" && STD_DIR="$HOME/.local/share/kernrift/std"
+mkdir -p "$STD_DIR"
 for mod in string io math fmt mem vec map; do
     curl -sL -o "$STD_DIR/$mod.kr" \
         "https://raw.githubusercontent.com/Pantelis23/KernRift/main/std/$mod.kr"
