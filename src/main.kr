@@ -556,6 +556,16 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
     parser_init(my_tokens, tcount)
     uint64 root = parse_module()
 
+    // Semantic validation: check arg counts, missing returns, duplicate functions
+    uint64 sema_errs = run_semantic_checks(root, source, my_tokens)
+    if sema_errs != 0 {
+        uint8[24] ebuf
+        uint64 elen = fmt_uint(ebuf, sema_errs)
+        write(2, ebuf, elen)
+        write(2, " error(s) found\n", 16)
+        exit(1)
+    }
+
     // Dead code elimination: scan AST for reachable functions
     dce_init()
     dce_scan(root)
@@ -860,6 +870,16 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     codegen_init(4194304, source, my_tokens)
     parser_init(my_tokens, saved_tcount)
     uint64 root = parse_module()
+
+    // Semantic validation: check arg counts, missing returns, duplicate functions
+    uint64 sema_errs = run_semantic_checks(root, source, my_tokens)
+    if sema_errs != 0 {
+        uint8[24] ebuf2
+        uint64 elen2 = fmt_uint(ebuf2, sema_errs)
+        write(2, ebuf2, elen2)
+        write(2, " error(s) found\n", 16)
+        exit(1)
+    }
 
     // Dead code elimination
     dce_init()
