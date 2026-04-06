@@ -46,13 +46,22 @@ jobs:
           fn inc() { c = c + 1 }
           fn main() { inc(); inc(); inc(); exit(c) }' > /tmp/static.kr
 
+          # alloc test
+          echo 'fn main() {
+              uint64 buf = alloc(64)
+              unsafe { *(buf as uint64) = 42 }
+              uint64 v = 0
+              unsafe { *(buf as uint64) -> v }
+              exit(v)
+          }' > /tmp/alloc_test.kr
+
           # macOS x86_64
-          for t in exit42 hello fib add static; do
+          for t in exit42 hello fib add static alloc_test; do
             ./build/krc2 --arch=x86_64 --emit=macho /tmp/$t.kr -o /tmp/test-bins/macos-x64-$t
           done
 
           # macOS ARM64
-          for t in exit42 hello fib add static; do
+          for t in exit42 hello fib add static alloc_test; do
             ./build/krc2 --arch=arm64 --emit=macho /tmp/$t.kr -o /tmp/test-bins/macos-arm-$t
           done
 
@@ -140,7 +149,10 @@ jobs:
           chmod +x bins/krc-macos-x64
           ls -la bins/krc-macos-x64
           echo "pwd: $(pwd)"
-          echo "--- compile ---"
+          echo '--- test alloc ---'
+          chmod +x bins/macos-x64-alloc_test
+          ./bins/macos-x64-alloc_test; echo "alloc_test: $?"
+          echo '--- compile ---'
           echo 'fn main() { println("macOS self-compiled!"); exit(42) }' > test.kr
           cat test.kr
           ls -la test.kr
