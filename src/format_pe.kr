@@ -325,7 +325,7 @@ fn emit_pe_headers_a64(uint64 code_size) -> uint64 {
     emit_u16_le(6); emit_u16_le(0); emit_u16_le(0); emit_u16_le(0)
     emit_u16_le(6); emit_u16_le(0); emit_u32_le(0)
     emit_u32_le(0x3000); emit_u32_le(0x200); emit_u32_le(0)
-    emit_u16_le(3); emit_u16_le(0x8160)  // DYNAMIC_BASE + NX_COMPAT + HIGH_ENTROPY_VA
+    emit_u16_le(3); emit_u16_le(0x8100)  // NX_COMPAT + TERMINAL_SERVER_AWARE (no DYNAMIC_BASE — statics use absolute addresses)
     emit_u64_le(0x800000); emit_u64_le(0x800000)  // StackReserve=8MB, StackCommit=8MB
     emit_u64_le(0x100000); emit_u64_le(0x1000)
     emit_u32_le(0); emit_u32_le(16)
