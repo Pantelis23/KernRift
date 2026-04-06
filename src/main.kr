@@ -91,6 +91,8 @@ static uint64 imp_buf_len = 0
 static uint64 imp_buf_cap = 0
 static uint64 imp_seen = 0
 static uint64 imp_seen_count = 0
+static uint64 srcmap_table = 0
+static uint64 srcmap_count = 0
 
 fn imp_init() {
     imp_buf_cap = 4194304
@@ -98,6 +100,8 @@ fn imp_init() {
     imp_buf_len = 0
     imp_seen = alloc(16384)
     imp_seen_count = 0
+    srcmap_table = alloc(256 * 16)
+    srcmap_count = 0
 }
 
 fn imp_is_seen(uint64 path) -> uint64 {
@@ -133,7 +137,13 @@ fn imp_mark_seen(uint64 path) {
     imp_seen_count = imp_seen_count + 1
 }
 
-fn imp_append(uint64 src, uint64 len) {
+fn imp_append(uint64 src, uint64 len, uint64 file_path) {
+    uint64 sm_entry = srcmap_table + srcmap_count * 16
+    uint64 sm_off = imp_buf_len
+    unsafe { *(sm_entry as uint64) = sm_off }
+    uint64 sm_fp = sm_entry + 8
+    unsafe { *(sm_fp as uint64) = file_path }
+    srcmap_count = srcmap_count + 1
     uint64 i = 0
     while i < len {
         uint64 sp = src + i
@@ -150,6 +160,62 @@ fn imp_append(uint64 src, uint64 len) {
     uint8 nl = 10
     unsafe { *(np as uint8) = nl }
     imp_buf_len = imp_buf_len + 1
+}
+
+@export
+fn srcmap_file(uint64 byte_offset) -> uint64 {
+    uint64 file_path = 0
+    uint64 i = 0
+    while i < srcmap_count {
+        uint64 entry = srcmap_table + i * 16
+        uint64 entry_off = 0
+        unsafe { *(entry as uint64) -> entry_off }
+        if entry_off > byte_offset { break }
+        uint64 fp_ptr = entry + 8
+        unsafe { *(fp_ptr as uint64) -> file_path }
+        i = i + 1
+    }
+    return file_path
+}
+
+@export
+fn srcmap_line(uint64 byte_offset) -> uint64 {
+    uint64 file_start = 0
+    uint64 i = 0
+    while i < srcmap_count {
+        uint64 entry = srcmap_table + i * 16
+        uint64 entry_off = 0
+        unsafe { *(entry as uint64) -> entry_off }
+        if entry_off > byte_offset { break }
+        file_start = entry_off
+        i = i + 1
+    }
+    uint64 line = 1
+    uint64 p = file_start
+    while p < byte_offset {
+        uint64 cp = imp_buf + p
+        uint64 ch = 0
+        unsafe { *(cp as uint8) -> ch }
+        if ch == 10 { line = line + 1 }
+        p = p + 1
+    }
+    return line
+}
+
+@export
+fn report_error_at(uint64 tok_idx, uint64 msg) {
+    uint64 tok_start = tok_text_start(tok_idx)
+    uint64 file_path = srcmap_file(tok_start)
+    if file_path != 0 {
+        write(2, file_path, str_len(file_path))
+    }
+    write(2, ":", 1)
+    uint8[24] lbuf
+    uint64 llen = fmt_uint(lbuf, srcmap_line(tok_start))
+    write(2, lbuf, llen)
+    write(2, ": error: ", 9)
+    write(2, msg, str_len(msg))
+    write(2, "\n", 1)
 }
 
 fn imp_dir_of(uint64 path) -> uint64 {
@@ -468,7 +534,7 @@ fn imp_process(uint64 file_path) {
     }
 
     // Append entire file content (including import lines — parser ignores them)
-    imp_append(tmp, size)
+    imp_append(tmp, size, file_path)
 }
 
 // arch: 0=x86_64, 1=arm64
