@@ -421,17 +421,22 @@ jobs:
           if (Test-Path hello_out.txt) { Write-Host "hello: $(Get-Content hello_out.txt -Raw)" }
           Set-Content -Path test.kr -Value 'fn main() { exit(42) }'
           # Run compiler with timeout to detect hang vs crash
-          $job = Start-Job -ScriptBlock {
-            & $using:PWD\bins\krc-win-arm64.exe --emit=pe $using:PWD\test.kr -o $using:PWD\test-arm64.exe *> $using:PWD\compile_all.txt
-          }
-          $done = Wait-Job $job -Timeout 15
-          if ($done) {
-            Write-Host "compile exit: $($done.ChildJobs[0].ExitCode)"
+          $p = Start-Process -FilePath bins\krc-win-arm64.exe -ArgumentList '--emit=pe','test.kr','-o','test-arm64.exe' -PassThru -NoNewWindow -RedirectStandardOutput comp_out.txt -RedirectStandardError comp_err.txt
+          $exited = $p.WaitForExit(15000)
+          if ($exited) {
+            Write-Host "compile exit: $($p.ExitCode)"
           } else {
-            Write-Host "TIMEOUT: compiler hung after 15s"
-            Stop-Job $job
+            Write-Host "TIMEOUT: compiler hung (killing)"
+            $p.Kill()
           }
-          if (Test-Path compile_all.txt) { Write-Host "output: $(Get-Content compile_all.txt -Raw)" }
+          if (Test-Path comp_out.txt) { Write-Host "stdout: $(Get-Content comp_out.txt -Raw)" }
+          if (Test-Path comp_err.txt) { Write-Host "stderr: $(Get-Content comp_err.txt -Raw)" }
+          if (Test-Path test-arm64.exe) {
+            Write-Host "output exists: $((Get-Item test-arm64.exe).Length) bytes"
+            $r2 = Start-Process -FilePath .\test-arm64.exe -Wait -PassThru -NoNewWindow
+            if ($r2.ExitCode -eq 42) { Write-Host "PASS: Windows ARM64 self-compilation" }
+            else { Write-Host "FAIL: run exit=$($r2.ExitCode)" }
+          }
           $r2 = Start-Process -FilePath .\test-arm64.exe -Wait -PassThru -NoNewWindow
           Write-Host "run exit: $($r2.ExitCode)"
           if ($r2.ExitCode -eq 42) {
