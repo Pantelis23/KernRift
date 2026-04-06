@@ -420,62 +420,18 @@ jobs:
           Write-Host "hello exit=$($r_hello.ExitCode)"
           if (Test-Path hello_out.txt) { Write-Host "hello: $(Get-Content hello_out.txt -Raw)" }
           Set-Content -Path test.kr -Value 'fn main() { exit(42) }'
-          # Use Python debug harness to catch crash/hang
-          Set-Content -Path debug_crash.py -Value @"
-          import ctypes, struct, subprocess, sys
-          k32 = ctypes.windll.kernel32
-          DEBUG_PROCESS = 1
-          EXCEPTION_DEBUG_EVENT = 1
-          CREATE_PROCESS_DEBUG_EVENT = 3
-          EXIT_PROCESS_DEBUG_EVENT = 5
-          DBG_CONTINUE = 0x10002
-          DBG_EXCEPTION_NOT_HANDLED = 0x80010001
-
-          class STARTUPINFO(ctypes.Structure):
-              _fields_ = [('cb',ctypes.c_ulong)] + [('r'+str(i),ctypes.c_void_p) for i in range(17)]
-          class PROCESS_INFORMATION(ctypes.Structure):
-              _fields_ = [('hProcess',ctypes.c_void_p),('hThread',ctypes.c_void_p),('dwProcessId',ctypes.c_ulong),('dwThreadId',ctypes.c_ulong)]
-          class DEBUG_EVENT(ctypes.Structure):
-              _fields_ = [('code',ctypes.c_ulong),('pid',ctypes.c_ulong),('tid',ctypes.c_ulong),('_pad',ctypes.c_ulong),('u',ctypes.c_byte*160)]
-
-          si = STARTUPINFO()
-          si.cb = ctypes.sizeof(si)
-          pi = PROCESS_INFORMATION()
-          exe = sys.argv[1]
-          args = ' '.join(sys.argv[1:])
-          print(f'Debugging: {args}')
-          ok = k32.CreateProcessW(None, args, None, None, False, DEBUG_PROCESS, None, None, ctypes.byref(si), ctypes.byref(pi))
-          if not ok: print(f'CreateProcess failed: {k32.GetLastError()}'); sys.exit(1)
-          base = 0
-          evt = DEBUG_EVENT()
-          for _ in range(200):
-              if not k32.WaitForDebugEvent(ctypes.byref(evt), 60000): print('timeout'); break
-              print(f'evt={evt.code}', end=' ')
-              if evt.code == CREATE_PROCESS_DEBUG_EVENT:
-                  base = struct.unpack_from('<Q', evt.u, 24)[0]
-                  print(f'Base: 0x{base:X}')
-              elif evt.code == EXCEPTION_DEBUG_EVENT:
-                  exc_code = struct.unpack_from('<I', evt.u, 0)[0]
-                  exc_addr = struct.unpack_from('<Q', evt.u, 16)[0]
-                  first = struct.unpack_from('<I', evt.u, 24)[0]
-                  if exc_code == 0x80000003:
-                      k32.ContinueDebugEvent(evt.pid, evt.tid, DBG_CONTINUE); continue
-                  rva = exc_addr - base if base else 0
-                  rw = struct.unpack_from('<Q', evt.u, 28)[0]
-                  target = struct.unpack_from('<Q', evt.u, 36)[0]
-                  rwname = {0:'READ',1:'WRITE',8:'DEP'}.get(rw,str(rw))
-                  print(f'EXCEPTION 0x{exc_code:08X} at 0x{exc_addr:X} (RVA 0x{rva:X}) {rwname} 0x{target:X} first={first}')
-                  if not first:
-                      k32.ContinueDebugEvent(evt.pid, evt.tid, DBG_EXCEPTION_NOT_HANDLED); break
-                  k32.ContinueDebugEvent(evt.pid, evt.tid, DBG_EXCEPTION_NOT_HANDLED)
-              elif evt.code == EXIT_PROCESS_DEBUG_EVENT:
-                  print('Process exited normally'); k32.ContinueDebugEvent(evt.pid, evt.tid, DBG_CONTINUE); break
-              else:
-                  if evt.code not in (6,7,8): print(f'Event: {evt.code}')
-                  k32.ContinueDebugEvent(evt.pid, evt.tid, DBG_CONTINUE)
-          k32.TerminateProcess(pi.hProcess, 1)
-          "@
-          python3 debug_crash.py bins\krc-win-arm64.exe --emit=pe test.kr -o test-arm64.exe
+          # Run compiler with timeout to detect hang vs crash
+          $job = Start-Job -ScriptBlock {
+            & $using:PWD\bins\krc-win-arm64.exe --emit=pe $using:PWD\test.kr -o $using:PWD\test-arm64.exe *> $using:PWD\compile_all.txt
+          }
+          $done = Wait-Job $job -Timeout 15
+          if ($done) {
+            Write-Host "compile exit: $($done.ChildJobs[0].ExitCode)"
+          } else {
+            Write-Host "TIMEOUT: compiler hung after 15s"
+            Stop-Job $job
+          }
+          if (Test-Path compile_all.txt) { Write-Host "output: $(Get-Content compile_all.txt -Raw)" }
           $r2 = Start-Process -FilePath .\test-arm64.exe -Wait -PassThru -NoNewWindow
           Write-Host "run exit: $($r2.ExitCode)"
           if ($r2.ExitCode -eq 42) {
