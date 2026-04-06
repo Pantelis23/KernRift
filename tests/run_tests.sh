@@ -747,6 +747,61 @@ fn main() {
     exit(0)
 }' 42
 
+# --- Error detection tests ---
+echo ""
+echo "--- Error detection tests ---"
+
+# Wrong argument count
+TOTAL=$((TOTAL + 1))
+printf 'fn add(uint64 a, uint64 b) -> uint64 { return a + b }\nfn main() { exit(add(1, 2, 3)) }\n' > /tmp/krc_err_$$.kr
+if $KRC /tmp/krc_err_$$.kr -o /tmp/krc_err_$$ 2>/tmp/krc_stderr_$$ ; then
+    echo "FAIL: wrong_arg_count (should not compile)"
+    FAIL=$((FAIL + 1))
+else
+    if grep -q "wrong number of arguments" /tmp/krc_stderr_$$; then
+        PASS=$((PASS + 1))
+        echo "  wrong_arg_count: PASS (error detected)"
+    else
+        echo "FAIL: wrong_arg_count (wrong error)"
+        FAIL=$((FAIL + 1))
+    fi
+fi
+rm -f /tmp/krc_err_$$.kr /tmp/krc_err_$$ /tmp/krc_stderr_$$
+
+# Missing return in non-void function
+TOTAL=$((TOTAL + 1))
+printf 'fn get_val() -> uint64 { uint64 x = 42 }\nfn main() { exit(get_val()) }\n' > /tmp/krc_err_$$.kr
+if $KRC /tmp/krc_err_$$.kr -o /tmp/krc_err_$$ 2>/tmp/krc_stderr_$$ ; then
+    echo "FAIL: missing_return (should not compile)"
+    FAIL=$((FAIL + 1))
+else
+    if grep -q "may not return" /tmp/krc_stderr_$$; then
+        PASS=$((PASS + 1))
+        echo "  missing_return: PASS (error detected)"
+    else
+        echo "FAIL: missing_return (wrong error)"
+        FAIL=$((FAIL + 1))
+    fi
+fi
+rm -f /tmp/krc_err_$$.kr /tmp/krc_err_$$ /tmp/krc_stderr_$$
+
+# Duplicate function definition
+TOTAL=$((TOTAL + 1))
+printf 'fn foo() { exit(1) }\nfn foo() { exit(2) }\nfn main() { foo() }\n' > /tmp/krc_err_$$.kr
+if $KRC /tmp/krc_err_$$.kr -o /tmp/krc_err_$$ 2>/tmp/krc_stderr_$$ ; then
+    echo "FAIL: duplicate_fn (should not compile)"
+    FAIL=$((FAIL + 1))
+else
+    if grep -q "redefinition" /tmp/krc_stderr_$$; then
+        PASS=$((PASS + 1))
+        echo "  duplicate_fn: PASS (error detected)"
+    else
+        echo "FAIL: duplicate_fn (wrong error)"
+        FAIL=$((FAIL + 1))
+    fi
+fi
+rm -f /tmp/krc_err_$$.kr /tmp/krc_err_$$ /tmp/krc_stderr_$$
+
 # --- Bootstrap test ---
 echo ""
 echo "--- Bootstrap test ---"
