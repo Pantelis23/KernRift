@@ -422,7 +422,13 @@ jobs:
           $r_bad = Start-Process -FilePath bins\krc-win-arm64.exe -ArgumentList 'nonexistent.kr' -Wait -PassThru -NoNewWindow -RedirectStandardError bad_err.txt -RedirectStandardOutput bad_out.txt
           Write-Host "bad-file exit: $($r_bad.ExitCode)"
           if (Test-Path bad_err.txt) { Write-Host "bad-file stderr: $(Get-Content bad_err.txt -Raw)" }
-          # Test 3: actual compile
+          # Test 3: minimal program (no builtins)
+          Set-Content -Path test.kr -Value 'fn main() { }'
+          $r_min = Start-Process -FilePath bins\krc-win-arm64.exe -ArgumentList '--emit=pe','test.kr','-o','test-min.exe' -Wait -PassThru -NoNewWindow -RedirectStandardError min_err.txt -RedirectStandardOutput min_out.txt
+          Write-Host "minimal exit: $($r_min.ExitCode)"
+          if (Test-Path min_out.txt) { Write-Host "minimal stdout: $(Get-Content min_out.txt -Raw)" }
+          if (Test-Path min_err.txt) { Write-Host "minimal stderr: $(Get-Content min_err.txt -Raw)" }
+          # Test 4: actual compile
           Set-Content -Path test.kr -Value 'fn main() { exit(42) }'
           $r0 = Start-Process -FilePath bins\krc-win-arm64.exe -ArgumentList '--emit=pe','test.kr','-o','test-arm64.exe' -Wait -PassThru -NoNewWindow -RedirectStandardError err.txt -RedirectStandardOutput out.txt
           Write-Host "compile exit: $($r0.ExitCode)"
