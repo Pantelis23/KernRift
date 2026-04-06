@@ -1118,31 +1118,19 @@ fn gen_expr_a64(uint64 node) {
             uint64 wfa = first_arg
             gen_expr_a64(wfa)
             if target_os == 2 {
-                // Windows ARM64: SetFilePointerEx(handle, 0, &newPos, FILE_END=2)
-                // then SetFilePointerEx(handle, 0, NULL, FILE_BEGIN=0)
-                // Save handle in x19 (callee-saved)
-                emit_a64_mov(19, 0)
-                // Allocate 8 bytes on stack for output (use extra temp area)
-                // sub sp, sp, #16  (keep 16-byte aligned)
-                emit_a64_sub_sp_imm(16)
-                // SetFilePointerEx(handle, distance=0, lpNewPos=sp, dwMoveMethod=FILE_END=2)
-                emit_a64_mov(0, 19)
-                emit_a64_mov_imm(1, 0)
-                emit_a64_mov(2, 31)
-                emit_a64_mov_imm(3, 2)
+                // Windows ARM64: GetFileSizeEx(handle, &size)
+                // Use temp_slot_1 as the output buffer (in our frame, no SP manipulation)
+                emit_a64_store_x0(temp_slot_0)
+                // Zero temp_slot_1 first
+                emit_a64_mov_imm(0, 0)
+                emit_a64_store_x0(temp_slot_1)
+                // x0 = handle
+                emit_a64_load_x0(temp_slot_0)
+                // x1 = &temp_slot_1 (pointer to output in our frame)
+                emit_a64_add_imm(1, 31, a64_var_base + temp_slot_1)
                 emit_a64_win_call_iat(8)
-                // Read size from [sp]
-                emit_a64_ldr(20, 31, 0)
-                // Rewind: SetFilePointerEx(handle, 0, NULL, FILE_BEGIN=0)
-                emit_a64_mov(0, 19)
-                emit_a64_mov_imm(1, 0)
-                emit_a64_mov_imm(2, 0)
-                emit_a64_mov_imm(3, 0)
-                emit_a64_win_call_iat(8)
-                // Restore stack
-                emit_a64_add_sp_imm(16)
-                // Result in x0
-                emit_a64_mov(0, 20)
+                // Load size from temp_slot_1
+                emit_a64_load_x0(temp_slot_1)
             } else {
                 emit_a64_mov(19, 0)
                 emit_a64_mov_imm(1, 0)
