@@ -2497,7 +2497,8 @@ fn gen_function_a64(uint64 fn_node) {
             emit_a64_static_store(argc_off_w)
         }
     }
-    if tok_matches(wnt_a64, "main", 4) != 0 && target_os == 0 && freestanding == 0 {
+    if tok_matches(wnt_a64, "main", 4) != 0 && target_os != 2 && freestanding == 0 {
+        // Linux + macOS: argc/argv on stack. [SP]=argc, [SP+8]=&argv[0]
         // ldr x0, [sp]        ; x0 = argc
         emit_a64_ldr(0, 31, 0)
         // Store to cli_argc static

@@ -3975,7 +3975,8 @@ fn gen_function(uint64 fn_node) {
         // RSP is still ≡ 8 mod 16 (same as after a CALL), so the normal
         // function prologue (push rbx + sub rsp,frame) works correctly.
     }
-    if tok_matches(wnt, "main", 4) != 0 && target_os == 0 && freestanding == 0 {
+    if tok_matches(wnt, "main", 4) != 0 && target_os != 2 && freestanding == 0 {
+        // Linux + macOS: argc/argv on stack. [RSP]=argc, [RSP+8]=&argv[0]
         // mov rax, [rsp]       ; rax = argc
         emit_byte(0x48); emit_byte(0x8B); emit_byte(0x04); emit_byte(0x24)
         // Store to cli_argc static
