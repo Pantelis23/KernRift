@@ -76,7 +76,7 @@ fn emit_macho_headers_a64(uint64 code_size) -> uint64 {
     emit_u32_le(0x00000002)       // MH_EXECUTE
     emit_u32_le(5)                // ncmds: PAGEZERO + TEXT + DATA + LINKEDIT + UNIXTHREAD
     emit_u32_le(576)              // sizeofcmds = 72*4 + 288
-    emit_u32_le(0x00200001)       // flags: MH_NOUNDEFS|MH_PIE
+    emit_u32_le(0x00000001)       // flags: MH_NOUNDEFS (no MH_PIE — LC_UNIXTHREAD uses absolute PC)
     emit_u32_le(0)
 
     // __PAGEZERO (72 bytes, offset 32)
