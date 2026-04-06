@@ -775,7 +775,7 @@ fn fn_lookup(uint64 name_tok) -> uint64 {
 
 // emit: mov rax, imm64
 fn emit_mov_rax_imm(uint64 val) {
-    reg_cache_invalidate_all()
+    rax_invalidate()
     if val == 0 {
         // xor eax, eax (2 bytes, zero-extends to rax)
         emit_byte(0x31)
@@ -795,19 +795,12 @@ fn emit_mov_rax_imm(uint64 val) {
 }
 
 // emit: mov [rsp+off], rax
-// Register cache: tracks if rax/r11 already hold a stack slot value
+// Register cache: tracks if rax already holds a stack slot value
 // rax_cache = 0 means not cached, rax_cache = offset+1 means rax holds [rsp+offset]
-// r11_cache = 0 means not cached, r11_cache = offset+1 means r11 holds [rsp+offset]
 static uint64 rax_cache = 0
-static uint64 r11_cache = 0
-
-fn reg_cache_invalidate_all() {
-    rax_cache = 0
-    r11_cache = 0
-}
 
 fn rax_invalidate() {
-    reg_cache_invalidate_all()
+    rax_cache = 0
 }
 
 fn emit_store_rax_to_stack(uint64 offset) {
@@ -828,35 +821,12 @@ fn emit_store_rax_to_stack(uint64 offset) {
     }
     // After store, rax still holds the value for this offset
     rax_cache = offset + 1
-    // If r11 was caching this same slot, invalidate it (stale)
-    if r11_cache == offset + 1 { r11_cache = 0 }
 }
 
 // emit: mov rax, [rsp+off] — skipped if rax already holds this value
-// Uses R11 as secondary cache: promotes RAX→R11 before overwriting, restores R11→RAX on hit
 fn emit_load_rax_from_stack(uint64 offset) {
-    // Already in RAX? Skip entirely
+    // Check cache: if rax already holds [rsp+offset], skip the load
     if rax_cache == offset + 1 { return }
-    // In R11? Move R11→RAX instead of loading from stack
-    if r11_cache == offset + 1 {
-        // mov rax, r11 (4C 89 D8)
-        emit_byte(0x4C)
-        emit_byte(0x89)
-        emit_byte(0xD8)
-        rax_cache = offset + 1
-        return
-    }
-    // Promote current RAX value to R11 before overwriting (if RAX cached and R11 free)
-    if rax_cache != 0 {
-        if r11_cache == 0 {
-            // mov r11, rax (49 89 C3)
-            emit_byte(0x49)
-            emit_byte(0x89)
-            emit_byte(0xC3)
-            r11_cache = rax_cache
-        }
-    }
-    // Load from stack
     emit_byte(0x48)
     emit_byte(0x8B)
     if offset == 0 {
@@ -877,7 +847,7 @@ fn emit_load_rax_from_stack(uint64 offset) {
 
 // emit: push rax
 fn emit_push_rax() {
-    reg_cache_invalidate_all()
+    rax_invalidate()
     emit_byte(0x50)
 }
 
@@ -888,7 +858,7 @@ fn emit_pop_rcx() {
 
 // emit: add rax, rcx
 fn emit_add_rax_rcx() {
-    reg_cache_invalidate_all()
+    rax_invalidate()
     emit_byte(0x48)
     emit_byte(0x01)
     emit_byte(0xC8)
@@ -896,7 +866,7 @@ fn emit_add_rax_rcx() {
 
 // emit: sub rax, rcx  (rax = rax - rcx)
 fn emit_sub_rax_rcx() {
-    reg_cache_invalidate_all()
+    rax_invalidate()
     emit_byte(0x48)
     emit_byte(0x29)
     emit_byte(0xC8)
@@ -904,7 +874,7 @@ fn emit_sub_rax_rcx() {
 
 // emit: imul rax, rcx
 fn emit_mul_rax_rcx() {
-    reg_cache_invalidate_all()
+    rax_invalidate()
     emit_byte(0x48)
     emit_byte(0x0F)
     emit_byte(0xAF)
@@ -991,7 +961,7 @@ fn emit_mov_r9_imm(uint64 val) {
 // call qword [rip + disp32] — IAT indirect call
 // All 13 entries are loader-resolved; slot 0-12 maps directly to IAT[0..12]
 fn emit_win_call_iat(uint64 slot) {
-    reg_cache_invalidate_all()
+    rax_invalidate()
     emit_byte(0xFF)
     emit_byte(0x15)
     uint64 patch_off = out_len
@@ -1060,7 +1030,7 @@ fn emit_lea_rcx_str(uint64 str_offset) {
 
 // neg rax
 fn emit_neg_rax() {
-    reg_cache_invalidate_all()
+    rax_invalidate()
     emit_byte(0x48)
     emit_byte(0xF7)
     emit_byte(0xD8)
@@ -1068,7 +1038,7 @@ fn emit_neg_rax() {
 
 // sub rax, imm8
 fn emit_sub_rax_imm8(uint64 val) {
-    reg_cache_invalidate_all()
+    rax_invalidate()
     emit_byte(0x48)
     emit_byte(0x83)
     emit_byte(0xE8)
@@ -1118,7 +1088,7 @@ fn resolve_win_iat_fixups(uint64 text_start, uint64 iat_rva) {
 
 // emit: cmp rcx, rax + setCC al + movzx eax, al
 fn emit_compare(uint64 op_tok_kind) {
-    reg_cache_invalidate_all()
+    rax_invalidate()
     // cmp rax, rcx  (computes rax - rcx, sets flags for lhs vs rhs)
     emit_byte(0x48)
     emit_byte(0x39)
@@ -1149,7 +1119,7 @@ fn emit_compare(uint64 op_tok_kind) {
 @export
 fn gen_expr(uint64 node) {
     // Invalidate rax cache — gen_expr will put a new value in rax
-    reg_cache_invalidate_all()
+    rax_invalidate()
     uint32 kind = ast_kind(node)
 
     // Unary operator: !, -, ~
@@ -2686,7 +2656,7 @@ fn gen_expr(uint64 node) {
 
         // call_ptr(fn_ptr, args...) — indirect call through function pointer
         if tok_matches(wct, "call_ptr", 8) != 0 {
-            reg_cache_invalidate_all()
+            rax_invalidate()
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
 
