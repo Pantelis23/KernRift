@@ -160,16 +160,26 @@ fn emit_a64_ldp_post(uint64 rt1, uint64 rt2, uint64 rn, uint64 offset) {
     emit_a64(insn)
 }
 
-// SUB SP, SP, #imm12
+// SUB SP, SP, #imm (large-frame safe)
 fn emit_a64_sub_sp_imm(uint64 imm) {
-    uint64 insn = 0xD1000000 | (imm << 10) | (31 << 5) | 31
-    emit_a64(insn)
+    if imm <= 4095 {
+        uint64 insn = 0xD1000000 | (imm << 10) | (31 << 5) | 31
+        emit_a64(insn)
+    } else {
+        emit_a64_mov_imm(16, imm)
+        emit_a64(0xCB1003FF)
+    }
 }
 
-// ADD SP, SP, #imm12
+// ADD SP, SP, #imm (large-frame safe)
 fn emit_a64_add_sp_imm(uint64 imm) {
-    uint64 insn = 0x91000000 | (imm << 10) | (31 << 5) | 31
-    emit_a64(insn)
+    if imm <= 4095 {
+        uint64 insn = 0x91000000 | (imm << 10) | (31 << 5) | 31
+        emit_a64(insn)
+    } else {
+        emit_a64_mov_imm(16, imm)
+        emit_a64(0x8B1003FF)
+    }
 }
 
 // BL offset (branch with link, rel26*4)
@@ -1730,7 +1740,6 @@ fn gen_expr_a64(uint64 node) {
             emit_a64_mov(9, 0) // x9 = bit
             emit_a64_load_x0(temp_slot_0) // x0 = val
             emit_a64_lsr(0, 0, 9) // x0 = val >> bit
-            emit_a64_and(0, 0, 31) // won't work: XZR AND is 0
             // Use: AND x0, x0, #1 (immediate)
             // AND (bitmask imm): 0x92400000 | (N:immr:imms << 10) | (Rn << 5) | Rd
             // For #1: N=1, immr=0, imms=0 → 0x92400000
@@ -1823,26 +1832,21 @@ fn gen_expr_a64(uint64 node) {
             emit_a64(0xD1000400 | (10 << 5) | 10) // sub x10, x10, #1 → mask
             // (bits & mask) << start
             emit_a64_load_x0(bi_extra + 24)
-            emit_a64_and(0, 0, 10) // bits & mask
-            emit_a64_load_x0(bi_extra + 8) // start
-            emit_a64_mov(9, 0)
-            emit_a64_lsl(0, 0, 9) // shifted bits
+            emit_a64_and(0, 0, 10) // x0 = bits & mask
+            emit_a64_mov(11, 0)     // x11 = bits & mask (save)
+            emit_a64_load_x0(bi_extra + 8) // x0 = start
+            emit_a64_mov(9, 0)      // x9 = start
+            emit_a64_lsl(0, 11, 9)  // x0 = (bits & mask) << start
             emit_a64_store_x0(bi_extra + 24) // save shifted bits
             // ~(mask << start)
             emit_a64_lsl(10, 10, 9) // mask << start
             emit_a64_mvn(10, 10) // ~(mask << start)
-            // val & ~(mask << start)
+            // val & ~(mask << start) | shifted bits
             emit_a64_load_x0(bi_extra)
-            emit_a64_and(0, 0, 10) // cleared val
-            // | shifted bits
-            emit_a64_load_x0(bi_extra + 24)
-            emit_a64_orr(0, 0, 0) // need to load cleared val
-            // Actually: x0 = cleared val, save it, then OR
-            emit_a64_store_x0(bi_extra) // cleared val in slot0
-            emit_a64_load_x0(bi_extra + 24) // shifted bits
-            emit_a64_mov(9, 0)
-            emit_a64_load_x0(bi_extra) // cleared val
-            emit_a64_orr(0, 0, 9) // result
+            emit_a64_and(0, 0, 10)     // x0 = cleared val
+            emit_a64_mov(11, 0)         // x11 = cleared val
+            emit_a64_load_x0(bi_extra + 24) // x0 = shifted bits
+            emit_a64_orr(0, 11, 0)     // x0 = cleared val | shifted bits
             return
         }
 
@@ -2719,8 +2723,9 @@ fn resolve_fnaddr_fixups_a64() {
             // For simplicity in flat binary: use ADR x0, target (if within ±1MB)
             // ADR: bits [31]=0, [30:29]=immlo, [28:24]=10000, [23:5]=immhi, [4:0]=Rd
             uint64 disp = target_off - wpo
-            uint64 immlo = (disp >> 0) & 3
-            uint64 immhi = (disp >> 2) & 0x7FFFF
+            uint64 imm21 = disp & 0x1FFFFF
+            uint64 immlo = imm21 & 3
+            uint64 immhi = (imm21 >> 2) & 0x7FFFF
             // ADR x0, disp
             uint32 adr_instr = 0x10000000 | (immlo << 29) | (immhi << 5) | 0
             patch_u32(wpo, adr_instr)
