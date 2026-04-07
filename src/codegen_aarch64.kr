@@ -1953,6 +1953,28 @@ fn gen_expr_a64(uint64 node) {
             return
         }
 
+        // Built-in: set_executable(path) → chmod +x on Linux/macOS, no-op on Windows
+        if tok_matches(wct, "set_executable", 14) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr_a64(wfa)
+            if target_os == 1 {
+                // macOS: chmod(x0=path, x1=0755)
+                emit_a64_mov_imm(1, 0x1ED)
+                emit_a64_syscall_nr(15)
+                emit_a64(0xD4000001)
+            } else if target_os != 2 {
+                // Linux/Android: fchmodat(AT_FDCWD, path, 0755, 0)
+                emit_a64_mov(1, 0)
+                emit_a64_mov_imm(0, 0xFFFFFFFFFFFFFF9C)
+                emit_a64_mov_imm(2, 0x1ED)
+                emit_a64_mov_imm(3, 0)
+                emit_a64_syscall_nr(53)
+                emit_a64(0xD4000001)
+            }
+            return
+        }
+
         // Built-in: get_target_os() → compile-time OS constant (0=Linux, 1=macOS, 2=Windows)
         if tok_matches(wct, "get_target_os", 13) != 0 {
             emit_a64_mov_imm(0, target_os)

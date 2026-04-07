@@ -106,8 +106,9 @@ fn main() {
         uint64 tfd = file_open(tmp, 1)
         file_write(tfd, data, fsize)
         file_close(tfd)
-        if raw_os == 2 { exec_process(tmp) }
-        exit(0)
+        set_executable(tmp)
+        exec_process(tmp)
+        exit(1)
     }
 
     // Parse fat header
@@ -171,9 +172,7 @@ fn main() {
     file_write(tfd, binary, decomp_size)
     file_close(tfd)
 
-    if host_os == 2 {
-        exec_process(tmp_path)
-    }
-    // Linux/macOS: signal success — the shell wrapper handles chmod+exec
-    exit(0)
+    set_executable(tmp_path)
+    exec_process(tmp_path)
+    exit(1)
 }

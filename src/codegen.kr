@@ -3075,6 +3075,22 @@ fn gen_expr(uint64 node) {
             return
         }
 
+        // Built-in: set_executable(path) → chmod +x on Linux/macOS, no-op on Windows
+        if tok_matches(wct, "set_executable", 14) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr(wfa)
+            if target_os != 2 {
+                // Linux/macOS: chmod(path, 0755)
+                emit_mov_rdi_rax()
+                emit_mov_rax_imm(0x1ED)
+                emit_mov_rsi_rax()
+                if target_os == 1 { emit_mov_rax_imm(0x200000F) } else { emit_mov_rax_imm(90) }
+                emit_byte(0x0F); emit_byte(0x05)
+            }
+            return
+        }
+
         // Built-in: get_target_os() → compile-time OS constant (0=Linux, 1=macOS, 2=Windows)
         if tok_matches(wct, "get_target_os", 13) != 0 {
             emit_mov_rax_imm(target_os)
