@@ -21,7 +21,7 @@ A self-hosted systems language compiler for kernel-first development. KernRift c
 # Install (gets krc compiler, kr runner, and stdlib)
 curl -sSf https://raw.githubusercontent.com/Pantelis23/KernRift/main/install.sh | sh
 
-# Compile to fat binary (default: 6 platform slices, BCJ+LZ4-compressed)
+# Compile to fat binary (default: 7 platform slices, BCJ+LZ4-compressed)
 krc hello.kr -o hello.krbo
 
 # Run on any platform

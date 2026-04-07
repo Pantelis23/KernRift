@@ -39,7 +39,7 @@ fn main() {
 Save as `hello.kr` and compile:
 
 ```bash
-krc hello.kr -o hello.krbo        # fat binary (6 slices, LZ4-compressed)
+krc hello.kr -o hello.krbo        # fat binary (7 slices, BCJ+LZ4-compressed)
 kr hello.krbo                     # run on any platform
 
 krc --arch=x86_64 hello.kr -o hello   # native x86_64 ELF
