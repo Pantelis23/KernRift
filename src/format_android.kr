@@ -48,7 +48,7 @@ fn emit_elf_header_android_a64() {
     // ---- PT_PHDR [64..120) ----
     emit_u32_le(6); emit_u32_le(4)
     emit_u64_le(64); emit_u64_le(64); emit_u64_le(64)
-    emit_u64_le(224); emit_u64_le(224); emit_u64_le(8)
+    emit_u64_le(224); emit_u64_le(224); emit_u64_le(8)  // 4 phdrs * 56 = 224
 
     // ---- PT_INTERP [120..176) ----
     emit_u32_le(3); emit_u32_le(4)
@@ -92,7 +92,7 @@ fn emit_elf_header_android_a64() {
     emit_byte(46); emit_byte(115); emit_byte(104); emit_byte(115)  // .shs
     emit_byte(116); emit_byte(114); emit_byte(116); emit_byte(97)  // trta
     emit_byte(98); emit_byte(0)                               // b\0 (index 10, len 10)
-    emit_byte(0); emit_byte(0); emit_byte(0)                  // padding to 24
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)    // padding to 24
 
     // ---- Section headers [360..552) ----
     // Section 0: null (64 zeros)
