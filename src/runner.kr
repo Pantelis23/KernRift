@@ -137,6 +137,7 @@ fn main() {
         uint64 raw_os = get_target_os()
         uint64 tmp = "/tmp/.kr-exec"
         if raw_os == 2 { tmp = ".\\kr-run.exe" }
+        if raw_os == 3 { tmp = ".kr-exec" }
         uint64 tfd = file_open(tmp, 1)
         file_write(tfd, data, fsize)
         file_close(tfd)
@@ -201,6 +202,9 @@ fn main() {
     uint64 tmp_path = "/tmp/.kr-exec"
     if host_os == 2 {
         tmp_path = ".\\kr-run.exe"
+    }
+    if host_os == 3 {
+        tmp_path = ".kr-exec"
     }
     uint64 tfd = file_open(tmp_path, 1)
     file_write(tfd, binary, decomp_size)
