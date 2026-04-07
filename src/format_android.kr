@@ -3,17 +3,18 @@
 // PIE ELF for Android ARM64 with minimal dynamic linking structures.
 //
 // Byte-exact layout (1024 bytes header):
-//   [0..64)     ELF header (e_shoff=360, e_phnum=4, e_shnum=4, e_shstrndx=3)
-//   [64..120)   PT_PHDR (4 phdrs * 56 = 224 bytes)
-//   [120..176)  PT_INTERP → interp string at 288
-//   [176..232)  PT_LOAD (whole file, patched)
-//   [232..288)  PT_DYNAMIC → .dynamic at 310
+//   [0..64)     ELF header
+//   [64..120)   PT_PHDR
+//   [120..176)  PT_INTERP
+//   [176..232)  PT_LOAD
+//   [232..288)  PT_DYNAMIC → .dynamic at 312
 //   [288..309)  Interp: "/system/bin/linker64\0" (21 bytes)
 //   [309..310)  .dynstr: "\0" (1 byte)
-//   [310..326)  .dynamic: DT_NULL (16 bytes)
-//   [326..354)  .shstrtab: "\0.dynamic\0.dynstr\0.shstrtab\0" (28 bytes)
-//   [354..360)  Padding (6 bytes)
-//   [360..616)  Section headers: null + .dynamic + .dynstr + .shstrtab (4 × 64)
+//   [310..312)  Padding (2 bytes for 8-byte alignment)
+//   [312..328)  .dynamic: DT_NULL (16 bytes) — 8-byte aligned
+//   [328..356)  .shstrtab string table (28 bytes)
+//   [356..360)  Padding (4 bytes)
+//   [360..616)  Section headers (4 × 64)
 //   [616..1024) Padding
 //
 // Patch offsets: e_entry@24, PT_LOAD p_filesz@208, p_memsz@216
@@ -58,7 +59,7 @@ fn emit_elf_header_android_a64() {
 
     // ---- PT_DYNAMIC [232..288) ----
     emit_u32_le(2); emit_u32_le(6)
-    emit_u64_le(310); emit_u64_le(310); emit_u64_le(310)
+    emit_u64_le(312); emit_u64_le(312); emit_u64_le(312)
     emit_u64_le(16); emit_u64_le(16); emit_u64_le(8)
 
     // ---- Interp [288..309) = 21 bytes ----
@@ -72,64 +73,65 @@ fn emit_elf_header_android_a64() {
     // ---- .dynstr [309..310) = 1 byte ----
     emit_byte(0)
 
-    // ---- .dynamic [310..326) = 16 bytes ----
+    // ---- Padding [310..312) = 2 bytes ----
+    emit_byte(0); emit_byte(0)
+
+    // ---- .dynamic [312..328) = 16 bytes (8-byte aligned) ----
     emit_u64_le(0); emit_u64_le(0)
 
-    // ---- .shstrtab [326..354) = 28 bytes ----
+    // ---- .shstrtab [328..356) = 28 bytes ----
+    // "\0.dynamic\0.dynstr\0.shstrtab\0"
     // Offsets: 0=\0, 1=.dynamic, 10=.dynstr, 18=.shstrtab
-    emit_byte(0)                                                     // 0: \0
-    emit_byte(46); emit_byte(100); emit_byte(121); emit_byte(110)   // .dyn
-    emit_byte(97); emit_byte(109); emit_byte(105); emit_byte(99)    // amic
-    emit_byte(0)                                                     // \0
-    emit_byte(46); emit_byte(100); emit_byte(121); emit_byte(110)   // .dyn
-    emit_byte(115); emit_byte(116); emit_byte(114); emit_byte(0)    // str\0
-    emit_byte(46); emit_byte(115); emit_byte(104); emit_byte(115)   // .shs
-    emit_byte(116); emit_byte(114); emit_byte(116); emit_byte(97)   // trta
-    emit_byte(98); emit_byte(0)                                      // b\0
+    emit_byte(0)
+    emit_byte(46); emit_byte(100); emit_byte(121); emit_byte(110)
+    emit_byte(97); emit_byte(109); emit_byte(105); emit_byte(99)
+    emit_byte(0)
+    emit_byte(46); emit_byte(100); emit_byte(121); emit_byte(110)
+    emit_byte(115); emit_byte(116); emit_byte(114); emit_byte(0)
+    emit_byte(46); emit_byte(115); emit_byte(104); emit_byte(115)
+    emit_byte(116); emit_byte(114); emit_byte(116); emit_byte(97)
+    emit_byte(98); emit_byte(0)
 
-    // ---- Padding [354..360) = 6 bytes ----
-    i = 0
-    while i < 6 { emit_byte(0); i = i + 1 }
+    // ---- Padding [356..360) = 4 bytes ----
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
 
-    // ---- Section headers [360..616) = 4 × 64 bytes ----
+    // ---- Section headers [360..616) ----
 
     // Section 0: null (64 zeros)
     i = 0
     while i < 64 { emit_byte(0); i = i + 1 }
 
     // Section 1: .dynamic (sh_link=2 → .dynstr)
-    emit_u32_le(1)      // sh_name = 1
+    emit_u32_le(1)      // sh_name
     emit_u32_le(6)      // sh_type = SHT_DYNAMIC
     emit_u64_le(3)      // sh_flags = SHF_WRITE | SHF_ALLOC
-    emit_u64_le(310)    // sh_addr
-    emit_u64_le(310)    // sh_offset
+    emit_u64_le(312)    // sh_addr
+    emit_u64_le(312)    // sh_offset
     emit_u64_le(16)     // sh_size
-    emit_u32_le(2)      // sh_link = 2 (index of .dynstr)
+    emit_u32_le(2)      // sh_link = 2 (.dynstr)
     emit_u32_le(0)      // sh_info
     emit_u64_le(8)      // sh_addralign
     emit_u64_le(16)     // sh_entsize
 
     // Section 2: .dynstr
-    emit_u32_le(10)     // sh_name = 10
+    emit_u32_le(10)     // sh_name
     emit_u32_le(3)      // sh_type = SHT_STRTAB
     emit_u64_le(2)      // sh_flags = SHF_ALLOC
     emit_u64_le(309)    // sh_addr
     emit_u64_le(309)    // sh_offset
-    emit_u64_le(1)      // sh_size = 1
-    emit_u32_le(0)      // sh_link
-    emit_u32_le(0)      // sh_info
+    emit_u64_le(1)      // sh_size
+    emit_u32_le(0); emit_u32_le(0)
     emit_u64_le(1)      // sh_addralign
     emit_u64_le(0)      // sh_entsize
 
     // Section 3: .shstrtab
-    emit_u32_le(18)     // sh_name = 18
+    emit_u32_le(18)     // sh_name
     emit_u32_le(3)      // sh_type = SHT_STRTAB
     emit_u64_le(0)      // sh_flags
-    emit_u64_le(326)    // sh_addr
-    emit_u64_le(326)    // sh_offset
+    emit_u64_le(328)    // sh_addr
+    emit_u64_le(328)    // sh_offset
     emit_u64_le(28)     // sh_size
-    emit_u32_le(0)      // sh_link
-    emit_u32_le(0)      // sh_info
+    emit_u32_le(0); emit_u32_le(0)
     emit_u64_le(1)      // sh_addralign
     emit_u64_le(0)      // sh_entsize
 
