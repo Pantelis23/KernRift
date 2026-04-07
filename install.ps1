@@ -27,33 +27,20 @@ if (!(Test-Path $InstallDir)) {
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 }
 
-# Download from GitHub releases
+# Download krc compiler from GitHub releases
 $BinaryName = "krc-windows-$ArchName.exe"
 $Url = "https://github.com/$Repo/releases/latest/download/$BinaryName"
 $Dest = "$InstallDir\krc.exe"
 
 Write-Host "Downloading $BinaryName..."
 try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing
 } catch {
     Write-Host "error: download failed: $_" -ForegroundColor Red
     Write-Host ""
-    Write-Host "Alternatively, build from source:"
-    Write-Host "  cargo install --git https://github.com/Pantelis23/KernRift-bootstrap kernriftc"
-    Write-Host "  kernriftc --emit=hostexe build\krc.kr -o krc.exe"
-    Write-Host "  Copy-Item krc.exe $InstallDir\krc.exe"
+    Write-Host "Manual install: download from https://github.com/$Repo/releases"
     exit 1
-}
-
-# Download kr runner
-$KrBinaryName = "kr-windows-$ArchName.exe"
-$KrUrl = "https://github.com/$Repo/releases/latest/download/$KrBinaryName"
-$KrDest = "$InstallDir\kr.exe"
-Write-Host "Downloading $KrBinaryName..."
-try {
-    Invoke-WebRequest -Uri $KrUrl -OutFile $KrDest -UseBasicParsing
-} catch {
-    Write-Host "warning: could not download kr runner: $_" -ForegroundColor Yellow
 }
 
 # Download standard library
@@ -63,11 +50,11 @@ if (!(Test-Path $StdDir)) {
 }
 Write-Host "Installing standard library..."
 foreach ($mod in @("string", "io", "math", "fmt", "mem", "vec", "map")) {
-    $modUrl = "https://raw.githubusercontent.com/Pantelis23/KernRift/main/std/$mod.kr"
+    $modUrl = "https://raw.githubusercontent.com/$Repo/main/std/$mod.kr"
     try {
         Invoke-WebRequest -Uri $modUrl -OutFile "$StdDir\$mod.kr" -UseBasicParsing
     } catch {
-        Write-Host "warning: could not download std/$mod.kr" -ForegroundColor Yellow
+        Write-Host "  warning: could not download std/$mod.kr" -ForegroundColor Yellow
     }
 }
 Write-Host "Standard library: $StdDir"
@@ -82,14 +69,11 @@ if ($UserPath -notlike "*$InstallDir*") {
 
 Write-Host ""
 Write-Host "Installed: $Dest"
-Write-Host "Installed: $KrDest"
 Write-Host ""
 Write-Host "Usage:"
-Write-Host "  krc program.kr                  # compile to fat binary"
-Write-Host "  krc --arch=x86_64 prog.kr      # compile for x86_64"
-Write-Host "  krc -o output.exe prog.kr      # specify output"
-Write-Host "  krc check prog.kr              # run analysis"
-Write-Host "  krc lc prog.kr                 # living compiler report"
-Write-Host "  krc --version                  # show version"
+Write-Host "  krc --emit=pe program.kr -o program.exe   # compile for Windows"
+Write-Host "  krc --arch=x86_64 prog.kr                 # native x86_64 ELF"
+Write-Host "  krc program.kr -o program.krbo             # fat binary (7 slices)"
+Write-Host "  krc --version                              # show version"
 Write-Host ""
 Write-Host "=== Installation complete ==="
