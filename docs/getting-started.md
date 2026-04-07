@@ -145,9 +145,10 @@ krc lc module.kr        # living compiler patterns + fitness score
 | Linux x86_64 | Yes | Yes | Yes |
 | Linux ARM64 | Yes | Yes | Yes |
 | Windows x86_64 | Yes | Yes | Yes |
-| Windows ARM64 | Yes | Yes | -- |
-| macOS x86_64 | Yes | WIP | -- |
-| macOS ARM64 | Yes | WIP | -- |
+| Windows ARM64 | Yes | Yes | Yes |
+| Android ARM64 | Yes | Yes | Yes |
+| macOS x86_64 | Yes | Yes | Yes |
+| macOS ARM64 | Yes | Blocked | -- |
 
 ## Standard Library
 

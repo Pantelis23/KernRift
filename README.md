@@ -2,13 +2,13 @@
 
 **KernRift is a bare-metal systems programming language and compiler created by Pantelis Christou.**
 
-A self-hosted systems language compiler for kernel-first development. KernRift compiles itself — no Rust, no C, no external toolchain. It produces native executables for x86_64 and AArch64 on Linux, Windows, and macOS, with BCJ+LZ4-compressed fat binaries as the default output (6 platform slices per `.krbo`). The `kr` runner (or `kr.exe` on Windows) executes `.krbo` fat binaries on any supported platform.
+A self-hosted systems language compiler for kernel-first development. KernRift compiles itself — no Rust, no C, no external toolchain. It produces native executables for x86_64 and AArch64 on Linux, Windows, macOS, and Android, with BCJ+LZ4-compressed fat binaries as the default output (7 platform slices per `.krbo`). The `kr` runner executes `.krbo` fat binaries on any supported platform. The compiler self-hosts on 5 platforms including phones (verified on Samsung Galaxy Z Fold 5 via Termux).
 
 ## Features
 
 - **Self-hosting** — the compiler compiles itself to a fixed point
-- **Triple-platform** — Linux, Windows, and macOS from a single source (x86_64 + ARM64 each)
-- **Fat binaries** — default output is KrboFat (6 platform slices, BCJ+LZ4-compressed)
+- **5-platform** — Linux, Windows, macOS, and Android from a single source (x86_64 + ARM64)
+- **Fat binaries** — default output is KrboFat (7 platform slices, BCJ+LZ4-compressed)
 - **Zero dependencies** — static executables, no libc, no linker
 - **Kernel-first** — inline assembly, `@naked` functions, `@packed` structs, signed comparisons, volatile memory, bitfield ops, `--freestanding` mode
 - **Kernel safety** — context checks, effect tracking, lock graphs, capabilities, undeclared identifier detection
@@ -45,10 +45,11 @@ krc lc program.kr
 
 | Platform | CPU | Time |
 |----------|-----|------|
-| Linux x86_64 | AMD Ryzen 9 7900X | 53ms |
-| Linux ARM64 | QEMU on Ryzen 9 7900X | 422ms |
+| Linux x86_64 | AMD Ryzen 9 7900X | 55ms |
+| Linux ARM64 | ARM Cortex-A72 (Pi 400) | 635ms |
 | Windows 11 x86_64 | Intel Core Ultra 9 275HX | 66ms |
 | Windows 11 ARM64 | GitHub Actions runner | bootstrap verified |
+| Android ARM64 | Snapdragon 8 Gen 2 (Z Fold 5) | self-compile verified |
 
 ## Install
 
@@ -205,7 +206,7 @@ A VS Code extension (v0.2.3) is available on the VS Code Marketplace:
 
 ## Architecture
 
-14,000+ lines of KernRift across 14 source files + 7 stdlib modules (828 lines). Self-compiles to a 371 KB native binary in 53ms, or a 2.1 MB universal fat binary (6 slices) in 252ms (AMD Ryzen 9 7900X). 105 tests, bootstrap fixed point verified on 4 platforms (Linux x86_64, Linux ARM64, Windows x86_64, Windows ARM64).
+14,400+ lines of KernRift across 15 source files + 7 stdlib modules (828 lines). Self-compiles to a 383 KB native binary in 55ms, or a 2.6 MB universal fat binary (7 slices) in ~280ms (AMD Ryzen 9 7900X). 106 tests, bootstrap fixed point verified on 5 platforms (Linux x86_64, Linux ARM64, Windows x86_64, Windows ARM64, Android ARM64).
 
 | File | Purpose |
 |------|---------|
@@ -236,6 +237,7 @@ The [bootstrap compiler](https://github.com/Pantelis23/KernRift-bootstrap) is on
 | Linux ARM64 | ✅ | ✅ | ✅ | ✅ | ✅ fixed point |
 | Windows x86_64 | ✅ | ✅ | ✅ | ✅ | ✅ chain verified |
 | Windows ARM64 | ✅ | ✅ | ✅ | ✅ | ✅ krc3==krc4 |
+| Android ARM64 | ✅ | ✅ | ✅ | ✅ | ✅ self-compiled on phone |
 | macOS x86_64 | ✅ | ✅ | ✅ | ✅ | — |
 | macOS ARM64 | ✅ | WIP | — | — | — |
 
