@@ -600,7 +600,7 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
     } else if emit_mode == 4 {
         // Android PIE ELF
         emit_elf_header_android_a64()
-        header_size = 256
+        header_size = 512
     }
 
     uint64 text_start = codegen_output_len()
