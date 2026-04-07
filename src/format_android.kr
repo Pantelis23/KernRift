@@ -41,9 +41,9 @@ fn emit_elf_header_android_a64() {
     emit_u16_le(64)    // e_ehsize = 64
     emit_u16_le(56)    // e_phentsize = 56
     emit_u16_le(3)     // e_phnum = 3 (PHDR + INTERP + LOAD)
-    emit_u16_le(64)    // e_shentsize
-    emit_u16_le(0)     // e_shnum
-    emit_u16_le(0)     // e_shstrndx
+    emit_u16_le(0)     // e_shentsize = 0 (no section headers)
+    emit_u16_le(0)     // e_shnum = 0
+    emit_u16_le(0)     // e_shstrndx = SHN_UNDEF
 
     // ---- PT_PHDR [64..120) ----
     emit_u32_le(6)     // p_type = PT_PHDR
