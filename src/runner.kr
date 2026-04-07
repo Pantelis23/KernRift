@@ -63,8 +63,42 @@ fn detect_arch_r() -> uint64 {
 static uint64 cli_argc = 0
 static uint64 cli_argv = 0
 
+fn win_init_args_r() {
+    uint64 cmdline = cli_argv
+    uint64 argv_buf = alloc(512)
+    uint64 argc = 0
+    uint64 pos = cmdline
+    uint64 ch = 0
+    unsafe { *(pos as uint8) -> ch }
+    while ch != 0 {
+        while ch == 32 {
+            pos = pos + 1
+            unsafe { *(pos as uint8) -> ch }
+        }
+        if ch == 0 { break }
+        uint64 slot = argv_buf + argc * 8
+        unsafe { *(slot as uint64) = pos }
+        argc = argc + 1
+        while ch != 0 && ch != 32 {
+            pos = pos + 1
+            unsafe { *(pos as uint8) -> ch }
+        }
+        if ch == 32 {
+            uint8 z = 0
+            unsafe { *(pos as uint8) = z }
+            pos = pos + 1
+            unsafe { *(pos as uint8) -> ch }
+        }
+    }
+    cli_argc = argc
+    cli_argv = argv_buf
+}
+
 @export
 fn main() {
+    if cli_argc == 0xFFFFFFFF {
+        win_init_args_r()
+    }
     if cli_argc < 2 {
         write(2, "kr: KernRift fat binary runner\n", 30)
         write(2, "usage: kr <program.krbo> [args...]\n\n", 36)
