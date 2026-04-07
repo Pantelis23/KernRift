@@ -112,6 +112,15 @@ jobs:
           ./build/krc2 --arch=x86_64 --emit=macho build/krc.kr -o /tmp/test-bins/krc-macos-x64
           cp build/krc.kr /tmp/test-bins/krc-source.kr
 
+          # Build kr runners for each platform
+          cat src/bcj.kr src/runner.kr > /tmp/kr_src.kr
+          ./build/krc2 --arch=x86_64 --emit=pe /tmp/kr_src.kr -o /tmp/test-bins/kr-win-x64.exe
+          ./build/krc2 --arch=x86_64 --emit=macho /tmp/kr_src.kr -o /tmp/test-bins/kr-macos-x64
+
+          # Build a fat binary test program
+          echo 'fn main() { exit(42) }' > /tmp/kr_fat_test.kr
+          ./build/krc2 /tmp/kr_fat_test.kr -o /tmp/test-bins/kr-test.krbo
+
           ls -la /tmp/test-bins/
 
       - name: Upload test binaries
@@ -166,6 +175,17 @@ jobs:
             echo "PASS: macOS x86_64 file I/O (read 8 bytes)"
           else
             echo "FAIL: macOS x86_64 file I/O (expected 8, got $CODE)"
+            exit 1
+          fi
+
+      - name: Fat binary runner (kr) on macOS
+        run: |
+          chmod +x bins/kr-macos-x64
+          set +e; bins/kr-macos-x64 bins/kr-test.krbo; CODE=$?; set -e
+          if [ "$CODE" -eq 42 ]; then
+            echo "PASS: kr runner (fat binary exit=42)"
+          else
+            echo "FAIL: kr runner (exit=$CODE)"
             exit 1
           fi
 
@@ -315,6 +335,17 @@ jobs:
             Write-Host "PASS: file I/O (read back 8 bytes)"
           } else {
             Write-Host "FAIL: file I/O (expected 8, got $($r.ExitCode))"
+            exit 1
+          }
+
+      - name: Fat binary runner (kr) on Windows
+        shell: pwsh
+        run: |
+          $r = Start-Process -FilePath bins\kr-win-x64.exe -ArgumentList 'bins\kr-test.krbo' -Wait -PassThru -NoNewWindow
+          if ($r.ExitCode -eq 42) {
+            Write-Host "PASS: kr runner (fat binary exit=42)"
+          } else {
+            Write-Host "FAIL: kr runner (exit=$($r.ExitCode))"
             exit 1
           }
 

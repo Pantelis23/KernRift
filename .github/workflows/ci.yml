@@ -119,6 +119,31 @@ jobs:
           set +e; qemu-aarch64-static /tmp/android-selfout; CODE=$?; set -e
           [ "$CODE" -eq 99 ] && echo "PASS: Android self-compiled binary runs (exit=99)" || { echo "FAIL: expected 99, got $CODE"; exit 1; }
 
+      - name: Fat binary runner (kr) test
+        run: |
+          # Build kr runner
+          cat src/bcj.kr src/runner.kr > /tmp/kr_src.kr
+          ./build/krc2 --arch=x86_64 /tmp/kr_src.kr -o /tmp/kr
+          chmod +x /tmp/kr
+
+          # Compile a test program to fat binary
+          echo 'fn main() { println("kr runner works!"); exit(42) }' > /tmp/kr_test.kr
+          ./build/krc2 /tmp/kr_test.kr -o /tmp/kr_test.krbo
+
+          # Run via kr runner — should extract x86_64 slice and execute
+          set +e
+          OUTPUT=$(/tmp/kr /tmp/kr_test.krbo 2>&1)
+          CODE=$?
+          set -e
+          echo "kr output: $OUTPUT"
+          echo "kr exit: $CODE"
+          if [ "$CODE" -eq 42 ] && echo "$OUTPUT" | grep -q "kr runner works"; then
+            echo "PASS: kr runner (fat binary → x86_64 → exit 42)"
+          else
+            echo "FAIL: kr runner (exit=$CODE, output=$OUTPUT)"
+            exit 1
+          fi
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
