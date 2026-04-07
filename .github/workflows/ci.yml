@@ -81,6 +81,42 @@ jobs:
           file /tmp/cross-win-arm.exe | grep -q "PE32+"
           echo "Windows ARM64 PE: OK"
 
+          ./build/krc2 --emit=android /tmp/cross.kr -o /tmp/cross-android-arm
+          file /tmp/cross-android-arm | grep -q "ARM aarch64"
+          echo "Android ARM64 PIE: OK"
+
+      - name: Android ARM64 execution test (QEMU)
+        run: |
+          sudo apt-get install -y qemu-user-static >/dev/null 2>&1
+          sudo mkdir -p /system/bin
+          sudo ln -sf /usr/aarch64-linux-gnu/lib/ld-linux-aarch64.so.1 /system/bin/linker64
+
+          # Test 1: exit(42)
+          echo 'fn main() { exit(42) }' > /tmp/android.kr
+          ./build/krc2 --emit=android /tmp/android.kr -o /tmp/android-exit42
+          chmod +x /tmp/android-exit42
+          set +e; qemu-aarch64-static /tmp/android-exit42; CODE=$?; set -e
+          [ "$CODE" -eq 42 ] && echo "PASS: Android exit(42)" || { echo "FAIL: expected 42, got $CODE"; exit 1; }
+
+          # Test 2: println + statics
+          echo 'static uint64 c = 0
+          fn inc() { c = c + 1 }
+          fn main() { println("Android QEMU!"); inc(); inc(); inc(); exit(c) }' > /tmp/android.kr
+          ./build/krc2 --emit=android /tmp/android.kr -o /tmp/android-static
+          chmod +x /tmp/android-static
+          set +e; qemu-aarch64-static /tmp/android-static; CODE=$?; set -e
+          [ "$CODE" -eq 3 ] && echo "PASS: Android statics (exit=3)" || { echo "FAIL: expected 3, got $CODE"; exit 1; }
+
+          # Test 3: self-compile on QEMU
+          ./build/krc2 --emit=android build/krc.kr -o /tmp/krc-android
+          chmod +x /tmp/krc-android
+          echo 'fn main() { exit(99) }' > /tmp/android-selftest.kr
+          set +e; qemu-aarch64-static /tmp/krc-android --emit=android /tmp/android-selftest.kr -o /tmp/android-selfout; COMP=$?; set -e
+          [ "$COMP" -eq 0 ] && echo "PASS: Android self-compile" || { echo "FAIL: compile exit=$COMP"; exit 1; }
+          chmod +x /tmp/android-selfout
+          set +e; qemu-aarch64-static /tmp/android-selfout; CODE=$?; set -e
+          [ "$CODE" -eq 99 ] && echo "PASS: Android self-compiled binary runs (exit=99)" || { echo "FAIL: expected 99, got $CODE"; exit 1; }
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
