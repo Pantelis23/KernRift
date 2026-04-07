@@ -1,27 +1,18 @@
 // KernRift self-hosted compiler — Android ARM64 ELF output format
 //
-// PIE ELF for Android ARM64 with minimal dynamic linking structures.
+// PIE ELF for Android ARM64. Minimal dynamic linking structures.
 //
-// Layout (1024 bytes header):
-//   [0..64)     ELF header
-//   [64..120)   PT_PHDR (4 phdrs)
-//   [120..176)  PT_INTERP
-//   [176..232)  PT_LOAD (RX)
-//   [232..288)  PT_DYNAMIC → .dynamic at 312
-//   [288..309)  Interp string (21 bytes)
-//   [309..310)  .dynstr (1 byte)
-//   [310..312)  Padding
-//   [312..376)  .dynamic (4 entries × 16 = 64 bytes)
-//   [376..404)  .gnu.hash (28 bytes: header + bloom + buckets)
-//   [404..408)  Padding
-//   [408..448)  .shstrtab (40 bytes)
-//   [448..768)  Section headers (5 × 64 = 320 bytes)
-//   [768..1024) Padding
+// Sections: .dynstr .dynsym .gnu.hash .dynamic .shstrtab
+// Dynamic entries: DT_STRTAB DT_STRSZ DT_SYMTAB DT_SYMENT DT_GNU_HASH DT_NULL
 //
 // Patch offsets: e_entry@24, PT_LOAD p_filesz@208, p_memsz@216
 
 @export
 fn emit_elf_header_android_a64() {
+    // All offsets pre-calculated:
+    // phdr: 64, interp_str: 288, dynstr: 312, dynsym: 320, gnu_hash: 344
+    // dynamic: 376, shstrtab: 472, shdr: 520
+
     // ---- ELF header [0..64) ----
     emit_byte(0x7F); emit_byte(69); emit_byte(76); emit_byte(70)
     emit_byte(2); emit_byte(1); emit_byte(1); emit_byte(0)
@@ -29,17 +20,17 @@ fn emit_elf_header_android_a64() {
     while i < 8 { emit_byte(0); i = i + 1 }
     emit_u16_le(3)      // e_type = ET_DYN
     emit_u16_le(0xB7)   // e_machine
-    emit_u32_le(1)      // e_version
+    emit_u32_le(1)
     emit_u64_le(0)      // e_entry @24 (patched)
     emit_u64_le(64)     // e_phoff
-    emit_u64_le(448)    // e_shoff
-    emit_u32_le(0)      // e_flags
+    emit_u64_le(520)    // e_shoff
+    emit_u32_le(0)
     emit_u16_le(64)     // e_ehsize
     emit_u16_le(56)     // e_phentsize
     emit_u16_le(4)      // e_phnum
     emit_u16_le(64)     // e_shentsize
-    emit_u16_le(5)      // e_shnum
-    emit_u16_le(4)      // e_shstrndx
+    emit_u16_le(6)      // e_shnum (null + .dynstr + .dynsym + .gnu.hash + .dynamic + .shstrtab)
+    emit_u16_le(5)      // e_shstrndx = 5
 
     // ---- PT_PHDR [64..120) ----
     emit_u32_le(6); emit_u32_le(4)
@@ -52,18 +43,18 @@ fn emit_elf_header_android_a64() {
     emit_u64_le(21); emit_u64_le(21); emit_u64_le(1)
 
     // ---- PT_LOAD [176..232) ----
-    emit_u32_le(1); emit_u32_le(5)  // PF_R|PF_X
+    emit_u32_le(1); emit_u32_le(5)  // R+X
     emit_u64_le(0); emit_u64_le(0); emit_u64_le(0)
     emit_u64_le(0)      // p_filesz @208 (patched)
     emit_u64_le(0)      // p_memsz @216 (patched)
     emit_u64_le(0x10000)
 
     // ---- PT_DYNAMIC [232..288) ----
-    emit_u32_le(2); emit_u32_le(4)  // PF_R
-    emit_u64_le(312); emit_u64_le(312); emit_u64_le(312)
-    emit_u64_le(64); emit_u64_le(64); emit_u64_le(8)  // 4 entries × 16 = 64
+    emit_u32_le(2); emit_u32_le(4)  // R
+    emit_u64_le(376); emit_u64_le(376); emit_u64_le(376)
+    emit_u64_le(96); emit_u64_le(96); emit_u64_le(8)  // 6 entries × 16 = 96
 
-    // ---- Interp [288..309) ----
+    // ---- Interp [288..309) = 21 bytes ----
     emit_byte(47); emit_byte(115); emit_byte(121); emit_byte(115)
     emit_byte(116); emit_byte(101); emit_byte(109); emit_byte(47)
     emit_byte(98); emit_byte(105); emit_byte(110); emit_byte(47)
@@ -71,106 +62,102 @@ fn emit_elf_header_android_a64() {
     emit_byte(101); emit_byte(114); emit_byte(54); emit_byte(52)
     emit_byte(0)
 
-    // ---- .dynstr [309..310) ----
-    emit_byte(0)
+    // ---- Padding [309..312) = 3 bytes ----
+    emit_byte(0); emit_byte(0); emit_byte(0)
 
-    // ---- Padding [310..312) ----
-    emit_byte(0); emit_byte(0)
+    // ---- .dynstr [312..320) = 8 bytes (padded to 8-align) ----
+    emit_byte(0)  // just the null string
+    i = 0
+    while i < 7 { emit_byte(0); i = i + 1 }
 
-    // ---- .dynamic [312..376) = 4 entries × 16 bytes ----
-    // DT_GNU_HASH (0x6FFFFEF5) → .gnu.hash at 376
-    emit_u64_le(0x6FFFFEF5)
-    emit_u64_le(376)
+    // ---- .dynsym [320..344) = 24 bytes = 1 NULL Elf64_Sym ----
+    i = 0
+    while i < 24 { emit_byte(0); i = i + 1 }
 
-    // DT_STRTAB (5) → .dynstr at 309
-    emit_u64_le(5)
-    emit_u64_le(309)
+    // ---- .gnu.hash [344..376) = 32 bytes (28 data + 4 pad) ----
+    emit_u32_le(1)      // nbuckets
+    emit_u32_le(1)      // symndx
+    emit_u32_le(1)      // maskwords
+    emit_u32_le(0)      // shift2
+    emit_u64_le(0)      // bloom[0]
+    emit_u32_le(0)      // buckets[0]
+    emit_u32_le(0)      // padding
 
-    // DT_STRSZ (10) → size = 1
-    emit_u64_le(10)
-    emit_u64_le(1)
+    // ---- .dynamic [376..472) = 6 entries × 16 = 96 bytes ----
+    // DT_STRTAB (5)
+    emit_u64_le(5); emit_u64_le(312)
+    // DT_STRSZ (10)
+    emit_u64_le(10); emit_u64_le(1)
+    // DT_SYMTAB (6)
+    emit_u64_le(6); emit_u64_le(320)
+    // DT_SYMENT (11)
+    emit_u64_le(11); emit_u64_le(24)
+    // DT_GNU_HASH (0x6FFFFEF5)
+    emit_u64_le(0x6FFFFEF5); emit_u64_le(344)
+    // DT_NULL
+    emit_u64_le(0); emit_u64_le(0)
 
-    // DT_NULL (0)
-    emit_u64_le(0)
-    emit_u64_le(0)
-
-    // ---- .gnu.hash [376..404) = 28 bytes ----
-    // Minimal empty GNU hash table
-    emit_u32_le(1)      // nbuckets = 1
-    emit_u32_le(1)      // symndx = 1 (skip NULL symbol)
-    emit_u32_le(1)      // maskwords = 1
-    emit_u32_le(0)      // shift2 = 0
-    emit_u64_le(0)      // bloom[0] = 0 (empty bloom filter)
-    emit_u32_le(0)      // buckets[0] = 0 (empty bucket)
-
-    // ---- Padding [404..408) ----
-    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
-
-    // ---- .shstrtab [408..448) = 40 bytes ----
-    // "\0.dynamic\0.dynstr\0.gnu.hash\0.shstrtab\0" + pad
-    // Offsets: 0=\0, 1=.dynamic, 10=.dynstr, 18=.gnu.hash, 28=.shstrtab
+    // ---- .shstrtab [472..520) = 48 bytes ----
+    // "\0.dynstr\0.dynsym\0.gnu.hash\0.dynamic\0.shstrtab\0" + pad
+    // offsets: 0=\0, 1=.dynstr, 9=.dynsym, 17=.gnu.hash, 27=.dynamic, 36=.shstrtab
     emit_byte(0)                                                     // 0
     emit_byte(46); emit_byte(100); emit_byte(121); emit_byte(110)   // .dyn
-    emit_byte(97); emit_byte(109); emit_byte(105); emit_byte(99)    // amic
-    emit_byte(0)                                                     // \0 (9 bytes, offset 1)
+    emit_byte(115); emit_byte(116); emit_byte(114); emit_byte(0)    // str\0 (off 1)
     emit_byte(46); emit_byte(100); emit_byte(121); emit_byte(110)   // .dyn
-    emit_byte(115); emit_byte(116); emit_byte(114); emit_byte(0)    // str\0 (8 bytes, offset 10)
+    emit_byte(115); emit_byte(121); emit_byte(109); emit_byte(0)    // sym\0 (off 9)
     emit_byte(46); emit_byte(103); emit_byte(110); emit_byte(117)   // .gnu
     emit_byte(46); emit_byte(104); emit_byte(97); emit_byte(115)    // .has
-    emit_byte(104); emit_byte(0)                                     // h\0 (10 bytes, offset 18)
+    emit_byte(104); emit_byte(0)                                     // h\0 (off 17)
+    emit_byte(46); emit_byte(100); emit_byte(121); emit_byte(110)   // .dyn
+    emit_byte(97); emit_byte(109); emit_byte(105); emit_byte(99)    // amic
+    emit_byte(0)                                                     // \0 (off 27)
     emit_byte(46); emit_byte(115); emit_byte(104); emit_byte(115)   // .shs
     emit_byte(116); emit_byte(114); emit_byte(116); emit_byte(97)   // trta
-    emit_byte(98); emit_byte(0)                                      // b\0 (10 bytes, offset 28)
-    // Total: 1+9+8+10+10 = 38 bytes. Pad to 40.
+    emit_byte(98); emit_byte(0)                                      // b\0 (off 36)
+    // total = 1+8+8+10+9+10 = 46 bytes. Pad to 48.
     emit_byte(0); emit_byte(0)
 
-    // ---- Section headers [448..768) = 5 × 64 ----
+    // ---- Section headers [520..904) = 6 × 64 ----
 
     // Section 0: null
     i = 0
     while i < 64 { emit_byte(0); i = i + 1 }
 
-    // Section 1: .dynamic
-    emit_u32_le(1)      // sh_name
-    emit_u32_le(6)      // sh_type = SHT_DYNAMIC
-    emit_u64_le(2)      // sh_flags = SHF_ALLOC
-    emit_u64_le(312)    // sh_addr
-    emit_u64_le(312)    // sh_offset
-    emit_u64_le(64)     // sh_size
-    emit_u32_le(2)      // sh_link = 2 (.dynstr)
-    emit_u32_le(0)      // sh_info
-    emit_u64_le(8)      // sh_addralign
-    emit_u64_le(16)     // sh_entsize
-
-    // Section 2: .dynstr
-    emit_u32_le(10)     // sh_name
-    emit_u32_le(3)      // sh_type = SHT_STRTAB
-    emit_u64_le(2)      // sh_flags = SHF_ALLOC
-    emit_u64_le(309)    // sh_addr
-    emit_u64_le(309)    // sh_offset
-    emit_u64_le(1)      // sh_size
+    // Section 1: .dynstr
+    emit_u32_le(1); emit_u32_le(3)   // SHT_STRTAB
+    emit_u64_le(2)                    // SHF_ALLOC
+    emit_u64_le(312); emit_u64_le(312); emit_u64_le(1)
     emit_u32_le(0); emit_u32_le(0)
     emit_u64_le(1); emit_u64_le(0)
 
-    // Section 3: .gnu.hash
-    emit_u32_le(18)     // sh_name
-    emit_u32_le(0x6FFFFFF6) // sh_type = SHT_GNU_HASH
-    emit_u64_le(2)      // sh_flags = SHF_ALLOC
-    emit_u64_le(376)    // sh_addr
-    emit_u64_le(376)    // sh_offset
-    emit_u64_le(28)     // sh_size
-    emit_u32_le(0)      // sh_link (should point to .dynsym but we have none — use 0)
-    emit_u32_le(0)      // sh_info
-    emit_u64_le(8)      // sh_addralign
-    emit_u64_le(0)      // sh_entsize
+    // Section 2: .dynsym
+    emit_u32_le(9); emit_u32_le(11)  // SHT_DYNSYM
+    emit_u64_le(2)                    // SHF_ALLOC
+    emit_u64_le(320); emit_u64_le(320); emit_u64_le(24)
+    emit_u32_le(1)                    // sh_link = 1 (.dynstr)
+    emit_u32_le(1)                    // sh_info = 1 (first non-local symbol)
+    emit_u64_le(8); emit_u64_le(24)
 
-    // Section 4: .shstrtab
-    emit_u32_le(28)     // sh_name
-    emit_u32_le(3)      // sh_type = SHT_STRTAB
-    emit_u64_le(0)      // sh_flags
-    emit_u64_le(408)    // sh_addr
-    emit_u64_le(408)    // sh_offset
-    emit_u64_le(38)     // sh_size
+    // Section 3: .gnu.hash
+    emit_u32_le(17); emit_u32_le(0x6FFFFFF6) // SHT_GNU_HASH
+    emit_u64_le(2)                    // SHF_ALLOC
+    emit_u64_le(344); emit_u64_le(344); emit_u64_le(28)
+    emit_u32_le(2)                    // sh_link = 2 (.dynsym)
+    emit_u32_le(0)
+    emit_u64_le(8); emit_u64_le(0)
+
+    // Section 4: .dynamic
+    emit_u32_le(27); emit_u32_le(6)  // SHT_DYNAMIC
+    emit_u64_le(2)                    // SHF_ALLOC
+    emit_u64_le(376); emit_u64_le(376); emit_u64_le(96)
+    emit_u32_le(1)                    // sh_link = 1 (.dynstr)
+    emit_u32_le(0)
+    emit_u64_le(8); emit_u64_le(16)
+
+    // Section 5: .shstrtab
+    emit_u32_le(36); emit_u32_le(3)  // SHT_STRTAB
+    emit_u64_le(0)
+    emit_u64_le(472); emit_u64_le(472); emit_u64_le(46)
     emit_u32_le(0); emit_u32_le(0)
     emit_u64_le(1); emit_u64_le(0)
 
