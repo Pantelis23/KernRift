@@ -5,13 +5,19 @@
 // Sections: .dynstr .dynsym .gnu.hash .dynamic .shstrtab
 // Dynamic entries: DT_STRTAB DT_STRSZ DT_SYMTAB DT_SYMENT DT_GNU_HASH DT_NULL
 //
-// Patch offsets: e_entry@24, PT_LOAD p_filesz@208, p_memsz@216
+// Program headers: PT_PHDR, PT_INTERP, PT_LOAD(RX), PT_DYNAMIC, PT_LOAD(RW)
+//
+// Patch offsets:
+//   e_entry          @24
+//   PT_LOAD RX:  p_filesz @208  p_memsz @216
+//   PT_LOAD RW:  p_offset @296  p_vaddr @304  p_paddr @312
+//                p_filesz @320  p_memsz @328
 
 @export
 fn emit_elf_header_android_a64() {
-    // All offsets pre-calculated:
-    // phdr: 64, interp_str: 288, dynstr: 312, dynsym: 320, gnu_hash: 344
-    // dynamic: 376, shstrtab: 472, shdr: 520
+    // All offsets pre-calculated (5 phdrs):
+    // phdr: 64, interp_str: 344, dynstr: 368, dynsym: 376, gnu_hash: 400
+    // dynamic: 432, shstrtab: 528, shdr: 576
 
     // ---- ELF header [0..64) ----
     emit_byte(0x7F); emit_byte(69); emit_byte(76); emit_byte(70)
@@ -23,11 +29,11 @@ fn emit_elf_header_android_a64() {
     emit_u32_le(1)
     emit_u64_le(0)      // e_entry @24 (patched)
     emit_u64_le(64)     // e_phoff
-    emit_u64_le(520)    // e_shoff
+    emit_u64_le(576)    // e_shoff
     emit_u32_le(0)
     emit_u16_le(64)     // e_ehsize
     emit_u16_le(56)     // e_phentsize
-    emit_u16_le(4)      // e_phnum
+    emit_u16_le(5)      // e_phnum
     emit_u16_le(64)     // e_shentsize
     emit_u16_le(6)      // e_shnum (null + .dynstr + .dynsym + .gnu.hash + .dynamic + .shstrtab)
     emit_u16_le(5)      // e_shstrndx = 5
@@ -35,14 +41,14 @@ fn emit_elf_header_android_a64() {
     // ---- PT_PHDR [64..120) ----
     emit_u32_le(6); emit_u32_le(4)
     emit_u64_le(64); emit_u64_le(64); emit_u64_le(64)
-    emit_u64_le(224); emit_u64_le(224); emit_u64_le(8)
+    emit_u64_le(280); emit_u64_le(280); emit_u64_le(8)  // 5 phdrs × 56 = 280
 
     // ---- PT_INTERP [120..176) ----
     emit_u32_le(3); emit_u32_le(4)
-    emit_u64_le(288); emit_u64_le(288); emit_u64_le(288)
+    emit_u64_le(344); emit_u64_le(344); emit_u64_le(344)
     emit_u64_le(21); emit_u64_le(21); emit_u64_le(1)
 
-    // ---- PT_LOAD [176..232) ----
+    // ---- PT_LOAD RX [176..232) ----
     emit_u32_le(1); emit_u32_le(5)  // R+X
     emit_u64_le(0); emit_u64_le(0); emit_u64_le(0)
     emit_u64_le(0)      // p_filesz @208 (patched)
@@ -51,10 +57,19 @@ fn emit_elf_header_android_a64() {
 
     // ---- PT_DYNAMIC [232..288) ----
     emit_u32_le(2); emit_u32_le(4)  // R
-    emit_u64_le(376); emit_u64_le(376); emit_u64_le(376)
+    emit_u64_le(432); emit_u64_le(432); emit_u64_le(432)
     emit_u64_le(96); emit_u64_le(96); emit_u64_le(8)  // 6 entries × 16 = 96
 
-    // ---- Interp [288..309) = 21 bytes ----
+    // ---- PT_LOAD RW [288..344) ----
+    emit_u32_le(1); emit_u32_le(6)  // R+W
+    emit_u64_le(0)      // p_offset @296 (patched)
+    emit_u64_le(0)      // p_vaddr  @304 (patched)
+    emit_u64_le(0)      // p_paddr  @312 (patched)
+    emit_u64_le(0)      // p_filesz @320 (patched)
+    emit_u64_le(0)      // p_memsz  @328 (patched)
+    emit_u64_le(0x10000)
+
+    // ---- Interp [344..365) = 21 bytes ----
     emit_byte(47); emit_byte(115); emit_byte(121); emit_byte(115)
     emit_byte(116); emit_byte(101); emit_byte(109); emit_byte(47)
     emit_byte(98); emit_byte(105); emit_byte(110); emit_byte(47)
@@ -62,19 +77,19 @@ fn emit_elf_header_android_a64() {
     emit_byte(101); emit_byte(114); emit_byte(54); emit_byte(52)
     emit_byte(0)
 
-    // ---- Padding [309..312) = 3 bytes ----
+    // ---- Padding [365..368) = 3 bytes ----
     emit_byte(0); emit_byte(0); emit_byte(0)
 
-    // ---- .dynstr [312..320) = 8 bytes (padded to 8-align) ----
+    // ---- .dynstr [368..376) = 8 bytes (padded to 8-align) ----
     emit_byte(0)  // just the null string
     i = 0
     while i < 7 { emit_byte(0); i = i + 1 }
 
-    // ---- .dynsym [320..344) = 24 bytes = 1 NULL Elf64_Sym ----
+    // ---- .dynsym [376..400) = 24 bytes = 1 NULL Elf64_Sym ----
     i = 0
     while i < 24 { emit_byte(0); i = i + 1 }
 
-    // ---- .gnu.hash [344..376) = 32 bytes (28 data + 4 pad) ----
+    // ---- .gnu.hash [400..432) = 32 bytes (28 data + 4 pad) ----
     emit_u32_le(1)      // nbuckets
     emit_u32_le(1)      // symndx
     emit_u32_le(1)      // maskwords
@@ -83,21 +98,21 @@ fn emit_elf_header_android_a64() {
     emit_u32_le(0)      // buckets[0]
     emit_u32_le(0)      // padding
 
-    // ---- .dynamic [376..472) = 6 entries × 16 = 96 bytes ----
+    // ---- .dynamic [432..528) = 6 entries × 16 = 96 bytes ----
     // DT_STRTAB (5)
-    emit_u64_le(5); emit_u64_le(312)
+    emit_u64_le(5); emit_u64_le(368)
     // DT_STRSZ (10)
     emit_u64_le(10); emit_u64_le(1)
     // DT_SYMTAB (6)
-    emit_u64_le(6); emit_u64_le(320)
+    emit_u64_le(6); emit_u64_le(376)
     // DT_SYMENT (11)
     emit_u64_le(11); emit_u64_le(24)
     // DT_GNU_HASH (0x6FFFFEF5)
-    emit_u64_le(0x6FFFFEF5); emit_u64_le(344)
+    emit_u64_le(0x6FFFFEF5); emit_u64_le(400)
     // DT_NULL
     emit_u64_le(0); emit_u64_le(0)
 
-    // ---- .shstrtab [472..520) = 48 bytes ----
+    // ---- .shstrtab [528..576) = 48 bytes ----
     // "\0.dynstr\0.dynsym\0.gnu.hash\0.dynamic\0.shstrtab\0" + pad
     // offsets: 0=\0, 1=.dynstr, 9=.dynsym, 17=.gnu.hash, 27=.dynamic, 36=.shstrtab
     emit_byte(0)                                                     // 0
@@ -117,7 +132,7 @@ fn emit_elf_header_android_a64() {
     // total = 1+8+8+10+9+10 = 46 bytes. Pad to 48.
     emit_byte(0); emit_byte(0)
 
-    // ---- Section headers [520..904) = 6 × 64 ----
+    // ---- Section headers [576..960) = 6 × 64 ----
 
     // Section 0: null
     i = 0
@@ -126,14 +141,14 @@ fn emit_elf_header_android_a64() {
     // Section 1: .dynstr
     emit_u32_le(1); emit_u32_le(3)   // SHT_STRTAB
     emit_u64_le(2)                    // SHF_ALLOC
-    emit_u64_le(312); emit_u64_le(312); emit_u64_le(1)
+    emit_u64_le(368); emit_u64_le(368); emit_u64_le(1)
     emit_u32_le(0); emit_u32_le(0)
     emit_u64_le(1); emit_u64_le(0)
 
     // Section 2: .dynsym
     emit_u32_le(9); emit_u32_le(11)  // SHT_DYNSYM
     emit_u64_le(2)                    // SHF_ALLOC
-    emit_u64_le(320); emit_u64_le(320); emit_u64_le(24)
+    emit_u64_le(376); emit_u64_le(376); emit_u64_le(24)
     emit_u32_le(1)                    // sh_link = 1 (.dynstr)
     emit_u32_le(1)                    // sh_info = 1 (first non-local symbol)
     emit_u64_le(8); emit_u64_le(24)
@@ -141,7 +156,7 @@ fn emit_elf_header_android_a64() {
     // Section 3: .gnu.hash
     emit_u32_le(17); emit_u32_le(0x6FFFFFF6) // SHT_GNU_HASH
     emit_u64_le(2)                    // SHF_ALLOC
-    emit_u64_le(344); emit_u64_le(344); emit_u64_le(28)
+    emit_u64_le(400); emit_u64_le(400); emit_u64_le(28)
     emit_u32_le(2)                    // sh_link = 2 (.dynsym)
     emit_u32_le(0)
     emit_u64_le(8); emit_u64_le(0)
@@ -149,7 +164,7 @@ fn emit_elf_header_android_a64() {
     // Section 4: .dynamic
     emit_u32_le(27); emit_u32_le(6)  // SHT_DYNAMIC
     emit_u64_le(2)                    // SHF_ALLOC
-    emit_u64_le(376); emit_u64_le(376); emit_u64_le(96)
+    emit_u64_le(432); emit_u64_le(432); emit_u64_le(96)
     emit_u32_le(1)                    // sh_link = 1 (.dynstr)
     emit_u32_le(0)
     emit_u64_le(8); emit_u64_le(16)
@@ -157,7 +172,7 @@ fn emit_elf_header_android_a64() {
     // Section 5: .shstrtab
     emit_u32_le(36); emit_u32_le(3)  // SHT_STRTAB
     emit_u64_le(0)
-    emit_u64_le(472); emit_u64_le(472); emit_u64_le(46)
+    emit_u64_le(528); emit_u64_le(528); emit_u64_le(46)
     emit_u32_le(0); emit_u32_le(0)
     emit_u64_le(1); emit_u64_le(0)
 

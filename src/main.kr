@@ -859,15 +859,44 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
             resolve_win_iat_fixups(text_start, iat_rva_val)
         }
     } else if emit_mode == 4 {
-        // Android PIE ELF: relative entry point, patch load segment sizes
+        // Android PIE ELF: separate RX code + RW data segments
         uint64 android_entry = entry_off
         patch_u32(24, android_entry & 0xFFFFFFFF)
         patch_u32(28, (android_entry >> 32) & 0xFFFFFFFF)
-        uint64 total_size = codegen_output_len()
-        patch_u32(208, total_size & 0xFFFFFFFF)
-        patch_u32(212, (total_size >> 32) & 0xFFFFFFFF)
-        patch_u32(216, total_size & 0xFFFFFFFF)
-        patch_u32(220, (total_size >> 32) & 0xFFFFFFFF)
+        // PT_LOAD RX: code + strings only (up to current output)
+        uint64 rx_size = codegen_output_len()
+        patch_u32(208, rx_size & 0xFFFFFFFF)
+        patch_u32(212, (rx_size >> 32) & 0xFFFFFFFF)
+        patch_u32(216, rx_size & 0xFFFFFFFF)
+        patch_u32(220, (rx_size >> 32) & 0xFFFFFFFF)
+        // Pad to 64KB page boundary for PT_LOAD RW
+        uint64 rx_aligned = (rx_size + 0xFFFF) & ~0xFFFF
+        while codegen_output_len() < rx_aligned { emit_byte(0) }
+        // Emit data segment (statics)
+        uint64 a_dfoff = codegen_output_len()
+        emit_static_data()
+        uint64 a_draw = codegen_output_len() - a_dfoff
+        uint64 a_dal = (a_draw + 0xFFFF) & ~0xFFFF
+        if a_dal == 0 { a_dal = 0x10000 }
+        while codegen_output_len() < a_dfoff + a_dal { emit_byte(0) }
+        // Re-resolve static fixups to point into RW segment
+        // a64_compute_va returns file_offset for target_os==3, and the data
+        // is at file offset a_dfoff which maps to VA rx_aligned (page-aligned
+        // vaddr right after the RX segment). Pass a_dfoff directly.
+        resolve_static_fixups_a64(a_dfoff)
+        // Patch PT_LOAD RW @288: p_offset, p_vaddr, p_paddr, p_filesz, p_memsz
+        patch_u32(296, a_dfoff & 0xFFFFFFFF)
+        patch_u32(300, (a_dfoff >> 32) & 0xFFFFFFFF)
+        // vaddr = rx_aligned (page-aligned, contiguous after RX in VA space)
+        patch_u32(304, rx_aligned & 0xFFFFFFFF)
+        patch_u32(308, (rx_aligned >> 32) & 0xFFFFFFFF)
+        // paddr = same as vaddr
+        patch_u32(312, rx_aligned & 0xFFFFFFFF)
+        patch_u32(316, (rx_aligned >> 32) & 0xFFFFFFFF)
+        patch_u32(320, a_draw & 0xFFFFFFFF)
+        patch_u32(324, (a_draw >> 32) & 0xFFFFFFFF)
+        patch_u32(328, a_draw & 0xFFFFFFFF)
+        patch_u32(332, (a_draw >> 32) & 0xFFFFFFFF)
     }
 
     codegen_write_output(output_path)
@@ -1419,15 +1448,39 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     emit_string_data()
     resolve_string_fixups_a64(str_start7)
 
-    // Android PIE ELF: relative entry point, patch load segment sizes
+    // Android PIE ELF: separate RX code + RW data segments
     uint64 android_entry = find_main_offset()
     patch_u32(24, android_entry & 0xFFFFFFFF)
     patch_u32(28, (android_entry >> 32) & 0xFFFFFFFF)
-    uint64 android_total = codegen_output_len()
-    patch_u32(208, android_total & 0xFFFFFFFF)
-    patch_u32(212, (android_total >> 32) & 0xFFFFFFFF)
-    patch_u32(216, android_total & 0xFFFFFFFF)
-    patch_u32(220, (android_total >> 32) & 0xFFFFFFFF)
+    // PT_LOAD RX: code + strings only
+    uint64 android_rx = codegen_output_len()
+    patch_u32(208, android_rx & 0xFFFFFFFF)
+    patch_u32(212, (android_rx >> 32) & 0xFFFFFFFF)
+    patch_u32(216, android_rx & 0xFFFFFFFF)
+    patch_u32(220, (android_rx >> 32) & 0xFFFFFFFF)
+    // Pad to 64KB page boundary for PT_LOAD RW
+    uint64 android_rx_aligned = (android_rx + 0xFFFF) & ~0xFFFF
+    while codegen_output_len() < android_rx_aligned { emit_byte(0) }
+    // Emit data segment (statics)
+    uint64 a7_dfoff = codegen_output_len()
+    emit_static_data()
+    uint64 a7_draw = codegen_output_len() - a7_dfoff
+    uint64 a7_dal = (a7_draw + 0xFFFF) & ~0xFFFF
+    if a7_dal == 0 { a7_dal = 0x10000 }
+    while codegen_output_len() < a7_dfoff + a7_dal { emit_byte(0) }
+    // Re-resolve static fixups to point into RW segment
+    resolve_static_fixups_a64(a7_dfoff)
+    // Patch PT_LOAD RW @288
+    patch_u32(296, a7_dfoff & 0xFFFFFFFF)
+    patch_u32(300, (a7_dfoff >> 32) & 0xFFFFFFFF)
+    patch_u32(304, android_rx_aligned & 0xFFFFFFFF)
+    patch_u32(308, (android_rx_aligned >> 32) & 0xFFFFFFFF)
+    patch_u32(312, android_rx_aligned & 0xFFFFFFFF)
+    patch_u32(316, (android_rx_aligned >> 32) & 0xFFFFFFFF)
+    patch_u32(320, a7_draw & 0xFFFFFFFF)
+    patch_u32(324, (a7_draw >> 32) & 0xFFFFFFFF)
+    patch_u32(328, a7_draw & 0xFFFFFFFF)
+    patch_u32(332, (a7_draw >> 32) & 0xFFFFFFFF)
 
     uint64 android_len = codegen_output_len()
     uint64 android_buf = alloc(android_len)
