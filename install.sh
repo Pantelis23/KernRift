@@ -78,12 +78,11 @@ fi
 # Download kr runner
 echo "Downloading kr..."
 if [ "$IS_ANDROID" = "1" ]; then
-    curl -sL -o "$INSTALL_DIR/kr" "$BASE/kr-linux-arm64"
-    chmod +x "$INSTALL_DIR/kr"
+    curl -sL -o "$INSTALL_DIR/kr" "$BASE/kr-android-arm64"
 else
     curl -sL -o "$INSTALL_DIR/kr" "$BASE/kr-$OS_NAME-$ARCH_NAME"
-    chmod +x "$INSTALL_DIR/kr"
 fi
+chmod +x "$INSTALL_DIR/kr"
 
 # Download standard library
 STD_DIR="$HOME/.local/share/kernrift/std"

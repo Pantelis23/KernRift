@@ -43,6 +43,17 @@ try {
     exit 1
 }
 
+# Download kr runner
+$KrBinaryName = "kr-windows-$ArchName.exe"
+$KrUrl = "https://github.com/$Repo/releases/latest/download/$KrBinaryName"
+$KrDest = "$InstallDir\kr.exe"
+Write-Host "Downloading $KrBinaryName..."
+try {
+    Invoke-WebRequest -Uri $KrUrl -OutFile $KrDest -UseBasicParsing
+} catch {
+    Write-Host "  warning: could not download kr runner" -ForegroundColor Yellow
+}
+
 # Download standard library
 $StdDir = "$env:LOCALAPPDATA\KernRift\std"
 if (!(Test-Path $StdDir)) {
