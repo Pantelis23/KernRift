@@ -597,6 +597,10 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
     } else if emit_mode == 3 {
         // ELF relocatable (.o) — no header at start, code goes at offset 0
         header_size = 0
+    } else if emit_mode == 4 {
+        // Android PIE ELF
+        emit_elf_header_android_a64()
+        header_size = 256
     }
 
     uint64 text_start = codegen_output_len()
@@ -854,6 +858,16 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
             // Resolve x86_64 IAT fixups
             resolve_win_iat_fixups(text_start, iat_rva_val)
         }
+    } else if emit_mode == 4 {
+        // Android PIE ELF: relative entry point, patch load segment sizes
+        uint64 android_entry = entry_off
+        patch_u32(24, android_entry & 0xFFFFFFFF)
+        patch_u32(28, (android_entry >> 32) & 0xFFFFFFFF)
+        uint64 total_size = codegen_output_len()
+        patch_u32(208, total_size & 0xFFFFFFFF)
+        patch_u32(212, (total_size >> 32) & 0xFFFFFFFF)
+        patch_u32(216, total_size & 0xFFFFFFFF)
+        patch_u32(220, (total_size >> 32) & 0xFFFFFFFF)
     }
 
     codegen_write_output(output_path)
@@ -1603,6 +1617,8 @@ fn main() {
                     emit_mode = 2
                 } else if str_starts_with(emit_str, "obj", 3) != 0 {
                     emit_mode = 3
+                } else if str_starts_with(emit_str, "android", 7) != 0 {
+                    emit_mode = 4
                 }
             } else if str_eq_full(arg, "-c") != 0 {
                 emit_set = 1
@@ -1619,6 +1635,9 @@ fn main() {
                     target_os = 2
                 } else if str_starts_with(tgt_str, "linux", 5) != 0 {
                     target_os = 0
+                } else if str_starts_with(tgt_str, "android", 7) != 0 {
+                    target_os = 3
+                    emit_mode = 4
                 }
             } else if str_starts_with(arg, "--version", 9) != 0 {
                 uint64 msg = "krc 2.1.0 (KernRift self-hosted compiler)\n"
@@ -1651,6 +1670,8 @@ fn main() {
     // Auto-set target_os from emit_mode if not explicitly set
     if emit_mode == 1 && target_os == 0 { target_os = 1 }
     if emit_mode == 2 && target_os == 0 { target_os = 2 }
+    if emit_mode == 4 && target_os == 0 { target_os = 3 }
+    if emit_mode == 4 { arch = 1 }
 
     // Derive output name from input if not specified with -o
     if str_eq_full(output_path, "a.krbo") != 0 && input_path != 0 {

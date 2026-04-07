@@ -456,8 +456,8 @@ fn emit_a64_static_load(uint64 data_offset) {
     uint32 dp = data_offset
     unsafe { *(fe4 as uint32) = dp }
     static_fixup_count = static_fixup_count + 1
-    if target_os == 2 {
-        // PE: ADRP + LDR (PC-relative, ASLR-compatible)
+    if target_os == 2 || target_os == 3 {
+        // PE/Android: ADRP + LDR (PC-relative, ASLR-compatible)
         emit_a64(0x90000010)           // ADRP X16, #0 (patched)
         emit_a64(0xF9400200)           // LDR X0, [X16, #0] (patched)
     } else {
@@ -480,8 +480,8 @@ fn emit_a64_static_store(uint64 data_offset) {
     uint32 dp = data_offset
     unsafe { *(fe4 as uint32) = dp }
     static_fixup_count = static_fixup_count + 1
-    if target_os == 2 {
-        // PE: ADRP + STR (PC-relative, ASLR-compatible)
+    if target_os == 2 || target_os == 3 {
+        // PE/Android: ADRP + STR (PC-relative, ASLR-compatible)
         emit_a64(0x90000010)           // ADRP X16, #0 (patched)
         emit_a64(0xF9000209)           // STR X9, [X16, #0] (patched)
     } else {
@@ -575,8 +575,8 @@ fn gen_expr_a64(uint64 node) {
         uint32 so = str_offset
         unsafe { *(fe4 as uint32) = so }
         str_fixup_count = str_fixup_count + 1
-        if target_os == 2 {
-            // PE: ADRP + ADD (PC-relative, patched later)
+        if target_os == 2 || target_os == 3 {
+            // PE/Android: ADRP + ADD (PC-relative, patched later)
             emit_a64(0x90000010)       // ADRP X16, #0
             emit_a64(0x91000200)       // ADD X0, X16, #0
         } else {
@@ -1961,7 +1961,9 @@ fn gen_expr_a64(uint64 node) {
 
         // Built-in: get_arch_id() → compile-time arch ID
         if tok_matches(wct, "get_arch_id", 11) != 0 {
-            if target_os == 2 {
+            if target_os == 3 {
+                emit_a64_mov_imm(0, 7)
+            } else if target_os == 2 {
                 emit_a64_mov_imm(0, 4)
             } else if target_os == 1 {
                 emit_a64_mov_imm(0, 6)
@@ -2764,6 +2766,10 @@ fn a64_compute_va(uint64 file_offset) -> uint64 {
         // Mach-O: vmaddr(0x100000000) + file_offset
         return 0x100000000 + file_offset
     }
+    if target_os == 3 {
+        // Android PIE: PT_LOAD maps file offset 0 to VA 0
+        return file_offset
+    }
     // ELF: load at 0x400000
     return 0x400000 + file_offset
 }
@@ -2780,8 +2786,8 @@ fn resolve_static_fixups_a64(uint64 data_start) {
         unsafe { *(fe4 as uint32) -> data_off }
         uint64 wdo = data_off
         uint64 wco = code_off
-        if target_os == 2 {
-            // PE: patch ADRP + LDR/STR with PC-relative offsets
+        if target_os == 2 || target_os == 3 {
+            // PE/Android: patch ADRP + LDR/STR with PC-relative offsets
             // Code at file offset wco has RVA = 0x1000 + (wco - text_start_global)
             // But we don't have text_start here. Use data_start to compute:
             // target RVA = data_start was passed as data_rva - 0xE00 for compat,
@@ -2837,8 +2843,8 @@ fn resolve_string_fixups_a64(uint64 str_data_start) {
         unsafe { *(fe4 as uint32) -> str_off }
         uint64 wso = str_off
         uint64 wco = code_off
-        if target_os == 2 {
-            // PE: patch ADRP + ADD with PC-relative offsets
+        if target_os == 2 || target_os == 3 {
+            // PE/Android: patch ADRP + ADD with PC-relative offsets
             uint64 code_va = a64_compute_va(wco)
             uint64 target_va = a64_compute_va(str_data_start + wso)
             uint64 code_page = code_va >> 12

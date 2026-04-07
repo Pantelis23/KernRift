@@ -1,0 +1,106 @@
+// KernRift self-hosted compiler — Android ARM64 ELF output format
+//
+// Emits a PIE (Position-Independent Executable) ELF for Android ARM64.
+// Android requires ET_DYN with PT_INTERP pointing to /system/bin/linker64.
+//
+// Header layout (256 bytes total):
+//   [0..64)    ELF header (e_type=ET_DYN, e_machine=EM_AARCH64, e_phnum=3)
+//   [64..120)  PT_PHDR program header
+//   [120..176) PT_INTERP program header
+//   [176..232) PT_LOAD program header (filesz/memsz patched later)
+//   [232..253) Interpreter string: "/system/bin/linker64\0"
+//   [253..256) Padding zeros
+//
+// Patch offsets:
+//   Byte 24:  e_entry (uint64) — relative entry point
+//   Byte 208: PT_LOAD p_filesz (uint64)
+//   Byte 216: PT_LOAD p_memsz (uint64)
+
+@export
+fn emit_elf_header_android_a64() {
+    // ---- ELF header [0..64) ----
+    // e_ident: magic + class/data/version/osabi + padding
+    emit_byte(0x7F); emit_byte(69); emit_byte(76); emit_byte(70)  // \x7FELF
+    emit_byte(2)       // EI_CLASS = ELFCLASS64
+    emit_byte(1)       // EI_DATA = ELFDATA2LSB
+    emit_byte(1)       // EI_VERSION = EV_CURRENT
+    emit_byte(0)       // EI_OSABI = ELFOSABI_NONE
+    uint64 i = 0
+    while i < 8 { emit_byte(0); i = i + 1 }  // EI_ABIVERSION + padding
+
+    emit_u16_le(3)     // e_type = ET_DYN (PIE)
+    emit_u16_le(0xB7)  // e_machine = EM_AARCH64
+    emit_u32_le(1)     // e_version = EV_CURRENT
+
+    // Byte 24: e_entry (patched later with relative entry offset)
+    emit_u64_le(0)
+
+    emit_u64_le(64)    // e_phoff = 64 (program headers start right after ELF header)
+    emit_u64_le(0)     // e_shoff = 0 (no section headers)
+    emit_u32_le(0)     // e_flags
+    emit_u16_le(64)    // e_ehsize = 64
+    emit_u16_le(56)    // e_phentsize = 56
+    emit_u16_le(3)     // e_phnum = 3 (PHDR + INTERP + LOAD)
+    emit_u16_le(64)    // e_shentsize
+    emit_u16_le(0)     // e_shnum
+    emit_u16_le(0)     // e_shstrndx
+
+    // ---- PT_PHDR [64..120) ----
+    emit_u32_le(6)     // p_type = PT_PHDR
+    emit_u32_le(4)     // p_flags = PF_R
+    emit_u64_le(64)    // p_offset = 64
+    emit_u64_le(64)    // p_vaddr = 64
+    emit_u64_le(64)    // p_paddr = 64
+    emit_u64_le(168)   // p_filesz = 3 * 56 = 168
+    emit_u64_le(168)   // p_memsz = 168
+    emit_u64_le(8)     // p_align = 8
+
+    // ---- PT_INTERP [120..176) ----
+    emit_u32_le(3)     // p_type = PT_INTERP
+    emit_u32_le(4)     // p_flags = PF_R
+    emit_u64_le(232)   // p_offset = 232 (where interp string starts)
+    emit_u64_le(232)   // p_vaddr = 232
+    emit_u64_le(232)   // p_paddr = 232
+    emit_u64_le(21)    // p_filesz = 21 (strlen + null)
+    emit_u64_le(21)    // p_memsz = 21
+    emit_u64_le(1)     // p_align = 1
+
+    // ---- PT_LOAD [176..232) ----
+    emit_u32_le(1)     // p_type = PT_LOAD
+    emit_u32_le(7)     // p_flags = PF_R | PF_W | PF_X
+    emit_u64_le(0)     // p_offset = 0
+    emit_u64_le(0)     // p_vaddr = 0
+    emit_u64_le(0)     // p_paddr = 0
+    // Byte 208: p_filesz (patched later with total file size)
+    emit_u64_le(0)
+    // Byte 216: p_memsz (patched later with total file size)
+    emit_u64_le(0)
+    emit_u64_le(0x10000) // p_align = 0x10000
+
+    // ---- Interpreter string [232..253) ----
+    // "/system/bin/linker64\0" = 21 bytes
+    emit_byte(47)   // /
+    emit_byte(115)  // s
+    emit_byte(121)  // y
+    emit_byte(115)  // s
+    emit_byte(116)  // t
+    emit_byte(101)  // e
+    emit_byte(109)  // m
+    emit_byte(47)   // /
+    emit_byte(98)   // b
+    emit_byte(105)  // i
+    emit_byte(110)  // n
+    emit_byte(47)   // /
+    emit_byte(108)  // l
+    emit_byte(105)  // i
+    emit_byte(110)  // n
+    emit_byte(107)  // k
+    emit_byte(101)  // e
+    emit_byte(114)  // r
+    emit_byte(54)   // 6
+    emit_byte(52)   // 4
+    emit_byte(0)    // null terminator
+
+    // ---- Padding [253..256) ----
+    emit_byte(0); emit_byte(0); emit_byte(0)
+}

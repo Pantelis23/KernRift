@@ -15,6 +15,7 @@ cat \
     "$DIR/src/format_macho.kr" \
     "$DIR/src/format_pe.kr" \
     "$DIR/src/format_archive.kr" \
+    "$DIR/src/format_android.kr" \
     "$DIR/src/analysis.kr" \
     "$DIR/src/living.kr" \
     "$DIR/src/runtime.kr" \
