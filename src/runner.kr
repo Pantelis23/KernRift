@@ -49,7 +49,15 @@ fn lz4_decompress_frame_r(uint64 input, uint64 input_len, uint64 output) -> uint
 }
 
 fn detect_arch_r() -> uint64 {
-    return get_arch_id()
+    uint64 aid = get_arch_id()
+    if aid == 2 {
+        uint64 lfd = file_open("/system/bin/linker64", 0)
+        if lfd < 0xFFFFFFFF {
+            file_close(lfd)
+            return 7
+        }
+    }
+    return aid
 }
 
 static uint64 cli_argc = 0
@@ -149,7 +157,7 @@ fn main() {
     if host_arch == 1 || host_arch == 3 || host_arch == 5 {
         filter_x86_64_bcj(binary, decomp_size, 0)
     }
-    if host_arch == 2 || host_arch == 4 || host_arch == 6 {
+    if host_arch == 2 || host_arch == 4 || host_arch == 6 || host_arch == 7 {
         filter_aarch64_bcj(binary, decomp_size, 0)
     }
 

@@ -1380,6 +1380,68 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
         mai = mai + 1
     }
 
+    // === Compile ARM64 Android PIE ELF ===
+    target_os = 3
+    out_len = 0
+    fn_count = 0
+    fixup_count = 0
+    static_fixup_count = 0
+    str_fixup_count = 0
+    str_len = 0
+    fnaddr_fixup_count = 0
+
+    ast_init(131072)
+    parser_init(my_tokens, saved_tcount)
+    uint64 root7 = parse_module()
+    dce_init()
+    dce_scan(root7)
+
+    emit_elf_header_android_a64()
+    uint64 text_start7 = codegen_output_len()
+
+    uint32 child7 = ast_child(root7)
+    uint64 wchild7 = child7
+    while wchild7 != 0 {
+        uint32 ck7 = ast_kind(wchild7)
+        if ck7 == 2 {
+            uint32 fn_name7 = ast_data1(wchild7)
+            if dce_is_live(fn_name7) != 0 { gen_function_a64(wchild7) }
+        }
+        uint32 nxt7 = ast_next(wchild7)
+        wchild7 = nxt7
+    }
+    resolve_fixups_a64()
+    resolve_fnaddr_fixups_a64()
+    uint64 data_start7 = codegen_output_len()
+    emit_static_data()
+    resolve_static_fixups_a64(data_start7)
+    uint64 str_start7 = codegen_output_len()
+    emit_string_data()
+    resolve_string_fixups_a64(str_start7)
+
+    // Android PIE ELF: relative entry point, patch load segment sizes
+    uint64 android_entry = find_main_offset()
+    patch_u32(24, android_entry & 0xFFFFFFFF)
+    patch_u32(28, (android_entry >> 32) & 0xFFFFFFFF)
+    uint64 android_total = codegen_output_len()
+    patch_u32(208, android_total & 0xFFFFFFFF)
+    patch_u32(212, (android_total >> 32) & 0xFFFFFFFF)
+    patch_u32(216, android_total & 0xFFFFFFFF)
+    patch_u32(220, (android_total >> 32) & 0xFFFFFFFF)
+
+    uint64 android_len = codegen_output_len()
+    uint64 android_buf = alloc(android_len)
+    uint64 adi = 0
+    while adi < android_len {
+        uint64 sp = out_buf + adi
+        uint64 dp = android_buf + adi
+        uint64 bv = 0
+        unsafe { *(sp as uint8) -> bv }
+        uint8 bb = bv
+        unsafe { *(dp as uint8) = bb }
+        adi = adi + 1
+    }
+
     // Reset target_os for fat binary emission
     target_os = 0
 
@@ -1392,6 +1454,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     filter_aarch64_bcj(a64_buf, a64_len, 1)
     filter_aarch64_bcj(pe_a64_buf, pe_a64_len, 1)
     filter_aarch64_bcj(macho_a64_buf, macho_a64_len, 1)
+    filter_aarch64_bcj(android_buf, android_len, 1)
 
     // === LZ4 compress all 6 ===
     uint64 x86_comp = alloc(x86_len + 256)
@@ -1412,11 +1475,14 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     uint64 macho_a64_comp = alloc(macho_a64_len + 256)
     uint64 macho_a64_comp_len = lz4_compress_frame(macho_a64_buf, macho_a64_len, macho_a64_comp)
 
+    uint64 android_comp = alloc(android_len + 256)
+    uint64 android_comp_len = lz4_compress_frame(android_buf, android_len, android_comp)
+
     // === Emit KrboFat v2 ===
     out_len = 0
-    emit_krbofat_v2_header(6)
-    // 6 entries x 48 bytes = 288
-    uint64 data_offset = 16 + 6 * 48
+    emit_krbofat_v2_header(7)
+    // 7 entries x 48 bytes = 336
+    uint64 data_offset = 16 + 7 * 48
     uint64 pad = (16 - (data_offset & 15)) & 15
     data_offset = data_offset + pad
     uint64 x86_data_off = data_offset
@@ -1425,6 +1491,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     uint64 pe_a64_data_off = pe_x86_data_off + pe_x86_comp_len
     uint64 macho_x86_data_off = pe_a64_data_off + pe_a64_comp_len
     uint64 macho_a64_data_off = macho_x86_data_off + macho_x86_comp_len
+    uint64 android_data_off = macho_a64_data_off + macho_a64_comp_len
 
     emit_krbofat_v2_entry_hdr(1, 1, x86_data_off, x86_comp_len, x86_len)
     emit_krbofat_v2_entry_rt(0, 0)
@@ -1437,6 +1504,8 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     emit_krbofat_v2_entry_hdr(5, 1, macho_x86_data_off, macho_x86_comp_len, macho_x86_len)
     emit_krbofat_v2_entry_rt(0, 0)
     emit_krbofat_v2_entry_hdr(6, 1, macho_a64_data_off, macho_a64_comp_len, macho_a64_len)
+    emit_krbofat_v2_entry_rt(0, 0)
+    emit_krbofat_v2_entry_hdr(7, 1, android_data_off, android_comp_len, android_len)
     emit_krbofat_v2_entry_rt(0, 0)
 
     // Padding
@@ -1509,6 +1578,17 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
         mai = mai + 1
     }
 
+    // Compressed Android ARM64 blob
+    adi = 0
+    while adi < android_comp_len {
+        uint64 p = android_comp + adi
+        uint64 bv = 0
+        unsafe { *(p as uint8) -> bv }
+        uint8 bb = bv
+        emit_byte(bb)
+        adi = adi + 1
+    }
+
     codegen_write_output(output_path)
 
     uint8[64] nb
@@ -1535,6 +1615,10 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     msg = ") + mac-arm("
     write(1, msg, 12)
     nl = fmt_uint(nb, macho_a64_len)
+    write(1, nb, nl)
+    msg = ") + android-arm64("
+    write(1, msg, 18)
+    nl = fmt_uint(nb, android_len)
     write(1, nb, nl)
     msg = ") -> "
     write(1, msg, 5)
