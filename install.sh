@@ -67,13 +67,23 @@ BASE="https://github.com/$REPO/releases/latest/download"
 
 # Download krc compiler
 echo "Downloading krc..."
-curl -sL -o "$INSTALL_DIR/krc" "$BASE/krc-$OS_NAME-$ARCH_NAME"
-chmod +x "$INSTALL_DIR/krc"
+if [ "$IS_ANDROID" = "1" ]; then
+    curl -sL -o "$INSTALL_DIR/krc" "$BASE/krc-android-arm64"
+    chmod +x "$INSTALL_DIR/krc"
+else
+    curl -sL -o "$INSTALL_DIR/krc" "$BASE/krc-$OS_NAME-$ARCH_NAME"
+    chmod +x "$INSTALL_DIR/krc"
+fi
 
 # Download kr runner
 echo "Downloading kr..."
-curl -sL -o "$INSTALL_DIR/kr" "$BASE/kr-$OS_NAME-$ARCH_NAME"
-chmod +x "$INSTALL_DIR/kr"
+if [ "$IS_ANDROID" = "1" ]; then
+    curl -sL -o "$INSTALL_DIR/kr" "$BASE/kr-linux-arm64"
+    chmod +x "$INSTALL_DIR/kr"
+else
+    curl -sL -o "$INSTALL_DIR/kr" "$BASE/kr-$OS_NAME-$ARCH_NAME"
+    chmod +x "$INSTALL_DIR/kr"
+fi
 
 # Download standard library
 STD_DIR="$HOME/.local/share/kernrift/std"
