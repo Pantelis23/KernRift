@@ -1906,13 +1906,11 @@ fn gen_expr_a64(uint64 node) {
                 emit_a64(0xB9006FE9)  // str w9, [sp, #0x6C] -- wait, offset 0x60
                 // Actually: str w9, [sp, #0x60]
                 emit_a64(0xB90060E9)  // str w9, [sp, #0x60]
-                // CreateProcessA(NULL, path, NULL, NULL, 0, 0, NULL, NULL, &si, &pi)
-                // x0 = NULL (lpApplicationName)
-                emit_a64_mov_imm(0, 0)
-                // x1 = path (lpCommandLine)
+                // CreateProcessA(path, NULL, NULL, NULL, 0, 0, NULL, NULL, &si, &pi)
+                // x0 = path (lpApplicationName) — avoids CreateProcessA modifying read-only lpCommandLine
                 emit_a64_load_x0(temp_slot_0)
-                emit_a64_mov(1, 0)
-                emit_a64_mov_imm(0, 0)
+                // x1 = NULL (lpCommandLine)
+                emit_a64_mov_imm(1, 0)
                 // x2 = NULL, x3 = NULL, x4 = 0, x5 = 0, x6 = NULL, x7 = NULL
                 emit_a64_mov_imm(2, 0)
                 emit_a64_mov_imm(3, 0)

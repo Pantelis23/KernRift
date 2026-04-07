@@ -3020,10 +3020,10 @@ fn gen_expr(uint64 node) {
                 emit_byte(0xF3); emit_byte(0xAA)
                 // mov dword [rsp+0x50], 104 (STARTUPINFOA.cb)
                 emit_byte(0xC7); emit_byte(0x44); emit_byte(0x24); emit_byte(0x50); emit_u32_le(104)
-                // rcx = NULL (lpApplicationName)
-                emit_byte(0x48); emit_byte(0x31); emit_byte(0xC9)
-                // rdx = path — load from stack (offset adjusted by 0xD0 for sub rsp)
-                emit_byte(0x48); emit_byte(0x8B); emit_byte(0x94); emit_byte(0x24); emit_u32_le(temp_slot_0 + 0xD0)
+                // rcx = path (lpApplicationName) — avoids CreateProcessA modifying read-only lpCommandLine
+                emit_byte(0x48); emit_byte(0x8B); emit_byte(0x8C); emit_byte(0x24); emit_u32_le(temp_slot_0 + 0xD0)
+                // rdx = NULL (lpCommandLine)
+                emit_byte(0x48); emit_byte(0x31); emit_byte(0xD2)
                 // r8 = NULL
                 emit_byte(0x4D); emit_byte(0x31); emit_byte(0xC0)
                 // r9 = NULL
