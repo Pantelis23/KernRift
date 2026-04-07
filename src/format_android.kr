@@ -58,7 +58,7 @@ fn emit_elf_header_android_a64() {
     emit_u64_le(0x10000)
 
     // ---- PT_DYNAMIC [232..288) ----
-    emit_u32_le(2); emit_u32_le(6)
+    emit_u32_le(2); emit_u32_le(4)  // PF_R only (no write — .dynamic is read-only for us)
     emit_u64_le(312); emit_u64_le(312); emit_u64_le(312)
     emit_u64_le(16); emit_u64_le(16); emit_u64_le(8)
 
@@ -104,7 +104,7 @@ fn emit_elf_header_android_a64() {
     // Section 1: .dynamic (sh_link=2 → .dynstr)
     emit_u32_le(1)      // sh_name
     emit_u32_le(6)      // sh_type = SHT_DYNAMIC
-    emit_u64_le(3)      // sh_flags = SHF_WRITE | SHF_ALLOC
+    emit_u64_le(2)      // sh_flags = SHF_ALLOC (no write)
     emit_u64_le(312)    // sh_addr
     emit_u64_le(312)    // sh_offset
     emit_u64_le(16)     // sh_size
