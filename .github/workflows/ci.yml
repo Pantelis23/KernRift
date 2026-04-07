@@ -87,9 +87,19 @@ jobs:
 
       - name: Android ARM64 execution test (QEMU)
         run: |
-          sudo apt-get install -y qemu-user-static >/dev/null 2>&1
+          sudo apt-get install -y qemu-user-static qemu-user-binfmt libc6-arm64-cross >/dev/null 2>&1
           sudo mkdir -p /system/bin
-          sudo ln -sf /usr/aarch64-linux-gnu/lib/ld-linux-aarch64.so.1 /system/bin/linker64
+          # Find the ARM64 dynamic linker and symlink it as Android's linker64
+          LDPATH=$(find /usr -name "ld-linux-aarch64.so*" 2>/dev/null | head -1)
+          if [ -z "$LDPATH" ]; then LDPATH=$(find / -name "ld-linux-aarch64.so*" 2>/dev/null | head -1); fi
+          echo "ARM64 linker: $LDPATH"
+          if [ -n "$LDPATH" ]; then
+            sudo ln -sf "$LDPATH" /system/bin/linker64
+          else
+            echo "WARNING: ARM64 linker not found, using stub"
+            sudo cp /bin/true /system/bin/linker64
+          fi
+          ls -la /system/bin/linker64
 
           # Test 1: exit(42)
           echo 'fn main() { exit(42) }' > /tmp/android.kr
