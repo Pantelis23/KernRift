@@ -51,7 +51,7 @@ fn emit_elf_header_android_a64() {
     emit_u64_le(21); emit_u64_le(21); emit_u64_le(1)
 
     // ---- PT_LOAD [176..232) ----
-    emit_u32_le(1); emit_u32_le(7)
+    emit_u32_le(1); emit_u32_le(5)  // PF_R|PF_X (no write — Android rejects RWX)
     emit_u64_le(0); emit_u64_le(0); emit_u64_le(0)
     emit_u64_le(0)      // p_filesz @208 (patched)
     emit_u64_le(0)      // p_memsz @216 (patched)
