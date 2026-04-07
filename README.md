@@ -7,7 +7,7 @@ A self-hosted systems language compiler for kernel-first development. KernRift c
 ## Features
 
 - **Self-hosting** — the compiler compiles itself to a fixed point
-- **5-platform** — Linux, Windows, macOS, and Android from a single source (x86_64 + ARM64)
+- **Cross-platform** — Linux, Windows, macOS, and Android from a single source (x86_64 + ARM64)
 - **Fat binaries** — default output is KrboFat (7 platform slices, BCJ+LZ4-compressed)
 - **Zero dependencies** — static executables, no libc, no linker
 - **Kernel-first** — inline assembly, `@naked` functions, `@packed` structs, signed comparisons, volatile memory, bitfield ops, `--freestanding` mode

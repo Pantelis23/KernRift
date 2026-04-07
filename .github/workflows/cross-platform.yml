@@ -170,33 +170,19 @@ jobs:
           fi
 
       - name: Self-compilation on macOS (Rosetta)
-        continue-on-error: true
         run: |
           set +e
           chmod +x bins/krc-macos-x64
-          ls -la bins/krc-macos-x64
-          echo "pwd: $(pwd)"
-          echo '--- test alloc ---'
-          chmod +x bins/macos-x64-alloc_test
-          ./bins/macos-x64-alloc_test; echo "alloc_test: $?"
-          echo '--- compile ---'
           echo 'fn main() { println("macOS self-compiled!"); exit(42) }' > test.kr
-          cat test.kr
-          ls -la test.kr
-          ./bins/krc-macos-x64 --arch=x86_64 --emit=macho test.kr -o test_out >stdout.txt 2>stderr.txt
+          ./bins/krc-macos-x64 --arch=x86_64 --emit=macho test.kr -o test_out 2>&1
           COMP=$?
-          echo "compile exit: $COMP"
-          echo "stdout:"; cat stdout.txt
-          echo "stderr:"; cat stderr.txt
-          ls -la test_out 2>/dev/null || echo "test_out not created"
-          if [ "$COMP" -ne 0 ]; then echo "FAIL: compile stage"; exit 1; fi
+          if [ "$COMP" -ne 0 ]; then echo "FAIL: compile (exit=$COMP)"; exit 1; fi
           chmod +x test_out
           ./test_out; CODE=$?
-          echo "run exit: $CODE"
           if [ "$CODE" -eq 42 ]; then
             echo "PASS: macOS x86_64 self-compilation"
           else
-            echo "FAIL: macOS x86_64 self-compilation (exit=$CODE)"
+            echo "FAIL: run exit=$CODE (expected 42)"
             exit 1
           fi
 
