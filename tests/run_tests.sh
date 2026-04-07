@@ -811,6 +811,27 @@ else
 fi
 rm -f /tmp/krc_err_$$.kr /tmp/krc_err_$$ /tmp/krc_stderr_$$
 
+# --- Android emit test ---
+echo ""
+echo "--- Android emit test ---"
+TOTAL=$((TOTAL + 1))
+printf 'fn main() { exit(42) }\n' > /tmp/krc_android_$$.kr
+if $KRC --emit=android /tmp/krc_android_$$.kr -o /tmp/krc_android_$$ > /dev/null 2>&1; then
+    magic=$(xxd -l 4 -p /tmp/krc_android_$$ 2>/dev/null)
+    etype=$(xxd -s 16 -l 2 -p /tmp/krc_android_$$ 2>/dev/null)
+    if [ "$magic" = "7f454c46" ] && [ "$etype" = "0300" ]; then
+        PASS=$((PASS + 1))
+        echo "  android_emit: PASS (valid PIE ELF, $(wc -c < /tmp/krc_android_$$) bytes)"
+    else
+        FAIL=$((FAIL + 1))
+        echo "  android_emit: FAIL (bad ELF: magic=$magic etype=$etype)"
+    fi
+else
+    FAIL=$((FAIL + 1))
+    echo "  android_emit: FAIL (compilation failed)"
+fi
+rm -f /tmp/krc_android_$$.kr /tmp/krc_android_$$
+
 # --- Bootstrap test ---
 echo ""
 echo "--- Bootstrap test ---"

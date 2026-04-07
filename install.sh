@@ -17,18 +17,44 @@ INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 
 # Detect platform
 ARCH=$(uname -m)
+IS_ANDROID=0
+if [ -f "/system/bin/linker64" ]; then
+    IS_ANDROID=1
+fi
+
 case "$ARCH" in
     x86_64|amd64) ARCH_NAME="x86_64" ;;
-    aarch64|arm64) ARCH_NAME="arm64" ;;
+    aarch64|arm64)
+        if [ "$IS_ANDROID" = "1" ]; then
+            ARCH_NAME="android-arm64"
+        else
+            ARCH_NAME="arm64"
+        fi
+        ;;
     *) echo "error: unsupported architecture: $ARCH"; exit 1 ;;
 esac
 
 OS=$(uname -s)
 case "$OS" in
-    Linux)  OS_NAME="linux" ;;
+    Linux)
+        if [ "$IS_ANDROID" = "1" ]; then
+            OS_NAME="android"
+        else
+            OS_NAME="linux"
+        fi
+        ;;
     Darwin) OS_NAME="macos" ;;
     *)      echo "error: unsupported OS: $OS"; exit 1 ;;
 esac
+
+# Android install path
+if [ "$IS_ANDROID" = "1" ]; then
+    if [ -d "/data/data/com.termux" ]; then
+        INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
+    else
+        INSTALL_DIR="${INSTALL_DIR:-/data/local/tmp}"
+    fi
+fi
 
 echo "=== KernRift Installer ==="
 echo "Platform: $OS_NAME $ARCH_NAME"
