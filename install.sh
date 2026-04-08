@@ -88,8 +88,27 @@ curl -sL -o "$INSTALL_DIR/krc" "$BASE/$KRC_ASSET"
 chmod +x "$INSTALL_DIR/krc"
 
 echo "Downloading $KR_ASSET..."
-curl -sL -o "$INSTALL_DIR/kr" "$BASE/$KR_ASSET"
-chmod +x "$INSTALL_DIR/kr"
+if [ "$IS_TERMUX" = "1" ]; then
+    # Termux: SELinux blocks raw execve from PIE binaries.
+    # Install kr-bin (the real binary) and kr (a shell wrapper).
+    curl -sL -o "$INSTALL_DIR/kr-bin" "$BASE/$KR_ASSET"
+    chmod +x "$INSTALL_DIR/kr-bin"
+    cat > "$INSTALL_DIR/kr" << 'KRWRAP'
+#!/data/data/com.termux/files/usr/bin/sh
+kr-bin "$@"
+rc=$?
+if [ $rc -eq 120 ]; then
+    ./kr-exec "$@"
+    rc=$?
+    rm -f ./kr-exec
+fi
+exit $rc
+KRWRAP
+    chmod +x "$INSTALL_DIR/kr"
+else
+    curl -sL -o "$INSTALL_DIR/kr" "$BASE/$KR_ASSET"
+    chmod +x "$INSTALL_DIR/kr"
+fi
 
 # Download standard library
 echo "Installing standard library..."
