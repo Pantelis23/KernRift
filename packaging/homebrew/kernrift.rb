@@ -38,8 +38,13 @@ class Kernrift < Formula
     krc_name = stable.url.split("/").last
     bin.install krc_name => "krc"
 
-    # Download the kr runner script
-    kr_url = "#{BASE}/kr"
+    # Download the kr runner (platform-specific)
+    if OS.mac?
+      kr_suffix = Hardware::CPU.arm? ? "kr-macos-arm64" : "kr-macos-x86_64"
+    else
+      kr_suffix = Hardware::CPU.arm? ? "kr-linux-arm64" : "kr-linux-x86_64"
+    end
+    kr_url = "#{BASE}/#{kr_suffix}"
     curl_download kr_url, to: buildpath/"kr"
     bin.install "kr"
     chmod 0755, bin/"kr"

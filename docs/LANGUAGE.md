@@ -295,19 +295,16 @@ fn entry() {
 }
 ```
 
-The compiler performs a topological sort of all call edges and rejects any
-cycle, including trivial self-calls and mutual recursion (`a → b → a`).  Use
-an explicit loop for iterative algorithms.
+Recursive calls are supported, including mutual recursion.  The compiler
+resolves forward references during code generation, so function ordering does
+not matter:
 
-**KR0.1 restriction:** recursive calls are rejected at compile time.  A
-function that calls itself directly or through a cycle will produce an error:
-
+```kr
+fn fib(uint64 n) -> uint64 {
+    if n <= 1 { return n }
+    return fib(n - 1) + fib(n - 2)
+}
 ```
-error: recursion unsupported in KR0.1: factorial -> factorial
-```
-
-Mutual recursion (`a → b → a`) is equally rejected.  Use an explicit loop or
-an iterative stack to replace recursive algorithms.
 
 ### Built-in `print` statement
 
@@ -1001,17 +998,21 @@ status_reg = bit_insert(status_reg, 4, 4, 0xF) // set bits 7:4 to 0xF
 
 ## 22. Volatile Blocks
 
-`volatile { ... }` is syntactically and semantically identical to `unsafe { ... }`
-in the current compiler (no optimizer to defeat). It serves as documentation of
-intent — the programmer is performing a memory-mapped I/O access that must not
-be elided or reordered by future optimization passes:
+`volatile { ... }` performs memory-mapped I/O accesses with hardware memory
+barriers to prevent reordering. Unlike `unsafe { ... }`, volatile blocks emit
+a fence instruction after every load and before every store:
+
+- x86_64: `mfence` (full memory barrier)
+- ARM64: `DMB ISH` (data memory barrier, inner-shareable)
+
+Use volatile blocks for MMIO register access where ordering matters:
 
 ```kr
-volatile { *(mmio_base as uint32) -> status }
-volatile { *(mmio_base as uint32) = 0x01 }
+volatile { *(mmio_base as uint32) = 0x01 }   // barrier before store
+volatile { *(mmio_base as uint32) -> status } // barrier after load
 ```
 
-The cast type determines the access width.  Supported types are `uint8`,
+The cast type determines the access width. Supported types are `uint8`,
 `uint16`, `uint32`, and `uint64`:
 
 ```kr
@@ -1019,20 +1020,8 @@ volatile { *(port_base as uint16) -> reg16 }
 volatile { *(port_base as uint16) = 0x1234 }
 ```
 
-### Volatile barriers
-
-`volatile_barrier()` emits a compiler-level ordering fence.  It prevents the
-compiler from reordering memory accesses across the barrier without emitting a
-hardware fence instruction:
-
-```kr
-volatile { *(mmio_base as uint32) = 0x01 }
-volatile_barrier()
-volatile { *(mmio_base as uint32) -> status }
-```
-
-For hardware-level ordering, use inline assembly barriers (`dmb`, `dsb` on
-ARM64, or `mfence` on x86_64) instead.
+For device register access requiring stronger ordering (e.g., `DSB SY`), use
+inline assembly barriers explicitly after the volatile block.
 
 ---
 

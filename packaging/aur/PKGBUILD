@@ -1,6 +1,6 @@
 # Maintainer: Pantelis Christou <pantelis@kernrift.org>
 pkgname=kernrift
-pkgver=2.1.0
+pkgver=2.4.0
 pkgrel=1
 pkgdesc="Self-hosted systems language compiler for kernel development"
 arch=('x86_64' 'aarch64')
@@ -14,7 +14,7 @@ _raw="https://raw.githubusercontent.com/Pantelis23/KernRift/main"
 
 source_x86_64=(
     "krc::${_base}/krc-linux-x86_64"
-    "kr::${_base}/kr"
+    "kr::${_base}/kr-linux-x86_64"
     "string.kr::${_raw}/std/string.kr"
     "io.kr::${_raw}/std/io.kr"
     "math.kr::${_raw}/std/math.kr"
@@ -22,12 +22,18 @@ source_x86_64=(
     "mem.kr::${_raw}/std/mem.kr"
     "vec.kr::${_raw}/std/vec.kr"
     "map.kr::${_raw}/std/map.kr"
+    "color.kr::${_raw}/std/color.kr"
+    "fb.kr::${_raw}/std/fb.kr"
+    "fixedpoint.kr::${_raw}/std/fixedpoint.kr"
+    "font.kr::${_raw}/std/font.kr"
+    "memfast.kr::${_raw}/std/memfast.kr"
+    "widget.kr::${_raw}/std/widget.kr"
     "LICENSE::${_raw}/LICENSE"
 )
 
 source_aarch64=(
     "krc::${_base}/krc-linux-arm64"
-    "kr::${_base}/kr"
+    "kr::${_base}/kr-linux-arm64"
     "string.kr::${_raw}/std/string.kr"
     "io.kr::${_raw}/std/io.kr"
     "math.kr::${_raw}/std/math.kr"
@@ -35,12 +41,18 @@ source_aarch64=(
     "mem.kr::${_raw}/std/mem.kr"
     "vec.kr::${_raw}/std/vec.kr"
     "map.kr::${_raw}/std/map.kr"
+    "color.kr::${_raw}/std/color.kr"
+    "fb.kr::${_raw}/std/fb.kr"
+    "fixedpoint.kr::${_raw}/std/fixedpoint.kr"
+    "font.kr::${_raw}/std/font.kr"
+    "memfast.kr::${_raw}/std/memfast.kr"
+    "widget.kr::${_raw}/std/widget.kr"
     "LICENSE::${_raw}/LICENSE"
 )
 
 # Update these after release with: sha256sum <file>
-sha256sums_x86_64=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
-sha256sums_aarch64=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
+sha256sums_x86_64=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
+sha256sums_aarch64=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
 
 package() {
     # Install krc compiler
@@ -52,7 +64,7 @@ package() {
     # Install standard library
     local stddir="$pkgdir/usr/share/kernrift/std"
     install -dm755 "$stddir"
-    for mod in string io math fmt mem vec map; do
+    for mod in string io math fmt mem vec map color fb fixedpoint font memfast widget; do
         install -Dm644 "$srcdir/${mod}.kr" "$stddir/${mod}.kr"
     done
 

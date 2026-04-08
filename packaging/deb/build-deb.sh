@@ -34,7 +34,7 @@ Homepage: https://kernrift.org
 Description: Self-hosted systems language compiler for kernel development
  KernRift is a self-hosting systems language compiler that produces
  native executables for x86_64 and AArch64. It compiles itself to a
- fixed point in under 25ms. Features include inline assembly, naked
+ fixed point in 55ms on modern hardware. Features include inline assembly, naked
  functions, packed structs, signed comparisons, bitfield operations,
  volatile memory access, and freestanding mode for bare-metal targets.
  .
