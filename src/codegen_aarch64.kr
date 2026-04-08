@@ -2038,8 +2038,8 @@ fn gen_expr_a64(uint64 node) {
             emit_a64(0xC85FFC03)
             // CMP X3, X1
             emit_a64(0xEB01007F)
-            // B.NE +12 (skip STXR+CBNZ, go to fail)
-            emit_a64(0x54000061)
+            // B.NE +20 (skip STXR+CBNZ+MOV+B, go to fail)
+            emit_a64(0x540000A1)
             // STLXR W4, X2, [X0]
             emit_a64(0xC804FC02)
             // CBNZ W4, -16 (retry from LDAXR)
@@ -2072,7 +2072,7 @@ fn gen_expr_a64(uint64 node) {
             // STLXR W4, X3, [X0]
             emit_a64(0xC804FC03)
             // CBNZ W4, -12 (retry from LDAXR)
-            emit_a64(0x35FFFF64)
+            emit_a64(0x35FFFFA4)
             // MOV X0, X2 (return old value)
             emit_a64_mov(0, 2)
             return

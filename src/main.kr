@@ -2134,7 +2134,7 @@ fn main() {
             write(2, "usage: krc [options] <file.kr> [-o output]\n\n", 44)
             write(2, "options:\n", 9)
             write(2, "  --arch=x86_64|arm64\n", 22)
-            write(2, "  --emit=elfexe|macho|pe|obj|asm\n", 33)
+            write(2, "  --emit=elfexe|macho|pe|obj|android|asm\n", 41)
             write(2, "  -c                        emit relocatable .o\n", 48)
             write(2, "  --target=linux|macos|windows\n", 31)
             write(2, "  --version\n\n", 13)

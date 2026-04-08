@@ -3137,11 +3137,9 @@ fn gen_expr(uint64 node) {
             gen_expr(wa3)
             // rcx = desired (from rax)
             emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
-            // rax = expected
+            // rax = expected (cmpxchg compares [rdx] with rax)
             emit_load_rax_from_stack(temp_slot_1)
             // rdx = ptr
-            emit_byte(0x48); emit_byte(0x8B); emit_byte(0x14); emit_byte(0x24)
-            emit_load_rax_from_stack(temp_slot_1)
             emit_byte(0x48); emit_byte(0x8B); emit_byte(0x54); emit_byte(0x24)
             if temp_slot_0 < 128 {
                 emit_byte(temp_slot_0)
