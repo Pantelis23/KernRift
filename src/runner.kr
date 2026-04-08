@@ -119,15 +119,27 @@ fn main() {
     file_read(fd, data, fsize)
     file_close(fd)
 
+    // Debug: print file info
+    write(2, "kr: file=", 9)
+    uint64 kplen = str_len_r(krbo_path)
+    write(2, krbo_path, kplen)
+    write(2, " size=", 6)
+    print(fsize)
+    write(2, " m0=", 4)
+    uint32 m0 = 0
+    unsafe { *(data as uint32) -> m0 }
+    uint64 wm0 = m0
+    print(wm0)
+    write(2, " m4=", 4)
+    uint64 dp4 = data + 4
+    uint32 m4 = 0
+    unsafe { *(dp4 as uint32) -> m4 }
+    uint64 wm4 = m4
+    print(wm4)
+    write(2, "\n", 1)
+
     // Check magic
     uint64 is_fat = 0
-    uint32 m0 = 0
-    uint32 m4 = 0
-    unsafe { *(data as uint32) -> m0 }
-    uint64 dp4 = data + 4
-    unsafe { *(dp4 as uint32) -> m4 }
-    uint64 wm0 = m0
-    uint64 wm4 = m4
     if wm0 == 0x4F42524B && wm4 == 0x00544146 {
         is_fat = 1
     }
