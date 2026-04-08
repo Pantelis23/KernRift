@@ -140,6 +140,10 @@ fn main() {
         if raw_os == 3 { tmp = "/data/local/tmp/.kr-exec" }
         uint64 tfd = file_open(tmp, 1)
         if tfd > 0xFFFFFFFFFFFFF000 && raw_os == 3 {
+            tmp = "/data/data/com.termux/files/usr/tmp/.kr-exec"
+            tfd = file_open(tmp, 1)
+        }
+        if tfd > 0xFFFFFFFFFFFFF000 && raw_os == 3 {
             tmp = ".kr-exec"
             tfd = file_open(tmp, 1)
         }
@@ -217,7 +221,10 @@ fn main() {
     }
     uint64 tfd = file_open(tmp_path, 1)
     if tfd > 0xFFFFFFFFFFFFF000 && host_os == 3 {
-        // Fallback for Termux: use current directory
+        tmp_path = "/data/data/com.termux/files/usr/tmp/.kr-exec"
+        tfd = file_open(tmp_path, 1)
+    }
+    if tfd > 0xFFFFFFFFFFFFF000 && host_os == 3 {
         tmp_path = ".kr-exec"
         tfd = file_open(tmp_path, 1)
     }
@@ -233,6 +240,29 @@ fn main() {
 
     set_executable(tmp_path)
     exec_process(tmp_path)
+
+    // execve failed — on Android, try Termux prefix path
+    if host_os == 3 {
+        // Try writing to Termux tmp and executing from there
+        uint64 tmux_path = "/data/data/com.termux/files/usr/tmp/.kr-exec"
+        uint64 tfd2 = file_open(tmux_path, 1)
+        if tfd2 < 0xFFFFFFFFFFFFF000 {
+            file_write(tfd2, binary, decomp_size)
+            file_close(tfd2)
+            set_executable(tmux_path)
+            exec_process(tmux_path)
+        }
+        // Last resort: try current directory
+        uint64 cwd_path = ".kr-exec"
+        uint64 tfd3 = file_open(cwd_path, 1)
+        if tfd3 < 0xFFFFFFFFFFFFF000 {
+            file_write(tfd3, binary, decomp_size)
+            file_close(tfd3)
+            set_executable(cwd_path)
+            exec_process(cwd_path)
+        }
+    }
+
     write(2, "kr: exec failed\n", 17)
     exit(1)
 }
