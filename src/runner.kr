@@ -63,6 +63,7 @@ fn detect_arch_r() -> uint64 {
 static uint64 cli_argc = 0
 static uint64 cli_argv = 0
 static uint64 cli_envp = 0
+static uint64 exec_errno = 0
 
 fn win_init_args_r() {
     uint64 cmdline = cli_argv
@@ -240,40 +241,14 @@ fn main() {
     set_executable(tmp_path)
     exec_process(tmp_path)
 
-    // execve failed — print which path failed
+    // execve failed — print path and errno
     write(2, "kr: exec failed: ", 18)
     uint64 tplen2 = str_len_r(tmp_path)
     write(2, tmp_path, tplen2)
-    write(2, "\n", 1)
-
-    // On Android, try alternative paths
-    if host_os == 3 {
-        uint64 tmux_path = "/data/data/com.termux/files/usr/tmp/.kr-exec"
-        uint64 tfd2 = file_open(tmux_path, 1)
-        if tfd2 < 0xFFFFFFFFFFFFF000 {
-            file_write(tfd2, binary, decomp_size)
-            file_close(tfd2)
-            set_executable(tmux_path)
-            exec_process(tmux_path)
-            write(2, "kr: exec failed: ", 18)
-            uint64 tl2 = str_len_r(tmux_path)
-            write(2, tmux_path, tl2)
-            write(2, "\n", 1)
-        }
-        uint64 cwd_path = ".kr-exec"
-        uint64 tfd3 = file_open(cwd_path, 1)
-        if tfd3 < 0xFFFFFFFFFFFFF000 {
-            file_write(tfd3, binary, decomp_size)
-            file_close(tfd3)
-            set_executable(cwd_path)
-            exec_process(cwd_path)
-            write(2, "kr: exec failed: ", 18)
-            uint64 tl3 = str_len_r(cwd_path)
-            write(2, cwd_path, tl3)
-            write(2, "\n", 1)
-        }
-    }
-
-    write(2, "kr: all exec attempts failed\n", 29)
+    write(2, " (errno=", 8)
+    // exec_errno is negative on Linux (-EACCES=-13, -ENOEXEC=-8, etc.)
+    uint64 abs_errno = 0 - exec_errno
+    print(abs_errno)
+    write(2, ")\n", 2)
     exit(1)
 }

@@ -3082,6 +3082,11 @@ fn gen_expr(uint64 node) {
                 emit_byte(0x0F); emit_byte(0x05)
                 // Restore stack if execve failed (only reached on error)
                 emit_byte(0x48); emit_byte(0x83); emit_byte(0xC4); emit_byte(0x10) // add rsp, 16
+                // Save errno (rax) to exec_errno static if defined
+                uint64 errno_off_x = static_lookup_by_name("exec_errno", 10)
+                if errno_off_x != 0xFFFFFFFF {
+                    emit_static_store(errno_off_x)
+                }
             }
             return
         }

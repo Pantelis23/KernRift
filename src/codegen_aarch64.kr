@@ -1975,6 +1975,11 @@ fn gen_expr_a64(uint64 node) {
                 emit_a64(0xD4000001) // svc #0
                 // Restore stack if execve failed (only reached on error)
                 emit_a64(0x910043FF) // add sp, sp, #16
+                // Save errno (x0) to exec_errno static if defined
+                uint64 errno_off_a = static_lookup_by_name("exec_errno", 10)
+                if errno_off_a != 0xFFFFFFFF {
+                    emit_a64_static_store(errno_off_a)
+                }
             }
             return
         }
