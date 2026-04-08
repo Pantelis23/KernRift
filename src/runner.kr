@@ -139,6 +139,10 @@ fn main() {
         if raw_os == 2 { tmp = ".\\kr-run.exe" }
         if raw_os == 3 { tmp = "/data/local/tmp/.kr-exec" }
         uint64 tfd = file_open(tmp, 1)
+        if tfd > 0xFFFFFFFFFFFFF000 && raw_os == 3 {
+            tmp = ".kr-exec"
+            tfd = file_open(tmp, 1)
+        }
         if tfd > 0xFFFFFFFFFFFFF000 {
             write(2, "kr: failed to create temp file\n", 31)
             exit(1)
@@ -212,6 +216,11 @@ fn main() {
         tmp_path = "/data/local/tmp/.kr-exec"
     }
     uint64 tfd = file_open(tmp_path, 1)
+    if tfd > 0xFFFFFFFFFFFFF000 && host_os == 3 {
+        // Fallback for Termux: use current directory
+        tmp_path = ".kr-exec"
+        tfd = file_open(tmp_path, 1)
+    }
     if tfd > 0xFFFFFFFFFFFFF000 {
         write(2, "kr: failed to create temp file: ", 32)
         uint64 tplen = str_len_r(tmp_path)
