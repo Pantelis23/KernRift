@@ -185,7 +185,8 @@ These are compiler intrinsics — no import needed, available on all platforms:
 | Memory | `memcpy(dst, src, len)`, `memset(dst, val, len)`, `str_len(s)`, `str_eq(a, b)` |
 | Signed cmp | `signed_lt(a, b)`, `signed_gt(a, b)`, `signed_le(a, b)`, `signed_ge(a, b)` |
 | Bitfield | `bit_get(v, n)`, `bit_set(v, n)`, `bit_clear(v, n)`, `bit_range(v, lo, hi)`, `bit_insert(v, lo, hi, bits)` |
-| Meta | `fn_addr(name)`, `call_ptr(addr, ...)`, `get_module_path()`, `exec_process(path, args)`, `get_target_os()`, `get_arch_id()` |
+| Atomic | `atomic_load(ptr)`, `atomic_store(ptr, val)`, `atomic_cas(ptr, exp, des)`, `atomic_add(ptr, val)`, `atomic_sub(ptr, val)`, `atomic_and(ptr, val)`, `atomic_or(ptr, val)`, `atomic_xor(ptr, val)` |
+| Meta | `fn_addr(name)`, `call_ptr(addr, ...)`, `get_module_path(buf, size)`, `exec_process(path)`, `set_executable(path)`, `get_target_os()`, `get_arch_id()`, `fmt_uint(buf, val)` |
 
 ## Standard Library
 
@@ -218,7 +219,7 @@ A VS Code extension (v0.2.3) is available on the VS Code Marketplace:
 
 ## Architecture
 
-14,800+ lines of KernRift across 15 source files + 13 stdlib modules (~2000+ lines). Self-compiles to a 383 KB native binary in 55ms, or a 2.6 MB universal fat binary (7 slices) in ~280ms (AMD Ryzen 9 7900X). 119 tests, bootstrap fixed point verified on 5 platforms (Linux x86_64, Linux ARM64, Windows x86_64, Windows ARM64, Android ARM64).
+15,500+ lines of KernRift across 15 source files + 13 stdlib modules (~2000+ lines). Self-compiles to a 383 KB native binary in 55ms, or a 2.6 MB universal fat binary (7 slices) in ~280ms (AMD Ryzen 9 7900X). 119 tests, bootstrap fixed point verified on 5 platforms (Linux x86_64, Linux ARM64, Windows x86_64, Windows ARM64, Android ARM64).
 
 | File | Purpose |
 |------|---------|

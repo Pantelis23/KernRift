@@ -1163,7 +1163,9 @@ available without any `extern fn` declaration.  The compiler maps these to
 | `get_target_os() -> uint64`                  | Return the target OS identifier (e.g. `1` = Linux, `2` = Windows, `3` = macOS). |
 | `get_arch_id() -> uint64`                    | Return the target architecture (`1` = x86-64, `2` = AArch64). |
 | `exec_process(path) -> uint32`               | Spawn and wait on an executable at `path`. Returns the exit code. |
+| `set_executable(path)`                       | Set execute permission on a file (`chmod 755` on Unix, no-op on Windows). |
 | `get_module_path(buf, size) -> uint64`        | Write the path of the current module into `buf` (up to `size` bytes). Returns bytes written. |
+| `fmt_uint(buf, val) -> uint64`               | Format unsigned integer `val` as decimal into `buf`. Returns length. |
 
 ### Example
 
@@ -1324,7 +1326,17 @@ fn fill([uint8] buf, uint64 n, uint8 val) {
 
 ```sh
 krc <file.kr>                        # compile to <stem>.krbo (native arch)
-krc --version
+krc --version                        # show version
+krc --help                           # show usage and options
+krc -h                               # same as --help
+```
+
+### Runner (kr)
+
+```sh
+kr <program.krbo>                    # extract and run fat binary
+kr --version                         # show runner version
+kr --help                            # show runner usage
 ```
 
 ### Check and analyse

@@ -17,6 +17,8 @@ All notable changes to `kernriftc` are documented in this file.
 - **Android linker argv shift**: detects and skips injected exe path from the Android linker.
 - **`exec_process` robustness**: restores SP on failure and saves `errno`.
 - **`exec_process` environment**: passes environment to `execve`.
+- **Functions with >6 parameters**: overflow args now correctly passed on the stack (SysV x86_64 ABI). Fixes `panel_new`, `button_new`, `progress_new`.
+- **`--emit=asm` MRS/MSR decoder**: fixed bitmask `0xFFE00000` to `0xFFF00000`.
 
 ## v2.4.0 - 2026-04-08
 

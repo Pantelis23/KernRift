@@ -6,7 +6,7 @@
 #   Homebrew (macOS/Linux):  brew install kernrift
 #   Scoop (Windows):         scoop bucket add kernrift https://github.com/Pantelis23/KernRift && scoop install kernrift
 #   Winget (Windows):        winget install Pantelis23.KernRift
-#   Debian/Ubuntu (.deb):    curl -sSLO https://github.com/.../kernrift_2.4.0_amd64.deb && sudo dpkg -i kernrift_*.deb
+#   Debian/Ubuntu (.deb):    curl -sSLO https://github.com/.../kernrift_2.4.1_amd64.deb && sudo dpkg -i kernrift_*.deb
 #   AUR (Arch Linux):        yay -S kernrift
 #   PowerShell (Windows):    irm https://raw.githubusercontent.com/Pantelis23/KernRift/main/install.ps1 | iex
 #
