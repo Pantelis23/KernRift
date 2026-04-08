@@ -3093,6 +3093,89 @@ fn gen_expr(uint64 node) {
             return
         }
 
+        // Built-in: atomic_load(ptr) → load with mfence
+        if tok_matches(wct, "atomic_load", 11) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr(wfa)
+            // mov rax, [rax]
+            emit_byte(0x48); emit_byte(0x8B); emit_byte(0x00)
+            // mfence
+            emit_byte(0x0F); emit_byte(0xAE); emit_byte(0xF0)
+            return
+        }
+
+        // Built-in: atomic_store(ptr, val)
+        if tok_matches(wct, "atomic_store", 12) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 wa1 = arg1
+            gen_expr(wa1)
+            emit_store_rax_to_stack(temp_slot_0)
+            uint32 arg2 = ast_next(wa1)
+            uint64 wa2 = arg2
+            gen_expr(wa2)
+            // mov rcx, rax (val)
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
+            emit_load_rax_from_stack(temp_slot_0)
+            // lock xchg [rax], rcx
+            emit_byte(0xF0); emit_byte(0x48); emit_byte(0x87); emit_byte(0x08)
+            return
+        }
+
+        // Built-in: atomic_cas(ptr, expected, desired) → 1 if swapped, 0 if not
+        if tok_matches(wct, "atomic_cas", 10) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 wa1 = arg1
+            gen_expr(wa1)
+            emit_store_rax_to_stack(temp_slot_0)
+            uint32 arg2 = ast_next(wa1)
+            uint64 wa2 = arg2
+            gen_expr(wa2)
+            emit_store_rax_to_stack(temp_slot_1)
+            uint32 arg3 = ast_next(wa2)
+            uint64 wa3 = arg3
+            gen_expr(wa3)
+            // rcx = desired (from rax)
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
+            // rax = expected
+            emit_load_rax_from_stack(temp_slot_1)
+            // rdx = ptr
+            emit_byte(0x48); emit_byte(0x8B); emit_byte(0x14); emit_byte(0x24)
+            emit_load_rax_from_stack(temp_slot_1)
+            emit_byte(0x48); emit_byte(0x8B); emit_byte(0x54); emit_byte(0x24)
+            if temp_slot_0 < 128 {
+                emit_byte(temp_slot_0)
+            } else {
+                emit_byte(0x94); emit_byte(0x24); emit_u32_le(temp_slot_0)
+            }
+            // lock cmpxchg [rdx], rcx
+            emit_byte(0xF0); emit_byte(0x48); emit_byte(0x0F); emit_byte(0xB1); emit_byte(0x0A)
+            // sete al; movzx eax, al → rax = 1 if equal (swapped), 0 if not
+            emit_byte(0x0F); emit_byte(0x94); emit_byte(0xC0)
+            emit_byte(0x0F); emit_byte(0xB6); emit_byte(0xC0)
+            return
+        }
+
+        // Built-in: atomic_add(ptr, val) → old value
+        if tok_matches(wct, "atomic_add", 10) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 wa1 = arg1
+            gen_expr(wa1)
+            emit_store_rax_to_stack(temp_slot_0)
+            uint32 arg2 = ast_next(wa1)
+            uint64 wa2 = arg2
+            gen_expr(wa2)
+            // rcx = val
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
+            // rax = ptr
+            emit_load_rax_from_stack(temp_slot_0)
+            // lock xadd [rax], rcx
+            emit_byte(0xF0); emit_byte(0x48); emit_byte(0x0F); emit_byte(0xC1); emit_byte(0x08)
+            // rax = old value (rcx has old value after xadd)
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC8)
+            return
+        }
+
         // Built-in: get_target_os() → compile-time OS constant (0=Linux, 1=macOS, 2=Windows)
         if tok_matches(wct, "get_target_os", 13) != 0 {
             emit_mov_rax_imm(target_os)
@@ -3400,6 +3483,105 @@ fn asm_emit_a64(uint64 str_tok) {
             si = si + 1
         }
         emit_a64(0xD4000001 | (imm << 5))
+        return
+    }
+    // MSR sysreg, xN
+    if asm_match(sptr, 0, "msr ", 4) != 0 {
+        uint64 sreg = 0
+        uint64 rt = 0
+        // Find comma position
+        uint64 ci = 4
+        while ci < slen {
+            uint64 ca = sptr + ci
+            uint64 cc = 0
+            unsafe { *(ca as uint8) -> cc }
+            if cc == 44 { break }
+            ci = ci + 1
+        }
+        // Parse sysreg name (offset 4 to ci)
+        if asm_match(sptr, 4, "sctlr_el1", 9) != 0 { sreg = 0x81000 }
+        if asm_match(sptr, 4, "tcr_el1", 7) != 0 { sreg = 0x82040 }
+        if asm_match(sptr, 4, "ttbr0_el1", 9) != 0 { sreg = 0x82000 }
+        if asm_match(sptr, 4, "ttbr1_el1", 9) != 0 { sreg = 0x82020 }
+        if asm_match(sptr, 4, "mair_el1", 8) != 0 { sreg = 0x8A200 }
+        if asm_match(sptr, 4, "vbar_el1", 8) != 0 { sreg = 0x8C000 }
+        if asm_match(sptr, 4, "elr_el1", 7) != 0 { sreg = 0x84020 }
+        if asm_match(sptr, 4, "spsr_el1", 8) != 0 { sreg = 0x84000 }
+        if asm_match(sptr, 4, "esr_el1", 7) != 0 { sreg = 0x85200 }
+        if asm_match(sptr, 4, "far_el1", 7) != 0 { sreg = 0x86000 }
+        if asm_match(sptr, 4, "daif", 4) != 0 { sreg = 0xB4220 }
+        if asm_match(sptr, 4, "sp_el0", 6) != 0 { sreg = 0x84100 }
+        if asm_match(sptr, 4, "tpidr_el0", 9) != 0 { sreg = 0xBD040 }
+        if asm_match(sptr, 4, "tpidr_el1", 9) != 0 { sreg = 0x8D080 }
+        if asm_match(sptr, 4, "cntp_ctl_el0", 12) != 0 { sreg = 0xBE220 }
+        if asm_match(sptr, 4, "cntp_tval_el0", 13) != 0 { sreg = 0xBE200 }
+        if asm_match(sptr, 4, "cntfrq_el0", 10) != 0 { sreg = 0xBE000 }
+        if asm_match(sptr, 4, "csselr_el1", 10) != 0 { sreg = 0xA0000 }
+        // Parse xN after comma+space
+        uint64 ri = ci + 1
+        uint64 ra = sptr + ri
+        uint64 rc = 0
+        unsafe { *(ra as uint8) -> rc }
+        if rc == 32 { ri = ri + 1 }
+        // Skip 'x'
+        ri = ri + 1
+        uint64 rnum = 0
+        while ri < slen {
+            uint64 rra = sptr + ri
+            uint64 rrc = 0
+            unsafe { *(rra as uint8) -> rrc }
+            if rrc >= 48 && rrc <= 57 { rnum = rnum * 10 + rrc - 48 }
+            ri = ri + 1
+        }
+        rt = rnum
+        emit_a64(0xD5100000 | sreg | rt)
+        return
+    }
+    // MRS xN, sysreg
+    if asm_match(sptr, 0, "mrs ", 4) != 0 {
+        uint64 sreg = 0
+        uint64 rt = 0
+        // Parse xN (starts at offset 4, skip 'x')
+        uint64 ri = 5
+        uint64 rnum = 0
+        while ri < slen {
+            uint64 rra = sptr + ri
+            uint64 rrc = 0
+            unsafe { *(rra as uint8) -> rrc }
+            if rrc == 44 { break }
+            if rrc >= 48 && rrc <= 57 { rnum = rnum * 10 + rrc - 48 }
+            ri = ri + 1
+        }
+        rt = rnum
+        // Parse sysreg name after ", "
+        uint64 si = ri + 1
+        uint64 sa = sptr + si
+        uint64 sc = 0
+        unsafe { *(sa as uint8) -> sc }
+        if sc == 32 { si = si + 1 }
+        if asm_match(sptr, si, "sctlr_el1", 9) != 0 { sreg = 0x81000 }
+        if asm_match(sptr, si, "tcr_el1", 7) != 0 { sreg = 0x82040 }
+        if asm_match(sptr, si, "ttbr0_el1", 9) != 0 { sreg = 0x82000 }
+        if asm_match(sptr, si, "ttbr1_el1", 9) != 0 { sreg = 0x82020 }
+        if asm_match(sptr, si, "mair_el1", 8) != 0 { sreg = 0x8A200 }
+        if asm_match(sptr, si, "vbar_el1", 8) != 0 { sreg = 0x8C000 }
+        if asm_match(sptr, si, "elr_el1", 7) != 0 { sreg = 0x84020 }
+        if asm_match(sptr, si, "spsr_el1", 8) != 0 { sreg = 0x84000 }
+        if asm_match(sptr, si, "esr_el1", 7) != 0 { sreg = 0x85200 }
+        if asm_match(sptr, si, "far_el1", 7) != 0 { sreg = 0x86000 }
+        if asm_match(sptr, si, "daif", 4) != 0 { sreg = 0xB4220 }
+        if asm_match(sptr, si, "currentel", 9) != 0 { sreg = 0x84240 }
+        if asm_match(sptr, si, "mpidr_el1", 9) != 0 { sreg = 0x800A0 }
+        if asm_match(sptr, si, "sp_el0", 6) != 0 { sreg = 0x84100 }
+        if asm_match(sptr, si, "tpidr_el0", 9) != 0 { sreg = 0xBD040 }
+        if asm_match(sptr, si, "tpidr_el1", 9) != 0 { sreg = 0x8D080 }
+        if asm_match(sptr, si, "cntfrq_el0", 10) != 0 { sreg = 0xBE000 }
+        if asm_match(sptr, si, "cntp_ctl_el0", 12) != 0 { sreg = 0xBE220 }
+        if asm_match(sptr, si, "cntp_tval_el0", 13) != 0 { sreg = 0xBE200 }
+        if asm_match(sptr, si, "clidr_el1", 9) != 0 { sreg = 0x90020 }
+        if asm_match(sptr, si, "ccsidr_el1", 10) != 0 { sreg = 0x90000 }
+        if asm_match(sptr, si, "csselr_el1", 10) != 0 { sreg = 0xA0000 }
+        emit_a64(0xD5300000 | sreg | rt)
         return
     }
     // Unrecognized — skip silently
@@ -3830,6 +4012,11 @@ fn gen_stmt(uint64 node) {
             emit_byte(0x0F)
             emit_byte(0xB6)
             emit_byte(0x00)
+        } else if wts == 2 {
+            // movzwl (%rax), %eax
+            emit_byte(0x0F)
+            emit_byte(0xB7)
+            emit_byte(0x00)
         } else if wts == 4 {
             // movl (%rax), %eax
             emit_byte(0x8B)
@@ -3839,6 +4026,13 @@ fn gen_stmt(uint64 node) {
             emit_byte(0x48)
             emit_byte(0x8B)
             emit_byte(0x00)
+        }
+        // Volatile barrier after load (prevent reordering)
+        uint32 vol_flag = ast_data3(node)
+        uint64 wvf = vol_flag
+        if wvf == 1 {
+            // mfence
+            emit_byte(0x0F); emit_byte(0xAE); emit_byte(0xF0)
         }
         // Store to destination variable
         uint32 dest_tok = ast_data2(node)
@@ -3886,10 +4080,22 @@ fn gen_stmt(uint64 node) {
             emit_byte(0x24)
             emit_u32_le(temp_slot_0)
         }
+        // Volatile barrier before store (prevent reordering)
+        uint32 vol_flag2 = ast_data3(node)
+        uint64 wvf2 = vol_flag2
+        if wvf2 == 1 {
+            // mfence
+            emit_byte(0x0F); emit_byte(0xAE); emit_byte(0xF0)
+        }
         // Store rcx to (%rax) based on type_size
         if wts == 1 {
             // movb %cl, (%rax)
             emit_byte(0x88)
+            emit_byte(0x08)
+        } else if wts == 2 {
+            // mov word [rax], cx
+            emit_byte(0x66)
+            emit_byte(0x89)
             emit_byte(0x08)
         } else if wts == 4 {
             // movl %ecx, (%rax)

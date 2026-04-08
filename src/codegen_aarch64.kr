@@ -132,6 +132,20 @@ fn emit_a64_ldrb(uint64 rt, uint64 rn, uint64 offset) {
     emit_a64(insn)
 }
 
+// LDRH Wt, [Xn, #imm12*2] (load halfword, unsigned offset)
+fn emit_a64_ldrh(uint64 rt, uint64 rn, uint64 offset) {
+    uint64 imm12 = offset / 2
+    uint64 insn = 0x79400000 | (imm12 << 10) | (rn << 5) | rt
+    emit_a64(insn)
+}
+
+// STRH Wt, [Xn, #imm12*2] (store halfword, unsigned offset)
+fn emit_a64_strh(uint64 rt, uint64 rn, uint64 offset) {
+    uint64 imm12 = offset / 2
+    uint64 insn = 0x79000000 | (imm12 << 10) | (rn << 5) | rt
+    emit_a64(insn)
+}
+
 // LDR Wt, [Xn, #imm12*4] (load 32-bit, unsigned offset)
 fn emit_a64_ldr32(uint64 rt, uint64 rn, uint64 offset) {
     uint64 imm12 = offset / 4
@@ -1976,6 +1990,94 @@ fn gen_expr_a64(uint64 node) {
             return
         }
 
+        // Built-in: atomic_load(ptr) → load-acquire
+        if tok_matches(wct, "atomic_load", 11) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr_a64(wfa)
+            // LDAR X0, [X0]
+            emit_a64(0xC8DFFC00)
+            return
+        }
+
+        // Built-in: atomic_store(ptr, val) → store-release
+        if tok_matches(wct, "atomic_store", 12) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 wa1 = arg1
+            gen_expr_a64(wa1)
+            emit_a64_store_x0(temp_slot_0)
+            uint32 arg2 = ast_next(wa1)
+            uint64 wa2 = arg2
+            gen_expr_a64(wa2)
+            emit_a64_mov(1, 0)
+            emit_a64_load_x0(temp_slot_0)
+            // STLR X1, [X0]
+            emit_a64(0xC89FFC01)
+            return
+        }
+
+        // Built-in: atomic_cas(ptr, expected, desired) → 1 if swapped, 0 if not
+        if tok_matches(wct, "atomic_cas", 10) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 wa1 = arg1
+            gen_expr_a64(wa1)
+            emit_a64_store_x0(temp_slot_0)
+            uint32 arg2 = ast_next(wa1)
+            uint64 wa2 = arg2
+            gen_expr_a64(wa2)
+            emit_a64_store_x0(temp_slot_1)
+            uint32 arg3 = ast_next(wa2)
+            uint64 wa3 = arg3
+            gen_expr_a64(wa3)
+            emit_a64_mov(2, 0)
+            emit_a64_load_x0(temp_slot_1)
+            emit_a64_mov(1, 0)
+            emit_a64_load_x0(temp_slot_0)
+            // x0=ptr, x1=expected, x2=desired
+            // LDAXR X3, [X0]
+            emit_a64(0xC85FFC03)
+            // CMP X3, X1
+            emit_a64(0xEB01007F)
+            // B.NE +12 (skip STXR+CBNZ, go to fail)
+            emit_a64(0x54000061)
+            // STLXR W4, X2, [X0]
+            emit_a64(0xC804FC02)
+            // CBNZ W4, -16 (retry from LDAXR)
+            emit_a64(0x35FFFF84)
+            // MOV X0, #1 (success)
+            emit_a64_mov_imm(0, 1)
+            // B +8 (skip fail)
+            emit_a64(0x14000002)
+            // fail: MOV X0, #0
+            emit_a64_mov_imm(0, 0)
+            return
+        }
+
+        // Built-in: atomic_add(ptr, val) → old value
+        if tok_matches(wct, "atomic_add", 10) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 wa1 = arg1
+            gen_expr_a64(wa1)
+            emit_a64_store_x0(temp_slot_0)
+            uint32 arg2 = ast_next(wa1)
+            uint64 wa2 = arg2
+            gen_expr_a64(wa2)
+            emit_a64_mov(1, 0)
+            emit_a64_load_x0(temp_slot_0)
+            // x0=ptr, x1=val
+            // LDAXR X2, [X0]
+            emit_a64(0xC85FFC02)
+            // ADD X3, X2, X1
+            emit_a64(0x8B010043)
+            // STLXR W4, X3, [X0]
+            emit_a64(0xC804FC03)
+            // CBNZ W4, -12 (retry from LDAXR)
+            emit_a64(0x35FFFF64)
+            // MOV X0, X2 (return old value)
+            emit_a64_mov(0, 2)
+            return
+        }
+
         // Built-in: get_target_os() → compile-time OS constant (0=Linux, 1=macOS, 2=Windows)
         if tok_matches(wct, "get_target_os", 13) != 0 {
             emit_a64_mov_imm(0, target_os)
@@ -2309,8 +2411,13 @@ fn gen_stmt_a64(uint64 node) {
         uint64 wa = addr_child
         gen_expr_a64(wa)
         if wts == 1 { emit_a64_ldrb(0, 0, 0) }
+        else if wts == 2 { emit_a64_ldrh(0, 0, 0) }
         else if wts == 4 { emit_a64_ldr32(0, 0, 0) }
         else { emit_a64_ldr(0, 0, 0) }
+        // Volatile barrier after load
+        uint32 vol_flag = ast_data3(node)
+        uint64 wvf = vol_flag
+        if wvf == 1 { emit_a64(0xD5033BBF) }
         uint32 dest_tok = ast_data2(node)
         uint64 doff = var_lookup(dest_tok)
         if doff != 0xFFFFFFFF {
@@ -2335,7 +2442,12 @@ fn gen_stmt_a64(uint64 node) {
         gen_expr_a64(wa)
         emit_a64_mov(10, 0)
         emit_a64_load_x0(temp_slot_0)
+        // Volatile barrier before store
+        uint32 vol_flag2 = ast_data3(node)
+        uint64 wvf2 = vol_flag2
+        if wvf2 == 1 { emit_a64(0xD5033BBF) }
         if wts == 1 { emit_a64_strb(0, 10, 0) }
+        else if wts == 2 { emit_a64_strh(0, 10, 0) }
         else if wts == 4 { emit_a64_str32(0, 10, 0) }
         else { emit_a64_str(0, 10, 0) }
         return

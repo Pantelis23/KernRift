@@ -1,0 +1,170 @@
+// KernRift standard library — framebuffer primitives
+// Framebuffer descriptor: 5 x uint64 = [addr, width, height, stride, bpp]
+
+fn fb_init(uint64 addr, uint64 w, uint64 h, uint64 stride, uint64 bpp) -> uint64 {
+    uint64 fb = alloc(40)
+    unsafe { *(fb as uint64) = addr }
+    uint64 p1 = fb + 8
+    unsafe { *(p1 as uint64) = w }
+    uint64 p2 = fb + 16
+    unsafe { *(p2 as uint64) = h }
+    uint64 p3 = fb + 24
+    unsafe { *(p3 as uint64) = stride }
+    uint64 p4 = fb + 32
+    unsafe { *(p4 as uint64) = bpp }
+    return fb
+}
+
+fn fb_addr(uint64 fb) -> uint64 {
+    uint64 v = 0
+    unsafe { *(fb as uint64) -> v }
+    return v
+}
+
+fn fb_width(uint64 fb) -> uint64 {
+    uint64 v = 0
+    uint64 p = fb + 8
+    unsafe { *(p as uint64) -> v }
+    return v
+}
+
+fn fb_height(uint64 fb) -> uint64 {
+    uint64 v = 0
+    uint64 p = fb + 16
+    unsafe { *(p as uint64) -> v }
+    return v
+}
+
+fn fb_stride(uint64 fb) -> uint64 {
+    uint64 v = 0
+    uint64 p = fb + 24
+    unsafe { *(p as uint64) -> v }
+    return v
+}
+
+fn fb_bpp(uint64 fb) -> uint64 {
+    uint64 v = 0
+    uint64 p = fb + 32
+    unsafe { *(p as uint64) -> v }
+    return v
+}
+
+fn fb_pixel(uint64 fb, uint64 x, uint64 y, uint64 color) {
+    uint64 addr = fb_addr(fb)
+    uint64 stride = fb_stride(fb)
+    uint64 bpp = fb_bpp(fb)
+    uint64 bytes_pp = bpp / 8
+    uint64 offset = addr + y * stride + x * bytes_pp
+    if bpp == 32 {
+        uint32 c = color
+        unsafe { *(offset as uint32) = c }
+    } else if bpp == 16 {
+        uint16 c = color
+        unsafe { *(offset as uint16) = c }
+    } else if bpp == 24 {
+        uint8 r = color >> 16
+        uint8 g = color >> 8
+        uint8 b = color
+        unsafe { *(offset as uint8) = b }
+        uint64 o1 = offset + 1
+        unsafe { *(o1 as uint8) = g }
+        uint64 o2 = offset + 2
+        unsafe { *(o2 as uint8) = r }
+    } else {
+        uint8 c = color
+        unsafe { *(offset as uint8) = c }
+    }
+}
+
+fn fb_rect(uint64 fb, uint64 x, uint64 y, uint64 w, uint64 h, uint64 color) {
+    uint64 addr = fb_addr(fb)
+    uint64 stride = fb_stride(fb)
+    uint64 bpp = fb_bpp(fb)
+    uint64 bytes_pp = bpp / 8
+    uint64 iy = 0
+    while iy < h {
+        uint64 row = addr + (y + iy) * stride + x * bytes_pp
+        if bpp == 32 {
+            uint32 c = color
+            uint64 ix = 0
+            while ix < w {
+                uint64 p = row + ix * 4
+                unsafe { *(p as uint32) = c }
+                ix = ix + 1
+            }
+        } else {
+            uint64 ix = 0
+            while ix < w {
+                fb_pixel(fb, x + ix, y + iy, color)
+                ix = ix + 1
+            }
+        }
+        iy = iy + 1
+    }
+}
+
+fn fb_fill(uint64 fb, uint64 color) {
+    fb_rect(fb, 0, 0, fb_width(fb), fb_height(fb), color)
+}
+
+fn fb_clear(uint64 fb) {
+    fb_fill(fb, 0)
+}
+
+fn fb_hline(uint64 fb, uint64 x, uint64 y, uint64 w, uint64 color) {
+    fb_rect(fb, x, y, w, 1, color)
+}
+
+fn fb_vline(uint64 fb, uint64 x, uint64 y, uint64 h, uint64 color) {
+    fb_rect(fb, x, y, 1, h, color)
+}
+
+fn fb_line(uint64 fb, uint64 x0, uint64 y0, uint64 x1, uint64 y1, uint64 color) {
+    // Bresenham's line algorithm using signed comparisons
+    uint64 dx = 0
+    uint64 dy = 0
+    uint64 sx = 1
+    uint64 sy = 1
+    if signed_lt(x1, x0) { dx = x0 - x1; sx = 0 - 1 } else { dx = x1 - x0 }
+    if signed_lt(y1, y0) { dy = y0 - y1; sy = 0 - 1 } else { dy = y1 - y0 }
+    uint64 err = 0
+    if signed_gt(dx, dy) { err = dx } else { err = 0 - dy }
+    err = err / 2 - (0 - err) / 2
+    // Use signed err: positive if dx > dy
+    if signed_ge(dx, dy) { err = dx } else { err = 0 - dy }
+    uint64 e2 = 0
+    uint64 cx = x0
+    uint64 cy = y0
+    while 1 {
+        fb_pixel(fb, cx, cy, color)
+        if cx == x1 && cy == y1 { break }
+        e2 = err + err
+        if signed_gt(e2, 0 - dy) {
+            err = err - dy
+            cx = cx + sx
+        }
+        if signed_lt(e2, dx) {
+            err = err + dx
+            cy = cy + sy
+        }
+    }
+}
+
+fn fb_rect_outline(uint64 fb, uint64 x, uint64 y, uint64 w, uint64 h, uint64 color) {
+    fb_hline(fb, x, y, w, color)
+    fb_hline(fb, x, y + h - 1, w, color)
+    fb_vline(fb, x, y, h, color)
+    fb_vline(fb, x + w - 1, y, h, color)
+}
+
+fn fb_blit(uint64 fb, uint64 x, uint64 y, uint64 src, uint64 src_w, uint64 src_h) {
+    uint64 addr = fb_addr(fb)
+    uint64 stride = fb_stride(fb)
+    uint64 iy = 0
+    while iy < src_h {
+        uint64 dst_row = addr + (y + iy) * stride + x * 4
+        uint64 src_row = src + iy * src_w * 4
+        memcpy(dst_row, src_row, src_w * 4)
+        iy = iy + 1
+    }
+}
