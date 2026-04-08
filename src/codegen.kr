@@ -3188,6 +3188,112 @@ fn gen_expr(uint64 node) {
             return
         }
 
+        // Built-in: atomic_sub(ptr, val) → old value
+        if tok_matches(wct, "atomic_sub", 10) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 wa1 = arg1
+            gen_expr(wa1)
+            emit_store_rax_to_stack(temp_slot_0)
+            uint32 arg2 = ast_next(wa1)
+            uint64 wa2 = arg2
+            gen_expr(wa2)
+            // rcx = val
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
+            // neg rcx (negate val since there's no XSUB)
+            emit_byte(0x48); emit_byte(0xF7); emit_byte(0xD9)
+            // rax = ptr
+            emit_load_rax_from_stack(temp_slot_0)
+            // lock xadd [rax], rcx
+            emit_byte(0xF0); emit_byte(0x48); emit_byte(0x0F); emit_byte(0xC1); emit_byte(0x08)
+            // rax = old value (rcx has old value after xadd)
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC8)
+            return
+        }
+
+        // Built-in: atomic_and(ptr, val) → old value
+        if tok_matches(wct, "atomic_and", 10) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 wa1 = arg1
+            gen_expr(wa1)
+            emit_store_rax_to_stack(temp_slot_0)
+            uint32 arg2 = ast_next(wa1)
+            uint64 wa2 = arg2
+            gen_expr(wa2)
+            // rcx = val
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
+            // rdi = ptr
+            emit_load_rax_from_stack(temp_slot_0)
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC7)
+            // retry: mov rax, [rdi]
+            emit_byte(0x48); emit_byte(0x8B); emit_byte(0x07)
+            // mov rdx, rax
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC2)
+            // and rdx, rcx
+            emit_byte(0x48); emit_byte(0x21); emit_byte(0xCA)
+            // lock cmpxchg [rdi], rdx
+            emit_byte(0xF0); emit_byte(0x48); emit_byte(0x0F); emit_byte(0xB1); emit_byte(0x17)
+            // jne retry (-16)
+            emit_byte(0x75); emit_byte(0xF0)
+            // rax = old value
+            return
+        }
+
+        // Built-in: atomic_or(ptr, val) → old value
+        if tok_matches(wct, "atomic_or", 9) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 wa1 = arg1
+            gen_expr(wa1)
+            emit_store_rax_to_stack(temp_slot_0)
+            uint32 arg2 = ast_next(wa1)
+            uint64 wa2 = arg2
+            gen_expr(wa2)
+            // rcx = val
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
+            // rdi = ptr
+            emit_load_rax_from_stack(temp_slot_0)
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC7)
+            // retry: mov rax, [rdi]
+            emit_byte(0x48); emit_byte(0x8B); emit_byte(0x07)
+            // mov rdx, rax
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC2)
+            // or rdx, rcx
+            emit_byte(0x48); emit_byte(0x09); emit_byte(0xCA)
+            // lock cmpxchg [rdi], rdx
+            emit_byte(0xF0); emit_byte(0x48); emit_byte(0x0F); emit_byte(0xB1); emit_byte(0x17)
+            // jne retry (-16)
+            emit_byte(0x75); emit_byte(0xF0)
+            // rax = old value
+            return
+        }
+
+        // Built-in: atomic_xor(ptr, val) → old value
+        if tok_matches(wct, "atomic_xor", 10) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 wa1 = arg1
+            gen_expr(wa1)
+            emit_store_rax_to_stack(temp_slot_0)
+            uint32 arg2 = ast_next(wa1)
+            uint64 wa2 = arg2
+            gen_expr(wa2)
+            // rcx = val
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
+            // rdi = ptr
+            emit_load_rax_from_stack(temp_slot_0)
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC7)
+            // retry: mov rax, [rdi]
+            emit_byte(0x48); emit_byte(0x8B); emit_byte(0x07)
+            // mov rdx, rax
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC2)
+            // xor rdx, rcx
+            emit_byte(0x48); emit_byte(0x31); emit_byte(0xCA)
+            // lock cmpxchg [rdi], rdx
+            emit_byte(0xF0); emit_byte(0x48); emit_byte(0x0F); emit_byte(0xB1); emit_byte(0x17)
+            // jne retry (-16)
+            emit_byte(0x75); emit_byte(0xF0)
+            // rax = old value
+            return
+        }
+
         // Built-in: get_target_os() → compile-time OS constant (0=Linux, 1=macOS, 2=Windows)
         if tok_matches(wct, "get_target_os", 13) != 0 {
             emit_mov_rax_imm(target_os)

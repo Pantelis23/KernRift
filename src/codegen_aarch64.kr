@@ -2094,6 +2094,106 @@ fn gen_expr_a64(uint64 node) {
             return
         }
 
+        // Built-in: atomic_sub(ptr, val) → old value
+        if tok_matches(wct, "atomic_sub", 10) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 wa1 = arg1
+            gen_expr_a64(wa1)
+            emit_a64_store_x0(temp_slot_0)
+            uint32 arg2 = ast_next(wa1)
+            uint64 wa2 = arg2
+            gen_expr_a64(wa2)
+            emit_a64_mov(1, 0)
+            emit_a64_load_x0(temp_slot_0)
+            // x0=ptr, x1=val
+            // LDAXR X2, [X0]
+            emit_a64(0xC85FFC02)
+            // SUB X3, X2, X1
+            emit_a64(0xCB010043)
+            // STLXR W4, X3, [X0]
+            emit_a64(0xC804FC03)
+            // CBNZ W4, -12 (retry from LDAXR)
+            emit_a64(0x35FFFFA4)
+            // MOV X0, X2 (return old value)
+            emit_a64_mov(0, 2)
+            return
+        }
+
+        // Built-in: atomic_and(ptr, val) → old value
+        if tok_matches(wct, "atomic_and", 10) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 wa1 = arg1
+            gen_expr_a64(wa1)
+            emit_a64_store_x0(temp_slot_0)
+            uint32 arg2 = ast_next(wa1)
+            uint64 wa2 = arg2
+            gen_expr_a64(wa2)
+            emit_a64_mov(1, 0)
+            emit_a64_load_x0(temp_slot_0)
+            // x0=ptr, x1=val
+            // LDAXR X2, [X0]
+            emit_a64(0xC85FFC02)
+            // AND X3, X2, X1
+            emit_a64(0x8A010043)
+            // STLXR W4, X3, [X0]
+            emit_a64(0xC804FC03)
+            // CBNZ W4, -12 (retry from LDAXR)
+            emit_a64(0x35FFFFA4)
+            // MOV X0, X2 (return old value)
+            emit_a64_mov(0, 2)
+            return
+        }
+
+        // Built-in: atomic_or(ptr, val) → old value
+        if tok_matches(wct, "atomic_or", 9) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 wa1 = arg1
+            gen_expr_a64(wa1)
+            emit_a64_store_x0(temp_slot_0)
+            uint32 arg2 = ast_next(wa1)
+            uint64 wa2 = arg2
+            gen_expr_a64(wa2)
+            emit_a64_mov(1, 0)
+            emit_a64_load_x0(temp_slot_0)
+            // x0=ptr, x1=val
+            // LDAXR X2, [X0]
+            emit_a64(0xC85FFC02)
+            // ORR X3, X2, X1
+            emit_a64(0xAA010043)
+            // STLXR W4, X3, [X0]
+            emit_a64(0xC804FC03)
+            // CBNZ W4, -12 (retry from LDAXR)
+            emit_a64(0x35FFFFA4)
+            // MOV X0, X2 (return old value)
+            emit_a64_mov(0, 2)
+            return
+        }
+
+        // Built-in: atomic_xor(ptr, val) → old value
+        if tok_matches(wct, "atomic_xor", 10) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 wa1 = arg1
+            gen_expr_a64(wa1)
+            emit_a64_store_x0(temp_slot_0)
+            uint32 arg2 = ast_next(wa1)
+            uint64 wa2 = arg2
+            gen_expr_a64(wa2)
+            emit_a64_mov(1, 0)
+            emit_a64_load_x0(temp_slot_0)
+            // x0=ptr, x1=val
+            // LDAXR X2, [X0]
+            emit_a64(0xC85FFC02)
+            // EOR X3, X2, X1
+            emit_a64(0xCA010043)
+            // STLXR W4, X3, [X0]
+            emit_a64(0xC804FC03)
+            // CBNZ W4, -12 (retry from LDAXR)
+            emit_a64(0x35FFFFA4)
+            // MOV X0, X2 (return old value)
+            emit_a64_mov(0, 2)
+            return
+        }
+
         // Built-in: get_target_os() → compile-time OS constant (0=Linux, 1=macOS, 2=Windows)
         if tok_matches(wct, "get_target_os", 13) != 0 {
             emit_a64_mov_imm(0, target_os)

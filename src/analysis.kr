@@ -608,6 +608,10 @@ fn is_builtin(uint64 tok_idx) -> uint64 {
     if sema_tok_matches(tok_idx, "atomic_store", 12) != 0 { return 1 }
     if sema_tok_matches(tok_idx, "atomic_cas", 10) != 0 { return 1 }
     if sema_tok_matches(tok_idx, "atomic_add", 10) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "atomic_sub", 10) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "atomic_and", 10) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "atomic_or", 9) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "atomic_xor", 10) != 0 { return 1 }
     if sema_tok_matches(tok_idx, "get_module_path", 15) != 0 { return 1 }
     if sema_tok_matches(tok_idx, "fmt_uint", 8) != 0 { return 1 }
     if sema_tok_matches(tok_idx, "asm", 3) != 0 { return 1 }
@@ -643,6 +647,10 @@ fn builtin_arg_count(uint64 tok_idx) -> uint64 {
     if sema_tok_matches(tok_idx, "fmt_uint", 8) != 0 { return 2 }
     if sema_tok_matches(tok_idx, "atomic_store", 12) != 0 { return 2 }
     if sema_tok_matches(tok_idx, "atomic_add", 10) != 0 { return 2 }
+    if sema_tok_matches(tok_idx, "atomic_sub", 10) != 0 { return 2 }
+    if sema_tok_matches(tok_idx, "atomic_and", 10) != 0 { return 2 }
+    if sema_tok_matches(tok_idx, "atomic_or", 9) != 0 { return 2 }
+    if sema_tok_matches(tok_idx, "atomic_xor", 10) != 0 { return 2 }
     // 3-arg builtins
     if sema_tok_matches(tok_idx, "write", 5) != 0 { return 3 }
     if sema_tok_matches(tok_idx, "memcpy", 6) != 0 { return 3 }
