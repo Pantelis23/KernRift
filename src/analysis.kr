@@ -614,6 +614,54 @@ fn is_builtin(uint64 tok_idx) -> uint64 {
     return 0
 }
 
+// Return expected argument count for a builtin, or 0xFFFFFFFF for variable-arg builtins
+fn builtin_arg_count(uint64 tok_idx) -> uint64 {
+    // 1-arg builtins
+    if sema_tok_matches(tok_idx, "exit", 4) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "print", 5) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "println", 7) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "alloc", 5) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "dealloc", 7) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "str_len", 7) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "file_close", 10) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "file_size", 9) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "fn_addr", 7) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "exec_process", 12) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "set_executable", 14) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "atomic_load", 11) != 0 { return 1 }
+    // 2-arg builtins
+    if sema_tok_matches(tok_idx, "str_eq", 6) != 0 { return 2 }
+    if sema_tok_matches(tok_idx, "file_open", 9) != 0 { return 2 }
+    if sema_tok_matches(tok_idx, "bit_get", 7) != 0 { return 2 }
+    if sema_tok_matches(tok_idx, "bit_set", 7) != 0 { return 2 }
+    if sema_tok_matches(tok_idx, "bit_clear", 9) != 0 { return 2 }
+    if sema_tok_matches(tok_idx, "signed_lt", 9) != 0 { return 2 }
+    if sema_tok_matches(tok_idx, "signed_gt", 9) != 0 { return 2 }
+    if sema_tok_matches(tok_idx, "signed_le", 9) != 0 { return 2 }
+    if sema_tok_matches(tok_idx, "signed_ge", 9) != 0 { return 2 }
+    if sema_tok_matches(tok_idx, "get_module_path", 15) != 0 { return 2 }
+    if sema_tok_matches(tok_idx, "fmt_uint", 8) != 0 { return 2 }
+    if sema_tok_matches(tok_idx, "atomic_store", 12) != 0 { return 2 }
+    if sema_tok_matches(tok_idx, "atomic_add", 10) != 0 { return 2 }
+    // 3-arg builtins
+    if sema_tok_matches(tok_idx, "write", 5) != 0 { return 3 }
+    if sema_tok_matches(tok_idx, "memcpy", 6) != 0 { return 3 }
+    if sema_tok_matches(tok_idx, "memset", 6) != 0 { return 3 }
+    if sema_tok_matches(tok_idx, "file_read", 9) != 0 { return 3 }
+    if sema_tok_matches(tok_idx, "file_write", 10) != 0 { return 3 }
+    if sema_tok_matches(tok_idx, "bit_range", 9) != 0 { return 3 }
+    if sema_tok_matches(tok_idx, "atomic_cas", 10) != 0 { return 3 }
+    // 4-arg builtins
+    if sema_tok_matches(tok_idx, "bit_insert", 10) != 0 { return 4 }
+    // 0-arg builtins
+    if sema_tok_matches(tok_idx, "get_target_os", 13) != 0 { return 0 }
+    if sema_tok_matches(tok_idx, "get_arch_id", 11) != 0 { return 0 }
+    // Variable-arg builtins — skip checking
+    if sema_tok_matches(tok_idx, "call_ptr", 8) != 0 { return 0xFFFFFFFF }
+    if sema_tok_matches(tok_idx, "asm", 3) != 0 { return 0xFFFFFFFF }
+    return 0xFFFFFFFF
+}
+
 // Recursively check expressions for call argument count mismatches
 fn sema_check_expr(uint64 node) {
     if node == 0 { return }
@@ -623,7 +671,24 @@ fn sema_check_expr(uint64 node) {
         // Call node: data1=callee_tok, child=first_arg
         uint32 callee_tok = ast_data1(node)
         uint64 wcallee = callee_tok
-        if is_builtin(wcallee) == 0 {
+        if is_builtin(wcallee) != 0 {
+            uint64 bexpected = builtin_arg_count(wcallee)
+            if bexpected != 0xFFFFFFFF {
+                // Count actual args
+                uint64 bactual = 0
+                uint32 barg = ast_child(node)
+                uint64 wbarg = barg
+                while wbarg != 0 {
+                    bactual = bactual + 1
+                    uint32 banxt = ast_next(wbarg)
+                    wbarg = banxt
+                }
+                if bactual != bexpected {
+                    report_error_at(wcallee, "wrong number of arguments to builtin")
+                    sema_errors = sema_errors + 1
+                }
+            }
+        } else {
             uint64 expected = fn_sig_lookup(wcallee)
             if expected != 0xFFFFFFFF {
                 // Count actual args

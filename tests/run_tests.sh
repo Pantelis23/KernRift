@@ -2,8 +2,9 @@
 # No set -e: test binaries return non-zero exit codes intentionally
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
-KRC="${KRC:-$DIR/../build/krc}"
+KRC="${KRC:-$DIR/../build/krc3}"
 ARCH=$(uname -m)
+KRC_FLAGS="${KRC_FLAGS:---arch=$ARCH}"
 PASS=0
 FAIL=0
 TOTAL=0
@@ -15,7 +16,7 @@ run_test() {
     TOTAL=$((TOTAL + 1))
 
     printf '%s\n' "$input" > /tmp/krc_test_$$.kr
-    if $KRC /tmp/krc_test_$$.kr -o /tmp/krc_test_$$ > /dev/null 2>&1; then
+    if $KRC $KRC_FLAGS /tmp/krc_test_$$.kr -o /tmp/krc_test_$$ > /dev/null 2>&1; then
         chmod +x /tmp/krc_test_$$
         local got=0
         /tmp/krc_test_$$ > /dev/null 2>&1 && got=0 || got=$?
@@ -40,7 +41,7 @@ run_test_output() {
     TOTAL=$((TOTAL + 1))
 
     printf '%s\n' "$input" > /tmp/krc_test_$$.kr
-    if $KRC /tmp/krc_test_$$.kr -o /tmp/krc_test_$$ > /dev/null 2>&1; then
+    if $KRC $KRC_FLAGS /tmp/krc_test_$$.kr -o /tmp/krc_test_$$ > /dev/null 2>&1; then
         chmod +x /tmp/krc_test_$$
         local got_output
         got_output=$(/tmp/krc_test_$$ 2>/dev/null)
@@ -531,6 +532,155 @@ fn main() {
     exit(r)
 }' 42
 
+# --- uint16 pointer operations ---
+run_test "uint16_store_load" 'fn main() {
+    uint64 buf = alloc(64)
+    uint16 val = 0xBEEF
+    unsafe { *(buf as uint16) = val }
+    uint16 got = 0
+    unsafe { *(buf as uint16) -> got }
+    uint64 r = got
+    exit(r & 0xFF)
+}' 239
+
+run_test "uint16_store_load_small" 'fn main() {
+    uint64 buf = alloc(64)
+    uint16 val = 42
+    unsafe { *(buf as uint16) = val }
+    uint16 got = 0
+    unsafe { *(buf as uint16) -> got }
+    uint64 r = got
+    exit(r)
+}' 42
+
+run_test "uint16_two_slots" 'fn main() {
+    uint64 buf = alloc(64)
+    uint16 a = 10
+    uint16 b = 32
+    unsafe { *(buf as uint16) = a }
+    uint64 buf2 = buf + 2
+    unsafe { *(buf2 as uint16) = b }
+    uint16 va = 0
+    uint16 vb = 0
+    unsafe { *(buf as uint16) -> va }
+    unsafe { *(buf2 as uint16) -> vb }
+    uint64 ra = va
+    uint64 rb = vb
+    exit(ra + rb)
+}' 42
+
+# --- Atomic operations ---
+run_test "atomic_store_load" 'fn main() {
+    uint64 buf = alloc(64)
+    atomic_store(buf, 42)
+    uint64 v = atomic_load(buf)
+    exit(v)
+}' 42
+
+run_test "atomic_add_basic" 'fn main() {
+    uint64 buf = alloc(64)
+    atomic_store(buf, 30)
+    uint64 old = atomic_add(buf, 12)
+    uint64 v = atomic_load(buf)
+    exit(v)
+}' 42
+
+run_test "atomic_add_returns_old" 'fn main() {
+    uint64 buf = alloc(64)
+    atomic_store(buf, 40)
+    uint64 old = atomic_add(buf, 10)
+    exit(old)
+}' 40
+
+run_test "atomic_cas_success" 'fn main() {
+    uint64 buf = alloc(64)
+    atomic_store(buf, 10)
+    uint64 ok = atomic_cas(buf, 10, 42)
+    uint64 v = atomic_load(buf)
+    if ok == 1 && v == 42 { exit(42) }
+    exit(0)
+}' 42
+
+run_test "atomic_cas_fail" 'fn main() {
+    uint64 buf = alloc(64)
+    atomic_store(buf, 10)
+    uint64 ok = atomic_cas(buf, 99, 42)
+    uint64 v = atomic_load(buf)
+    if ok == 0 && v == 10 { exit(42) }
+    exit(0)
+}' 42
+
+# --- Volatile blocks ---
+run_test "volatile_store_load" 'fn main() {
+    uint64 buf = alloc(64)
+    volatile { *(buf as uint64) = 42 }
+    uint64 v = 0
+    volatile { *(buf as uint64) -> v }
+    exit(v)
+}' 42
+
+run_test "volatile_roundtrip" 'fn main() {
+    uint64 buf = alloc(64)
+    volatile { *(buf as uint64) = 100 }
+    uint64 a = 0
+    volatile { *(buf as uint64) -> a }
+    volatile { *(buf as uint64) = 42 }
+    uint64 b = 0
+    volatile { *(buf as uint64) -> b }
+    exit(b)
+}' 42
+
+run_test "volatile_uint8" 'fn main() {
+    uint64 buf = alloc(64)
+    uint8 val = 42
+    volatile { *(buf as uint8) = val }
+    uint8 got = 0
+    volatile { *(buf as uint8) -> got }
+    uint64 r = got
+    exit(r)
+}' 42
+
+# --- MSR/MRS (compile-only, privileged instructions cannot run in userspace) ---
+if [ "$ARCH" != "aarch64" ]; then
+    # x86: rdmsr/wrmsr are ring-0 only; just verify the asm block compiles
+    TOTAL=$((TOTAL + 1))
+    printf 'fn main() { exit(42) }\n@naked fn msr_test() { asm("rdmsr") }\n' > /tmp/krc_test_$$.kr
+    if $KRC $KRC_FLAGS /tmp/krc_test_$$.kr -o /tmp/krc_test_$$ > /dev/null 2>&1; then
+        chmod +x /tmp/krc_test_$$
+        /tmp/krc_test_$$ > /dev/null 2>&1; got=$?
+        if [ "$got" = "42" ]; then
+            PASS=$((PASS + 1))
+        else
+            echo "FAIL: msr_compile (expected 42, got $got)"
+            FAIL=$((FAIL + 1))
+        fi
+    else
+        echo "FAIL: msr_compile (compilation failed)"
+        FAIL=$((FAIL + 1))
+    fi
+    rm -f /tmp/krc_test_$$.kr /tmp/krc_test_$$
+
+    TOTAL=$((TOTAL + 1))
+    printf 'fn main() { exit(42) }\n@naked fn msr_test() { asm("wrmsr") }\n' > /tmp/krc_test_$$.kr
+    if $KRC $KRC_FLAGS /tmp/krc_test_$$.kr -o /tmp/krc_test_$$ > /dev/null 2>&1; then
+        chmod +x /tmp/krc_test_$$
+        /tmp/krc_test_$$ > /dev/null 2>&1; got=$?
+        if [ "$got" = "42" ]; then
+            PASS=$((PASS + 1))
+        else
+            echo "FAIL: msr_wrmsr_compile (expected 42, got $got)"
+            FAIL=$((FAIL + 1))
+        fi
+    else
+        echo "FAIL: msr_wrmsr_compile (compilation failed)"
+        FAIL=$((FAIL + 1))
+    fi
+    rm -f /tmp/krc_test_$$.kr /tmp/krc_test_$$
+else
+    echo "  msr_compile: SKIP (x86-only)"; PASS=$((PASS+1)); TOTAL=$((TOTAL+1))
+    echo "  msr_wrmsr_compile: SKIP (x86-only)"; PASS=$((PASS+1)); TOTAL=$((TOTAL+1))
+fi
+
 # --- Dead Code Elimination test ---
 echo ""
 echo "--- DCE test ---"
@@ -627,8 +777,8 @@ fn main() {
 }
 KRSRC
 
-if $KRC /tmp/krc_dce_unused_$$.kr -o /tmp/krc_dce_small_$$ > /dev/null 2>&1 && \
-   $KRC /tmp/krc_dce_used_$$.kr -o /tmp/krc_dce_large_$$ > /dev/null 2>&1; then
+if $KRC $KRC_FLAGS /tmp/krc_dce_unused_$$.kr -o /tmp/krc_dce_small_$$ > /dev/null 2>&1 && \
+   $KRC $KRC_FLAGS /tmp/krc_dce_used_$$.kr -o /tmp/krc_dce_large_$$ > /dev/null 2>&1; then
     chmod +x /tmp/krc_dce_small_$$ /tmp/krc_dce_large_$$
     small_size=$(wc -c < /tmp/krc_dce_small_$$)
     large_size=$(wc -c < /tmp/krc_dce_large_$$)
@@ -653,7 +803,7 @@ echo ""
 echo "--- ELF relocatable (.o) test ---"
 TOTAL=$((TOTAL + 1))
 printf 'fn add(uint64 a, uint64 b) -> uint64 { return a + b }\nfn main() { exit(add(30, 12)) }\n' > /tmp/krc_obj_$$.kr
-if $KRC --emit=obj /tmp/krc_obj_$$.kr -o /tmp/krc_obj_$$.o > /dev/null 2>&1; then
+if $KRC $KRC_FLAGS --emit=obj /tmp/krc_obj_$$.kr -o /tmp/krc_obj_$$.o > /dev/null 2>&1; then
     # Check first 18 bytes: ELF magic (4) + class(1) + data(1) + version(1) + osabi(1) + padding(8) + e_type LE (2)
     # e_type at offset 16-17 should be 01 00 (ET_REL = 1, little-endian)
     magic=$(xxd -l 4 -p /tmp/krc_obj_$$.o 2>/dev/null)
@@ -672,7 +822,7 @@ fi
 
 # Also test -c flag produces same result
 TOTAL=$((TOTAL + 1))
-if $KRC -c /tmp/krc_obj_$$.kr -o /tmp/krc_obj_c_$$.o > /dev/null 2>&1; then
+if $KRC $KRC_FLAGS -c /tmp/krc_obj_$$.kr -o /tmp/krc_obj_c_$$.o > /dev/null 2>&1; then
     c_magic=$(xxd -l 4 -p /tmp/krc_obj_c_$$.o 2>/dev/null)
     c_etype=$(xxd -s 16 -l 2 -p /tmp/krc_obj_c_$$.o 2>/dev/null)
     if [ "$c_magic" = "7f454c46" ] && [ "$c_etype" = "0100" ]; then
@@ -763,7 +913,7 @@ echo "--- Error detection tests ---"
 # Wrong argument count
 TOTAL=$((TOTAL + 1))
 printf 'fn add(uint64 a, uint64 b) -> uint64 { return a + b }\nfn main() { exit(add(1, 2, 3)) }\n' > /tmp/krc_err_$$.kr
-if $KRC /tmp/krc_err_$$.kr -o /tmp/krc_err_$$ 2>/tmp/krc_stderr_$$ ; then
+if $KRC $KRC_FLAGS /tmp/krc_err_$$.kr -o /tmp/krc_err_$$ 2>/tmp/krc_stderr_$$ ; then
     echo "FAIL: wrong_arg_count (should not compile)"
     FAIL=$((FAIL + 1))
 else
@@ -780,7 +930,7 @@ rm -f /tmp/krc_err_$$.kr /tmp/krc_err_$$ /tmp/krc_stderr_$$
 # Missing return in non-void function
 TOTAL=$((TOTAL + 1))
 printf 'fn get_val() -> uint64 { uint64 x = 42 }\nfn main() { exit(get_val()) }\n' > /tmp/krc_err_$$.kr
-if $KRC /tmp/krc_err_$$.kr -o /tmp/krc_err_$$ 2>/tmp/krc_stderr_$$ ; then
+if $KRC $KRC_FLAGS /tmp/krc_err_$$.kr -o /tmp/krc_err_$$ 2>/tmp/krc_stderr_$$ ; then
     echo "FAIL: missing_return (should not compile)"
     FAIL=$((FAIL + 1))
 else
@@ -797,7 +947,7 @@ rm -f /tmp/krc_err_$$.kr /tmp/krc_err_$$ /tmp/krc_stderr_$$
 # Duplicate function definition
 TOTAL=$((TOTAL + 1))
 printf 'fn foo() { exit(1) }\nfn foo() { exit(2) }\nfn main() { foo() }\n' > /tmp/krc_err_$$.kr
-if $KRC /tmp/krc_err_$$.kr -o /tmp/krc_err_$$ 2>/tmp/krc_stderr_$$ ; then
+if $KRC $KRC_FLAGS /tmp/krc_err_$$.kr -o /tmp/krc_err_$$ 2>/tmp/krc_stderr_$$ ; then
     echo "FAIL: duplicate_fn (should not compile)"
     FAIL=$((FAIL + 1))
 else
@@ -816,7 +966,7 @@ echo ""
 echo "--- Android emit test ---"
 TOTAL=$((TOTAL + 1))
 printf 'fn main() { exit(42) }\n' > /tmp/krc_android_$$.kr
-if $KRC --emit=android /tmp/krc_android_$$.kr -o /tmp/krc_android_$$ > /dev/null 2>&1; then
+if $KRC $KRC_FLAGS --emit=android /tmp/krc_android_$$.kr -o /tmp/krc_android_$$ > /dev/null 2>&1; then
     magic=$(xxd -l 4 -p /tmp/krc_android_$$ 2>/dev/null)
     etype=$(xxd -s 16 -l 2 -p /tmp/krc_android_$$ 2>/dev/null)
     if [ "$magic" = "7f454c46" ] && [ "$etype" = "0300" ]; then
@@ -838,7 +988,7 @@ echo "--- Bootstrap test ---"
 TOTAL=$((TOTAL + 1))
 if [ -f "$DIR/../build/krc.kr" ]; then
     cp "$DIR/../build/krc.kr" /tmp/krc_bootstrap_$$.kr
-    $KRC /tmp/krc_bootstrap_$$.kr -o /tmp/krc2_$$ > /dev/null 2>&1
+    $KRC $KRC_FLAGS /tmp/krc_bootstrap_$$.kr -o /tmp/krc2_$$ > /dev/null 2>&1
     chmod +x /tmp/krc2_$$ 2>/dev/null
     /tmp/krc2_$$ --arch=x86_64 /tmp/krc_bootstrap_$$.kr -o /tmp/krc3_$$ > /dev/null 2>&1
     chmod +x /tmp/krc3_$$ 2>/dev/null
