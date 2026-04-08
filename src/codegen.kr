@@ -3064,11 +3064,13 @@ fn gen_expr(uint64 node) {
                 emit_win_alloc_stack(0x20)
                 emit_win_call_iat(0)
             } else {
-                // Linux/macOS: execve(path, NULL, NULL)
+                // Linux/macOS: execve(path, argv, NULL)
+                // Build argv = [path, NULL] on stack (POSIX requires valid argv)
                 emit_mov_rdi_rax()
-                emit_mov_rax_imm(0)
-                emit_mov_rsi_rax()
-                emit_mov_rdx_rax()
+                emit_byte(0x6A); emit_byte(0x00)  // push 0 (argv[1] = NULL)
+                emit_byte(0x57)                    // push rdi (argv[0] = path)
+                emit_byte(0x48); emit_byte(0x89); emit_byte(0xE6)  // mov rsi, rsp (argv)
+                emit_byte(0x48); emit_byte(0x31); emit_byte(0xD2)  // xor rdx, rdx (envp = NULL)
                 if target_os == 1 { emit_mov_rax_imm(0x200003B) } else { emit_mov_rax_imm(59) }
                 emit_byte(0x0F); emit_byte(0x05)
             }

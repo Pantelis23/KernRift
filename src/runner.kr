@@ -139,10 +139,15 @@ fn main() {
         if raw_os == 2 { tmp = ".\\kr-run.exe" }
         if raw_os == 3 { tmp = ".kr-exec" }
         uint64 tfd = file_open(tmp, 1)
+        if tfd > 0xFFFFFFFFFFFFF000 {
+            write(2, "kr: failed to create temp file\n", 31)
+            exit(1)
+        }
         file_write(tfd, data, fsize)
         file_close(tfd)
         set_executable(tmp)
         exec_process(tmp)
+        write(2, "kr: exec failed\n", 17)
         exit(1)
     }
 
@@ -207,10 +212,18 @@ fn main() {
         tmp_path = ".kr-exec"
     }
     uint64 tfd = file_open(tmp_path, 1)
+    if tfd > 0xFFFFFFFFFFFFF000 {
+        write(2, "kr: failed to create temp file: ", 32)
+        uint64 tplen = str_len_r(tmp_path)
+        write(2, tmp_path, tplen)
+        write(2, "\n", 1)
+        exit(1)
+    }
     file_write(tfd, binary, decomp_size)
     file_close(tfd)
 
     set_executable(tmp_path)
     exec_process(tmp_path)
+    write(2, "kr: exec failed\n", 17)
     exit(1)
 }

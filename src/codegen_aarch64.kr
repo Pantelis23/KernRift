@@ -1941,10 +1941,13 @@ fn gen_expr_a64(uint64 node) {
                 // ExitProcess(w0 already in x0)
                 emit_a64_win_call_iat(0)
             } else {
-                // Linux: execve(x0=path, x1=NULL, x2=NULL)
-                emit_a64_mov(0, 0)
-                emit_a64_mov_imm(1, 0)
-                emit_a64_mov_imm(2, 0)
+                // Linux/macOS/Android: execve(x0=path, x1=argv, x2=NULL)
+                // Build argv = [path, NULL] on stack (POSIX requires valid argv)
+                emit_a64(0xD10043FF)  // sub sp, sp, #16
+                emit_a64(0xF90003E0)  // str x0, [sp, #0]  (argv[0] = path)
+                emit_a64(0xF90007FF)  // str xzr, [sp, #8] (argv[1] = NULL)
+                emit_a64(0x910003E1)  // add x1, sp, #0    (x1 = argv)
+                emit_a64(0xAA1F03E2)  // mov x2, xzr       (envp = NULL)
                 if target_os == 1 { emit_a64_syscall_nr(59) } else { emit_a64_syscall_nr(221) }
                 emit_a64(0xD4000001) // svc #0
             }
