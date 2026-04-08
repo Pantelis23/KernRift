@@ -2045,8 +2045,22 @@ fn main() {
                     target_os = 3
                     emit_mode = 4
                 }
+            } else if str_starts_with(arg, "--help", 6) != 0 || str_eq_full(arg, "-h") != 0 {
+                write(1, "usage: krc [options] <file.kr> [-o output]\n\n", 44)
+                write(1, "options:\n", 9)
+                write(1, "  --arch=x86_64|arm64\n", 22)
+                write(1, "  --emit=elfexe|macho|pe|obj|android|asm\n", 41)
+                write(1, "  -c                        emit relocatable .o\n", 48)
+                write(1, "  --target=linux|macos|windows\n", 31)
+                write(1, "  --freestanding            no startup code\n", 44)
+                write(1, "  --version                 show version\n", 41)
+                write(1, "  --help, -h                show this help\n\n", 44)
+                write(1, "commands:\n", 10)
+                write(1, "  check <file.kr>   safety analysis\n", 36)
+                write(1, "  lc <file.kr>      living compiler\n", 36)
+                exit(0)
             } else if str_starts_with(arg, "--version", 9) != 0 {
-                uint64 msg = "krc 2.1.0 (KernRift self-hosted compiler)\n"
+                uint64 msg = "krc 2.4.1 (KernRift self-hosted compiler)\n"
                 write(1, msg, 42)
                 exit(0)
             } else if str_starts_with(arg, "--freestanding", 14) != 0 {

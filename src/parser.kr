@@ -693,10 +693,10 @@ fn parse_stmt() -> uint64 {
         uint32 type_kind = cur_kind()
         advance_tok()
         uint64 type_size = 8
-        if type_kind == 80 { type_size = 1 }
-        if type_kind == 81 { type_size = 2 }
-        if type_kind == 82 { type_size = 4 }
-        if type_kind == 83 { type_size = 8 }
+        if type_kind == 80 || type_kind == 84 { type_size = 1 }
+        if type_kind == 81 || type_kind == 85 { type_size = 2 }
+        if type_kind == 82 || type_kind == 86 { type_size = 4 }
+        if type_kind == 83 || type_kind == 87 { type_size = 8 }
         expect(11)
         if cur_kind() == 20 {
             advance_tok()
@@ -744,10 +744,10 @@ fn parse_stmt() -> uint64 {
         uint32 type_kind = cur_kind()
         advance_tok()
         uint64 type_size = 8
-        if type_kind == 80 { type_size = 1 }
-        if type_kind == 81 { type_size = 2 }
-        if type_kind == 82 { type_size = 4 }
-        if type_kind == 83 { type_size = 8 }
+        if type_kind == 80 || type_kind == 84 { type_size = 1 }
+        if type_kind == 81 || type_kind == 85 { type_size = 2 }
+        if type_kind == 82 || type_kind == 86 { type_size = 4 }
+        if type_kind == 83 || type_kind == 87 { type_size = 8 }
         expect(11)
 
         if cur_kind() == 20 {

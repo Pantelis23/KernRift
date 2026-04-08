@@ -101,17 +101,8 @@ fn main() {
     if cli_argc == 0xFFFFFFFF {
         win_init_args_r()
     }
-    if cli_argc < 2 {
-        write(2, "kr: KernRift fat binary runner\n", 30)
-        write(2, "usage: kr <program.krbo> [args...]\n\n", 36)
-        write(2, "Runs .krbo fat binaries (LZ4-compressed x86_64 + ARM64).\n", 57)
-        write(2, "Auto-detects host architecture and extracts the matching native binary.\n", 71)
-        exit(1)
-    }
-
     // On Android, linker64 may inject the full exe path as argv[1],
-    // shifting the real argument to argv[2]. Detect by checking if
-    // argv[1] starts with '/' and argc >= 3.
+    // shifting real arguments to argv[2]+. Detect and adjust.
     uint64 arg_offset = 8
     uint64 rt_os = get_target_os()
     if rt_os == 3 && cli_argc >= 3 {
@@ -122,9 +113,53 @@ fn main() {
         unsafe { *(a1v as uint8) -> a1c }
         if a1c == 47 { arg_offset = 16 }
     }
+
+    // Effective argc (adjusted for Android linker shift)
+    uint64 eff_argc = cli_argc
+    if arg_offset == 16 { eff_argc = cli_argc - 1 }
+
+    if eff_argc < 2 {
+        write(1, "kr 2.4.1 (KernRift fat binary runner)\n", 38)
+        write(1, "usage: kr <program.krbo> [args...]\n\n", 36)
+        write(1, "Runs .krbo fat binaries (LZ4-compressed, 7 platform slices).\n", 61)
+        write(1, "Auto-detects host architecture and extracts the matching native binary.\n\n", 73)
+        write(1, "options:\n", 9)
+        write(1, "  --help       show this help\n", 29)
+        write(1, "  --version    show version\n", 27)
+        exit(0)
+    }
+
     uint64 arg1_ptr = cli_argv + arg_offset
     uint64 krbo_path = 0
     unsafe { *(arg1_ptr as uint64) -> krbo_path }
+
+    // Check for --version and --help flags
+    uint64 fc = 0
+    unsafe { *(krbo_path as uint8) -> fc }
+    if fc == 45 {
+        uint64 sc = 0
+        uint64 kp1 = krbo_path + 1
+        unsafe { *(kp1 as uint8) -> sc }
+        if sc == 45 {
+            // Starts with "--"
+            uint64 tc = 0
+            uint64 kp2 = krbo_path + 2
+            unsafe { *(kp2 as uint8) -> tc }
+            if tc == 118 {
+                // --version
+                write(1, "kr 2.4.1 (KernRift fat binary runner)\n", 38)
+                exit(0)
+            }
+            if tc == 104 {
+                // --help
+                write(1, "kr 2.4.1 (KernRift fat binary runner)\n", 38)
+                write(1, "usage: kr <program.krbo> [args...]\n\n", 36)
+                write(1, "Runs .krbo fat binaries (LZ4-compressed, 7 platform slices).\n", 61)
+                write(1, "Auto-detects host architecture and extracts the matching native binary.\n", 71)
+                exit(0)
+            }
+        }
+    }
 
     uint64 fd = file_open(krbo_path, 0)
     uint64 fsize = file_size(fd)

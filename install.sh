@@ -98,7 +98,7 @@ if [ "$IS_TERMUX" = "1" ]; then
 kr-bin "$@"
 rc=$?
 if [ $rc -eq 120 ]; then
-    ./kr-exec "$@"
+    ./kr-exec
     rc=$?
     rm -f ./kr-exec
 fi
