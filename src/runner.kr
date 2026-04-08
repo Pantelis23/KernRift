@@ -149,7 +149,13 @@ fn main() {
         file_close(tfd)
         set_executable(tmp)
         exec_process(tmp)
-        write(2, "kr: exec failed\n", 17)
+        write(2, "kr: exec failed: ", 18)
+        uint64 tmplen = str_len_r(tmp)
+        write(2, tmp, tmplen)
+        write(2, " (errno=", 8)
+        uint64 abs_e = 0 - exec_errno
+        print(abs_e)
+        write(2, ")\n", 2)
         exit(1)
     }
 
