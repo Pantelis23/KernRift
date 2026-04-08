@@ -1961,7 +1961,16 @@ fn gen_expr_a64(uint64 node) {
                 emit_a64(0xF90003E0)  // str x0, [sp, #0]  (argv[0] = path)
                 emit_a64(0xF90007FF)  // str xzr, [sp, #8] (argv[1] = NULL)
                 emit_a64(0x910003E1)  // add x1, sp, #0    (x1 = argv)
-                emit_a64(0xAA1F03E2)  // mov x2, xzr       (envp = NULL)
+                // envp: use cli_envp if defined, else NULL
+                uint64 envp_off_a = static_lookup_by_name("cli_envp", 8)
+                if envp_off_a != 0xFFFFFFFF {
+                    emit_a64_static_load(envp_off_a)
+                    emit_a64_mov(2, 0)
+                    // Reload path into x0 from argv on stack
+                    emit_a64_ldr(0, 31, 0)
+                } else {
+                    emit_a64(0xAA1F03E2)  // mov x2, xzr (envp = NULL)
+                }
                 if target_os == 1 { emit_a64_syscall_nr(59) } else { emit_a64_syscall_nr(221) }
                 emit_a64(0xD4000001) // svc #0
             }
@@ -2645,6 +2654,17 @@ fn gen_function_a64(uint64 fn_node) {
         uint64 argv_off_a64 = static_lookup_by_name("cli_argv", 8)
         if argv_off_a64 != 0xFFFFFFFF {
             emit_a64_static_store(argv_off_a64)
+        }
+        // Compute envp = sp + 8 + (argc+1)*8
+        uint64 envp_off_a64 = static_lookup_by_name("cli_envp", 8)
+        if envp_off_a64 != 0xFFFFFFFF {
+            emit_a64_ldr(9, 31, 0)          // x9 = argc
+            emit_a64_add_imm(9, 9, 1)       // x9 = argc + 1
+            emit_a64_mov_imm(10, 8)          // x10 = 8
+            emit_a64_mul(9, 9, 10)           // x9 = (argc+1)*8
+            emit_a64_add_imm(0, 31, 8)      // x0 = sp + 8
+            emit_a64_add(0, 0, 9)           // x0 = sp + 8 + (argc+1)*8 = envp
+            emit_a64_static_store(envp_off_a64)
         }
     }
 

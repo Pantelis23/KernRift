@@ -62,6 +62,7 @@ fn detect_arch_r() -> uint64 {
 
 static uint64 cli_argc = 0
 static uint64 cli_argv = 0
+static uint64 cli_envp = 0
 
 fn win_init_args_r() {
     uint64 cmdline = cli_argv

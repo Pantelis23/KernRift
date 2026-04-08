@@ -3070,7 +3070,14 @@ fn gen_expr(uint64 node) {
                 emit_byte(0x6A); emit_byte(0x00)  // push 0 (argv[1] = NULL)
                 emit_byte(0x57)                    // push rdi (argv[0] = path)
                 emit_byte(0x48); emit_byte(0x89); emit_byte(0xE6)  // mov rsi, rsp (argv)
-                emit_byte(0x48); emit_byte(0x31); emit_byte(0xD2)  // xor rdx, rdx (envp = NULL)
+                // envp: use cli_envp if defined, else NULL
+                uint64 envp_off_x = static_lookup_by_name("cli_envp", 8)
+                if envp_off_x != 0xFFFFFFFF {
+                    emit_static_load(envp_off_x)
+                    emit_mov_rdx_rax()
+                } else {
+                    emit_byte(0x48); emit_byte(0x31); emit_byte(0xD2)  // xor rdx, rdx
+                }
                 if target_os == 1 { emit_mov_rax_imm(0x200003B) } else { emit_mov_rax_imm(59) }
                 emit_byte(0x0F); emit_byte(0x05)
             }
@@ -4211,6 +4218,17 @@ fn gen_function(uint64 fn_node) {
         uint64 argv_off = static_lookup_by_name("cli_argv", 8)
         if argv_off != 0xFFFFFFFF {
             emit_static_store(argv_off)
+        }
+        // Compute envp = rsp + 8 + (argc+1)*8
+        uint64 envp_off = static_lookup_by_name("cli_envp", 8)
+        if envp_off != 0xFFFFFFFF {
+            // mov rcx, [rsp]  ; rcx = argc
+            emit_byte(0x48); emit_byte(0x8B); emit_byte(0x0C); emit_byte(0x24)
+            // inc rcx
+            emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC1)
+            // lea rax, [rsp + rcx*8 + 8]
+            emit_byte(0x48); emit_byte(0x8D); emit_byte(0x44); emit_byte(0xCC); emit_byte(0x08)
+            emit_static_store(envp_off)
         }
     }
 
