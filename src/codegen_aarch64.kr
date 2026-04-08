@@ -1973,6 +1973,8 @@ fn gen_expr_a64(uint64 node) {
                 }
                 if target_os == 1 { emit_a64_syscall_nr(59) } else { emit_a64_syscall_nr(221) }
                 emit_a64(0xD4000001) // svc #0
+                // Restore stack if execve failed (only reached on error)
+                emit_a64(0x910043FF) // add sp, sp, #16
             }
             return
         }

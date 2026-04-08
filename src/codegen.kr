@@ -3080,6 +3080,8 @@ fn gen_expr(uint64 node) {
                 }
                 if target_os == 1 { emit_mov_rax_imm(0x200003B) } else { emit_mov_rax_imm(59) }
                 emit_byte(0x0F); emit_byte(0x05)
+                // Restore stack if execve failed (only reached on error)
+                emit_byte(0x48); emit_byte(0x83); emit_byte(0xC4); emit_byte(0x10) // add rsp, 16
             }
             return
         }
