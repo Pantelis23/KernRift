@@ -2,6 +2,22 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## v2.4.1 - 2026-04-08
+
+### Added
+- **Atomic builtins**: `atomic_sub`, `atomic_and`, `atomic_or`, `atomic_xor` — arithmetic and bitwise atomic operations on x86_64 (`LOCK` prefix) and ARM64 (`LDXR`/`STXR`).
+- **Signed pointer cast types**: `int16`, `int32`, `int64` now work in `unsafe`/`volatile` pointer operations (was uint-only).
+- **`--emit=asm` disassembly**: `--emit=asm` now produces a disassembled listing with function labels.
+- **`krc --help` / `krc -h`**: compiler prints usage information instead of crashing.
+- **`kr --version` / `kr --help` / `kr` (no args)**: runner prints proper output instead of crashing.
+
+### Fixed
+- **Android `kr` runner**: tries `/data/local/tmp` first for adb push, falls back to cwd for Termux.
+- **Termux SELinux**: `kr` uses a shell wrapper to bypass SELinux `execve` restriction on Termux.
+- **Android linker argv shift**: detects and skips injected exe path from the Android linker.
+- **`exec_process` robustness**: restores SP on failure and saves `errno`.
+- **`exec_process` environment**: passes environment to `execve`.
+
 ## v2.4.0 - 2026-04-08
 
 ### Added

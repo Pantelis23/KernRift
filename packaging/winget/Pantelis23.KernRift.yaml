@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.singleton.1.6.0.schema.json
 
 PackageIdentifier: Pantelis23.KernRift
-PackageVersion: 2.4.0
+PackageVersion: 2.4.1
 PackageLocale: en-US
 Publisher: Pantelis Christou
 PublisherUrl: https://github.com/Pantelis23
@@ -20,7 +20,7 @@ Tags:
   - kernel
   - language
 Moniker: kernrift
-ReleaseNotesUrl: https://github.com/Pantelis23/KernRift/releases/tag/v2.4.0
+ReleaseNotesUrl: https://github.com/Pantelis23/KernRift/releases/tag/v2.4.1
 Installers:
   - Architecture: x64
     InstallerUrl: https://github.com/Pantelis23/KernRift/releases/latest/download/krc-windows-x86_64.exe

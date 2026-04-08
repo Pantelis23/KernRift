@@ -1013,7 +1013,7 @@ volatile { *(mmio_base as uint32) -> status } // barrier after load
 ```
 
 The cast type determines the access width. Supported types are `uint8`,
-`uint16`, `uint32`, and `uint64`:
+`uint16`, `uint32`, `uint64`, `int16`, `int32`, and `int64`:
 
 ```kr
 volatile { *(port_base as uint16) -> reg16 }
@@ -1354,7 +1354,7 @@ krc --emit=krbo    -o out.krbo <file.kr>        # native-arch .krbo
 krc --emit=krboexe -o out.krbo <file.kr>        # self-contained .krbo (single-arch)
 krc --emit=elfobj  -o out.o    <file.kr>        # ELF relocatable object
 krc --emit=elfobj  --arch arm64 -o out.o <file.kr>
-krc --emit=asm     -o out.s    <file.kr>        # textual assembly
+krc --emit=asm     -o out.s    <file.kr>        # disassembled listing with function labels
 krc --emit=asm     --arch arm64 -o out.s <file.kr>
 krc --emit=staticlib -o out.a  <file.kr>        # static library archive (no ar needed)
 krc --emit=elfexe  -o out     <file.kr>        # native ELF executable (no ld needed)

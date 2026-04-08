@@ -4,7 +4,7 @@
 # Produces: kernrift_VERSION_amd64.deb and kernrift_VERSION_arm64.deb
 set -e
 
-VERSION="${1:-2.4.0}"
+VERSION="${1:-2.4.1}"
 REPO="Pantelis23/KernRift"
 BASE="https://github.com/$REPO/releases/latest/download"
 RAW="https://raw.githubusercontent.com/$REPO/main"

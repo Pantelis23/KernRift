@@ -646,8 +646,8 @@ fn emit_asm_listing(uint64 output_path, uint64 arch, uint64 text_start, uint64 s
                 else if (wi & 0xFC000000) == 0x94000000 { write(fd, "bl", 2) }
                 else if (wi & 0xFC000000) == 0x14000000 { write(fd, "b", 1) }
                 else if (wi & 0xFF000000) == 0x54000000 { write(fd, "b.cond", 6) }
-                else if (wi & 0xFFE00000) == 0xD5300000 { write(fd, "mrs", 3) }
-                else if (wi & 0xFFE00000) == 0xD5100000 { write(fd, "msr", 3) }
+                else if (wi & 0xFFF00000) == 0xD5300000 { write(fd, "mrs", 3) }
+                else if (wi & 0xFFF00000) == 0xD5100000 { write(fd, "msr", 3) }
                 else if (wi & 0x3FE00000) == 0x08400000 { write(fd, "ldxr/ldar", 9) }
                 else if (wi & 0x3FE00000) == 0x08000000 { write(fd, "stxr/stlr", 9) }
                 write(fd, "\n", 1)

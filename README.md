@@ -13,8 +13,9 @@ A self-hosted systems language compiler for kernel-first development. KernRift c
 - **Kernel-first** — inline assembly, `@naked` functions, `@packed` structs, signed comparisons, volatile memory, bitfield ops, `--freestanding` mode
 - **Kernel safety** — context checks, effect tracking, lock graphs, capabilities, undeclared identifier detection
 - **Volatile blocks** — `volatile { ... }` emits memory barriers (`mfence` on x86_64, `DMB ISH` on ARM64)
-- **Atomic operations** — `atomic_load`, `atomic_store`, `atomic_cas`, `atomic_add`
-- **uint16 pointer ops** — uint16 pointer operations in `unsafe`/`volatile` blocks
+- **Atomic operations** — `atomic_load`, `atomic_store`, `atomic_cas`, `atomic_add`, `atomic_sub`, `atomic_and`, `atomic_or`, `atomic_xor`
+- **Pointer cast ops** — uint16/uint32/uint64 and int16/int32/int64 pointer operations in `unsafe`/`volatile` blocks
+- **Assembly listing** — `--emit=asm` produces a disassembled listing with function labels
 - **ARM64 system registers** — MSR/MRS access in inline asm (20+ registers including SCTLR_EL1, VBAR_EL1, etc.)
 - **Builtin validation** — argument count validation for builtins in the semantic analyzer
 - **Living compiler** — pattern detection, fitness scoring, auto-fix suggestions
@@ -81,8 +82,8 @@ winget install Pantelis23.KernRift
 
 **Debian/Ubuntu** (.deb):
 ```bash
-curl -sSLO https://github.com/Pantelis23/KernRift/releases/latest/download/kernrift_2.4.0_amd64.deb
-sudo dpkg -i kernrift_2.4.0_amd64.deb
+curl -sSLO https://github.com/Pantelis23/KernRift/releases/latest/download/kernrift_2.4.1_amd64.deb
+sudo dpkg -i kernrift_2.4.1_amd64.deb
 ```
 
 **AUR** (Arch Linux):
