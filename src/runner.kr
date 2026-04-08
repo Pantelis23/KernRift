@@ -137,7 +137,7 @@ fn main() {
         uint64 raw_os = get_target_os()
         uint64 tmp = "/tmp/.kr-exec"
         if raw_os == 2 { tmp = ".\\kr-run.exe" }
-        if raw_os == 3 { tmp = ".kr-exec" }
+        if raw_os == 3 { tmp = "/data/local/tmp/.kr-exec" }
         uint64 tfd = file_open(tmp, 1)
         if tfd > 0xFFFFFFFFFFFFF000 {
             write(2, "kr: failed to create temp file\n", 31)
@@ -209,7 +209,7 @@ fn main() {
         tmp_path = ".\\kr-run.exe"
     }
     if host_os == 3 {
-        tmp_path = ".kr-exec"
+        tmp_path = "/data/local/tmp/.kr-exec"
     }
     uint64 tfd = file_open(tmp_path, 1)
     if tfd > 0xFFFFFFFFFFFFF000 {
