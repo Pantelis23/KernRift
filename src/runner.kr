@@ -189,8 +189,12 @@ fn main() {
         uint64 tmp = "/tmp/.kr-exec"
         if raw_os == 2 { tmp = ".\\kr-run.exe" }
         if raw_os == 3 {
-            tmp = "kr-exec"
+            tmp = "/data/local/tmp/kr-exec"
             uint64 atfd = file_open(tmp, 1)
+            if atfd > 0xFFFFFFFFFFFFF000 {
+                tmp = "kr-exec"
+                atfd = file_open(tmp, 1)
+            }
             if atfd < 0xFFFFFFFFFFFFF000 {
                 file_write(atfd, data, fsize)
                 file_close(atfd)
@@ -272,17 +276,22 @@ fn main() {
         tmp_path = ".\\kr-run.exe"
     }
     if host_os == 3 {
-        // Android: raw execve is blocked by SELinux on Termux.
-        // Write binary, try direct exec (works on adb), if that fails
-        // exit with code 120 so the shell wrapper can exec it.
-        tmp_path = "kr-exec"
+        // Android: try /data/local/tmp (adb), then cwd (Termux).
+        // Raw execve works on adb but is blocked by SELinux on Termux.
+        // If exec fails, exit 120 so the Termux shell wrapper can handle it.
+        tmp_path = "/data/local/tmp/kr-exec"
         uint64 atfd = file_open(tmp_path, 1)
+        if atfd > 0xFFFFFFFFFFFFF000 {
+            // /data/local/tmp not writable — try current directory
+            tmp_path = "kr-exec"
+            atfd = file_open(tmp_path, 1)
+        }
         if atfd < 0xFFFFFFFFFFFFF000 {
             file_write(atfd, binary, decomp_size)
             file_close(atfd)
             set_executable(tmp_path)
             exec_process(tmp_path)
-            // execve failed (SELinux) — exit 120 for shell wrapper
+            // execve failed (SELinux on Termux) — exit 120 for shell wrapper
             exit(120)
         }
         write(2, "kr: failed to create temp file\n", 31)
