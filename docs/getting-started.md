@@ -193,6 +193,12 @@ fn main() {
 | `std/mem.kr` | `realloc`, `memcmp`, `memzero`, `arena_init`, `arena_alloc`, `arena_reset` |
 | `std/vec.kr` | `vec_new`, `push`, `get`, `set`, `pop`, `remove`, `contains` |
 | `std/map.kr` | `map_new`, `set`, `get`, `has` |
+| `std/color.kr` | `rgb`, `rgba`, `color_r`, `color_g`, `color_b`, `alpha_blend`, `color_lerp` |
+| `std/fb.kr` | `fb_init`, `fb_pixel`, `fb_rect`, `fb_fill`, `fb_line`, `fb_blit` |
+| `std/fixedpoint.kr` | `fp_from_int`, `fp_to_int`, `fp_add`, `fp_sub`, `fp_mul`, `fp_div`, `fp_sqrt` |
+| `std/font.kr` | `font_init`, `fb_char`, `fb_text` |
+| `std/memfast.kr` | `memcpy32`, `memcpy64`, `memset32`, `memset64` |
+| `std/widget.kr` | `panel_new`, `panel_draw`, `label_new`, `button_new`, `progress_new`, `textfield_new` |
 
 ## Editor Setup
 

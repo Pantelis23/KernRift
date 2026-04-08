@@ -39,10 +39,11 @@ instructions; there are no hidden costs.
 24. [Port I/O Intrinsics](#24-port-io-intrinsics)
 25. [Syscall Intrinsic](#25-syscall-intrinsic)
 26. [Built-in Host Functions](#26-built-in-host-functions)
-27. [Slice Indexing](#27-slice-indexing)
-28. [Compiler CLI Reference](#28-compiler-cli-reference)
-29. [Adaptive Surface & Living Compiler](#29-adaptive-surface--living-compiler)
-30. [Binary Artifact Formats](#30-binary-artifact-formats)
+27. [Atomic Builtins](#27-atomic-builtins)
+28. [Slice Indexing](#28-slice-indexing)
+29. [Compiler CLI Reference](#29-compiler-cli-reference)
+30. [Adaptive Surface & Living Compiler](#30-adaptive-surface--living-compiler)
+31. [Binary Artifact Formats](#31-binary-artifact-formats)
 
 ---
 
@@ -896,6 +897,7 @@ asm("0xD503201F")        // NOP — ARM64
 | Basic | `nop`, `ret`, `eret` |
 | Wait | `wfi`, `wfe`, `sev` |
 | Barriers | `isb`, `dsb sy`, `dsb ish`, `dmb sy`, `dmb ish` |
+| System regs | `mrs x0, <sysreg>`, `msr <sysreg>, x0` (e.g. `SCTLR_EL1`, `VBAR_EL1`, `MPIDR_EL1`) |
 | Supervisor | `svc #N` (16-bit immediate) |
 
 ---
@@ -1008,6 +1010,29 @@ be elided or reordered by future optimization passes:
 volatile { *(mmio_base as uint32) -> status }
 volatile { *(mmio_base as uint32) = 0x01 }
 ```
+
+The cast type determines the access width.  Supported types are `uint8`,
+`uint16`, `uint32`, and `uint64`:
+
+```kr
+volatile { *(port_base as uint16) -> reg16 }
+volatile { *(port_base as uint16) = 0x1234 }
+```
+
+### Volatile barriers
+
+`volatile_barrier()` emits a compiler-level ordering fence.  It prevents the
+compiler from reordering memory accesses across the barrier without emitting a
+hardware fence instruction:
+
+```kr
+volatile { *(mmio_base as uint32) = 0x01 }
+volatile_barrier()
+volatile { *(mmio_base as uint32) -> status }
+```
+
+For hardware-level ordering, use inline assembly barriers (`dmb`, `dsb` on
+ARM64, or `mfence` on x86_64) instead.
 
 ---
 
@@ -1196,7 +1221,70 @@ additional capabilities beyond `@ctx(host)`.
 
 ---
 
-## 27. Slice Indexing
+## 27. Atomic Builtins
+
+KernRift provides built-in functions for lock-free atomic operations on memory.
+These map directly to hardware atomic instructions (`LOCK` prefix on x86_64,
+`LDXR`/`STXR` sequences on ARM64).
+
+### Compare-and-swap
+
+```kr
+uint64 ok = atomic_cas(addr, expected, desired)
+```
+
+Atomically compares the value at `addr` with `expected`.  If they match,
+stores `desired` and returns `1`.  Otherwise returns `0` and leaves memory
+unchanged.
+
+### Atomic load and store
+
+```kr
+uint64 val = atomic_load(addr)
+atomic_store(addr, value)
+```
+
+`atomic_load` performs a sequentially-consistent load.
+`atomic_store` performs a sequentially-consistent store.
+
+### Atomic arithmetic
+
+```kr
+uint64 old = atomic_add(addr, delta)
+uint64 old = atomic_sub(addr, delta)
+```
+
+Returns the previous value at `addr` before the operation.
+
+### Atomic bitwise
+
+```kr
+uint64 old = atomic_and(addr, mask)
+uint64 old = atomic_or(addr, mask)
+uint64 old = atomic_xor(addr, mask)
+```
+
+Returns the previous value at `addr` before the operation.
+
+### Example: spinlock
+
+```kr
+static uint64 lock_val = 0
+
+fn spin_lock() {
+    while atomic_cas(lock_val, 0, 1) == 0 {
+        asm("pause")   // x86_64 hint
+    }
+}
+
+fn spin_unlock() {
+    atomic_store(lock_val, 0)
+}
+```
+
+---
+
+## 28. Slice Indexing
 
 Slices support element access via bracket notation.  Both reads and writes
 are supported.
@@ -1241,7 +1329,7 @@ fn fill([uint8] buf, uint64 n, uint8 val) {
 
 ---
 
-## 28. Compiler CLI Reference
+## 29. Compiler CLI Reference
 
 ### Default compilation
 
@@ -1348,7 +1436,7 @@ memory, runs the entry function, and flushes `print()` output to stdout.
 
 ---
 
-## 29. Adaptive Surface & Living Compiler
+## 30. Adaptive Surface & Living Compiler
 
 KernRift's compiler has a built-in mechanism for evolving the language without
 breaking existing code.  Every attribute alias or shorthand goes through a
@@ -1473,7 +1561,7 @@ is idiomatic and no suggestions are available.
 
 ---
 
-## 30. Binary Artifact Formats
+## 31. Binary Artifact Formats
 
 ### `.krbo` — KernRift binary object
 

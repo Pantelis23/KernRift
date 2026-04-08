@@ -2,6 +2,46 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## v2.4.0 - 2026-04-08
+
+### Added
+- **uint16 pointer operations**: read/write through `u16` pointers in `unsafe`/`volatile` blocks (both x86_64 and ARM64).
+- **ARM64 MSR/MRS system register access**: inline `asm` blocks can now read/write 20+ kernel-mode system registers via MRS/MSR instructions.
+- **Volatile memory barriers**: `volatile { ... }` blocks now emit hardware memory barriers (`mfence` on x86_64, `DMB ISH` on ARM64).
+- **Atomic builtins**: `atomic_load`, `atomic_store`, `atomic_cas`, `atomic_add` — emits `LOCK` prefix on x86_64 and `LDXR`/`STXR` sequences on ARM64.
+- **Builtin argument count validation**: semantic analyzer now checks argument counts for all builtin functions at compile time.
+- **std/color.kr**: `rgb`, `rgba`, `alpha_blend`, `color_lerp`, `darken`/`lighten`, 11 named color constants.
+- **std/fixedpoint.kr**: 16.16 fixed-point math — `mul`, `div`, `sqrt`, `lerp`, `clamp`.
+- **std/memfast.kr**: `memcpy32`/`memcpy64`, `memset32`/`memset64`.
+- **std/fb.kr**: framebuffer primitives — `pixel`, `rect`, `line`, `blit`, `clear`, `rect_outline`.
+- **std/font.kr**: complete 8x16 bitmap font covering ASCII 32–126 (95 characters).
+- **std/widget.kr**: UI widgets — `panel`, `label`, `button`, `progress_bar`, `text_input`.
+
+### Tested
+- 13 new tests for uint16, atomics, volatile, and MSR/MRS (119 total).
+
+## v2.3.0 - 2026-04-05
+
+### Fixed
+- **kr runner execution**: `kr` runner now executes extracted binaries via `set_executable` + `exec_process`.
+- **exec_process Windows crash**: `exec_process` uses `lpApplicationName` to avoid read-only string crash.
+- **kr runner Windows args**: `kr` runner correctly parses Windows command line via `win_init_args_r`.
+- **Android kr temp path**: Android `kr` uses `/data/local/tmp/.kr-exec` (no `/tmp` on Android).
+- **exec_process argv**: `exec_process` passes proper `argv` array to `execve`.
+
+### Changed
+- **Release workflow**: add macOS and Android binaries to release workflow (17 total assets).
+
+## v2.2.0 - 2026-04-03
+
+### Added
+- **Android ARM64 support**: PIE ELF format for Android `aarch64` targets.
+- **Semantic analysis pass**: argument count checking, missing return detection, duplicate function detection.
+
+### Fixed
+- **ARM64 codegen fixes**: SP encoding, large stack frames, and bit operation correctness.
+- **Windows PE fixes**: stack alignment and digit buffer overflow.
+
 ## v2.1.1 - 2026-04-02
 
 ### Added

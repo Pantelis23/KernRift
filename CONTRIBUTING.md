@@ -14,7 +14,7 @@ make build       # bootstrap → krc → krc2 (self-compiled)
 ## Test
 
 ```sh
-make test        # 70 tests (arithmetic, control flow, functions, structs, imports, match, stdlib, etc.)
+make test        # 119 tests (arithmetic, control flow, functions, structs, imports, match, stdlib, etc.)
 make bootstrap   # verify krc3 == krc4 (fixed point)
 ```
 
@@ -39,7 +39,7 @@ All compiler source is in `src/`:
 | `format_*.kr` | Output formats (ELF, Mach-O, PE, AR, KRBO) |
 | `main.kr` | CLI and compilation driver |
 
-Standard library modules are in `std/` (7 modules, 828 lines):
+Standard library modules are in `std/` (13 modules, 2032 lines):
 
 | Module | Purpose |
 |--------|---------|
@@ -50,6 +50,12 @@ Standard library modules are in `std/` (7 modules, 828 lines):
 | `std/mem.kr` | Memory management (realloc, memcmp, arena allocator) |
 | `std/vec.kr` | Dynamic array |
 | `std/map.kr` | Hash map |
+| `std/color.kr` | Color utilities (rgb, rgba, blend, lerp, darken, lighten) |
+| `std/fb.kr` | Framebuffer primitives (pixel, rect, line, fill, blit) |
+| `std/fixedpoint.kr` | 16.16 fixed-point math (add, sub, mul, div, sqrt, lerp) |
+| `std/font.kr` | 8x16 bitmap font renderer (fb_char, fb_text) |
+| `std/memfast.kr` | Fast block memory operations (memcpy32, memcpy64, memset32, memset64) |
+| `std/widget.kr` | UI widget system (panel, label, button, progress, textfield) |
 
 ## Guidelines
 

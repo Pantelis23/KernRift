@@ -12,6 +12,11 @@ A self-hosted systems language compiler for kernel-first development. KernRift c
 - **Zero dependencies** — static executables, no libc, no linker
 - **Kernel-first** — inline assembly, `@naked` functions, `@packed` structs, signed comparisons, volatile memory, bitfield ops, `--freestanding` mode
 - **Kernel safety** — context checks, effect tracking, lock graphs, capabilities, undeclared identifier detection
+- **Volatile blocks** — `volatile { ... }` emits memory barriers (`mfence` on x86_64, `DMB ISH` on ARM64)
+- **Atomic operations** — `atomic_load`, `atomic_store`, `atomic_cas`, `atomic_add`
+- **uint16 pointer ops** — uint16 pointer operations in `unsafe`/`volatile` blocks
+- **ARM64 system registers** — MSR/MRS access in inline asm (20+ registers including SCTLR_EL1, VBAR_EL1, etc.)
+- **Builtin validation** — argument count validation for builtins in the semantic analyzer
 - **Living compiler** — pattern detection, fitness scoring, auto-fix suggestions
 - **Cross-compilation** — compile for any target from any host
 
@@ -76,8 +81,8 @@ winget install Pantelis23.KernRift
 
 **Debian/Ubuntu** (.deb):
 ```bash
-curl -sSLO https://github.com/Pantelis23/KernRift/releases/latest/download/kernrift_2.1.0_amd64.deb
-sudo dpkg -i kernrift_2.1.0_amd64.deb
+curl -sSLO https://github.com/Pantelis23/KernRift/releases/latest/download/kernrift_2.4.0_amd64.deb
+sudo dpkg -i kernrift_2.4.0_amd64.deb
 ```
 
 **AUR** (Arch Linux):
@@ -183,7 +188,7 @@ These are compiler intrinsics — no import needed, available on all platforms:
 
 ## Standard Library
 
-7 modules (828 lines) in `std/`:
+13 modules (~2000+ lines) in `std/`:
 
 | Module | Functions |
 |--------|-----------|
@@ -194,6 +199,12 @@ These are compiler intrinsics — no import needed, available on all platforms:
 | `std/mem.kr` | `realloc`, `memcmp`, `memzero`, `arena_init`, `arena_alloc`, `arena_reset` |
 | `std/vec.kr` | `vec_new`, `push`, `get`, `set`, `pop`, `remove`, `contains` |
 | `std/map.kr` | `map_new`, `set`, `get`, `has` |
+| `std/color.kr` | Color utilities: `rgb`, `rgba`, `alpha_blend` |
+| `std/fixedpoint.kr` | 16.16 fixed-point math |
+| `std/memfast.kr` | Fast block memory ops |
+| `std/fb.kr` | Framebuffer primitives |
+| `std/font.kr` | 8x16 bitmap font renderer |
+| `std/widget.kr` | UI widgets: panel, label, button, progress bar, text field |
 
 Import with `import "std/string.kr"` etc. The compiler searches `~/.local/share/kernrift/` automatically.
 
@@ -206,7 +217,7 @@ A VS Code extension (v0.2.3) is available on the VS Code Marketplace:
 
 ## Architecture
 
-14,400+ lines of KernRift across 15 source files + 7 stdlib modules (828 lines). Self-compiles to a 383 KB native binary in 55ms, or a 2.6 MB universal fat binary (7 slices) in ~280ms (AMD Ryzen 9 7900X). 106 tests, bootstrap fixed point verified on 5 platforms (Linux x86_64, Linux ARM64, Windows x86_64, Windows ARM64, Android ARM64).
+14,800+ lines of KernRift across 15 source files + 13 stdlib modules (~2000+ lines). Self-compiles to a 383 KB native binary in 55ms, or a 2.6 MB universal fat binary (7 slices) in ~280ms (AMD Ryzen 9 7900X). 119 tests, bootstrap fixed point verified on 5 platforms (Linux x86_64, Linux ARM64, Windows x86_64, Windows ARM64, Android ARM64).
 
 | File | Purpose |
 |------|---------|
@@ -218,7 +229,7 @@ A VS Code extension (v0.2.3) is available on the VS Code Marketplace:
 | `living.kr` | Pattern detection + fitness |
 | `bcj.kr` | BCJ filters (x86_64 + AArch64) for compression |
 | `format_*.kr` | ELF, Mach-O, PE, AR, KRBO, KrboFat |
-| `std/*.kr` | Standard library (7 modules, 828 lines) |
+| `std/*.kr` | Standard library (13 modules, ~2000+ lines) |
 
 ## Bootstrap
 
