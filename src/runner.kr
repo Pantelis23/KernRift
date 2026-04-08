@@ -109,9 +109,29 @@ fn main() {
         exit(1)
     }
 
+    // Debug: print argc and argv pointers
+    write(2, "kr: argc=", 9)
+    print(cli_argc)
+    write(2, " argv=", 6)
+    print(cli_argv)
+    write(2, "\n", 1)
+
+    // Print argv[0] and argv[1]
+    uint64 arg0_ptr = cli_argv
+    uint64 argv0 = 0
+    unsafe { *(arg0_ptr as uint64) -> argv0 }
+    write(2, "kr: argv[0]=", 12)
+    uint64 a0len = str_len_r(argv0)
+    write(2, argv0, a0len)
+    write(2, "\n", 1)
+
     uint64 arg1_ptr = cli_argv + 8
     uint64 krbo_path = 0
     unsafe { *(arg1_ptr as uint64) -> krbo_path }
+    write(2, "kr: argv[1]=", 12)
+    uint64 a1len = str_len_r(krbo_path)
+    write(2, krbo_path, a1len)
+    write(2, "\n", 1)
 
     uint64 fd = file_open(krbo_path, 0)
     uint64 fsize = file_size(fd)
