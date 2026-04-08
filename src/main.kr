@@ -537,8 +537,241 @@ fn imp_process(uint64 file_path) {
     imp_append(tmp, size, file_path)
 }
 
+fn hex_nibble(uint64 v) -> uint64 {
+    if v < 10 { return v + 48 }
+    return v + 87
+}
+
+fn write_hex8(uint64 fd, uint64 val) {
+    uint8 h = hex_nibble((val >> 4) & 0xF)
+    uint8 l = hex_nibble(val & 0xF)
+    uint8[2] hb
+    unsafe { *(hb as uint8) = h }
+    uint64 p1 = hb + 1
+    unsafe { *(p1 as uint8) = l }
+    write(fd, hb, 2)
+}
+
+fn write_hex32(uint64 fd, uint64 val) {
+    write_hex8(fd, (val >> 24) & 0xFF)
+    write_hex8(fd, (val >> 16) & 0xFF)
+    write_hex8(fd, (val >> 8) & 0xFF)
+    write_hex8(fd, val & 0xFF)
+}
+
+fn emit_asm_listing(uint64 output_path, uint64 arch, uint64 text_start, uint64 source, uint64 tokens) {
+    uint64 fd = file_open(output_path, 1)
+    uint64 code_end = codegen_output_len()
+    write(fd, "; KernRift assembly listing\n", 27)
+    if arch == 0 {
+        write(fd, "; Architecture: x86_64\n", 23)
+    } else {
+        write(fd, "; Architecture: ARM64\n", 22)
+    }
+    write(fd, "\n", 1)
+
+    // Build sorted function offset list for labeling
+    uint64 fi = 0
+    while fi < fn_count {
+        uint64 fentry = fn_table + fi * 8
+        uint32 fn_tok = 0
+        unsafe { *(fentry as uint32) -> fn_tok }
+        uint64 fe4 = fentry + 4
+        uint32 fn_off = 0
+        unsafe { *(fe4 as uint32) -> fn_off }
+        uint64 woff = fn_off
+
+        // Print function label
+        write(fd, "\n", 1)
+        uint64 tstart = tok_text_start(fn_tok)
+        uint64 tlen = tok_text_len(fn_tok)
+        uint64 name_ptr = source + tstart
+        write(fd, name_ptr, tlen)
+        write(fd, ":\n", 2)
+
+        // Find end of this function (next function offset or code_end)
+        uint64 fn_end = code_end
+        uint64 fj = 0
+        while fj < fn_count {
+            uint64 fe2 = fn_table + fj * 8 + 4
+            uint32 next_off = 0
+            unsafe { *(fe2 as uint32) -> next_off }
+            uint64 wnext = next_off
+            if wnext > woff && wnext < fn_end {
+                fn_end = wnext
+            }
+            fj = fj + 1
+        }
+
+        // Dump instructions
+        uint64 pos = woff
+        if arch == 1 {
+            // ARM64: fixed 4-byte instructions
+            while pos + 4 <= fn_end {
+                write(fd, "  ", 2)
+                write_hex32(fd, pos - text_start)
+                write(fd, ": ", 2)
+                uint64 bp = out_buf + pos
+                uint32 insn = 0
+                unsafe { *(bp as uint32) -> insn }
+                uint64 wi = insn
+                write_hex32(fd, wi)
+                write(fd, "  ", 2)
+                // Decode common ARM64 instructions
+                if wi == 0xD503201F { write(fd, "nop", 3) }
+                else if wi == 0xD65F03C0 { write(fd, "ret", 3) }
+                else if wi == 0xD503207F { write(fd, "wfi", 3) }
+                else if wi == 0xD5033FDF { write(fd, "isb", 3) }
+                else if wi == 0xD5033BBF { write(fd, "dmb ish", 7) }
+                else if wi == 0xD5033F9F { write(fd, "dsb sy", 6) }
+                else if wi == 0xD5033FBF { write(fd, "dmb sy", 6) }
+                else if wi == 0xD69F03E0 { write(fd, "eret", 4) }
+                else if wi == 0xD4000001 { write(fd, "svc #0", 6) }
+                else if (wi & 0xFF800000) == 0xD2800000 {
+                    write(fd, "movz x", 6)
+                    uint8[4] rb
+                    uint64 rd = wi & 0x1F
+                    uint64 rl = fmt_uint(rb, rd)
+                    write(fd, rb, rl)
+                    write(fd, ", #", 3)
+                    uint64 imm16 = (wi >> 5) & 0xFFFF
+                    uint64 il = fmt_uint(rb, imm16)
+                    write(fd, rb, il)
+                }
+                else if (wi & 0x7FE00000) == 0x0B000000 || (wi & 0x7FE00000) == 0x4B000000 {
+                    if (wi & 0x40000000) != 0 { write(fd, "sub", 3) } else { write(fd, "add", 3) }
+                }
+                else if (wi & 0xFFC00000) == 0xF9400000 { write(fd, "ldr", 3) }
+                else if (wi & 0xFFC00000) == 0xF9000000 { write(fd, "str", 3) }
+                else if (wi & 0xFC000000) == 0x94000000 { write(fd, "bl", 2) }
+                else if (wi & 0xFC000000) == 0x14000000 { write(fd, "b", 1) }
+                else if (wi & 0xFF000000) == 0x54000000 { write(fd, "b.cond", 6) }
+                else if (wi & 0xFFE00000) == 0xD5300000 { write(fd, "mrs", 3) }
+                else if (wi & 0xFFE00000) == 0xD5100000 { write(fd, "msr", 3) }
+                else if (wi & 0x3FE00000) == 0x08400000 { write(fd, "ldxr/ldar", 9) }
+                else if (wi & 0x3FE00000) == 0x08000000 { write(fd, "stxr/stlr", 9) }
+                write(fd, "\n", 1)
+                pos = pos + 4
+            }
+        } else {
+            // x86_64: variable length — hex dump with basic decode
+            while pos < fn_end {
+                write(fd, "  ", 2)
+                write_hex32(fd, pos - text_start)
+                write(fd, ": ", 2)
+                uint64 bp = out_buf + pos
+                uint64 b0 = 0
+                unsafe { *(bp as uint8) -> b0 }
+                // Decode some common patterns
+                if b0 == 0xC3 {
+                    write_hex8(fd, b0)
+                    write(fd, "                 ret", 20)
+                    pos = pos + 1
+                } else if b0 == 0x0F {
+                    uint64 bp1 = bp + 1
+                    uint64 b1 = 0
+                    unsafe { *(bp1 as uint8) -> b1 }
+                    if b1 == 0x05 {
+                        write_hex8(fd, b0)
+                        write(fd, " ", 1)
+                        write_hex8(fd, b1)
+                        write(fd, "              syscall", 21)
+                        pos = pos + 2
+                    } else if b1 == 0xAE {
+                        uint64 bp2 = bp + 2
+                        uint64 b2 = 0
+                        unsafe { *(bp2 as uint8) -> b2 }
+                        if b2 == 0xF0 {
+                            write_hex8(fd, b0)
+                            write(fd, " ", 1)
+                            write_hex8(fd, b1)
+                            write(fd, " ", 1)
+                            write_hex8(fd, b2)
+                            write(fd, "           mfence", 18)
+                            pos = pos + 3
+                        } else {
+                            write_hex8(fd, b0)
+                            write(fd, " ", 1)
+                            write_hex8(fd, b1)
+                            write(fd, " ", 1)
+                            write_hex8(fd, b2)
+                            pos = pos + 3
+                        }
+                    } else {
+                        // Dump up to 4 bytes
+                        uint64 cnt = 2
+                        uint64 di = 0
+                        while di < cnt {
+                            uint64 dp = bp + di
+                            uint64 db = 0
+                            unsafe { *(dp as uint8) -> db }
+                            write_hex8(fd, db)
+                            write(fd, " ", 1)
+                            di = di + 1
+                        }
+                        pos = pos + cnt
+                    }
+                } else if b0 == 0xF0 {
+                    // LOCK prefix
+                    write_hex8(fd, b0)
+                    write(fd, " ", 1)
+                    write(fd, "...          lock ...", 20)
+                    // Dump rest of instruction (up to 7 more bytes)
+                    uint64 li = 1
+                    while li < 8 && pos + li < fn_end {
+                        uint64 lp = bp + li
+                        uint64 lb = 0
+                        unsafe { *(lp as uint8) -> lb }
+                        if lb == 0x48 || lb == 0x0F || (lb >= 0x80 && lb <= 0xCF) {
+                            li = li + 1
+                        } else {
+                            li = li + 1
+                            break
+                        }
+                    }
+                    pos = pos + li
+                } else {
+                    // Generic: dump 1 byte per line for simple format
+                    uint64 cnt = 1
+                    // REX prefix? Read more bytes
+                    if b0 >= 0x40 && b0 <= 0x4F { cnt = 2 }
+                    if b0 == 0x48 || b0 == 0x49 {
+                        uint64 bp1 = bp + 1
+                        uint64 b1 = 0
+                        unsafe { *(bp1 as uint8) -> b1 }
+                        if b1 == 0xC7 { cnt = 7 }
+                        else if b1 == 0x89 || b1 == 0x8B { cnt = 3 }
+                        else if b1 == 0x81 { cnt = 7 }
+                        else if b1 == 0x83 { cnt = 4 }
+                        else if b1 == 0x31 { cnt = 3 }
+                        else { cnt = 3 }
+                    }
+                    if b0 == 0xB8 || b0 == 0xB9 || b0 == 0xBA { cnt = 5 }
+                    if b0 == 0xE8 { cnt = 5 }
+                    if b0 >= 0x50 && b0 <= 0x5F { cnt = 1 }
+                    if b0 == 0x90 { cnt = 1 }
+                    if cnt + pos > fn_end { cnt = fn_end - pos }
+                    uint64 di = 0
+                    while di < cnt {
+                        uint64 dp = bp + di
+                        uint64 db = 0
+                        unsafe { *(dp as uint8) -> db }
+                        write_hex8(fd, db)
+                        write(fd, " ", 1)
+                        di = di + 1
+                    }
+                    pos = pos + cnt
+                }
+                write(fd, "\n", 1)
+            }
+        }
+        fi = fi + 1
+    }
+    file_close(fd)
+}
+
 // arch: 0=x86_64, 1=arm64
-// emit: 0=elfexe, 1=machoexe, 2=peexe, 3=obj (ELF relocatable)
+// emit: 0=elfexe, 1=machoexe, 2=peexe, 3=obj (ELF relocatable), 5=asm listing
 fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode) {
     imp_init()
     imp_check_file(input_path)
@@ -601,6 +834,9 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
         // Android PIE ELF
         emit_elf_header_android_a64()
         header_size = 1024
+    } else if emit_mode == 5 {
+        // ASM listing — no header, code at offset 0
+        header_size = 0
     }
 
     uint64 text_start = codegen_output_len()
@@ -676,6 +912,30 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
         uint64 olen = str_len(output_path)
         write(1, output_path, olen)
         msg = " (relocatable)\n"
+        write(1, msg, 15)
+        return
+    }
+
+    // For ASM listing, output text disassembly
+    if emit_mode == 5 {
+        emit_asm_listing(output_path, arch, text_start, source, 0)
+
+        uint8[64] nb
+        uint64 tl = fmt_uint(nb, tcount)
+        write(1, nb, tl)
+        uint64 msg = " tokens, "
+        write(1, msg, 9)
+        uint64 al = fmt_uint(nb, ast_count)
+        write(1, nb, al)
+        msg = " nodes, "
+        write(1, msg, 8)
+        uint64 cl = fmt_uint(nb, text_size)
+        write(1, nb, cl)
+        msg = " bytes -> "
+        write(1, msg, 10)
+        uint64 olen = str_len(output_path)
+        write(1, output_path, olen)
+        msg = " (asm listing)\n"
         write(1, msg, 15)
         return
     }
@@ -1756,12 +2016,14 @@ fn main() {
                     emit_mode = 3
                 } else if str_starts_with(emit_str, "android", 7) != 0 {
                     emit_mode = 4
+                } else if str_starts_with(emit_str, "asm", 3) != 0 {
+                    emit_mode = 5
                 } else {
                     write(2, "error: unknown emit format '", 28)
                     uint64 esl = str_len(emit_str)
                     write(2, emit_str, esl)
                     write(2, "'\n", 2)
-                    write(2, "valid: elfexe, macho, pe, obj, android\n", 39)
+                    write(2, "valid: elfexe, macho, pe, obj, android, asm\n", 44)
                     exit(1)
                 }
             } else if str_eq_full(arg, "-c") != 0 {
@@ -1872,7 +2134,7 @@ fn main() {
             write(2, "usage: krc [options] <file.kr> [-o output]\n\n", 44)
             write(2, "options:\n", 9)
             write(2, "  --arch=x86_64|arm64\n", 22)
-            write(2, "  --emit=elfexe|macho|pe|obj\n", 29)
+            write(2, "  --emit=elfexe|macho|pe|obj|asm\n", 33)
             write(2, "  -c                        emit relocatable .o\n", 48)
             write(2, "  --target=linux|macos|windows\n", 31)
             write(2, "  --version\n\n", 13)
