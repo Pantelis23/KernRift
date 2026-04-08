@@ -13,24 +13,21 @@
 set -e
 
 REPO="Pantelis23/KernRift"
-INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 
 # Detect platform
 ARCH=$(uname -m)
 IS_ANDROID=0
+IS_TERMUX=0
 if [ -f "/system/bin/linker64" ]; then
     IS_ANDROID=1
+    if [ -d "/data/data/com.termux/files" ]; then
+        IS_TERMUX=1
+    fi
 fi
 
 case "$ARCH" in
     x86_64|amd64) ARCH_NAME="x86_64" ;;
-    aarch64|arm64)
-        if [ "$IS_ANDROID" = "1" ]; then
-            ARCH_NAME="android-arm64"
-        else
-            ARCH_NAME="arm64"
-        fi
-        ;;
+    aarch64|arm64) ARCH_NAME="arm64" ;;
     *) echo "error: unsupported architecture: $ARCH"; exit 1 ;;
 esac
 
@@ -47,17 +44,26 @@ case "$OS" in
     *)      echo "error: unsupported OS: $OS"; exit 1 ;;
 esac
 
-# Android install path
-if [ "$IS_ANDROID" = "1" ]; then
-    if [ -d "/data/data/com.termux" ]; then
-        INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
-    else
-        INSTALL_DIR="${INSTALL_DIR:-/data/local/tmp}"
-    fi
+# Set install directory based on environment
+if [ "$IS_TERMUX" = "1" ]; then
+    INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
+    STD_DIR="$HOME/.local/share/kernrift/std"
+elif [ "$IS_ANDROID" = "1" ]; then
+    INSTALL_DIR="${INSTALL_DIR:-/data/local/tmp/kernrift}"
+    STD_DIR="/data/local/tmp/kernrift/std"
+else
+    INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
+    STD_DIR="$HOME/.local/share/kernrift/std"
 fi
 
 echo "=== KernRift Installer ==="
-echo "Platform: $OS_NAME $ARCH_NAME"
+if [ "$IS_TERMUX" = "1" ]; then
+    echo "Platform: Android (Termux) ARM64"
+elif [ "$IS_ANDROID" = "1" ]; then
+    echo "Platform: Android (adb) ARM64"
+else
+    echo "Platform: $OS_NAME $ARCH_NAME"
+fi
 echo "Install to: $INSTALL_DIR"
 echo ""
 
@@ -66,26 +72,26 @@ mkdir -p "$INSTALL_DIR"
 BASE="https://github.com/$REPO/releases/latest/download"
 
 # Download krc compiler
-echo "Downloading krc..."
 if [ "$IS_ANDROID" = "1" ]; then
-    curl -sL -o "$INSTALL_DIR/krc" "$BASE/krc-android-arm64"
-    chmod +x "$INSTALL_DIR/krc"
+    KRC_ASSET="krc-android-arm64"
+    KR_ASSET="kr-android-arm64"
+elif [ "$OS_NAME" = "macos" ]; then
+    KRC_ASSET="krc-macos-$ARCH_NAME"
+    KR_ASSET="kr-macos-$ARCH_NAME"
 else
-    curl -sL -o "$INSTALL_DIR/krc" "$BASE/krc-$OS_NAME-$ARCH_NAME"
-    chmod +x "$INSTALL_DIR/krc"
+    KRC_ASSET="krc-linux-$ARCH_NAME"
+    KR_ASSET="kr-linux-$ARCH_NAME"
 fi
 
-# Download kr runner
-echo "Downloading kr..."
-if [ "$IS_ANDROID" = "1" ]; then
-    curl -sL -o "$INSTALL_DIR/kr" "$BASE/kr-android-arm64"
-else
-    curl -sL -o "$INSTALL_DIR/kr" "$BASE/kr-$OS_NAME-$ARCH_NAME"
-fi
+echo "Downloading $KRC_ASSET..."
+curl -sL -o "$INSTALL_DIR/krc" "$BASE/$KRC_ASSET"
+chmod +x "$INSTALL_DIR/krc"
+
+echo "Downloading $KR_ASSET..."
+curl -sL -o "$INSTALL_DIR/kr" "$BASE/$KR_ASSET"
 chmod +x "$INSTALL_DIR/kr"
 
 # Download standard library
-STD_DIR="$HOME/.local/share/kernrift/std"
 echo "Installing standard library..."
 mkdir -p "$STD_DIR"
 for mod in string io math fmt mem vec map color fb fixedpoint font memfast widget; do
@@ -93,10 +99,6 @@ for mod in string io math fmt mem vec map color fb fixedpoint font memfast widge
         "https://raw.githubusercontent.com/Pantelis23/KernRift/main/std/$mod.kr"
 done
 echo "Standard library: $STD_DIR"
-
-# Download native extractor for kr
-curl -sL -o "$INSTALL_DIR/kr-$OS_NAME-$ARCH_NAME" "$BASE/kr-$OS_NAME-$ARCH_NAME" 2>/dev/null || true
-chmod +x "$INSTALL_DIR/kr-$OS_NAME-$ARCH_NAME" 2>/dev/null || true
 
 echo ""
 
@@ -107,17 +109,33 @@ fi
 
 # Check PATH
 case ":$PATH:" in
-    *":$INSTALL_DIR:"*) echo "krc is in your PATH." ;;
-    *) echo "Add to PATH:  export PATH=\"$INSTALL_DIR:\$PATH\""
-       echo "Or add that line to ~/.bashrc" ;;
+    *":$INSTALL_DIR:"*)
+        echo "krc is in your PATH."
+        ;;
+    *)
+        if [ "$IS_TERMUX" = "1" ]; then
+            echo "Add to PATH:"
+            echo "  echo 'export PATH=\"$INSTALL_DIR:\$PATH\"' >> ~/.bashrc"
+            echo "  source ~/.bashrc"
+        elif [ "$IS_ANDROID" = "1" ]; then
+            echo "Run directly:"
+            echo "  $INSTALL_DIR/krc --version"
+        else
+            echo "Add to PATH:  export PATH=\"$INSTALL_DIR:\$PATH\""
+            echo "Or add that line to ~/.bashrc"
+        fi
+        ;;
 esac
 
 echo ""
 echo "Usage:"
 echo "  krc hello.kr -o hello.krbo    # compile (fat binary)"
 echo "  kr hello.krbo                 # run on any platform"
-echo "  krc --arch=x86_64 hello.kr    # native ELF"
+if [ "$IS_ANDROID" = "1" ]; then
+    echo "  krc --emit=android hello.kr -o hello   # native Android ARM64"
+else
+    echo "  krc --arch=$ARCH_NAME hello.kr          # native binary"
+fi
 echo "  krc check module.kr           # safety analysis"
-echo "  krc lc program.kr             # living compiler"
 echo ""
 echo "=== Done ==="
