@@ -447,9 +447,9 @@ fn resolve_a64_win_iat_fixups(uint64 text_start, uint64 iat_rva) {
 // Frame overhead: 24 bytes (FP + LR + x19), then 8 bytes per variable
 
 // a64_var_base: offset where variables start on the AArch64 stack frame
-// After saved registers: x29(8) + x30(8) + x19(8) + x20(8) = 32 bytes
+// After saved registers: x29(8) + x30(8) = 16 bytes (x19/x20 only if needed)
 // Initialized in codegen_init
-static uint64 a64_var_base = 32
+static uint64 a64_var_base = 16
 
 // Store x0 to variable slot on stack
 fn emit_a64_store_x0(uint64 var_offset) {
@@ -475,10 +475,11 @@ fn emit_a64_static_load(uint64 data_offset) {
         emit_a64(0x90000010)           // ADRP X16, #0 (patched)
         emit_a64(0xF9400200)           // LDR X0, [X16, #0] (patched)
     } else {
-        // ELF/Mach-O: MOVZ/MOVK absolute address
+        // ELF/Mach-O: MOVZ/MOVK absolute address (patched later)
+        // Use emit_a64_mov_imm pattern: only emit non-zero halfwords
         emit_a64_movz(10, 0)
         emit_a64_movk(10, 0, 16)
-        emit_a64_movk(10, 0, 32)
+        // Skip third MOVK — most addresses fit in 32 bits. Patched later.
         // ldr x0, [x10]
         emit_a64_ldr(0, 10, 0)
     }
@@ -499,10 +500,9 @@ fn emit_a64_static_store(uint64 data_offset) {
         emit_a64(0x90000010)           // ADRP X16, #0 (patched)
         emit_a64(0xF9000209)           // STR X9, [X16, #0] (patched)
     } else {
-        // ELF/Mach-O: MOVZ/MOVK absolute address
+        // ELF/Mach-O: MOVZ/MOVK absolute address (patched later)
         emit_a64_movz(10, 0)
         emit_a64_movk(10, 0, 16)
-        emit_a64_movk(10, 0, 32)
         // str x9, [x10]
         emit_a64_str(9, 10, 0)
     }
@@ -594,10 +594,9 @@ fn gen_expr_a64(uint64 node) {
             emit_a64(0x90000010)       // ADRP X16, #0
             emit_a64(0x91000200)       // ADD X0, X16, #0
         } else {
-            // ELF/Mach-O: MOVZ/MOVK absolute
+            // ELF/Mach-O: MOVZ/MOVK absolute (patched later)
             emit_a64_movz(0, 0)
             emit_a64_movk(0, 0, 16)
-            emit_a64_movk(0, 0, 32)
         }
         return
     }
@@ -2903,7 +2902,8 @@ fn gen_function_a64(uint64 fn_node) {
 
     // Prologue — for large frames (>4080) we split: pre_sub + prologue_sub
     uint64 pre_sub_patch = out_len
-    if is_naked == 0 {
+    // NOP placeholder for large frame pre-subtract (patched later if needed)
+    if is_naked == 0 && var_count > 500 {
         emit_a64(0xD503201F)  // NOP (patched to SUB SP if frame > 4080)
     }
     uint64 prologue_start = out_len
@@ -2913,8 +2913,6 @@ fn gen_function_a64(uint64 fn_node) {
         emit_a64(0xA9007BFD)
         // mov x29, sp
         emit_a64_add_imm(29, 31, 0)
-        // stp x19, x20, [sp, #16]
-        emit_a64(0xA90153F3)
     }
 
     // Spill params to stack (x0-x7)
@@ -2993,15 +2991,16 @@ fn gen_function_a64(uint64 fn_node) {
         }
     }
 
-    // ldp x19, x20, [sp, #16]
-    emit_a64(0xA94153F3)
     // ldp x29, x30, [sp] (no post-index)
     emit_a64(0xA9407BFD)
     // add sp, sp, #FRAME (placeholder, patched)
     uint64 epilogue_add = out_len
     emit_a64(0x91000000)
     uint64 post_add_patch = out_len
-    emit_a64(0xD503201F)  // NOP (patched to ADD SP if frame > 4080)
+    // NOP placeholder — patched to ADD SP for large frames (>4080)
+    if var_count > 500 {
+        emit_a64(0xD503201F)
+    }
     // ret
     emit_a64_ret()
 
@@ -3237,7 +3236,6 @@ fn resolve_static_fixups_a64(uint64 data_start) {
             uint64 hi32 = (target_va >> 32) & 0xFFFF
             patch_u32(wco, 0xD280000A | (lo16 << 5))
             patch_u32(wco + 4, 0xF2A0000A | (hi16 << 5))
-            patch_u32(wco + 8, 0xF2C0000A | (hi32 << 5))
         }
         i = i + 1
     }
@@ -3279,7 +3277,6 @@ fn resolve_string_fixups_a64(uint64 str_data_start) {
             uint64 hi32 = (target_va >> 32) & 0xFFFF
             patch_u32(wco, 0xD2800000 | (lo16 << 5))
             patch_u32(wco + 4, 0xF2A00000 | (hi16 << 5))
-            patch_u32(wco + 8, 0xF2C00000 | (hi32 << 5))
         }
         i = i + 1
     }
