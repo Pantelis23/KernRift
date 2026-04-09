@@ -117,7 +117,7 @@ fn codegen_init(uint64 capacity, uint64 source, uint64 tokens) {
     cg_tokens = tokens
     var_table = alloc(4096 * 8)
     var_count = 0
-    fn_table = alloc(256 * 8)
+    fn_table = alloc(1024 * 8)
     fn_count = 0
     fixup_table = alloc(8192 * 8)
     fixup_count = 0
@@ -140,12 +140,12 @@ fn codegen_init(uint64 capacity, uint64 source, uint64 tokens) {
     static_fixup_count = 0
     str_buf = alloc(65536)
     str_len = 0
-    str_fixups = alloc(1024 * 8)
+    str_fixups = alloc(4096 * 8)
     str_fixup_count = 0
     a64_var_base = 32
-    win_iat_fixups = alloc(1024 * 8)
+    win_iat_fixups = alloc(4096 * 8)
     win_iat_fixup_count = 0
-    a64_win_iat_fixups = alloc(1024 * 8)
+    a64_win_iat_fixups = alloc(4096 * 8)
     a64_win_iat_fixup_count = 0
     a64_digit_buf = alloc(32)
     type_alias_table = alloc(64 * 8)
