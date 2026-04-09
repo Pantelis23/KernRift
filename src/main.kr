@@ -9,6 +9,7 @@ import "format_archive.kr"
 import "analysis.kr"
 import "living.kr"
 import "runtime.kr"
+import "formatter.kr"
 
 // KernRift self-hosted compiler — main
 
@@ -559,6 +560,79 @@ fn write_hex32(uint64 fd, uint64 val) {
     write_hex8(fd, val & 0xFF)
 }
 
+fn write_a64_xreg(uint64 fd, uint64 reg) {
+    uint8[4] rb
+    if reg == 31 {
+        write(fd, "sp", 2)
+    } else {
+        write(fd, "x", 1)
+        uint64 rl = fmt_uint(rb, reg)
+        write(fd, rb, rl)
+    }
+}
+
+fn write_a64_wreg(uint64 fd, uint64 reg) {
+    uint8[4] rb
+    if reg == 31 {
+        write(fd, "wzr", 3)
+    } else {
+        write(fd, "w", 1)
+        uint64 rl = fmt_uint(rb, reg)
+        write(fd, rb, rl)
+    }
+}
+
+fn write_a64_sysreg(uint64 fd, uint64 op0, uint64 op1, uint64 crn, uint64 crm, uint64 op2) {
+    // Common system registers
+    if op0 == 3 && op1 == 3 && crn == 13 && crm == 0 && op2 == 2 {
+        write(fd, "tpidr_el0", 9)
+    } else if op0 == 3 && op1 == 0 && crn == 4 && crm == 0 && op2 == 1 {
+        write(fd, "elr_el1", 7)
+    } else if op0 == 3 && op1 == 0 && crn == 4 && crm == 0 && op2 == 0 {
+        write(fd, "spsr_el1", 8)
+    } else if op0 == 3 && op1 == 0 && crn == 5 && crm == 2 && op2 == 0 {
+        write(fd, "esr_el1", 7)
+    } else if op0 == 3 && op1 == 0 && crn == 6 && crm == 0 && op2 == 0 {
+        write(fd, "far_el1", 7)
+    } else if op0 == 3 && op1 == 0 && crn == 1 && crm == 0 && op2 == 0 {
+        write(fd, "sctlr_el1", 9)
+    } else if op0 == 3 && op1 == 0 && crn == 2 && crm == 0 && op2 == 0 {
+        write(fd, "ttbr0_el1", 9)
+    } else if op0 == 3 && op1 == 0 && crn == 2 && crm == 0 && op2 == 1 {
+        write(fd, "ttbr1_el1", 9)
+    } else if op0 == 3 && op1 == 0 && crn == 12 && crm == 0 && op2 == 0 {
+        write(fd, "vbar_el1", 8)
+    } else if op0 == 3 && op1 == 3 && crn == 4 && crm == 2 && op2 == 0 {
+        write(fd, "nzcv", 4)
+    } else if op0 == 3 && op1 == 3 && crn == 4 && crm == 2 && op2 == 1 {
+        write(fd, "daif", 4)
+    } else if op0 == 3 && op1 == 0 && crn == 0 && crm == 0 && op2 == 0 {
+        write(fd, "midr_el1", 8)
+    } else if op0 == 3 && op1 == 0 && crn == 0 && crm == 0 && op2 == 5 {
+        write(fd, "mpidr_el1", 9)
+    } else if op0 == 3 && op1 == 3 && crn == 14 && crm == 0 && op2 == 1 {
+        write(fd, "cntpct_el0", 10)
+    } else {
+        // Fallback: print s<op0>_<op1>_c<crn>_c<crm>_<op2>
+        uint8[4] rb
+        write(fd, "s", 1)
+        uint64 rl = fmt_uint(rb, op0)
+        write(fd, rb, rl)
+        write(fd, "_", 1)
+        rl = fmt_uint(rb, op1)
+        write(fd, rb, rl)
+        write(fd, "_c", 2)
+        rl = fmt_uint(rb, crn)
+        write(fd, rb, rl)
+        write(fd, "_c", 2)
+        rl = fmt_uint(rb, crm)
+        write(fd, rb, rl)
+        write(fd, "_", 1)
+        rl = fmt_uint(rb, op2)
+        write(fd, rb, rl)
+    }
+}
+
 fn emit_asm_listing(uint64 output_path, uint64 arch, uint64 text_start, uint64 source, uint64 tokens) {
     uint64 fd = file_open(output_path, 1)
     uint64 code_end = codegen_output_len()
@@ -617,6 +691,11 @@ fn emit_asm_listing(uint64 output_path, uint64 arch, uint64 text_start, uint64 s
                 uint64 wi = insn
                 write_hex32(fd, wi)
                 write(fd, "  ", 2)
+                uint8[16] drb
+                uint64 drl = 0
+                uint64 rd = wi & 0x1F
+                uint64 rn = (wi >> 5) & 0x1F
+                uint64 rm = (wi >> 16) & 0x1F
                 // Decode common ARM64 instructions
                 if wi == 0xD503201F { write(fd, "nop", 3) }
                 else if wi == 0xD65F03C0 { write(fd, "ret", 3) }
@@ -627,29 +706,425 @@ fn emit_asm_listing(uint64 output_path, uint64 arch, uint64 text_start, uint64 s
                 else if wi == 0xD5033FBF { write(fd, "dmb sy", 6) }
                 else if wi == 0xD69F03E0 { write(fd, "eret", 4) }
                 else if wi == 0xD4000001 { write(fd, "svc #0", 6) }
+                // MOVZ 64-bit
                 else if (wi & 0xFF800000) == 0xD2800000 {
-                    write(fd, "movz x", 6)
-                    uint8[4] rb
-                    uint64 rd = wi & 0x1F
-                    uint64 rl = fmt_uint(rb, rd)
-                    write(fd, rb, rl)
+                    write(fd, "movz ", 5)
+                    write_a64_xreg(fd, rd)
                     write(fd, ", #", 3)
                     uint64 imm16 = (wi >> 5) & 0xFFFF
-                    uint64 il = fmt_uint(rb, imm16)
-                    write(fd, rb, il)
+                    drl = fmt_uint(drb, imm16)
+                    write(fd, drb, drl)
+                    uint64 hw = (wi >> 21) & 0x3
+                    if hw != 0 {
+                        write(fd, ", lsl #", 7)
+                        drl = fmt_uint(drb, hw * 16)
+                        write(fd, drb, drl)
+                    }
                 }
-                else if (wi & 0x7FE00000) == 0x0B000000 || (wi & 0x7FE00000) == 0x4B000000 {
-                    if (wi & 0x40000000) != 0 { write(fd, "sub", 3) } else { write(fd, "add", 3) }
+                // MOVK 64-bit
+                else if (wi & 0xFF800000) == 0xF2800000 {
+                    write(fd, "movk ", 5)
+                    write_a64_xreg(fd, rd)
+                    write(fd, ", #", 3)
+                    uint64 imm16 = (wi >> 5) & 0xFFFF
+                    drl = fmt_uint(drb, imm16)
+                    write(fd, drb, drl)
+                    uint64 hw = (wi >> 21) & 0x3
+                    if hw != 0 {
+                        write(fd, ", lsl #", 7)
+                        drl = fmt_uint(drb, hw * 16)
+                        write(fd, drb, drl)
+                    }
                 }
-                else if (wi & 0xFFC00000) == 0xF9400000 { write(fd, "ldr", 3) }
-                else if (wi & 0xFFC00000) == 0xF9000000 { write(fd, "str", 3) }
-                else if (wi & 0xFC000000) == 0x94000000 { write(fd, "bl", 2) }
-                else if (wi & 0xFC000000) == 0x14000000 { write(fd, "b", 1) }
-                else if (wi & 0xFF000000) == 0x54000000 { write(fd, "b.cond", 6) }
-                else if (wi & 0xFFF00000) == 0xD5300000 { write(fd, "mrs", 3) }
-                else if (wi & 0xFFF00000) == 0xD5100000 { write(fd, "msr", 3) }
-                else if (wi & 0x3FE00000) == 0x08400000 { write(fd, "ldxr/ldar", 9) }
-                else if (wi & 0x3FE00000) == 0x08000000 { write(fd, "stxr/stlr", 9) }
+                // ADD/SUB immediate (bits 28:24 = 10001)
+                else if (wi & 0x1F000000) == 0x11000000 && (wi & 0x20000000) == 0 {
+                    uint64 is_64 = (wi >> 31) & 1
+                    if (wi & 0x40000000) != 0 {
+                        write(fd, "sub ", 4)
+                    } else {
+                        write(fd, "add ", 4)
+                    }
+                    if is_64 != 0 {
+                        write_a64_xreg(fd, rd)
+                        write(fd, ", ", 2)
+                        write_a64_xreg(fd, rn)
+                    } else {
+                        write_a64_wreg(fd, rd)
+                        write(fd, ", ", 2)
+                        write_a64_wreg(fd, rn)
+                    }
+                    write(fd, ", #", 3)
+                    uint64 imm12 = (wi >> 10) & 0xFFF
+                    drl = fmt_uint(drb, imm12)
+                    write(fd, drb, drl)
+                }
+                // ADD/SUB register (shifted): bits 28:24 = 01011, bit 21 = 0
+                else if (wi & 0x1F200000) == 0x0B000000 {
+                    uint64 is_64 = (wi >> 31) & 1
+                    if (wi & 0x40000000) != 0 {
+                        write(fd, "sub ", 4)
+                    } else {
+                        write(fd, "add ", 4)
+                    }
+                    if is_64 != 0 {
+                        write_a64_xreg(fd, rd)
+                        write(fd, ", ", 2)
+                        write_a64_xreg(fd, rn)
+                        write(fd, ", ", 2)
+                        write_a64_xreg(fd, rm)
+                    } else {
+                        write_a64_wreg(fd, rd)
+                        write(fd, ", ", 2)
+                        write_a64_wreg(fd, rn)
+                        write(fd, ", ", 2)
+                        write_a64_wreg(fd, rm)
+                    }
+                }
+                // LDR 64-bit unsigned offset
+                else if (wi & 0xFFC00000) == 0xF9400000 {
+                    write(fd, "ldr ", 4)
+                    write_a64_xreg(fd, rd)
+                    write(fd, ", [", 3)
+                    write_a64_xreg(fd, rn)
+                    uint64 imm12 = (wi >> 10) & 0xFFF
+                    uint64 off = imm12 * 8
+                    if off != 0 {
+                        write(fd, ", #", 3)
+                        drl = fmt_uint(drb, off)
+                        write(fd, drb, drl)
+                    }
+                    write(fd, "]", 1)
+                }
+                // STR 64-bit unsigned offset
+                else if (wi & 0xFFC00000) == 0xF9000000 {
+                    write(fd, "str ", 4)
+                    write_a64_xreg(fd, rd)
+                    write(fd, ", [", 3)
+                    write_a64_xreg(fd, rn)
+                    uint64 imm12 = (wi >> 10) & 0xFFF
+                    uint64 off = imm12 * 8
+                    if off != 0 {
+                        write(fd, ", #", 3)
+                        drl = fmt_uint(drb, off)
+                        write(fd, drb, drl)
+                    }
+                    write(fd, "]", 1)
+                }
+                // LDR 32-bit unsigned offset
+                else if (wi & 0xFFC00000) == 0xB9400000 {
+                    write(fd, "ldr ", 4)
+                    write_a64_wreg(fd, rd)
+                    write(fd, ", [", 3)
+                    write_a64_xreg(fd, rn)
+                    uint64 imm12 = (wi >> 10) & 0xFFF
+                    uint64 off = imm12 * 4
+                    if off != 0 {
+                        write(fd, ", #", 3)
+                        drl = fmt_uint(drb, off)
+                        write(fd, drb, drl)
+                    }
+                    write(fd, "]", 1)
+                }
+                // STR 32-bit unsigned offset
+                else if (wi & 0xFFC00000) == 0xB9000000 {
+                    write(fd, "str ", 4)
+                    write_a64_wreg(fd, rd)
+                    write(fd, ", [", 3)
+                    write_a64_xreg(fd, rn)
+                    uint64 imm12 = (wi >> 10) & 0xFFF
+                    uint64 off = imm12 * 4
+                    if off != 0 {
+                        write(fd, ", #", 3)
+                        drl = fmt_uint(drb, off)
+                        write(fd, drb, drl)
+                    }
+                    write(fd, "]", 1)
+                }
+                // LDRB unsigned offset
+                else if (wi & 0xFFC00000) == 0x39400000 {
+                    write(fd, "ldrb ", 5)
+                    write_a64_wreg(fd, rd)
+                    write(fd, ", [", 3)
+                    write_a64_xreg(fd, rn)
+                    uint64 imm12 = (wi >> 10) & 0xFFF
+                    if imm12 != 0 {
+                        write(fd, ", #", 3)
+                        drl = fmt_uint(drb, imm12)
+                        write(fd, drb, drl)
+                    }
+                    write(fd, "]", 1)
+                }
+                // STRB unsigned offset
+                else if (wi & 0xFFC00000) == 0x39000000 {
+                    write(fd, "strb ", 5)
+                    write_a64_wreg(fd, rd)
+                    write(fd, ", [", 3)
+                    write_a64_xreg(fd, rn)
+                    uint64 imm12 = (wi >> 10) & 0xFFF
+                    if imm12 != 0 {
+                        write(fd, ", #", 3)
+                        drl = fmt_uint(drb, imm12)
+                        write(fd, drb, drl)
+                    }
+                    write(fd, "]", 1)
+                }
+                // STP 64-bit: signed offset / pre-index / post-index
+                else if (wi & 0xFFC00000) == 0xA9000000 || (wi & 0xFFC00000) == 0xA9800000 || (wi & 0xFFC00000) == 0xA8800000 {
+                    write(fd, "stp ", 4)
+                    write_a64_xreg(fd, rd)
+                    write(fd, ", ", 2)
+                    uint64 rt2 = (wi >> 10) & 0x1F
+                    write_a64_xreg(fd, rt2)
+                    write(fd, ", [", 3)
+                    write_a64_xreg(fd, rn)
+                    uint64 imm7 = (wi >> 15) & 0x7F
+                    uint64 soff = imm7
+                    if (imm7 & 0x40) != 0 { soff = soff | 0xFFFFFFFFFFFFFF80 }
+                    soff = soff * 8
+                    if soff != 0 {
+                        write(fd, ", #", 3)
+                        if (soff & 0x8000000000000000) != 0 {
+                            write(fd, "-", 1)
+                            soff = 0 - soff
+                        }
+                        drl = fmt_uint(drb, soff)
+                        write(fd, drb, drl)
+                    }
+                    write(fd, "]", 1)
+                    if (wi & 0xFFC00000) == 0xA9800000 {
+                        write(fd, "!", 1)
+                    }
+                }
+                // LDP 64-bit: signed offset / pre-index / post-index
+                else if (wi & 0xFFC00000) == 0xA9400000 || (wi & 0xFFC00000) == 0xA9C00000 || (wi & 0xFFC00000) == 0xA8C00000 {
+                    write(fd, "ldp ", 4)
+                    write_a64_xreg(fd, rd)
+                    write(fd, ", ", 2)
+                    uint64 rt2 = (wi >> 10) & 0x1F
+                    write_a64_xreg(fd, rt2)
+                    write(fd, ", [", 3)
+                    write_a64_xreg(fd, rn)
+                    uint64 imm7 = (wi >> 15) & 0x7F
+                    uint64 soff = imm7
+                    if (imm7 & 0x40) != 0 { soff = soff | 0xFFFFFFFFFFFFFF80 }
+                    soff = soff * 8
+                    if soff != 0 {
+                        write(fd, ", #", 3)
+                        if (soff & 0x8000000000000000) != 0 {
+                            write(fd, "-", 1)
+                            soff = 0 - soff
+                        }
+                        drl = fmt_uint(drb, soff)
+                        write(fd, drb, drl)
+                    }
+                    write(fd, "]", 1)
+                    if (wi & 0xFFC00000) == 0xA9C00000 {
+                        write(fd, "!", 1)
+                    }
+                }
+                // BL: 1001 01 imm26
+                else if (wi & 0xFC000000) == 0x94000000 {
+                    write(fd, "bl ", 3)
+                    uint64 imm26 = wi & 0x3FFFFFF
+                    if (imm26 & 0x2000000) != 0 {
+                        uint64 soff = (0x4000000 - imm26) * 4
+                        write(fd, "<-", 2)
+                        drl = fmt_uint(drb, soff)
+                        write(fd, drb, drl)
+                    } else {
+                        uint64 soff = imm26 * 4
+                        write(fd, "<+", 2)
+                        drl = fmt_uint(drb, soff)
+                        write(fd, drb, drl)
+                    }
+                    write(fd, ">", 1)
+                }
+                // B: 0001 01 imm26
+                else if (wi & 0xFC000000) == 0x14000000 {
+                    write(fd, "b ", 2)
+                    uint64 imm26 = wi & 0x3FFFFFF
+                    if (imm26 & 0x2000000) != 0 {
+                        uint64 soff = (0x4000000 - imm26) * 4
+                        write(fd, "<-", 2)
+                        drl = fmt_uint(drb, soff)
+                        write(fd, drb, drl)
+                    } else {
+                        uint64 soff = imm26 * 4
+                        write(fd, "<+", 2)
+                        drl = fmt_uint(drb, soff)
+                        write(fd, drb, drl)
+                    }
+                    write(fd, ">", 1)
+                }
+                // B.cond: 0101 0100 imm19 0 cond
+                else if (wi & 0xFF000010) == 0x54000000 {
+                    write(fd, "b.", 2)
+                    uint64 cond = wi & 0xF
+                    if cond == 0 { write(fd, "eq", 2) }
+                    else if cond == 1 { write(fd, "ne", 2) }
+                    else if cond == 2 { write(fd, "cs", 2) }
+                    else if cond == 3 { write(fd, "cc", 2) }
+                    else if cond == 4 { write(fd, "mi", 2) }
+                    else if cond == 5 { write(fd, "pl", 2) }
+                    else if cond == 6 { write(fd, "vs", 2) }
+                    else if cond == 7 { write(fd, "vc", 2) }
+                    else if cond == 8 { write(fd, "hi", 2) }
+                    else if cond == 9 { write(fd, "ls", 2) }
+                    else if cond == 10 { write(fd, "ge", 2) }
+                    else if cond == 11 { write(fd, "lt", 2) }
+                    else if cond == 12 { write(fd, "gt", 2) }
+                    else if cond == 13 { write(fd, "le", 2) }
+                    else if cond == 14 { write(fd, "al", 2) }
+                    else { write(fd, "nv", 2) }
+                    write(fd, " ", 1)
+                    uint64 imm19 = (wi >> 5) & 0x7FFFF
+                    if (imm19 & 0x40000) != 0 {
+                        uint64 soff = (0x80000 - imm19) * 4
+                        write(fd, "<-", 2)
+                        drl = fmt_uint(drb, soff)
+                        write(fd, drb, drl)
+                    } else {
+                        uint64 soff = imm19 * 4
+                        write(fd, "<+", 2)
+                        drl = fmt_uint(drb, soff)
+                        write(fd, drb, drl)
+                    }
+                    write(fd, ">", 1)
+                }
+                // CBNZ 64-bit
+                else if (wi & 0xFF000000) == 0xB5000000 {
+                    write(fd, "cbnz ", 5)
+                    write_a64_xreg(fd, rd)
+                    write(fd, ", ", 2)
+                    uint64 imm19 = (wi >> 5) & 0x7FFFF
+                    if (imm19 & 0x40000) != 0 {
+                        uint64 soff = (0x80000 - imm19) * 4
+                        write(fd, "<-", 2)
+                        drl = fmt_uint(drb, soff)
+                        write(fd, drb, drl)
+                    } else {
+                        uint64 soff = imm19 * 4
+                        write(fd, "<+", 2)
+                        drl = fmt_uint(drb, soff)
+                        write(fd, drb, drl)
+                    }
+                    write(fd, ">", 1)
+                }
+                // CBZ 64-bit
+                else if (wi & 0xFF000000) == 0xB4000000 {
+                    write(fd, "cbz ", 4)
+                    write_a64_xreg(fd, rd)
+                    write(fd, ", ", 2)
+                    uint64 imm19 = (wi >> 5) & 0x7FFFF
+                    if (imm19 & 0x40000) != 0 {
+                        uint64 soff = (0x80000 - imm19) * 4
+                        write(fd, "<-", 2)
+                        drl = fmt_uint(drb, soff)
+                        write(fd, drb, drl)
+                    } else {
+                        uint64 soff = imm19 * 4
+                        write(fd, "<+", 2)
+                        drl = fmt_uint(drb, soff)
+                        write(fd, drb, drl)
+                    }
+                    write(fd, ">", 1)
+                }
+                // CBNZ 32-bit
+                else if (wi & 0xFF000000) == 0x35000000 {
+                    write(fd, "cbnz ", 5)
+                    write_a64_wreg(fd, rd)
+                    write(fd, ", ", 2)
+                    uint64 imm19 = (wi >> 5) & 0x7FFFF
+                    if (imm19 & 0x40000) != 0 {
+                        uint64 soff = (0x80000 - imm19) * 4
+                        write(fd, "<-", 2)
+                        drl = fmt_uint(drb, soff)
+                        write(fd, drb, drl)
+                    } else {
+                        uint64 soff = imm19 * 4
+                        write(fd, "<+", 2)
+                        drl = fmt_uint(drb, soff)
+                        write(fd, drb, drl)
+                    }
+                    write(fd, ">", 1)
+                }
+                // CBZ 32-bit
+                else if (wi & 0xFF000000) == 0x34000000 {
+                    write(fd, "cbz ", 4)
+                    write_a64_wreg(fd, rd)
+                    write(fd, ", ", 2)
+                    uint64 imm19 = (wi >> 5) & 0x7FFFF
+                    if (imm19 & 0x40000) != 0 {
+                        uint64 soff = (0x80000 - imm19) * 4
+                        write(fd, "<-", 2)
+                        drl = fmt_uint(drb, soff)
+                        write(fd, drb, drl)
+                    } else {
+                        uint64 soff = imm19 * 4
+                        write(fd, "<+", 2)
+                        drl = fmt_uint(drb, soff)
+                        write(fd, drb, drl)
+                    }
+                    write(fd, ">", 1)
+                }
+                // MRS
+                else if (wi & 0xFFF00000) == 0xD5300000 {
+                    write(fd, "mrs ", 4)
+                    write_a64_xreg(fd, rd)
+                    write(fd, ", ", 2)
+                    uint64 sop0 = ((wi >> 19) & 1) + 2
+                    uint64 sop1 = (wi >> 16) & 0x7
+                    uint64 scrn = (wi >> 12) & 0xF
+                    uint64 scrm = (wi >> 8) & 0xF
+                    uint64 sop2 = (wi >> 5) & 0x7
+                    write_a64_sysreg(fd, sop0, sop1, scrn, scrm, sop2)
+                }
+                // MSR
+                else if (wi & 0xFFF00000) == 0xD5100000 {
+                    write(fd, "msr ", 4)
+                    uint64 sop0 = ((wi >> 19) & 1) + 2
+                    uint64 sop1 = (wi >> 16) & 0x7
+                    uint64 scrn = (wi >> 12) & 0xF
+                    uint64 scrm = (wi >> 8) & 0xF
+                    uint64 sop2 = (wi >> 5) & 0x7
+                    write_a64_sysreg(fd, sop0, sop1, scrn, scrm, sop2)
+                    write(fd, ", ", 2)
+                    write_a64_xreg(fd, rd)
+                }
+                // LDXR/LDAR
+                else if (wi & 0x3FE00000) == 0x08400000 {
+                    if (wi & 0x00800000) != 0 {
+                        write(fd, "ldar ", 5)
+                    } else {
+                        write(fd, "ldxr ", 5)
+                    }
+                    uint64 is_64 = (wi >> 30) & 1
+                    if is_64 != 0 {
+                        write_a64_xreg(fd, rd)
+                    } else {
+                        write_a64_wreg(fd, rd)
+                    }
+                    write(fd, ", [", 3)
+                    write_a64_xreg(fd, rn)
+                    write(fd, "]", 1)
+                }
+                // STXR/STLR
+                else if (wi & 0x3FE00000) == 0x08000000 {
+                    if (wi & 0x00800000) != 0 {
+                        write(fd, "stlr ", 5)
+                    } else {
+                        write(fd, "stxr ", 5)
+                    }
+                    uint64 is_64 = (wi >> 30) & 1
+                    if is_64 != 0 {
+                        write_a64_xreg(fd, rd)
+                    } else {
+                        write_a64_wreg(fd, rd)
+                    }
+                    write(fd, ", [", 3)
+                    write_a64_xreg(fd, rn)
+                    write(fd, "]", 1)
+                }
                 write(fd, "\n", 1)
                 pos = pos + 4
             }
@@ -697,6 +1172,52 @@ fn emit_asm_listing(uint64 output_path, uint64 arch, uint64 text_start, uint64 s
                             write_hex8(fd, b2)
                             pos = pos + 3
                         }
+                    } else if b1 >= 0x80 && b1 <= 0x8F && pos + 6 <= fn_end {
+                        // jcc rel32: 0F 80-8F + imm32
+                        uint64 bp2 = bp + 2
+                        uint64 i0 = 0
+                        uint64 i1 = 0
+                        uint64 i2 = 0
+                        uint64 i3 = 0
+                        unsafe { *(bp2 as uint8) -> i0 }
+                        uint64 bp3 = bp + 3
+                        unsafe { *(bp3 as uint8) -> i1 }
+                        uint64 bp4 = bp + 4
+                        unsafe { *(bp4 as uint8) -> i2 }
+                        uint64 bp5 = bp + 5
+                        unsafe { *(bp5 as uint8) -> i3 }
+                        write_hex8(fd, b0)
+                        write(fd, " ", 1)
+                        write_hex8(fd, b1)
+                        write(fd, " ", 1)
+                        write_hex8(fd, i0)
+                        write(fd, " ", 1)
+                        write_hex8(fd, i1)
+                        write(fd, " ", 1)
+                        write_hex8(fd, i2)
+                        write(fd, " ", 1)
+                        write_hex8(fd, i3)
+                        write(fd, "  ", 2)
+                        uint64 jcc32_cc = b1 - 0x80
+                        if jcc32_cc == 0 { write(fd, "jo 0x", 5) }
+                        else if jcc32_cc == 1 { write(fd, "jno 0x", 6) }
+                        else if jcc32_cc == 2 { write(fd, "jb 0x", 5) }
+                        else if jcc32_cc == 3 { write(fd, "jnb 0x", 6) }
+                        else if jcc32_cc == 4 { write(fd, "je 0x", 5) }
+                        else if jcc32_cc == 5 { write(fd, "jne 0x", 6) }
+                        else if jcc32_cc == 6 { write(fd, "jbe 0x", 6) }
+                        else if jcc32_cc == 7 { write(fd, "ja 0x", 5) }
+                        else if jcc32_cc == 8 { write(fd, "js 0x", 5) }
+                        else if jcc32_cc == 9 { write(fd, "jns 0x", 6) }
+                        else if jcc32_cc == 10 { write(fd, "jp 0x", 5) }
+                        else if jcc32_cc == 11 { write(fd, "jnp 0x", 6) }
+                        else if jcc32_cc == 12 { write(fd, "jl 0x", 5) }
+                        else if jcc32_cc == 13 { write(fd, "jge 0x", 6) }
+                        else if jcc32_cc == 14 { write(fd, "jle 0x", 6) }
+                        else { write(fd, "jg 0x", 5) }
+                        uint64 jcc32_imm = i0 | (i1 << 8) | (i2 << 16) | (i3 << 24)
+                        write_hex32(fd, jcc32_imm)
+                        pos = pos + 6
                     } else {
                         // Dump up to 4 bytes
                         uint64 cnt = 2
@@ -730,12 +1251,453 @@ fn emit_asm_listing(uint64 output_path, uint64 arch, uint64 text_start, uint64 s
                         }
                     }
                     pos = pos + li
+                } else if b0 >= 0x50 && b0 <= 0x57 {
+                    // push reg (0x50-0x57)
+                    write_hex8(fd, b0)
+                    write(fd, "                 push ", 22)
+                    uint64 push_r = b0 - 0x50
+                    if push_r == 0 { write(fd, "rax", 3) }
+                    else if push_r == 1 { write(fd, "rcx", 3) }
+                    else if push_r == 2 { write(fd, "rdx", 3) }
+                    else if push_r == 3 { write(fd, "rbx", 3) }
+                    else if push_r == 4 { write(fd, "rsp", 3) }
+                    else if push_r == 5 { write(fd, "rbp", 3) }
+                    else if push_r == 6 { write(fd, "rsi", 3) }
+                    else { write(fd, "rdi", 3) }
+                    pos = pos + 1
+                } else if b0 >= 0x58 && b0 <= 0x5F {
+                    // pop reg (0x58-0x5F)
+                    write_hex8(fd, b0)
+                    write(fd, "                 pop ", 21)
+                    uint64 pop_r = b0 - 0x58
+                    if pop_r == 0 { write(fd, "rax", 3) }
+                    else if pop_r == 1 { write(fd, "rcx", 3) }
+                    else if pop_r == 2 { write(fd, "rdx", 3) }
+                    else if pop_r == 3 { write(fd, "rbx", 3) }
+                    else if pop_r == 4 { write(fd, "rsp", 3) }
+                    else if pop_r == 5 { write(fd, "rbp", 3) }
+                    else if pop_r == 6 { write(fd, "rsi", 3) }
+                    else { write(fd, "rdi", 3) }
+                    pos = pos + 1
+                } else if b0 == 0x90 {
+                    // nop
+                    write_hex8(fd, b0)
+                    write(fd, "                 nop", 20)
+                    pos = pos + 1
+                } else if b0 == 0xE8 && pos + 5 <= fn_end {
+                    // call rel32
+                    uint64 bp1 = bp + 1
+                    uint64 bp2 = bp + 2
+                    uint64 bp3 = bp + 3
+                    uint64 bp4 = bp + 4
+                    uint64 c0 = 0
+                    uint64 c1 = 0
+                    uint64 c2 = 0
+                    uint64 c3 = 0
+                    unsafe { *(bp1 as uint8) -> c0 }
+                    unsafe { *(bp2 as uint8) -> c1 }
+                    unsafe { *(bp3 as uint8) -> c2 }
+                    unsafe { *(bp4 as uint8) -> c3 }
+                    write_hex8(fd, b0)
+                    write(fd, " ", 1)
+                    write_hex8(fd, c0)
+                    write(fd, " ", 1)
+                    write_hex8(fd, c1)
+                    write(fd, " ", 1)
+                    write_hex8(fd, c2)
+                    write(fd, " ", 1)
+                    write_hex8(fd, c3)
+                    write(fd, "     call 0x", 12)
+                    uint64 call_imm = c0 | (c1 << 8) | (c2 << 16) | (c3 << 24)
+                    write_hex32(fd, call_imm)
+                    pos = pos + 5
+                } else if b0 == 0xE9 && pos + 5 <= fn_end {
+                    // jmp rel32
+                    uint64 bp1 = bp + 1
+                    uint64 bp2 = bp + 2
+                    uint64 bp3 = bp + 3
+                    uint64 bp4 = bp + 4
+                    uint64 j0 = 0
+                    uint64 j1 = 0
+                    uint64 j2 = 0
+                    uint64 j3 = 0
+                    unsafe { *(bp1 as uint8) -> j0 }
+                    unsafe { *(bp2 as uint8) -> j1 }
+                    unsafe { *(bp3 as uint8) -> j2 }
+                    unsafe { *(bp4 as uint8) -> j3 }
+                    write_hex8(fd, b0)
+                    write(fd, " ", 1)
+                    write_hex8(fd, j0)
+                    write(fd, " ", 1)
+                    write_hex8(fd, j1)
+                    write(fd, " ", 1)
+                    write_hex8(fd, j2)
+                    write(fd, " ", 1)
+                    write_hex8(fd, j3)
+                    write(fd, "     jmp 0x", 11)
+                    uint64 jmp32_imm = j0 | (j1 << 8) | (j2 << 16) | (j3 << 24)
+                    write_hex32(fd, jmp32_imm)
+                    pos = pos + 5
+                } else if b0 == 0xEB && pos + 2 <= fn_end {
+                    // jmp rel8
+                    uint64 bp1 = bp + 1
+                    uint64 jmp8_off = 0
+                    unsafe { *(bp1 as uint8) -> jmp8_off }
+                    write_hex8(fd, b0)
+                    write(fd, " ", 1)
+                    write_hex8(fd, jmp8_off)
+                    write(fd, "              jmp 0x", 20)
+                    write_hex8(fd, jmp8_off)
+                    pos = pos + 2
+                } else if b0 >= 0x70 && b0 <= 0x7F && pos + 2 <= fn_end {
+                    // jcc rel8 (0x70-0x7F)
+                    uint64 bp1 = bp + 1
+                    uint64 jcc8_off = 0
+                    unsafe { *(bp1 as uint8) -> jcc8_off }
+                    write_hex8(fd, b0)
+                    write(fd, " ", 1)
+                    write_hex8(fd, jcc8_off)
+                    write(fd, "              ", 14)
+                    uint64 jcc8_cc = b0 - 0x70
+                    if jcc8_cc == 0 { write(fd, "jo 0x", 5) }
+                    else if jcc8_cc == 1 { write(fd, "jno 0x", 6) }
+                    else if jcc8_cc == 2 { write(fd, "jb 0x", 5) }
+                    else if jcc8_cc == 3 { write(fd, "jnb 0x", 6) }
+                    else if jcc8_cc == 4 { write(fd, "je 0x", 5) }
+                    else if jcc8_cc == 5 { write(fd, "jne 0x", 6) }
+                    else if jcc8_cc == 6 { write(fd, "jbe 0x", 6) }
+                    else if jcc8_cc == 7 { write(fd, "ja 0x", 5) }
+                    else if jcc8_cc == 8 { write(fd, "js 0x", 5) }
+                    else if jcc8_cc == 9 { write(fd, "jns 0x", 6) }
+                    else if jcc8_cc == 10 { write(fd, "jp 0x", 5) }
+                    else if jcc8_cc == 11 { write(fd, "jnp 0x", 6) }
+                    else if jcc8_cc == 12 { write(fd, "jl 0x", 5) }
+                    else if jcc8_cc == 13 { write(fd, "jge 0x", 6) }
+                    else if jcc8_cc == 14 { write(fd, "jle 0x", 6) }
+                    else { write(fd, "jg 0x", 5) }
+                    write_hex8(fd, jcc8_off)
+                    pos = pos + 2
+                } else if b0 == 0xB8 && pos + 5 <= fn_end {
+                    // mov eax, imm32
+                    uint64 bp1 = bp + 1
+                    uint64 bp2 = bp + 2
+                    uint64 bp3 = bp + 3
+                    uint64 bp4 = bp + 4
+                    uint64 m0 = 0
+                    uint64 m1 = 0
+                    uint64 m2 = 0
+                    uint64 m3 = 0
+                    unsafe { *(bp1 as uint8) -> m0 }
+                    unsafe { *(bp2 as uint8) -> m1 }
+                    unsafe { *(bp3 as uint8) -> m2 }
+                    unsafe { *(bp4 as uint8) -> m3 }
+                    write_hex8(fd, b0)
+                    write(fd, " ", 1)
+                    write_hex8(fd, m0)
+                    write(fd, " ", 1)
+                    write_hex8(fd, m1)
+                    write(fd, " ", 1)
+                    write_hex8(fd, m2)
+                    write(fd, " ", 1)
+                    write_hex8(fd, m3)
+                    write(fd, "     mov eax, 0x", 16)
+                    uint64 mov_eax_imm = m0 | (m1 << 8) | (m2 << 16) | (m3 << 24)
+                    write_hex32(fd, mov_eax_imm)
+                    pos = pos + 5
+                } else if b0 == 0x48 && pos + 3 <= fn_end {
+                    // REX.W instructions
+                    uint64 bp1 = bp + 1
+                    uint64 b1 = 0
+                    unsafe { *(bp1 as uint8) -> b1 }
+                    if b1 == 0xC7 && pos + 7 <= fn_end {
+                        // REX.W mov r64, imm32: 48 C7 C0+reg imm32
+                        uint64 bp2 = bp + 2
+                        uint64 modrm = 0
+                        unsafe { *(bp2 as uint8) -> modrm }
+                        if modrm >= 0xC0 && modrm <= 0xC7 {
+                            uint64 bp3 = bp + 3
+                            uint64 bp4 = bp + 4
+                            uint64 bp5 = bp + 5
+                            uint64 bp6 = bp + 6
+                            uint64 ri0 = 0
+                            uint64 ri1 = 0
+                            uint64 ri2 = 0
+                            uint64 ri3 = 0
+                            unsafe { *(bp3 as uint8) -> ri0 }
+                            unsafe { *(bp4 as uint8) -> ri1 }
+                            unsafe { *(bp5 as uint8) -> ri2 }
+                            unsafe { *(bp6 as uint8) -> ri3 }
+                            write_hex8(fd, b0)
+                            write(fd, " ", 1)
+                            write_hex8(fd, b1)
+                            write(fd, " ", 1)
+                            write_hex8(fd, modrm)
+                            write(fd, " ", 1)
+                            write_hex8(fd, ri0)
+                            write(fd, " ", 1)
+                            write_hex8(fd, ri1)
+                            write(fd, " ", 1)
+                            write_hex8(fd, ri2)
+                            write(fd, " ", 1)
+                            write_hex8(fd, ri3)
+                            write(fd, " mov ", 5)
+                            uint64 mov_reg = modrm - 0xC0
+                            if mov_reg == 0 { write(fd, "rax", 3) }
+                            else if mov_reg == 1 { write(fd, "rcx", 3) }
+                            else if mov_reg == 2 { write(fd, "rdx", 3) }
+                            else if mov_reg == 3 { write(fd, "rbx", 3) }
+                            else if mov_reg == 4 { write(fd, "rsp", 3) }
+                            else if mov_reg == 5 { write(fd, "rbp", 3) }
+                            else if mov_reg == 6 { write(fd, "rsi", 3) }
+                            else { write(fd, "rdi", 3) }
+                            write(fd, ", 0x", 4)
+                            uint64 mov_imm = ri0 | (ri1 << 8) | (ri2 << 16) | (ri3 << 24)
+                            write_hex32(fd, mov_imm)
+                            pos = pos + 7
+                        } else {
+                            // C7 with non-register modrm, dump 7 bytes raw
+                            uint64 cnt = 7
+                            if cnt + pos > fn_end { cnt = fn_end - pos }
+                            uint64 di = 0
+                            while di < cnt {
+                                uint64 dp = bp + di
+                                uint64 db = 0
+                                unsafe { *(dp as uint8) -> db }
+                                write_hex8(fd, db)
+                                write(fd, " ", 1)
+                                di = di + 1
+                            }
+                            pos = pos + cnt
+                        }
+                    } else if b1 == 0x81 && pos + 7 <= fn_end {
+                        // REX.W op rsp, imm32: 48 81 EC/C4 imm32
+                        uint64 bp2 = bp + 2
+                        uint64 modrm81 = 0
+                        unsafe { *(bp2 as uint8) -> modrm81 }
+                        if modrm81 == 0xEC || modrm81 == 0xC4 {
+                            uint64 bp3 = bp + 3
+                            uint64 bp4 = bp + 4
+                            uint64 bp5 = bp + 5
+                            uint64 bp6 = bp + 6
+                            uint64 si0 = 0
+                            uint64 si1 = 0
+                            uint64 si2 = 0
+                            uint64 si3 = 0
+                            unsafe { *(bp3 as uint8) -> si0 }
+                            unsafe { *(bp4 as uint8) -> si1 }
+                            unsafe { *(bp5 as uint8) -> si2 }
+                            unsafe { *(bp6 as uint8) -> si3 }
+                            write_hex8(fd, b0)
+                            write(fd, " ", 1)
+                            write_hex8(fd, b1)
+                            write(fd, " ", 1)
+                            write_hex8(fd, modrm81)
+                            write(fd, " ", 1)
+                            write_hex8(fd, si0)
+                            write(fd, " ", 1)
+                            write_hex8(fd, si1)
+                            write(fd, " ", 1)
+                            write_hex8(fd, si2)
+                            write(fd, " ", 1)
+                            write_hex8(fd, si3)
+                            if modrm81 == 0xEC {
+                                write(fd, " sub rsp, 0x", 12)
+                            } else {
+                                write(fd, " add rsp, 0x", 12)
+                            }
+                            uint64 sub_imm32 = si0 | (si1 << 8) | (si2 << 16) | (si3 << 24)
+                            write_hex32(fd, sub_imm32)
+                            pos = pos + 7
+                        } else {
+                            // 81 with other modrm, dump 7 bytes raw
+                            uint64 cnt = 7
+                            if cnt + pos > fn_end { cnt = fn_end - pos }
+                            uint64 di = 0
+                            while di < cnt {
+                                uint64 dp = bp + di
+                                uint64 db = 0
+                                unsafe { *(dp as uint8) -> db }
+                                write_hex8(fd, db)
+                                write(fd, " ", 1)
+                                di = di + 1
+                            }
+                            pos = pos + cnt
+                        }
+                    } else if b1 == 0x83 && pos + 4 <= fn_end {
+                        // REX.W op rsp, imm8: 48 83 EC/C4 imm8
+                        uint64 bp2 = bp + 2
+                        uint64 modrm83 = 0
+                        unsafe { *(bp2 as uint8) -> modrm83 }
+                        if modrm83 == 0xEC || modrm83 == 0xC4 {
+                            uint64 bp3 = bp + 3
+                            uint64 si8 = 0
+                            unsafe { *(bp3 as uint8) -> si8 }
+                            write_hex8(fd, b0)
+                            write(fd, " ", 1)
+                            write_hex8(fd, b1)
+                            write(fd, " ", 1)
+                            write_hex8(fd, modrm83)
+                            write(fd, " ", 1)
+                            write_hex8(fd, si8)
+                            if modrm83 == 0xEC {
+                                write(fd, "        sub rsp, 0x", 19)
+                            } else {
+                                write(fd, "        add rsp, 0x", 19)
+                            }
+                            write_hex8(fd, si8)
+                            pos = pos + 4
+                        } else {
+                            // 83 with other modrm, dump 4 bytes raw
+                            uint64 cnt = 4
+                            if cnt + pos > fn_end { cnt = fn_end - pos }
+                            uint64 di = 0
+                            while di < cnt {
+                                uint64 dp = bp + di
+                                uint64 db = 0
+                                unsafe { *(dp as uint8) -> db }
+                                write_hex8(fd, db)
+                                write(fd, " ", 1)
+                                di = di + 1
+                            }
+                            pos = pos + cnt
+                        }
+                    } else if b1 == 0x31 && pos + 3 <= fn_end {
+                        // REX.W xor reg, reg: 48 31 XX
+                        uint64 bp2 = bp + 2
+                        uint64 modrm_xor = 0
+                        unsafe { *(bp2 as uint8) -> modrm_xor }
+                        write_hex8(fd, b0)
+                        write(fd, " ", 1)
+                        write_hex8(fd, b1)
+                        write(fd, " ", 1)
+                        write_hex8(fd, modrm_xor)
+                        write(fd, "           xor ", 15)
+                        // rm field = modrm & 0x07, reg field = (modrm >> 3) & 0x07
+                        uint64 xor_rm = modrm_xor & 0x07
+                        uint64 xor_reg = (modrm_xor >> 3) & 0x07
+                        if xor_rm == 0 { write(fd, "rax", 3) }
+                        else if xor_rm == 1 { write(fd, "rcx", 3) }
+                        else if xor_rm == 2 { write(fd, "rdx", 3) }
+                        else if xor_rm == 3 { write(fd, "rbx", 3) }
+                        else if xor_rm == 4 { write(fd, "rsp", 3) }
+                        else if xor_rm == 5 { write(fd, "rbp", 3) }
+                        else if xor_rm == 6 { write(fd, "rsi", 3) }
+                        else { write(fd, "rdi", 3) }
+                        write(fd, ", ", 2)
+                        if xor_reg == 0 { write(fd, "rax", 3) }
+                        else if xor_reg == 1 { write(fd, "rcx", 3) }
+                        else if xor_reg == 2 { write(fd, "rdx", 3) }
+                        else if xor_reg == 3 { write(fd, "rbx", 3) }
+                        else if xor_reg == 4 { write(fd, "rsp", 3) }
+                        else if xor_reg == 5 { write(fd, "rbp", 3) }
+                        else if xor_reg == 6 { write(fd, "rsi", 3) }
+                        else { write(fd, "rdi", 3) }
+                        pos = pos + 3
+                    } else if b1 == 0x89 && pos + 3 <= fn_end {
+                        // REX.W mov reg, reg: 48 89 XX
+                        uint64 bp2 = bp + 2
+                        uint64 modrm_mov = 0
+                        unsafe { *(bp2 as uint8) -> modrm_mov }
+                        write_hex8(fd, b0)
+                        write(fd, " ", 1)
+                        write_hex8(fd, b1)
+                        write(fd, " ", 1)
+                        write_hex8(fd, modrm_mov)
+                        write(fd, "           mov ", 15)
+                        uint64 mov_rm = modrm_mov & 0x07
+                        uint64 mov_src = (modrm_mov >> 3) & 0x07
+                        if mov_rm == 0 { write(fd, "rax", 3) }
+                        else if mov_rm == 1 { write(fd, "rcx", 3) }
+                        else if mov_rm == 2 { write(fd, "rdx", 3) }
+                        else if mov_rm == 3 { write(fd, "rbx", 3) }
+                        else if mov_rm == 4 { write(fd, "rsp", 3) }
+                        else if mov_rm == 5 { write(fd, "rbp", 3) }
+                        else if mov_rm == 6 { write(fd, "rsi", 3) }
+                        else { write(fd, "rdi", 3) }
+                        write(fd, ", ", 2)
+                        if mov_src == 0 { write(fd, "rax", 3) }
+                        else if mov_src == 1 { write(fd, "rcx", 3) }
+                        else if mov_src == 2 { write(fd, "rdx", 3) }
+                        else if mov_src == 3 { write(fd, "rbx", 3) }
+                        else if mov_src == 4 { write(fd, "rsp", 3) }
+                        else if mov_src == 5 { write(fd, "rbp", 3) }
+                        else if mov_src == 6 { write(fd, "rsi", 3) }
+                        else { write(fd, "rdi", 3) }
+                        pos = pos + 3
+                    } else if b1 == 0x8D && pos + 7 <= fn_end {
+                        // lea r64, [rip+disp32]: 48 8D 05 disp32
+                        uint64 bp2 = bp + 2
+                        uint64 modrm_lea = 0
+                        unsafe { *(bp2 as uint8) -> modrm_lea }
+                        if modrm_lea == 0x05 {
+                            uint64 bp3 = bp + 3
+                            uint64 bp4 = bp + 4
+                            uint64 bp5 = bp + 5
+                            uint64 bp6 = bp + 6
+                            uint64 ld0 = 0
+                            uint64 ld1 = 0
+                            uint64 ld2 = 0
+                            uint64 ld3 = 0
+                            unsafe { *(bp3 as uint8) -> ld0 }
+                            unsafe { *(bp4 as uint8) -> ld1 }
+                            unsafe { *(bp5 as uint8) -> ld2 }
+                            unsafe { *(bp6 as uint8) -> ld3 }
+                            write_hex8(fd, b0)
+                            write(fd, " ", 1)
+                            write_hex8(fd, b1)
+                            write(fd, " ", 1)
+                            write_hex8(fd, modrm_lea)
+                            write(fd, " ", 1)
+                            write_hex8(fd, ld0)
+                            write(fd, " ", 1)
+                            write_hex8(fd, ld1)
+                            write(fd, " ", 1)
+                            write_hex8(fd, ld2)
+                            write(fd, " ", 1)
+                            write_hex8(fd, ld3)
+                            uint64 lea_disp = ld0 | (ld1 << 8) | (ld2 << 16) | (ld3 << 24)
+                            write(fd, " lea rax, [rip+0x", 17)
+                            write_hex32(fd, lea_disp)
+                            write(fd, "]", 1)
+                            pos = pos + 7
+                        } else {
+                            // 8D with other modrm, dump 3 bytes raw
+                            uint64 cnt = 3
+                            if cnt + pos > fn_end { cnt = fn_end - pos }
+                            uint64 di = 0
+                            while di < cnt {
+                                uint64 dp = bp + di
+                                uint64 db = 0
+                                unsafe { *(dp as uint8) -> db }
+                                write_hex8(fd, db)
+                                write(fd, " ", 1)
+                                di = di + 1
+                            }
+                            pos = pos + cnt
+                        }
+                    } else {
+                        // Other REX.W instructions — dump with byte count heuristic
+                        uint64 cnt = 3
+                        if b1 == 0x8B { cnt = 3 }
+                        else if b1 >= 0x00 && b1 <= 0x3F { cnt = 3 }
+                        if cnt + pos > fn_end { cnt = fn_end - pos }
+                        uint64 di = 0
+                        while di < cnt {
+                            uint64 dp = bp + di
+                            uint64 db = 0
+                            unsafe { *(dp as uint8) -> db }
+                            write_hex8(fd, db)
+                            write(fd, " ", 1)
+                            di = di + 1
+                        }
+                        pos = pos + cnt
+                    }
                 } else {
                     // Generic: dump 1 byte per line for simple format
                     uint64 cnt = 1
                     // REX prefix? Read more bytes
                     if b0 >= 0x40 && b0 <= 0x4F { cnt = 2 }
-                    if b0 == 0x48 || b0 == 0x49 {
+                    if b0 == 0x49 {
                         uint64 bp1 = bp + 1
                         uint64 b1 = 0
                         unsafe { *(bp1 as uint8) -> b1 }
@@ -746,10 +1708,7 @@ fn emit_asm_listing(uint64 output_path, uint64 arch, uint64 text_start, uint64 s
                         else if b1 == 0x31 { cnt = 3 }
                         else { cnt = 3 }
                     }
-                    if b0 == 0xB8 || b0 == 0xB9 || b0 == 0xBA { cnt = 5 }
-                    if b0 == 0xE8 { cnt = 5 }
-                    if b0 >= 0x50 && b0 <= 0x5F { cnt = 1 }
-                    if b0 == 0x90 { cnt = 1 }
+                    if b0 == 0xB9 || b0 == 0xBA { cnt = 5 }
                     if cnt + pos > fn_end { cnt = fn_end - pos }
                     uint64 di = 0
                     while di < cnt {
@@ -2058,6 +3017,7 @@ fn main() {
                 write(1, "commands:\n", 10)
                 write(1, "  check <file.kr>   safety analysis\n", 36)
                 write(1, "  lc <file.kr>      living compiler\n", 36)
+                write(1, "  fmt <file.kr>     auto-format source\n", 39)
                 exit(0)
             } else if str_starts_with(arg, "--version", 9) != 0 {
                 uint64 msg = "krc 2.4.1 (KernRift self-hosted compiler)\n"
@@ -2080,6 +3040,8 @@ fn main() {
                 mode = 1
             } else if str_starts_with(arg, "lc", 2) != 0 {
                 mode = 2
+            } else if str_starts_with(arg, "fmt", 3) != 0 {
+                mode = 3
             } else {
                 input_path = arg
             }
@@ -2155,6 +3117,7 @@ fn main() {
             write(2, "commands:\n", 10)
             write(2, "  check <file.kr>   safety analysis\n", 36)
             write(2, "  lc <file.kr>      living compiler\n", 36)
+            write(2, "  fmt <file.kr>     auto-format source\n", 39)
             exit(1)
         }
         input_path = "test_input.kr"
@@ -2223,6 +3186,11 @@ fn main() {
                 exit(1)
             }
         }
+        exit(0)
+    }
+
+    if mode == 3 {
+        fmt_file(input_path)
         exit(0)
     }
 

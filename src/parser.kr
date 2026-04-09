@@ -584,12 +584,51 @@ fn parse_stmt() -> uint64 {
     if kind == 65 {
         advance_tok()
         uint64 iter_tok = expect(1)
-        expect(1)
+        expect(66)
         uint64 start_expr = parse_expr()
-        expect(17)
-        expect(17)
+        uint64 dot_tok = expect(17)
+        uint64 dot2_tok = expect(17)
         uint64 end_expr = parse_expr()
         uint64 body_block = parse_block()
+
+        // Repurpose dot tokens for desugared AST:
+        // First dot → '<' operator token for the comparison
+        uint64 dot_p = p_tok_buf + dot_tok * 16
+        uint32 lt_kind = 37
+        unsafe { *(dot_p as uint32) = lt_kind }
+
+        // Second dot → '+' operator token for the increment
+        uint64 dot2_p = p_tok_buf + dot2_tok * 16
+        uint32 plus_kind = 30
+        unsafe { *(dot2_p as uint32) = plus_kind }
+
+        // Create a synthetic '1' literal: overwrite the source byte at the
+        // first dot's text position with '1' and make a token for it
+        uint64 dot_text_start = tok_text_start(dot_tok)
+        uint64 src_p = cg_source + dot_text_start
+        uint8 one_ch = 49
+        unsafe { *(src_p as uint8) = one_ch }
+        // Repurpose first dot token text length to 1 (it's already 1 for '.')
+        // Now make a copy: set dot token kind to IntLit and use it as the '1'
+        // Actually we need the dot token for '<', so create the IntLit using
+        // the same text_start but a separate token slot. Overwrite dot2's
+        // text_start to point to the same '1' byte.
+        // Wait — we already used dot_tok for '<' and dot2_tok for '+'.
+        // We need a third slot. Let's re-use p_tok_pos (the current position
+        // is past all for-loop tokens) — we can overwrite the "in" token.
+        // The "in" keyword token (KwIn at position iter_tok+1) is already consumed.
+        uint64 in_tok = iter_tok + 1
+        uint64 in_p = p_tok_buf + in_tok * 16
+        uint32 intlit_kind = 2
+        unsafe { *(in_p as uint32) = intlit_kind }
+        // Set text_start to the same position where we wrote '1'
+        uint64 in_p4 = in_p + 4
+        uint32 dts = dot_text_start
+        unsafe { *(in_p4 as uint32) = dts }
+        // Set text_len to 1
+        uint64 in_p8 = in_p + 8
+        uint32 one_len = 1
+        unsafe { *(in_p8 as uint32) = one_len }
 
         // Build desugared AST: Block containing VarDecl + While
         uint64 outer_block = ast_alloc(AstKind.Block)
@@ -610,8 +649,8 @@ fn parse_stmt() -> uint64 {
         ast_set_child(cmp_node, ii)
         uint32 ee = end_expr
         ast_set_data2(cmp_node, ee)
-        // Need a '<' operator token — use iter_tok as placeholder (kind checked in codegen)
-        ast_set_data1(cmp_node, tt)
+        uint32 dt = dot_tok
+        ast_set_data1(cmp_node, dt)
 
         // While node: while cmp { body; IDENT = IDENT + 1 }
         uint64 while_node = ast_alloc(AstKind.While)
@@ -622,7 +661,11 @@ fn parse_stmt() -> uint64 {
         uint64 inc_ident = ast_alloc(AstKind.Ident)
         ast_set_data1(inc_ident, tt)
         uint64 one_lit = ast_alloc(AstKind.IntLit)
+        uint32 in_tok32 = in_tok
+        ast_set_data1(one_lit, in_tok32)
         uint64 inc_add = ast_alloc(AstKind.BinOp)
+        uint32 d2t = dot2_tok
+        ast_set_data1(inc_add, d2t)
         uint32 inci = inc_ident
         ast_set_child(inc_add, inci)
         uint32 ol = one_lit

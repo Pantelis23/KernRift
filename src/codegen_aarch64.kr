@@ -1676,10 +1676,40 @@ fn gen_expr_a64(uint64 node) {
             if arg_count >= 2 { emit_a64_load_x0(arg_slots_base + 8); emit_a64_mov(1, 0) }
             if arg_count >= 1 { emit_a64_load_x0(arg_slots_base) }
 
+            // Push overflow args (9+) onto stack (AAPCS64: x0-x7 = first 8 args)
+            uint64 cp_stack_args = 0
+            if arg_count > 8 {
+                cp_stack_args = arg_count - 8
+                if (cp_stack_args & 1) != 0 { cp_stack_args = cp_stack_args + 1 }
+            }
+            if cp_stack_args > 0 {
+                uint64 cp_stack_bytes = cp_stack_args * 8
+                uint64 cp_sub_insn = 0xD1000000 | (cp_stack_bytes << 10) | (31 << 5) | 31
+                emit_a64(cp_sub_insn)
+                uint64 cp_real_overflow = arg_count - 8
+                uint64 cp_oi = 0
+                while cp_oi < cp_real_overflow {
+                    emit_a64_ldr(10, 31, a64_var_base + arg_slots_base + (8 + cp_oi) * 8 + cp_stack_bytes)
+                    emit_a64_str(10, 31, cp_oi * 8)
+                    cp_oi = cp_oi + 1
+                }
+            }
+
             // Load fn_ptr into x9 directly (don't clobber x0 which has arg[0])
-            emit_a64_ldr(9, 31, a64_var_base + ptr_slot)
+            if cp_stack_args > 0 {
+                emit_a64_ldr(9, 31, a64_var_base + ptr_slot + cp_stack_args * 8)
+            } else {
+                emit_a64_ldr(9, 31, a64_var_base + ptr_slot)
+            }
             // BLR x9
             emit_a64(0xD63F0120)
+
+            // Clean up overflow args from stack
+            if cp_stack_args > 0 {
+                uint64 cp_cleanup = cp_stack_args * 8
+                uint64 cp_add_insn = 0x91000000 | (cp_cleanup << 10) | (31 << 5) | 31
+                emit_a64(cp_add_insn)
+            }
             return
         }
 
@@ -2200,6 +2230,49 @@ fn gen_expr_a64(uint64 node) {
             return
         }
 
+        // Built-in: syscall_raw(nr, a0, a1, a2, a3, a4, a5) → raw syscall
+        if tok_matches(wct, "syscall_raw", 11) != 0 {
+            // Evaluate all 7 args into temp slots
+            uint32 sc_arg = ast_child(node)
+            uint64 sc_warg = sc_arg
+            uint64 sc_base = var_count * 8
+            uint64 sc_i = 0
+            while sc_i < 7 {
+                var_count = var_count + 1
+                sc_i = sc_i + 1
+            }
+            var_frame_size = var_count * 8
+            uint64 sc_rem = var_frame_size & 15
+            if sc_rem != 0 { var_frame_size = var_frame_size + 16 - sc_rem }
+            sc_i = 0
+            while sc_warg != 0 {
+                gen_expr_a64(sc_warg)
+                emit_a64_store_x0(sc_base + sc_i * 8)
+                sc_i = sc_i + 1
+                uint32 sc_nxt = ast_next(sc_warg)
+                sc_warg = sc_nxt
+            }
+            // Load: a5->x5, a4->x4, a3->x3, a2->x2, a1->x1, a0->x0, nr->x8
+            emit_a64_load_x0(sc_base + 48); emit_a64_mov(5, 0)
+            emit_a64_load_x0(sc_base + 40); emit_a64_mov(4, 0)
+            emit_a64_load_x0(sc_base + 32); emit_a64_mov(3, 0)
+            emit_a64_load_x0(sc_base + 24); emit_a64_mov(2, 0)
+            emit_a64_load_x0(sc_base + 16); emit_a64_mov(1, 0)
+            // nr -> x8 (or x16 for macOS)
+            emit_a64_load_x0(sc_base)
+            if target_os == 1 {
+                emit_a64_mov(16, 0)
+            } else {
+                emit_a64_mov(8, 0)
+            }
+            // a0 -> x0
+            emit_a64_load_x0(sc_base + 8)
+            // svc #0
+            emit_a64_svc()
+            // Result is in x0
+            return
+        }
+
         // Built-in: get_arch_id() → compile-time arch ID
         if tok_matches(wct, "get_arch_id", 11) != 0 {
             if target_os == 3 {
@@ -2257,9 +2330,39 @@ fn gen_expr_a64(uint64 node) {
         if arg_count >= 2 { emit_a64_load_x0(arg_slots_base + 8); emit_a64_mov(1, 0) }
         if arg_count >= 1 { emit_a64_load_x0(arg_slots_base) }
 
+        // Push overflow args (9+) onto stack (AAPCS64: x0-x7 = first 8 args)
+        uint64 stack_args = 0
+        if arg_count > 8 {
+            stack_args = arg_count - 8
+            if (stack_args & 1) != 0 { stack_args = stack_args + 1 }
+        }
+        if stack_args > 0 {
+            uint64 stack_bytes = stack_args * 8
+            // sub sp, sp, #stack_bytes
+            uint64 sub_insn = 0xD1000000 | (stack_bytes << 10) | (31 << 5) | 31
+            emit_a64(sub_insn)
+            // Store overflow args at [sp+0], [sp+8], ...
+            uint64 real_overflow = arg_count - 8
+            uint64 oi = 0
+            while oi < real_overflow {
+                // Load from temp slot (offset shifted by stack_bytes because sp moved)
+                emit_a64_ldr(9, 31, a64_var_base + arg_slots_base + (8 + oi) * 8 + stack_bytes)
+                emit_a64_str(9, 31, oi * 8)
+                oi = oi + 1
+            }
+        }
+
         // BL rel26 (placeholder, fixup needed)
         uint64 fixup_off = out_len
         emit_a64_bl(0)
+
+        // Clean up overflow args from stack
+        if stack_args > 0 {
+            uint64 cleanup = stack_args * 8
+            uint64 add_insn = 0x91000000 | (cleanup << 10) | (31 << 5) | 31
+            emit_a64(add_insn)
+        }
+
         // Record fixup (same table as x86_64 — resolve_fixups handles both)
         uint64 fentry = fixup_table + fixup_count * 8
         uint32 fo = fixup_off
@@ -2395,6 +2498,12 @@ fn gen_stmt_a64(uint64 node) {
         uint64 endif_target = out_len
         uint64 b_disp = endif_target - b_patch
         patch_u32(b_patch, 0x14000000 | ((b_disp / 4) & 0x3FFFFFF))
+        return
+    }
+
+    // Block: nested block of statements (used by for-loop desugaring)
+    if kind == 15 {
+        gen_block_a64(node)
         return
     }
 
@@ -2720,6 +2829,10 @@ fn gen_function_a64(uint64 fn_node) {
     uint64 is_naked = ann_flags & 2
     uint64 is_noreturn = ann_flags & 1
 
+    // Overflow arg patch tracking (for functions with >8 params)
+    uint64[16] a64_overflow_patches
+    uint64 a64_overflow_patch_count = 0
+
     var_reset()
     temp_slot_0 = var_count * 8
     var_count = var_count + 1
@@ -2818,6 +2931,20 @@ fn gen_function_a64(uint64 fn_node) {
                 if reg <= 7 {
                     emit_a64_str(reg, 31, a64_var_base + poff)
                 }
+                if reg >= 8 {
+                    // Stack-passed arg: emit ldr x0, [sp, #PLACEHOLDER]
+                    // Offset will be patched when frame_size is known
+                    uint64 patch_loc = out_len
+                    emit_a64(0xF9400000 | (31 << 5) | 0) // ldr x0, [sp, #0] placeholder
+                    // str x0, [sp, #(a64_var_base + poff)]
+                    emit_a64_str(0, 31, a64_var_base + poff)
+                    // Save patch location
+                    uint64 opi = reg - 8
+                    uint64 op_entry = a64_overflow_patches + opi * 8
+                    uint32 pl32 = patch_loc
+                    unsafe { *(op_entry as uint32) = pl32 }
+                    a64_overflow_patch_count = opi + 1
+                }
                 pidx = pidx + 1
             }
         }
@@ -2902,6 +3029,29 @@ fn gen_function_a64(uint64 fn_node) {
         patch_u32(prologue_start, 0xD1000000 | (frame << 10) | (31 << 5) | 31)
         // epilogue does the full frame, post_add stays NOP
         patch_u32(epilogue_add, 0x91000000 | (frame << 10) | (31 << 5) | 31)
+    }
+
+    // Patch overflow arg offsets (9+ params, AAPCS64)
+    // After SUB SP, SP, #frame + STP x29,x30,[sp]:
+    // [sp + frame] = saved x29/x30 (16 bytes via STP)
+    // [sp + frame + 0]  = overflow arg 0
+    // [sp + frame + 8]  = overflow arg 1
+    // Actually the caller pushed overflow args BELOW the return address.
+    // The BL stores return address in LR (x30), not on stack.
+    // So overflow args are at [sp + frame + i*8] from callee's perspective.
+    if a64_overflow_patch_count > 0 {
+        uint64 oi = 0
+        while oi < a64_overflow_patch_count {
+            uint64 op_e = a64_overflow_patches + oi * 8
+            uint32 ploc = 0
+            unsafe { *(op_e as uint32) -> ploc }
+            uint64 wploc = ploc
+            uint64 soff = frame + oi * 8
+            // Patch LDR x0, [sp, #soff]: F9400000 | (imm12<<10) | (31<<5) | 0
+            uint64 imm12 = soff / 8
+            patch_u32(wploc, 0xF9400000 | (imm12 << 10) | (31 << 5) | 0)
+            oi = oi + 1
+        }
     }
 }
 

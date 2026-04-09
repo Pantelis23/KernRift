@@ -615,6 +615,7 @@ fn is_builtin(uint64 tok_idx) -> uint64 {
     if sema_tok_matches(tok_idx, "get_module_path", 15) != 0 { return 1 }
     if sema_tok_matches(tok_idx, "fmt_uint", 8) != 0 { return 1 }
     if sema_tok_matches(tok_idx, "asm", 3) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "syscall_raw", 11) != 0 { return 1 }
     return 0
 }
 
@@ -661,6 +662,8 @@ fn builtin_arg_count(uint64 tok_idx) -> uint64 {
     if sema_tok_matches(tok_idx, "atomic_cas", 10) != 0 { return 3 }
     // 4-arg builtins
     if sema_tok_matches(tok_idx, "bit_insert", 10) != 0 { return 4 }
+    // 7-arg builtins
+    if sema_tok_matches(tok_idx, "syscall_raw", 11) != 0 { return 7 }
     // 0-arg builtins
     if sema_tok_matches(tok_idx, "get_target_os", 13) != 0 { return 0 }
     if sema_tok_matches(tok_idx, "get_arch_id", 11) != 0 { return 0 }

@@ -1,0 +1,255 @@
+// KernRift auto-formatter — character-level source reformatter
+// Usage: krc fmt <file.kr>
+// Outputs formatted source to stdout.
+
+fn fmt_file(uint64 path) {
+    uint64 fd = file_open(path, 0)
+    if fd >= 0xFFFFFFFF {
+        write(2, "fmt: cannot open '", 18)
+        write(2, path, str_len(path))
+        write(2, "'\n", 2)
+        exit(1)
+    }
+    uint64 size = file_size(fd)
+    uint64 src = alloc(size + 1)
+    file_read(fd, src, size)
+    file_close(fd)
+
+    // Null-terminate
+    uint64 ep = src + size
+    uint8 z = 0
+    unsafe { *(ep as uint8) = z }
+
+    // Output buffer (generous: 2x input)
+    uint64 out_cap = size * 2 + 1024
+    uint64 out = alloc(out_cap)
+    uint64 op = 0
+
+    uint64 depth = 0
+    uint64 at_line_start = 1
+    uint64 in_string = 0
+    uint64 in_line_comment = 0
+    uint64 prev_nl = 1
+    uint64 line_len = 0
+    uint64 i = 0
+
+    while i < size {
+        uint64 cp = src + i
+        uint64 ch = 0
+        unsafe { *(cp as uint8) -> ch }
+
+        // --- Inside line comment: pass through until newline ---
+        if in_line_comment != 0 {
+            if ch == 10 {
+                in_line_comment = 0
+                // Emit newline
+                uint64 wp = out + op
+                uint8 nl = 10
+                unsafe { *(wp as uint8) = nl }
+                op = op + 1
+                at_line_start = 1
+                prev_nl = 1
+                line_len = 0
+            } else {
+                uint64 wp = out + op
+                uint8 cb = ch
+                unsafe { *(wp as uint8) = cb }
+                op = op + 1
+            }
+            i = i + 1
+            continue
+        }
+
+        // --- Inside string: pass through, handle escape sequences ---
+        if in_string != 0 {
+            uint64 wp = out + op
+            uint8 cb = ch
+            unsafe { *(wp as uint8) = cb }
+            op = op + 1
+            if ch == 92 {
+                // Backslash: copy next char too (escape)
+                i = i + 1
+                if i < size {
+                    uint64 np = src + i
+                    uint64 nc = 0
+                    unsafe { *(np as uint8) -> nc }
+                    uint64 wp2 = out + op
+                    uint8 nb = nc
+                    unsafe { *(wp2 as uint8) = nb }
+                    op = op + 1
+                }
+            } else if ch == 34 {
+                in_string = 0
+            }
+            i = i + 1
+            continue
+        }
+
+        // --- Check for line comment start ---
+        if ch == 47 && i + 1 < size {
+            uint64 np = src + i + 1
+            uint64 nc = 0
+            unsafe { *(np as uint8) -> nc }
+            if nc == 47 {
+                // Emit indent if at line start
+                if at_line_start != 0 {
+                    uint64 sp = 0
+                    while sp < depth * 4 {
+                        uint64 wp = out + op
+                        uint8 sb = 32
+                        unsafe { *(wp as uint8) = sb }
+                        op = op + 1
+                        sp = sp + 1
+                    }
+                    at_line_start = 0
+                }
+                in_line_comment = 1
+                uint64 wp = out + op
+                uint8 cb = 47
+                unsafe { *(wp as uint8) = cb }
+                op = op + 1
+                i = i + 1
+                uint64 wp2 = out + op
+                unsafe { *(wp2 as uint8) = cb }
+                op = op + 1
+                i = i + 1
+                continue
+            }
+        }
+
+        // --- Newline ---
+        if ch == 10 {
+            // Strip trailing whitespace from output
+            while op > 0 {
+                uint64 pp = out + op - 1
+                uint64 pc = 0
+                unsafe { *(pp as uint8) -> pc }
+                if pc == 32 || pc == 9 {
+                    op = op - 1
+                } else {
+                    break
+                }
+            }
+            uint64 wp = out + op
+            uint8 nl = 10
+            unsafe { *(wp as uint8) = nl }
+            op = op + 1
+            at_line_start = 1
+            prev_nl = 1
+            line_len = 0
+            i = i + 1
+            continue
+        }
+
+        // --- Skip whitespace at line start (we re-indent) ---
+        if at_line_start != 0 && (ch == 32 || ch == 9) {
+            i = i + 1
+            continue
+        }
+
+        // --- At line start: check for } to decrement before indent ---
+        if at_line_start != 0 {
+            // Peek: if first non-space char is }, decrement depth first
+            if ch == 125 {
+                if depth > 0 { depth = depth - 1 }
+            }
+
+            // Check if this line starts fn/struct/enum — insert blank line
+            if prev_nl != 0 && op > 1 {
+                uint64 is_decl = 0
+                if ch == 102 && i + 1 < size {
+                    uint64 np = src + i + 1
+                    uint64 nc = 0
+                    unsafe { *(np as uint8) -> nc }
+                    if nc == 110 { is_decl = 1 }
+                }
+                if ch == 115 && i + 5 < size {
+                    uint64 np = src + i + 1
+                    uint64 nc = 0
+                    unsafe { *(np as uint8) -> nc }
+                    if nc == 116 { is_decl = 1 }
+                }
+                if ch == 101 && i + 3 < size {
+                    uint64 np = src + i + 1
+                    uint64 nc = 0
+                    unsafe { *(np as uint8) -> nc }
+                    if nc == 110 { is_decl = 1 }
+                }
+                // Only at depth 0 (top-level declarations)
+                if is_decl != 0 && depth == 0 {
+                    // Check if previous line was already blank
+                    uint64 need_blank = 1
+                    if op >= 2 {
+                        uint64 p1 = out + op - 1
+                        uint64 p2 = out + op - 2
+                        uint64 c1 = 0; uint64 c2 = 0
+                        unsafe { *(p1 as uint8) -> c1 }
+                        unsafe { *(p2 as uint8) -> c2 }
+                        if c1 == 10 && c2 == 10 { need_blank = 0 }
+                    }
+                    if need_blank != 0 {
+                        uint64 wp = out + op
+                        uint8 nl = 10
+                        unsafe { *(wp as uint8) = nl }
+                        op = op + 1
+                    }
+                }
+            }
+
+            // Emit indent
+            uint64 sp = 0
+            while sp < depth * 4 {
+                uint64 wp = out + op
+                uint8 sb = 32
+                unsafe { *(wp as uint8) = sb }
+                op = op + 1
+                sp = sp + 1
+            }
+            at_line_start = 0
+            prev_nl = 0
+        }
+
+        // --- String start ---
+        if ch == 34 {
+            in_string = 1
+        }
+
+        // --- Emit char ---
+        uint64 wp = out + op
+        uint8 cb = ch
+        unsafe { *(wp as uint8) = cb }
+        op = op + 1
+
+        // --- Track brace depth (mid-line only) ---
+        if ch == 123 {
+            depth = depth + 1
+        }
+        if ch == 125 && line_len > 0 {
+            if depth > 0 { depth = depth - 1 }
+        }
+        line_len = line_len + 1
+
+        i = i + 1
+    }
+
+    // Ensure file ends with exactly one newline
+    // Strip trailing newlines
+    while op > 0 {
+        uint64 pp = out + op - 1
+        uint64 pc = 0
+        unsafe { *(pp as uint8) -> pc }
+        if pc == 10 {
+            op = op - 1
+        } else {
+            break
+        }
+    }
+    // Add single newline
+    uint64 wp = out + op
+    uint8 nl = 10
+    unsafe { *(wp as uint8) = nl }
+    op = op + 1
+
+    // Write to stdout
+    write(1, out, op)
+}

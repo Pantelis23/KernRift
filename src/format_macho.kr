@@ -74,9 +74,9 @@ fn emit_macho_headers_a64(uint64 code_size) -> uint64 {
     emit_u32_le(0x0100000C)       // ARM64
     emit_u32_le(0x00000000)
     emit_u32_le(0x00000002)       // MH_EXECUTE
-    emit_u32_le(5)                // ncmds: PAGEZERO + TEXT + DATA + LINKEDIT + UNIXTHREAD
-    emit_u32_le(576)              // sizeofcmds = 72*4 + 288
-    emit_u32_le(0x00000001)       // flags: MH_NOUNDEFS (no MH_PIE — LC_UNIXTHREAD uses absolute PC)
+    emit_u32_le(5)                // ncmds: PAGEZERO + TEXT(+__text section) + DATA + LINKEDIT + UNIXTHREAD
+    emit_u32_le(656)              // sizeofcmds = 72 + 152 + 72 + 72 + 288
+    emit_u32_le(0x00000001)       // flags: MH_NOUNDEFS
     emit_u32_le(0)
 
     // __PAGEZERO (72 bytes, offset 32)
@@ -89,8 +89,8 @@ fn emit_macho_headers_a64(uint64 code_size) -> uint64 {
     emit_u64_le(0); emit_u64_le(0)
     emit_u32_le(0); emit_u32_le(0); emit_u32_le(0); emit_u32_le(0)
 
-    // __TEXT (72 bytes, offset 104) — RX
-    emit_u32_le(0x19); emit_u32_le(72)
+    // __TEXT segment (152 bytes = 72 header + 80 section, offset 104) — RX
+    emit_u32_le(0x19); emit_u32_le(152)
     emit_byte(95); emit_byte(95); emit_byte(84); emit_byte(69)
     emit_byte(88); emit_byte(84); emit_byte(0); emit_byte(0)
     emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
@@ -100,36 +100,56 @@ fn emit_macho_headers_a64(uint64 code_size) -> uint64 {
     emit_u64_le(0)
     emit_u64_le(0)                // filesize (patched at 152)
     emit_u32_le(5); emit_u32_le(5)  // maxprot=RX, initprot=RX
-    emit_u32_le(0); emit_u32_le(0)
+    emit_u32_le(1); emit_u32_le(0)  // nsects=1, flags=0
 
-    // __DATA (72 bytes, offset 176) — RW statics
+    // __text section within __TEXT (80 bytes, offset 176)
+    // sectname "__text"
+    emit_byte(95); emit_byte(95); emit_byte(116); emit_byte(101)
+    emit_byte(120); emit_byte(116); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    // segname "__TEXT"
+    emit_byte(95); emit_byte(95); emit_byte(84); emit_byte(69)
+    emit_byte(88); emit_byte(84); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_u64_le(0x100000000 + header_size)  // addr (patched at 208)
+    emit_u64_le(0)                            // size (patched at 216)
+    emit_u32_le(header_size)                  // offset (patched at 224)
+    emit_u32_le(2)                            // align = 2^2 = 4 bytes
+    emit_u32_le(0)                            // reloff
+    emit_u32_le(0)                            // nreloc
+    emit_u32_le(0x80000400)                   // flags: S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS
+    emit_u32_le(0); emit_u32_le(0); emit_u32_le(0) // reserved
+
+    // __DATA (72 bytes, offset 256) — RW statics
     emit_u32_le(0x19); emit_u32_le(72)
     emit_byte(95); emit_byte(95); emit_byte(68); emit_byte(65)
     emit_byte(84); emit_byte(65); emit_byte(0); emit_byte(0)
     emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
     emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
-    emit_u64_le(0)                // vmaddr (patched at 200)
-    emit_u64_le(0)                // vmsize (patched at 208)
-    emit_u64_le(0)                // fileoff (patched at 216)
-    emit_u64_le(0)                // filesize (patched at 224)
+    emit_u64_le(0)                // vmaddr (patched at 280)
+    emit_u64_le(0)                // vmsize (patched at 288)
+    emit_u64_le(0)                // fileoff (patched at 296)
+    emit_u64_le(0)                // filesize (patched at 304)
     emit_u32_le(3); emit_u32_le(3)  // maxprot=RW, initprot=RW
     emit_u32_le(0); emit_u32_le(0)
 
-    // __LINKEDIT (72 bytes, offset 248) — for codesign
+    // __LINKEDIT (72 bytes, offset 328) — for codesign
     emit_u32_le(0x19); emit_u32_le(72)
     emit_byte(95); emit_byte(95); emit_byte(76); emit_byte(73)
     emit_byte(78); emit_byte(75); emit_byte(69); emit_byte(68)
     emit_byte(73); emit_byte(84); emit_byte(0); emit_byte(0)
     emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
-    emit_u64_le(0)                // vmaddr (patched at 272)
-    emit_u64_le(0)                // vmsize (patched at 280)
-    emit_u64_le(0)                // fileoff (patched at 288)
-    emit_u64_le(0)                // filesize (patched at 296)
+    emit_u64_le(0)                // vmaddr (patched at 352)
+    emit_u64_le(0)                // vmsize (patched at 360)
+    emit_u64_le(0)                // fileoff (patched at 368)
+    emit_u64_le(0)                // filesize (patched at 376)
     emit_u32_le(1); emit_u32_le(1)  // maxprot=R, initprot=R
     emit_u32_le(0); emit_u32_le(0)
 
-    // LC_UNIXTHREAD — ARM64 thread state (288 bytes, offset 320)
-    // PC at register 32: offset 320 + 16 + 32*8 = 592
+    // LC_UNIXTHREAD — ARM64 thread state (288 bytes, offset 400)
+    // PC at register 32: offset 400 + 16 + 32*8 = 672
     emit_u32_le(5)                // cmd = LC_UNIXTHREAD
     emit_u32_le(288)              // cmdsize
     emit_u32_le(6)                // flavor = ARM_THREAD_STATE64
@@ -138,7 +158,7 @@ fn emit_macho_headers_a64(uint64 code_size) -> uint64 {
     uint64 ri = 0
     while ri < 33 {
         if ri == 32 {
-            emit_u64_le(0x100000000 + header_size)  // pc (patched at 592)
+            emit_u64_le(0x100000000 + header_size)  // pc (patched at 672)
         } else {
             emit_u64_le(0)
         }

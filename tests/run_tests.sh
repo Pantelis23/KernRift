@@ -982,6 +982,43 @@ else
 fi
 rm -f /tmp/krc_android_$$.kr /tmp/krc_android_$$
 
+# --- For loop ---
+run_test "for_range" 'fn main() { uint64 s = 0; for i in 0..10 { s = s + i }; exit(s) }' 45
+
+# --- Many-parameter functions ---
+run_test "fn_7args" 'fn sum7(uint64 a, uint64 b, uint64 c, uint64 d, uint64 e, uint64 f, uint64 g) -> uint64 { return a + b + c + d + e + f + g }
+fn main() { exit(sum7(1,2,3,4,5,6,7)) }' 28
+
+run_test "fn_8args" 'fn s(uint64 a, uint64 b, uint64 c, uint64 d, uint64 e, uint64 f, uint64 g, uint64 h) -> uint64 { return a + b + c + d + e + f + g + h }
+fn main() { exit(s(1,2,3,4,5,6,7,8)) }' 36
+
+# --- Enum (auto-numbered) ---
+run_test "enum_auto" 'enum Color { Red, Green, Blue }
+fn main() { exit(Color.Blue) }' 2
+
+# --- emit=asm produces text ---
+echo ""
+echo "--- ASM emit test ---"
+TOTAL=$((TOTAL + 1))
+printf 'fn main() { exit(42) }\n' > /tmp/krc_asm_$$.kr
+if $KRC $KRC_FLAGS --emit=asm /tmp/krc_asm_$$.kr -o /tmp/krc_asm_$$.s > /dev/null 2>&1; then
+    if file /tmp/krc_asm_$$.s | grep -qi 'text\|ascii' && grep -q 'main' /tmp/krc_asm_$$.s; then
+        PASS=$((PASS + 1))
+        echo "  emit_asm: PASS (text output with function labels)"
+    else
+        FAIL=$((FAIL + 1))
+        echo "  emit_asm: FAIL (output is not text or missing labels)"
+    fi
+else
+    FAIL=$((FAIL + 1))
+    echo "  emit_asm: FAIL (compilation with --emit=asm failed)"
+fi
+rm -f /tmp/krc_asm_$$.kr /tmp/krc_asm_$$.s
+
+# --- String escapes ---
+run_test_output "str_escape_newline" 'fn main() { print("a\nb"); exit(0) }' "a
+b"
+
 # --- Bootstrap test ---
 echo ""
 echo "--- Bootstrap test ---"

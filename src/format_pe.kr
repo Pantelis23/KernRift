@@ -332,6 +332,7 @@ fn emit_pe_headers_a64(uint64 code_size) -> uint64 {
     i = 0
     while i < 16 {
         if i == 1 { emit_u32_le(0x2000); emit_u32_le(idata_size) }
+        else if i == 5 { emit_u32_le(0); emit_u32_le(0) }  // BaseReloc: empty (PC-relative code, no fixups)
         else { emit_u32_le(0); emit_u32_le(0) }
         i = i + 1
     }
