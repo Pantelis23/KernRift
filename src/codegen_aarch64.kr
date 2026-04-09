@@ -447,9 +447,9 @@ fn resolve_a64_win_iat_fixups(uint64 text_start, uint64 iat_rva) {
 // Frame overhead: 24 bytes (FP + LR + x19), then 8 bytes per variable
 
 // a64_var_base: offset where variables start on the AArch64 stack frame
-// After saved registers: x29(8) + x30(8) = 16 bytes (x19/x20 only if needed)
-// Initialized in codegen_init
-static uint64 a64_var_base = 16
+// After saved registers: x29(8) + x30(8) + x19(8) + x20(8) = 32 bytes
+// For freestanding/naked: no saved regs, a64_var_base = 0
+static uint64 a64_var_base = 32
 
 // Store x0 to variable slot on stack
 fn emit_a64_store_x0(uint64 var_offset) {
@@ -2909,10 +2909,12 @@ fn gen_function_a64(uint64 fn_node) {
     uint64 prologue_start = out_len
     if is_naked == 0 {
         emit_a64(0xD1000000)  // SUB SP, SP, #imm (patched)
-        // stp x29, x30, [sp] (no pre-index, frame already allocated)
+        // stp x29, x30, [sp]
         emit_a64(0xA9007BFD)
         // mov x29, sp
         emit_a64_add_imm(29, 31, 0)
+        // stp x19, x20, [sp, #16]
+        emit_a64(0xA90153F3)
     }
 
     // Spill params to stack (x0-x7)
@@ -2991,6 +2993,8 @@ fn gen_function_a64(uint64 fn_node) {
         }
     }
 
+    // ldp x19, x20, [sp, #16]
+    emit_a64(0xA94153F3)
     // ldp x29, x30, [sp] (no post-index)
     emit_a64(0xA9407BFD)
     // add sp, sp, #FRAME (placeholder, patched)
