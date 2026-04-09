@@ -470,19 +470,10 @@ fn emit_a64_static_load(uint64 data_offset) {
     uint32 dp = data_offset
     unsafe { *(fe4 as uint32) = dp }
     static_fixup_count = static_fixup_count + 1
-    if target_os == 2 || target_os == 3 {
-        // PE/Android: ADRP + LDR (PC-relative, ASLR-compatible)
-        emit_a64(0x90000010)           // ADRP X16, #0 (patched)
-        emit_a64(0xF9400200)           // LDR X0, [X16, #0] (patched)
-    } else {
-        // ELF/Mach-O: MOVZ/MOVK absolute address (patched later)
-        // Use emit_a64_mov_imm pattern: only emit non-zero halfwords
-        emit_a64_movz(10, 0)
-        emit_a64_movk(10, 0, 16)
-        // Skip third MOVK — most addresses fit in 32 bits. Patched later.
-        // ldr x0, [x10]
-        emit_a64_ldr(0, 10, 0)
-    }
+    // All ARM64 targets: ADRP + LDR (PC-relative, position-independent)
+    // This works for executables, relocatables (.o), and PIE binaries
+    emit_a64(0x90000010)           // ADRP X16, #0 (patched)
+    emit_a64(0xF9400200)           // LDR X0, [X16, #0] (patched)
 }
 
 fn emit_a64_static_store(uint64 data_offset) {
@@ -495,17 +486,9 @@ fn emit_a64_static_store(uint64 data_offset) {
     uint32 dp = data_offset
     unsafe { *(fe4 as uint32) = dp }
     static_fixup_count = static_fixup_count + 1
-    if target_os == 2 || target_os == 3 {
-        // PE/Android: ADRP + STR (PC-relative, ASLR-compatible)
-        emit_a64(0x90000010)           // ADRP X16, #0 (patched)
-        emit_a64(0xF9000209)           // STR X9, [X16, #0] (patched)
-    } else {
-        // ELF/Mach-O: MOVZ/MOVK absolute address (patched later)
-        emit_a64_movz(10, 0)
-        emit_a64_movk(10, 0, 16)
-        // str x9, [x10]
-        emit_a64_str(9, 10, 0)
-    }
+    // All ARM64 targets: ADRP + STR (PC-relative, position-independent)
+    emit_a64(0x90000010)           // ADRP X16, #0 (patched)
+    emit_a64(0xF9000209)           // STR X9, [X16, #0] (patched)
 }
 
 // ---------------------------------------------------------------------------
@@ -594,9 +577,9 @@ fn gen_expr_a64(uint64 node) {
             emit_a64(0x90000010)       // ADRP X16, #0
             emit_a64(0x91000200)       // ADD X0, X16, #0
         } else {
-            // ELF/Mach-O: MOVZ/MOVK absolute (patched later)
-            emit_a64_movz(0, 0)
-            emit_a64_movk(0, 0, 16)
+            // ELF/Mach-O: ADRP + ADD (PC-relative, position-independent)
+            emit_a64(0x90000010)       // ADRP X16, #0
+            emit_a64(0x91000200)       // ADD X0, X16, #0
         }
         return
     }
@@ -3201,46 +3184,26 @@ fn resolve_static_fixups_a64(uint64 data_start) {
         unsafe { *(fe4 as uint32) -> data_off }
         uint64 wdo = data_off
         uint64 wco = code_off
-        if target_os == 2 || target_os == 3 {
-            // PE/Android: patch ADRP + LDR/STR with PC-relative offsets
-            // Code at file offset wco has RVA = 0x1000 + (wco - text_start_global)
-            // But we don't have text_start here. Use data_start to compute:
-            // target RVA = data_start was passed as data_rva - 0xE00 for compat,
-            // OR as data_va_base. The actual target RVA = data_start + 0xE00 + wdo
-            // Actually: a64_compute_va(data_start + wdo) gives the correct VA.
-            // For ADRP: page delta from code to target
-            // ADRP at wco: its RVA = a64_compute_va(wco) - 0x140000000
-            uint64 code_va = a64_compute_va(wco)
-            uint64 target_va = a64_compute_va(data_start + wdo)
-            uint64 code_page = code_va >> 12
-            uint64 target_page = target_va >> 12
-            uint64 page_delta = target_page - code_page
-            uint64 page_off = target_va & 0xFFF
-            // Patch ADRP X16
-            uint64 immlo = page_delta & 3
-            uint64 immhi = (page_delta >> 2) & 0x7FFFF
-            patch_u32(wco, 0x90000010 | (immlo << 29) | (immhi << 5))
-            // Patch LDR/STR X?, [X16, #offset]
-            // The second instruction is either LDR X0 or STR X9
-            // Read existing instruction to determine which
-            uint64 insn_off = wco + 4
-            uint64 insn_ptr = out_buf + insn_off
-            uint32 existing = 0
-            unsafe { *(insn_ptr as uint32) -> existing }
-            uint64 wex = existing
-            uint64 imm12 = (page_off >> 3) & 0xFFF
-            // Preserve the opcode and registers, just update the offset
-            uint64 base_insn = wex & 0xFFC003FF
-            patch_u32(insn_off, base_insn | (imm12 << 10))
-        } else {
-            // ELF/Mach-O: patch MOVZ/MOVK with absolute VA
-            uint64 target_va = a64_compute_va(data_start + wdo)
-            uint64 lo16 = target_va & 0xFFFF
-            uint64 hi16 = (target_va >> 16) & 0xFFFF
-            uint64 hi32 = (target_va >> 32) & 0xFFFF
-            patch_u32(wco, 0xD280000A | (lo16 << 5))
-            patch_u32(wco + 4, 0xF2A0000A | (hi16 << 5))
-        }
+        // All ARM64: patch ADRP + LDR/STR with PC-relative offsets
+        uint64 code_va = a64_compute_va(wco)
+        uint64 target_va = a64_compute_va(data_start + wdo)
+        uint64 code_page = code_va >> 12
+        uint64 target_page = target_va >> 12
+        uint64 page_delta = target_page - code_page
+        uint64 page_off = target_va & 0xFFF
+        // Patch ADRP X16
+        uint64 immlo = page_delta & 3
+        uint64 immhi = (page_delta >> 2) & 0x7FFFF
+        patch_u32(wco, 0x90000010 | (immlo << 29) | (immhi << 5))
+        // Patch LDR/STR X?, [X16, #offset]
+        uint64 insn_off = wco + 4
+        uint64 insn_ptr = out_buf + insn_off
+        uint32 existing = 0
+        unsafe { *(insn_ptr as uint32) -> existing }
+        uint64 wex = existing
+        uint64 imm12 = (page_off >> 3) & 0xFFF
+        uint64 base_insn = wex & 0xFFC003FF
+        patch_u32(insn_off, base_insn | (imm12 << 10))
         i = i + 1
     }
 }
@@ -3275,12 +3238,21 @@ fn resolve_string_fixups_a64(uint64 str_data_start) {
             uint64 rd = existing_add & 0x1F
             patch_u32(wco + 4, 0x91000200 | (page_off << 10) | rd)
         } else {
+            // ELF/Mach-O: ADRP + ADD (PC-relative, position-independent)
+            uint64 code_va = a64_compute_va(wco)
             uint64 target_va = a64_compute_va(str_data_start + wso)
-            uint64 lo16 = target_va & 0xFFFF
-            uint64 hi16 = (target_va >> 16) & 0xFFFF
-            uint64 hi32 = (target_va >> 32) & 0xFFFF
-            patch_u32(wco, 0xD2800000 | (lo16 << 5))
-            patch_u32(wco + 4, 0xF2A00000 | (hi16 << 5))
+            uint64 code_page = code_va >> 12
+            uint64 target_page = target_va >> 12
+            uint64 page_delta = target_page - code_page
+            uint64 page_off = target_va & 0xFFF
+            uint64 immlo = page_delta & 3
+            uint64 immhi = (page_delta >> 2) & 0x7FFFF
+            patch_u32(wco, 0x90000010 | (immlo << 29) | (immhi << 5))
+            uint32 existing_add = 0
+            uint64 add_addr = out_buf + wco + 4
+            unsafe { *(add_addr as uint32) -> existing_add }
+            uint64 rd = existing_add & 0x1F
+            patch_u32(wco + 4, 0x91000200 | (page_off << 10) | rd)
         }
         i = i + 1
     }
