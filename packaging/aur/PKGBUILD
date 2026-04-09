@@ -1,6 +1,6 @@
 # Maintainer: Pantelis Christou <pantelis@kernrift.org>
 pkgname=kernrift
-pkgver=2.4.1
+pkgver=2.5.0
 pkgrel=1
 pkgdesc="Self-hosted systems language compiler for kernel development"
 arch=('x86_64' 'aarch64')
@@ -28,6 +28,9 @@ source_x86_64=(
     "font.kr::${_raw}/std/font.kr"
     "memfast.kr::${_raw}/std/memfast.kr"
     "widget.kr::${_raw}/std/widget.kr"
+    "time.kr::${_raw}/std/time.kr"
+    "log.kr::${_raw}/std/log.kr"
+    "net.kr::${_raw}/std/net.kr"
     "LICENSE::${_raw}/LICENSE"
 )
 
@@ -47,12 +50,15 @@ source_aarch64=(
     "font.kr::${_raw}/std/font.kr"
     "memfast.kr::${_raw}/std/memfast.kr"
     "widget.kr::${_raw}/std/widget.kr"
+    "time.kr::${_raw}/std/time.kr"
+    "log.kr::${_raw}/std/log.kr"
+    "net.kr::${_raw}/std/net.kr"
     "LICENSE::${_raw}/LICENSE"
 )
 
 # Update these after release with: sha256sum <file>
-sha256sums_x86_64=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
-sha256sums_aarch64=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
+sha256sums_x86_64=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
+sha256sums_aarch64=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
 
 package() {
     # Install krc compiler
@@ -64,7 +70,7 @@ package() {
     # Install standard library
     local stddir="$pkgdir/usr/share/kernrift/std"
     install -dm755 "$stddir"
-    for mod in string io math fmt mem vec map color fb fixedpoint font memfast widget; do
+    for mod in string io math fmt mem vec map color fb fixedpoint font memfast widget time log net; do
         install -Dm644 "$srcdir/${mod}.kr" "$stddir/${mod}.kr"
     done
 

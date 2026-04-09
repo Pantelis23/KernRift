@@ -6,7 +6,7 @@
 #   Homebrew (macOS/Linux):  brew install kernrift
 #   Scoop (Windows):         scoop bucket add kernrift https://github.com/Pantelis23/KernRift && scoop install kernrift
 #   Winget (Windows):        winget install Pantelis23.KernRift
-#   Debian/Ubuntu (.deb):    curl -sSLO https://github.com/.../kernrift_2.4.1_amd64.deb && sudo dpkg -i kernrift_*.deb
+#   Debian/Ubuntu (.deb):    curl -sSLO https://github.com/.../kernrift_2.5.0_amd64.deb && sudo dpkg -i kernrift_*.deb
 #   AUR (Arch Linux):        yay -S kernrift
 #   PowerShell (Windows):    irm https://raw.githubusercontent.com/Pantelis23/KernRift/main/install.ps1 | iex
 #
@@ -113,7 +113,7 @@ fi
 # Download standard library
 echo "Installing standard library..."
 mkdir -p "$STD_DIR"
-for mod in string io math fmt mem vec map color fb fixedpoint font memfast widget; do
+for mod in string io math fmt mem vec map color fb fixedpoint font memfast widget time log net; do
     curl -sL -o "$STD_DIR/$mod.kr" \
         "https://raw.githubusercontent.com/Pantelis23/KernRift/main/std/$mod.kr"
 done

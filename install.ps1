@@ -60,7 +60,7 @@ if (!(Test-Path $StdDir)) {
     New-Item -ItemType Directory -Path $StdDir -Force | Out-Null
 }
 Write-Host "Installing standard library..."
-foreach ($mod in @("string", "io", "math", "fmt", "mem", "vec", "map", "color", "fb", "fixedpoint", "font", "memfast", "widget")) {
+foreach ($mod in @("string", "io", "math", "fmt", "mem", "vec", "map", "color", "fb", "fixedpoint", "font", "memfast", "widget", "time", "log", "net")) {
     $modUrl = "https://raw.githubusercontent.com/$Repo/main/std/$mod.kr"
     try {
         Invoke-WebRequest -Uri $modUrl -OutFile "$StdDir\$mod.kr" -UseBasicParsing

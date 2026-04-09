@@ -1015,9 +1015,87 @@ else
 fi
 rm -f /tmp/krc_asm_$$.kr /tmp/krc_asm_$$.s
 
+# --- emit=asm content tests ---
+echo ""
+echo "--- emit=asm content tests ---"
+
+# Test asm output has function labels and mnemonics
+TOTAL=$((TOTAL + 1))
+echo 'fn add(uint64 a, uint64 b) -> uint64 { return a + b }
+fn main() { exit(add(1, 2)) }' > /tmp/krc_asm_test_$$.kr
+if $KRC $KRC_FLAGS --emit=asm /tmp/krc_asm_test_$$.kr -o /tmp/krc_asm_test_$$.s > /dev/null 2>&1; then
+    if grep -q "add:" /tmp/krc_asm_test_$$.s && grep -q "main:" /tmp/krc_asm_test_$$.s && grep -q "ret" /tmp/krc_asm_test_$$.s; then
+        echo "  emit_asm_content: PASS"
+        PASS=$((PASS + 1))
+    else
+        echo "  emit_asm_content: FAIL (missing labels or mnemonics)"
+        FAIL=$((FAIL + 1))
+    fi
+else
+    echo "  emit_asm_content: FAIL (compilation error)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f /tmp/krc_asm_test_$$.*
+
+# Test that --emit=xyz gives an error
+TOTAL=$((TOTAL + 1))
+echo 'fn main() { exit(0) }' > /tmp/krc_asm_err_$$.kr
+if $KRC --emit=xyz /tmp/krc_asm_err_$$.kr -o /tmp/krc_asm_err_$$ 2>&1 | grep -q "unknown emit format"; then
+    echo "  emit_unknown_error: PASS"
+    PASS=$((PASS + 1))
+else
+    echo "  emit_unknown_error: FAIL"
+    FAIL=$((FAIL + 1))
+fi
+rm -f /tmp/krc_asm_err_$$.kr /tmp/krc_asm_err_$$
+
 # --- String escapes ---
 run_test_output "str_escape_newline" 'fn main() { print("a\nb"); exit(0) }' "a
 b"
+
+# --- ARM64 cross-compilation tests via QEMU ---
+QEMU_A64=""
+if command -v qemu-aarch64-static > /dev/null 2>&1; then
+    QEMU_A64="qemu-aarch64-static"
+elif command -v qemu-aarch64 > /dev/null 2>&1; then
+    QEMU_A64="qemu-aarch64"
+fi
+
+if [ -n "$QEMU_A64" ] && [ "$ARCH" = "x86_64" ]; then
+    echo ""
+    echo "--- ARM64 cross-compilation tests (QEMU) ---"
+
+    run_test_a64() {
+        local name="$1"
+        local input="$2"
+        local expected="$3"
+        TOTAL=$((TOTAL + 1))
+
+        printf '%s\n' "$input" > /tmp/krc_a64_$$.kr
+        if $KRC --arch=arm64 /tmp/krc_a64_$$.kr -o /tmp/krc_a64_$$ > /dev/null 2>&1; then
+            chmod +x /tmp/krc_a64_$$
+            local got=0
+            $QEMU_A64 /tmp/krc_a64_$$ > /dev/null 2>&1 && got=0 || got=$?
+            if [ "$got" = "$expected" ]; then
+                PASS=$((PASS + 1))
+            else
+                echo "FAIL: $name (expected $expected, got $got)"
+                FAIL=$((FAIL + 1))
+            fi
+        else
+            echo "FAIL: $name (cross-compilation failed)"
+            FAIL=$((FAIL + 1))
+        fi
+        rm -f /tmp/krc_a64_$$.kr /tmp/krc_a64_$$
+    }
+
+    run_test_a64 "a64_exit" 'fn main() { exit(42) }' 42
+    run_test_a64 "a64_add" 'fn add(uint64 a, uint64 b) -> uint64 { return a + b }
+fn main() { exit(add(10, 32)) }' 42
+    run_test_a64 "a64_atomic" 'fn main() { uint64 buf = alloc(64); atomic_store(buf, 42); exit(atomic_load(buf)) }' 42
+    run_test_a64 "a64_static" 'static uint64 x = 0
+fn main() { x = 42; exit(x) }' 42
+fi
 
 # --- Bootstrap test ---
 echo ""

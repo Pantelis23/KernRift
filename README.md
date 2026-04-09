@@ -82,8 +82,8 @@ winget install Pantelis23.KernRift
 
 **Debian/Ubuntu** (.deb):
 ```bash
-curl -sSLO https://github.com/Pantelis23/KernRift/releases/latest/download/kernrift_2.4.1_amd64.deb
-sudo dpkg -i kernrift_2.4.1_amd64.deb
+curl -sSLO https://github.com/Pantelis23/KernRift/releases/latest/download/kernrift_2.5.0_amd64.deb
+sudo dpkg -i kernrift_2.5.0_amd64.deb
 ```
 
 **AUR** (Arch Linux):
@@ -190,7 +190,7 @@ These are compiler intrinsics — no import needed, available on all platforms:
 
 ## Standard Library
 
-13 modules (~2000+ lines) in `std/`:
+16 modules (~2500+ lines) in `std/`:
 
 | Module | Functions |
 |--------|-----------|
@@ -207,6 +207,9 @@ These are compiler intrinsics — no import needed, available on all platforms:
 | `std/fb.kr` | Framebuffer primitives |
 | `std/font.kr` | 8x16 bitmap font renderer |
 | `std/widget.kr` | UI widgets: panel, label, button, progress bar, text field |
+| `std/time.kr` | Clock access: `clock_gettime`, `nanosleep` |
+| `std/log.kr` | Structured logging with levels |
+| `std/net.kr` | Raw socket operations |
 
 Import with `import "std/string.kr"` etc. The compiler searches `~/.local/share/kernrift/` automatically.
 
@@ -219,7 +222,7 @@ A VS Code extension (v0.2.3) is available on the VS Code Marketplace:
 
 ## Architecture
 
-15,500+ lines of KernRift across 15 source files + 13 stdlib modules (~2000+ lines). Self-compiles to a 383 KB native binary in 55ms, or a 2.6 MB universal fat binary (7 slices) in ~280ms (AMD Ryzen 9 7900X). 119 tests, bootstrap fixed point verified on 5 platforms (Linux x86_64, Linux ARM64, Windows x86_64, Windows ARM64, Android ARM64).
+15,500+ lines of KernRift across 15 source files + 16 stdlib modules (~2500+ lines). Self-compiles to a 383 KB native binary in 55ms, or a 2.6 MB universal fat binary (7 slices) in ~280ms (AMD Ryzen 9 7900X). 125 tests, bootstrap fixed point verified on 5 platforms (Linux x86_64, Linux ARM64, Windows x86_64, Windows ARM64, Android ARM64).
 
 | File | Purpose |
 |------|---------|
@@ -231,7 +234,7 @@ A VS Code extension (v0.2.3) is available on the VS Code Marketplace:
 | `living.kr` | Pattern detection + fitness |
 | `bcj.kr` | BCJ filters (x86_64 + AArch64) for compression |
 | `format_*.kr` | ELF, Mach-O, PE, AR, KRBO, KrboFat |
-| `std/*.kr` | Standard library (13 modules, ~2000+ lines) |
+| `std/*.kr` | Standard library (16 modules, ~2500+ lines) |
 
 ## Bootstrap
 

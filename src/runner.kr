@@ -119,7 +119,7 @@ fn main() {
     if arg_offset == 16 { eff_argc = cli_argc - 1 }
 
     if eff_argc < 2 {
-        write(1, "kr 2.4.1 (KernRift fat binary runner)\n", 38)
+        write(1, "kr 2.5.0 (KernRift fat binary runner)\n", 38)
         write(1, "usage: kr <program.krbo> [args...]\n\n", 36)
         write(1, "Runs .krbo fat binaries (LZ4-compressed, 7 platform slices).\n", 61)
         write(1, "Auto-detects host architecture and extracts the matching native binary.\n\n", 73)
@@ -147,12 +147,12 @@ fn main() {
             unsafe { *(kp2 as uint8) -> tc }
             if tc == 118 {
                 // --version
-                write(1, "kr 2.4.1 (KernRift fat binary runner)\n", 38)
+                write(1, "kr 2.5.0 (KernRift fat binary runner)\n", 38)
                 exit(0)
             }
             if tc == 104 {
                 // --help
-                write(1, "kr 2.4.1 (KernRift fat binary runner)\n", 38)
+                write(1, "kr 2.5.0 (KernRift fat binary runner)\n", 38)
                 write(1, "usage: kr <program.krbo> [args...]\n\n", 36)
                 write(1, "Runs .krbo fat binaries (LZ4-compressed, 7 platform slices).\n", 61)
                 write(1, "Auto-detects host architecture and extracts the matching native binary.\n", 71)

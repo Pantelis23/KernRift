@@ -14,7 +14,7 @@ make build       # bootstrap → krc → krc2 (self-compiled)
 ## Test
 
 ```sh
-make test        # 119 tests (arithmetic, control flow, functions, structs, imports, match, stdlib, etc.)
+make test        # 125 tests (arithmetic, control flow, functions, structs, imports, match, stdlib, etc.)
 make bootstrap   # verify krc3 == krc4 (fixed point)
 ```
 
@@ -39,7 +39,7 @@ All compiler source is in `src/`:
 | `format_*.kr` | Output formats (ELF, Mach-O, PE, AR, KRBO) |
 | `main.kr` | CLI and compilation driver |
 
-Standard library modules are in `std/` (13 modules, 2032 lines):
+Standard library modules are in `std/` (16 modules, 2500+ lines):
 
 | Module | Purpose |
 |--------|---------|
@@ -56,6 +56,9 @@ Standard library modules are in `std/` (13 modules, 2032 lines):
 | `std/font.kr` | 8x16 bitmap font renderer (fb_char, fb_text) |
 | `std/memfast.kr` | Fast block memory operations (memcpy32, memcpy64, memset32, memset64) |
 | `std/widget.kr` | UI widget system (panel, label, button, progress, textfield) |
+| `std/time.kr` | Clock access (clock_gettime, nanosleep) |
+| `std/log.kr` | Structured logging with levels |
+| `std/net.kr` | Raw socket operations |
 
 ## Guidelines
 

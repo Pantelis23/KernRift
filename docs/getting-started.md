@@ -199,6 +199,9 @@ fn main() {
 | `std/font.kr` | `font_init`, `fb_char`, `fb_text` |
 | `std/memfast.kr` | `memcpy32`, `memcpy64`, `memset32`, `memset64` |
 | `std/widget.kr` | `panel_new`, `panel_draw`, `label_new`, `button_new`, `progress_new`, `textfield_new` |
+| `std/time.kr` | `clock_gettime`, `nanosleep` |
+| `std/log.kr` | `log_info`, `log_warn`, `log_error`, `log_debug` |
+| `std/net.kr` | `socket_open`, `socket_close`, `socket_send`, `socket_recv` |
 
 ## Editor Setup
 

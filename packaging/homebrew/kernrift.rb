@@ -4,7 +4,7 @@
 class Kernrift < Formula
   desc "Self-hosted systems language compiler for kernel development"
   homepage "https://kernrift.org"
-  version "2.4.1"
+  version "2.5.0"
   license "MIT"
 
   BASE = "https://github.com/Pantelis23/KernRift/releases/latest/download"
@@ -53,7 +53,7 @@ class Kernrift < Formula
     std_dir = share/"kernrift/std"
     std_dir.mkpath
 
-    %w[string io math fmt mem vec map color fb fixedpoint font memfast widget].each do |mod|
+    %w[string io math fmt mem vec map color fb fixedpoint font memfast widget time log net].each do |mod|
       raw_url = "https://raw.githubusercontent.com/Pantelis23/KernRift/main/std/#{mod}.kr"
       curl_download raw_url, to: std_dir/"#{mod}.kr"
     end

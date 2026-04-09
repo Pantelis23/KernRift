@@ -4,7 +4,7 @@
 # Produces: kernrift_VERSION_amd64.deb and kernrift_VERSION_arm64.deb
 set -e
 
-VERSION="${1:-2.4.1}"
+VERSION="${1:-2.5.0}"
 REPO="Pantelis23/KernRift"
 BASE="https://github.com/$REPO/releases/latest/download"
 RAW="https://raw.githubusercontent.com/$REPO/main"
@@ -52,7 +52,7 @@ EOF
     chmod 755 "$PKG/usr/bin/kr"
 
     # Download stdlib
-    for mod in string io math fmt mem vec map color fb fixedpoint font memfast widget; do
+    for mod in string io math fmt mem vec map color fb fixedpoint font memfast widget time log net; do
         echo "  Downloading std/$mod.kr..."
         curl -sSL -o "$PKG/usr/share/kernrift/std/$mod.kr" "$RAW/std/$mod.kr"
     done

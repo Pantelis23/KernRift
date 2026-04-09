@@ -2,6 +2,24 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## v2.5.0 - 2026-04-09
+
+### Added
+- **`syscall_raw` builtin**: raw syscalls on all platforms.
+- **ARM64 >8 parameter support**: AAPCS64 stack overflow for functions with more than 8 arguments.
+- **`krc fmt` auto-formatter**: `krc fmt <file.kr>` auto-formats KernRift source.
+- **`--emit=asm` improved decoders**: x86_64 and ARM64 disassembly now includes full operands.
+- **std/time.kr**: `clock_gettime`, `nanosleep` for time operations.
+- **std/log.kr**: structured logging with levels.
+- **std/net.kr**: raw socket operations.
+
+### Tested
+- for-loop, enum, string escape tests (125 total).
+
+### Fixed
+- **`str_fixups` buffer overflow**: increased from 1024 to 4096; fixes Windows PE generation for large programs.
+- **for-loop parser and Block node codegen**: correct parsing and code generation for `for` loops.
+
 ## v2.4.1 - 2026-04-08
 
 ### Added
