@@ -9,7 +9,7 @@ import "format_archive.kr"
 import "analysis.kr"
 import "living.kr"
 import "runtime.kr"
-import "formatter.kr"
+// formatter.kr is included via cat command, not import
 
 // KernRift self-hosted compiler — main
 
