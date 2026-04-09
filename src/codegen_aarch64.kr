@@ -2902,9 +2902,9 @@ fn gen_function_a64(uint64 fn_node) {
 
     // Prologue — for large frames (>4080) we split: pre_sub + prologue_sub
     uint64 pre_sub_patch = out_len
-    // NOP placeholder for large frame pre-subtract (patched later if needed)
-    if is_naked == 0 && var_count > 500 {
-        emit_a64(0xD503201F)  // NOP (patched to SUB SP if frame > 4080)
+    // NOP placeholder — patched to SUB SP for large frames (>4080 bytes)
+    if is_naked == 0 {
+        emit_a64(0xD503201F)
     }
     uint64 prologue_start = out_len
     if is_naked == 0 {
@@ -3001,8 +3001,8 @@ fn gen_function_a64(uint64 fn_node) {
     uint64 epilogue_add = out_len
     emit_a64(0x91000000)
     uint64 post_add_patch = out_len
-    // NOP placeholder — patched to ADD SP for large frames (>4080)
-    if var_count > 500 {
+    // NOP placeholder — patched to ADD SP for large frames (>4080 bytes)
+    if is_naked == 0 {
         emit_a64(0xD503201F)
     }
     // ret
