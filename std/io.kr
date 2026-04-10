@@ -64,12 +64,13 @@ fn print_int(uint64 val) {
 
 // Print a string followed by newline
 fn print_line(uint64 s) {
-    println(s)
+    println_str(s)
 }
 
 // Print formatted: "name = value\n"
+// key is a string pointer (from a variable or literal), val is an integer
 fn print_kv(uint64 key, uint64 val) {
-    print(key)
+    print_str(key)
     print(" = ")
     println(val)
 }

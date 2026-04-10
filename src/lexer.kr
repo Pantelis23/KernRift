@@ -287,7 +287,7 @@ fn classify_keyword(uint64 start, uint64 len) -> uint32 {
     if match_keyword(start, len, "false", 5) != 0 { return TokenKind.KwFalse }
     if match_keyword(start, len, "match", 5) != 0 { return TokenKind.KwMatch }
     if match_keyword(start, len, "type", 4) != 0 { return TokenKind.KwType }
-    // Type keywords
+    // Type keywords (long forms)
     if match_keyword(start, len, "uint8", 5) != 0 { return TokenKind.KwUint8 }
     if match_keyword(start, len, "uint16", 6) != 0 { return TokenKind.KwUint16 }
     if match_keyword(start, len, "uint32", 6) != 0 { return TokenKind.KwUint32 }
@@ -296,6 +296,17 @@ fn classify_keyword(uint64 start, uint64 len) -> uint32 {
     if match_keyword(start, len, "int16", 5) != 0 { return TokenKind.KwInt16 }
     if match_keyword(start, len, "int32", 5) != 0 { return TokenKind.KwInt32 }
     if match_keyword(start, len, "int64", 5) != 0 { return TokenKind.KwInt64 }
+    // Type keywords (short aliases)
+    if match_keyword(start, len, "u8", 2) != 0 { return TokenKind.KwUint8 }
+    if match_keyword(start, len, "u16", 3) != 0 { return TokenKind.KwUint16 }
+    if match_keyword(start, len, "u32", 3) != 0 { return TokenKind.KwUint32 }
+    if match_keyword(start, len, "u64", 3) != 0 { return TokenKind.KwUint64 }
+    if match_keyword(start, len, "i8", 2) != 0 { return TokenKind.KwInt8 }
+    if match_keyword(start, len, "i16", 3) != 0 { return TokenKind.KwInt16 }
+    if match_keyword(start, len, "i32", 3) != 0 { return TokenKind.KwInt32 }
+    if match_keyword(start, len, "i64", 3) != 0 { return TokenKind.KwInt64 }
+    if match_keyword(start, len, "byte", 4) != 0 { return TokenKind.KwUint8 }
+    if match_keyword(start, len, "addr", 4) != 0 { return TokenKind.KwUint64 }
     if match_keyword(start, len, "asm", 3) != 0 { return TokenKind.KwAsm }
     if match_keyword(start, len, "volatile", 8) != 0 { return TokenKind.KwVolatile }
     return TokenKind.Ident

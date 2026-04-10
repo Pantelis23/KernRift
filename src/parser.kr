@@ -253,7 +253,7 @@ fn parse_primary() -> uint64 {
             return call_node
         }
 
-        // Array indexing: ident[expr]
+        // Array indexing: ident[expr]  (optionally followed by .field for struct arrays)
         if cur_kind() == 14 {
             advance_tok()
             uint64 idx_expr = parse_expr()
@@ -263,28 +263,74 @@ fn parse_primary() -> uint64 {
             uint32 ie = idx_expr
             ast_set_child(idx_node, ie)
             ast_set_tok(idx_node, t32)
+            // Optional .field access (for struct arrays: pts[i].field)
+            if cur_kind() == 17 {
+                advance_tok()
+                uint64 sfield_tok = advance_tok()
+                uint64 fa_node = ast_alloc(AstKind.FieldAccess)
+                uint32 ic = idx_node
+                ast_set_child(fa_node, ic)
+                uint32 sft = sfield_tok
+                ast_set_data2(fa_node, sft)
+                ast_set_tok(fa_node, sft)
+                return fa_node
+            }
             return idx_node
         }
 
         // Field access (possibly chained): ident.field or ident.field.field2...
+        // Or method call: ident.method(args) — sugar for method(ident, args)
         if cur_kind() == 17 {
             // Build initial Ident node for the base object
             uint64 obj_node = ast_alloc(AstKind.Ident)
             ast_set_data1(obj_node, t32)
             ast_set_tok(obj_node, t32)
 
+            // Track the last field token and its object, so we can turn the
+            // final .field into a method call if followed by '('
+            uint64 last_field_tok = 0
+            uint64 last_obj = 0
+
             while cur_kind() == 17 {
                 advance_tok()
                 uint64 field_tok = advance_tok()
 
-                uint64 field_node = ast_alloc(AstKind.FieldAccess)
-                uint32 oc = obj_node
-                ast_set_child(field_node, oc)
-                uint32 ft = field_tok
-                ast_set_data2(field_node, ft)
-                ast_set_tok(field_node, ft)
-
-                obj_node = field_node
+                // If this is the last field in the chain AND followed by '(',
+                // treat it as a method call, not a field access.
+                if cur_kind() == 10 {
+                    // Method call: field_tok is the method name, obj_node is self
+                    advance_tok()
+                    uint64 call_node = ast_alloc(AstKind.Call)
+                    uint32 mt = field_tok
+                    ast_set_data1(call_node, mt)
+                    ast_set_tok(call_node, mt)
+                    // Append self (obj_node) as the first argument
+                    uint32 sc = obj_node
+                    ast_append_child(call_node, sc)
+                    // Then parse any additional arguments
+                    if cur_kind() != 11 {
+                        uint64 arg = parse_expr()
+                        ast_append_child(call_node, arg)
+                        while eat(16) != 0 {
+                            arg = parse_expr()
+                            ast_append_child(call_node, arg)
+                        }
+                    }
+                    expect(11)
+                    obj_node = call_node
+                    // After the method call, may be followed by more .field or .method()
+                    // Continue the outer while loop to handle chaining
+                } else {
+                    uint64 field_node = ast_alloc(AstKind.FieldAccess)
+                    uint32 oc = obj_node
+                    ast_set_child(field_node, oc)
+                    uint32 ft = field_tok
+                    ast_set_data2(field_node, ft)
+                    ast_set_tok(field_node, ft)
+                    obj_node = field_node
+                    last_field_tok = field_tok
+                    last_obj = obj_node
+                }
             }
             return obj_node
         }
@@ -826,12 +872,31 @@ fn parse_stmt() -> uint64 {
         expect(13)
     }
 
-    // Struct variable declaration: StructName varName
+    // Struct variable declaration: StructName varName  OR  StructName[N] arrName
     // Check if current token is an identifier that names a known struct
     if kind == 1 {
         uint64 maybe_struct = struct_lookup(p_tok_pos)
         if maybe_struct != 0xFFFFFFFF {
             uint64 type_tok = advance_tok()
+            // Check for struct array: StructName[N] name
+            if cur_kind() == 14 {
+                advance_tok()
+                uint64 size_tok = advance_tok()
+                expect(15)
+                uint64 name_tok = expect(1)
+                uint64 node = ast_alloc(AstKind.VarDecl)
+                uint32 tt = type_tok
+                uint32 nt = name_tok
+                ast_set_data1(node, tt)
+                ast_set_data2(node, nt)
+                ast_set_tok(node, tt)
+                uint32 st = size_tok
+                ast_set_data3(node, st)
+                // Mark as struct: data4 = struct_idx + 1
+                uint32 si4 = maybe_struct + 1
+                ast_set_data4(node, si4)
+                return node
+            }
             uint64 name_tok = expect(1)
             uint64 node = ast_alloc(AstKind.VarDecl)
             uint32 tt = type_tok
@@ -1112,19 +1177,77 @@ fn parse_module() -> uint64 {
                 }
             }
         } else if kind == 71 {
-            // static TYPE name = value
+            // static TYPE name = value  OR  static TYPE[N] name
             advance_tok()
-            // Skip type keyword
-            advance_tok()
-            // Name token
-            uint64 name_tok = expect(1)
-            // Register the static variable
-            static_declare(name_tok)
-            // Skip = value if present
-            if eat(34) != 0 {
-                // Skip the init value expression tokens
-                while cur_kind() != 60 && cur_kind() != 71 && cur_kind() != 72 && cur_kind() != 73 && cur_kind() != 21 && cur_kind() != 89 && cur_kind() != 0 {
-                    advance_tok()
+            // Type keyword
+            uint64 stype_tok = advance_tok()
+            // Check for array syntax: static TYPE[N] name
+            if cur_kind() == 14 {
+                advance_tok()
+                uint64 size_tok = advance_tok()
+                // Parse the integer literal from the token text
+                uint64 stsz_start = tok_start_at(size_tok)
+                uint64 stsz_len = tok_len_at(size_tok)
+                uint64 stsz_val = 0
+                uint64 stsz_i = 0
+                // Support decimal and 0x hex
+                uint64 sbp0 = src_ptr + stsz_start
+                uint64 sbc0 = 0
+                unsafe { *(sbp0 as uint8) -> sbc0 }
+                uint64 sbp1 = src_ptr + stsz_start + 1
+                uint64 sbc1 = 0
+                if stsz_len > 1 { unsafe { *(sbp1 as uint8) -> sbc1 } }
+                if sbc0 == 48 && sbc1 == 120 {
+                    // 0x... hex
+                    stsz_i = 2
+                    while stsz_i < stsz_len {
+                        uint64 sbpx = src_ptr + stsz_start + stsz_i
+                        uint64 sbcx = 0
+                        unsafe { *(sbpx as uint8) -> sbcx }
+                        uint64 dv = 0
+                        if sbcx >= 48 && sbcx <= 57 { dv = sbcx - 48 }
+                        else if sbcx >= 97 && sbcx <= 102 { dv = sbcx - 87 }
+                        else if sbcx >= 65 && sbcx <= 70 { dv = sbcx - 55 }
+                        stsz_val = stsz_val * 16 + dv
+                        stsz_i = stsz_i + 1
+                    }
+                } else {
+                    while stsz_i < stsz_len {
+                        uint64 sbp = src_ptr + stsz_start + stsz_i
+                        uint64 sbc = 0
+                        unsafe { *(sbp as uint8) -> sbc }
+                        stsz_val = stsz_val * 10 + (sbc - 48)
+                        stsz_i = stsz_i + 1
+                    }
+                }
+                expect(15)
+                uint64 name_tok = expect(1)
+                // Compute element size from type keyword kind
+                uint32 stk = tok_kind_at(stype_tok)
+                uint64 wstk = stk
+                uint64 elem_sz = 8
+                if wstk == 80 || wstk == 84 { elem_sz = 1 }
+                if wstk == 81 || wstk == 85 { elem_sz = 2 }
+                if wstk == 82 || wstk == 86 { elem_sz = 4 }
+                if wstk == 83 || wstk == 87 { elem_sz = 8 }
+                static_declare_array(name_tok, stsz_val * elem_sz)
+                // Optional initializer — skip for now (zero-initialized by BSS)
+                if eat(34) != 0 {
+                    while cur_kind() != 60 && cur_kind() != 71 && cur_kind() != 72 && cur_kind() != 73 && cur_kind() != 21 && cur_kind() != 89 && cur_kind() != 0 {
+                        advance_tok()
+                    }
+                }
+            } else {
+                // Name token
+                uint64 name_tok = expect(1)
+                // Register the static variable
+                static_declare(name_tok)
+                // Skip = value if present
+                if eat(34) != 0 {
+                    // Skip the init value expression tokens
+                    while cur_kind() != 60 && cur_kind() != 71 && cur_kind() != 72 && cur_kind() != 73 && cur_kind() != 21 && cur_kind() != 89 && cur_kind() != 0 {
+                        advance_tok()
+                    }
                 }
             }
         } else if kind == 72 {

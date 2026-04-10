@@ -616,6 +616,29 @@ fn is_builtin(uint64 tok_idx) -> uint64 {
     if sema_tok_matches(tok_idx, "fmt_uint", 8) != 0 { return 1 }
     if sema_tok_matches(tok_idx, "asm", 3) != 0 { return 1 }
     if sema_tok_matches(tok_idx, "syscall_raw", 11) != 0 { return 1 }
+    // String output (null-terminated, variable pointer safe)
+    if sema_tok_matches(tok_idx, "print_str", 9) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "println_str", 11) != 0 { return 1 }
+    // Easy pointer loads — zero-extended
+    if sema_tok_matches(tok_idx, "load8", 5) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "load16", 6) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "load32", 6) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "load64", 6) != 0 { return 1 }
+    // Easy pointer stores
+    if sema_tok_matches(tok_idx, "store8", 6) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "store16", 7) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "store32", 7) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "store64", 7) != 0 { return 1 }
+    // Volatile loads — with memory barrier
+    if sema_tok_matches(tok_idx, "vload8", 6) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "vload16", 7) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "vload32", 7) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "vload64", 7) != 0 { return 1 }
+    // Volatile stores — with memory barrier
+    if sema_tok_matches(tok_idx, "vstore8", 7) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "vstore16", 8) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "vstore32", 8) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "vstore64", 8) != 0 { return 1 }
     return 0
 }
 
@@ -625,6 +648,16 @@ fn builtin_arg_count(uint64 tok_idx) -> uint64 {
     if sema_tok_matches(tok_idx, "exit", 4) != 0 { return 1 }
     if sema_tok_matches(tok_idx, "print", 5) != 0 { return 1 }
     if sema_tok_matches(tok_idx, "println", 7) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "print_str", 9) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "println_str", 11) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "load8", 5) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "load16", 6) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "load32", 6) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "load64", 6) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "vload8", 6) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "vload16", 7) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "vload32", 7) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "vload64", 7) != 0 { return 1 }
     if sema_tok_matches(tok_idx, "alloc", 5) != 0 { return 1 }
     if sema_tok_matches(tok_idx, "dealloc", 7) != 0 { return 1 }
     if sema_tok_matches(tok_idx, "str_len", 7) != 0 { return 1 }
@@ -635,6 +668,14 @@ fn builtin_arg_count(uint64 tok_idx) -> uint64 {
     if sema_tok_matches(tok_idx, "set_executable", 14) != 0 { return 1 }
     if sema_tok_matches(tok_idx, "atomic_load", 11) != 0 { return 1 }
     // 2-arg builtins
+    if sema_tok_matches(tok_idx, "store8", 6) != 0 { return 2 }
+    if sema_tok_matches(tok_idx, "store16", 7) != 0 { return 2 }
+    if sema_tok_matches(tok_idx, "store32", 7) != 0 { return 2 }
+    if sema_tok_matches(tok_idx, "store64", 7) != 0 { return 2 }
+    if sema_tok_matches(tok_idx, "vstore8", 7) != 0 { return 2 }
+    if sema_tok_matches(tok_idx, "vstore16", 8) != 0 { return 2 }
+    if sema_tok_matches(tok_idx, "vstore32", 8) != 0 { return 2 }
+    if sema_tok_matches(tok_idx, "vstore64", 8) != 0 { return 2 }
     if sema_tok_matches(tok_idx, "str_eq", 6) != 0 { return 2 }
     if sema_tok_matches(tok_idx, "file_open", 9) != 0 { return 2 }
     if sema_tok_matches(tok_idx, "bit_get", 7) != 0 { return 2 }
