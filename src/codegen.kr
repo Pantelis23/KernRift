@@ -3401,13 +3401,6 @@ fn gen_expr(uint64 node) {
             wtmp = nt2
         }
 
-        // Fast path: single-arg call on SysV — skip temp slot entirely
-        if arg_count == 1 && target_os != 2 {
-            gen_expr(warg)
-            emit_mov_rdi_rax()
-            rax_cache = 0
-        } else {
-
         // Allocate temp slots for each arg
         uint64 arg_slots_base = var_count * 8
         uint64 ac = 0
@@ -3483,7 +3476,6 @@ fn gen_expr(uint64 node) {
             stack_args = arg_count - 6
             if (stack_args & 1) != 0 { stack_args = stack_args + 1 }
         }
-        } // end of single-arg fast path else
 
         // emit: call rel32 (placeholder)
         // First, push overflow args (using saved register values would clobber,
