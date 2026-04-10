@@ -101,7 +101,7 @@ fn imp_init() {
     imp_buf_len = 0
     imp_seen = alloc(16384)
     imp_seen_count = 0
-    srcmap_table = alloc(256 * 16)
+    srcmap_table = alloc(1024 * 16)
     srcmap_count = 0
 }
 

@@ -2621,10 +2621,10 @@ fn gen_stmt_a64(uint64 node) {
         else if wts == 2 { emit_a64_ldrh(0, 0, 0) }
         else if wts == 4 { emit_a64_ldr32(0, 0, 0) }
         else { emit_a64_ldr(0, 0, 0) }
-        // Volatile barrier after load
+        // Volatile barrier after load (DSB SY — ensures device read completes)
         uint32 vol_flag = ast_data3(node)
         uint64 wvf = vol_flag
-        if wvf == 1 { emit_a64(0xD5033BBF) }
+        if wvf == 1 { emit_a64(0xD5033F9F) }
         uint32 dest_tok = ast_data2(node)
         uint64 doff = var_lookup(dest_tok)
         if doff != 0xFFFFFFFF {
@@ -2649,7 +2649,7 @@ fn gen_stmt_a64(uint64 node) {
         gen_expr_a64(wa)
         emit_a64_mov(10, 0)
         emit_a64_load_x0(temp_slot_0)
-        // Volatile barrier before store
+        // Volatile barrier before store (DSB SY — ensures device write commits)
         uint32 vol_flag2 = ast_data3(node)
         uint64 wvf2 = vol_flag2
         if wvf2 == 1 { emit_a64(0xD5033BBF) }

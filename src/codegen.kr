@@ -132,7 +132,7 @@ fn codegen_init(uint64 capacity, uint64 source, uint64 tokens) {
     fn_count = 0
     fixup_table = alloc(8192 * 8)
     fixup_count = 0
-    ret_fixups = alloc(64 * 4)
+    ret_fixups = alloc(256 * 4)
     ret_fixup_count = 0
     struct_table = alloc(64 * 272)
     struct_count = 0
@@ -144,7 +144,7 @@ fn codegen_init(uint64 capacity, uint64 source, uint64 tokens) {
     break_fixup_count = 0
     enum_table = alloc(512 * 16)
     enum_count = 0
-    static_table = alloc(256 * 8)
+    static_table = alloc(1024 * 8)
     static_count = 0
     static_data_size = 0
     static_fixups = alloc(8192 * 8)
@@ -161,7 +161,7 @@ fn codegen_init(uint64 capacity, uint64 source, uint64 tokens) {
     a64_digit_buf = alloc(32)
     type_alias_table = alloc(64 * 8)
     type_alias_count = 0
-    fnaddr_fixup_table = alloc(256 * 8)
+    fnaddr_fixup_table = alloc(1024 * 8)
     fnaddr_fixup_count = 0
     pin_param0_offset = 0xFFFFFFFF
     pin_param1_offset = 0xFFFFFFFF
