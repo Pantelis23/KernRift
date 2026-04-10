@@ -115,6 +115,8 @@ static uint64 pin_param0_offset = 0xFFFFFFFF
 static uint64 pin_param1_offset = 0xFFFFFFFF
 static uint64 pin_param0_tok = 0
 static uint64 pin_param1_tok = 0
+// Binary op register spill: use r12 instead of stack for outermost binary op
+static uint64 r12_in_use = 0
 
 @export
 fn codegen_init(uint64 capacity, uint64 source, uint64 tokens) {
@@ -1350,29 +1352,36 @@ fn gen_expr(uint64 node) {
             return
         }
 
-        gen_expr(wlhs)           // rax = lhs
-
-        // Allocate a fresh temp slot (avoids nesting conflicts)
-        uint64 binop_temp = var_count * 8
-        var_count = var_count + 1
-        var_frame_size = var_count * 8
-        uint64 brem = var_frame_size & 15
-        if brem != 0 { var_frame_size = var_frame_size + 16 - brem }
-
-        // Save lhs to binop_temp
-        emit_store_rax_to_stack(binop_temp)
-
         uint32 rhs_idx = ast_data2(node)
         uint64 wrhs = rhs_idx
-        gen_expr(wrhs)           // rax = rhs
+        uint32 rhs_kind_check = ast_kind(wrhs)
+        uint64 wrk = rhs_kind_check
 
-        // mov rcx, rax (rhs → rcx)
-        emit_byte(0x48)
-        emit_byte(0x89)
-        emit_byte(0xC1)
-
-        // Restore lhs from binop_temp → rax
-        emit_load_rax_from_stack(binop_temp)
+        // Optimization: if RHS is simple (IntLit or Ident), skip stack temp
+        // Simple RHS doesn't make function calls, so rcx is safe to hold LHS
+        if wrk == 30 || wrk == 32 {
+            gen_expr(wlhs)           // rax = lhs
+            // mov rcx, rax (save lhs in rcx — safe because simple RHS won't clobber)
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
+            rax_cache = 0
+            gen_expr(wrhs)           // rax = rhs
+            // xchg rax, rcx (rax = lhs, rcx = rhs)
+            emit_byte(0x48); emit_byte(0x87); emit_byte(0xC1)
+            rax_cache = 0
+        } else {
+            gen_expr(wlhs)           // rax = lhs
+            // Complex RHS: use stack temp
+            uint64 binop_temp = var_count * 8
+            var_count = var_count + 1
+            var_frame_size = var_count * 8
+            uint64 brem = var_frame_size & 15
+            if brem != 0 { var_frame_size = var_frame_size + 16 - brem }
+            emit_store_rax_to_stack(binop_temp)
+            gen_expr(wrhs)           // rax = rhs
+            // mov rcx, rax
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
+            emit_load_rax_from_stack(binop_temp)
+        }
 
         // Determine operation from token kind
         uint32 op_tok = ast_data1(node)
