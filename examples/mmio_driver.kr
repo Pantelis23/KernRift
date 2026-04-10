@@ -19,9 +19,11 @@ device FakeUART at 0x55550000 {
 }
 
 fn main() {
-    // mmap a single page at the device address (userspace stand-in for MMIO)
-    // x86_64 Linux: syscall 9 = mmap
-    u64 page = syscall_raw(9, 0x55550000, 4096, 3, 0x32, 0xFFFFFFFFFFFFFFFF, 0)
+    // mmap a single page at the device address (userspace stand-in for MMIO).
+    // Syscall numbers: x86_64 Linux = 9, ARM64 Linux = 222.
+    u64 mmap_nr = 9
+    if get_arch_id() == 2 { mmap_nr = 222 }
+    u64 page = syscall_raw(mmap_nr, 0x55550000, 4096, 3, 0x32, 0xFFFFFFFFFFFFFFFF, 0)
 
     // Write to the "device"
     FakeUART.Ctrl = 0x8080
