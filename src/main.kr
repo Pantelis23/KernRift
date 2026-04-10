@@ -2967,6 +2967,9 @@ static uint64 cli_argv = 0
 // Living compiler CLI options
 static uint64 lc_ci_mode = 0
 static uint64 lc_min_fitness = 0
+static uint64 lc_fix_mode = 0
+static uint64 lc_dry_run = 0
+static uint64 lc_list_proposals = 0
 static uint64 freestanding = 0
 
 fn parse_uint_arg(uint64 s) -> uint64 {
@@ -3080,13 +3083,20 @@ fn main() {
                 write(1, "  fmt <file.kr>     auto-format source\n", 39)
                 exit(0)
             } else if str_starts_with(arg, "--version", 9) != 0 {
-                uint64 msg = "krc 2.6.0 (KernRift self-hosted compiler)\n"
+                uint64 msg = "krc 2.6.1 (KernRift self-hosted compiler)\n"
                 write(1, msg, 42)
                 exit(0)
             } else if str_starts_with(arg, "--freestanding", 14) != 0 {
                 freestanding = 1
             } else if str_starts_with(arg, "--ci", 4) != 0 {
                 lc_ci_mode = 1
+            } else if str_starts_with(arg, "--fix", 5) != 0 {
+                lc_fix_mode = 1
+            } else if str_starts_with(arg, "--dry-run", 9) != 0 {
+                lc_dry_run = 1
+            } else if str_starts_with(arg, "--list-proposals", 16) != 0 {
+                lc_list_proposals = 1
+                mode = 2
             } else if str_starts_with(arg, "--min-fitness=", 14) != 0 {
                 lc_min_fitness = parse_uint_arg(arg + 14)
             } else if str_starts_with(arg, "--min-fitness", 13) != 0 {
@@ -3164,6 +3174,13 @@ fn main() {
         }
     }
 
+    // --list-proposals doesn't need an input file
+    if lc_list_proposals != 0 && input_path == 0 {
+        init_proposals()
+        list_proposals()
+        exit(0)
+    }
+
     if input_path == 0 {
         if cli_argc > 0 {
             write(2, "krc: no input file\n\n", 20)
@@ -3215,6 +3232,17 @@ fn main() {
     }
 
     if mode == 2 {
+        // --list-proposals: print the governance-layer proposal registry
+        if lc_list_proposals != 0 {
+            init_proposals()
+            list_proposals()
+            exit(0)
+        }
+        // --fix mode: run the migration engine on the input file
+        if lc_fix_mode != 0 {
+            run_migration(input_path, lc_dry_run)
+            exit(0)
+        }
         imp_init()
     imp_check_file(input_path)
         imp_process(input_path)
@@ -3234,11 +3262,14 @@ fn main() {
         uint64 patterns = detect_patterns(root, tel)
         uint64 cycles = check_lock_cycles()
         uint64 fitness = compute_fitness(tel, patterns, cycles)
+        init_proposals()
+        detect_proposals(tel)
         if lc_min_fitness > 0 {
             print_living_report_filtered(tel, patterns, fitness, lc_min_fitness)
         } else {
             print_living_report(tel, patterns, fitness)
         }
+        print_firing_proposals()
         if lc_ci_mode != 0 {
             uint64 gate_threshold = lc_min_fitness
             if gate_threshold == 0 { gate_threshold = 50 }

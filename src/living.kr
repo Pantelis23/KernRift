@@ -717,3 +717,776 @@ fn print_living_report_filtered(uint64 tel, uint64 patterns, uint64 fitness, uin
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Proposal engine + Governance layer
+// ---------------------------------------------------------------------------
+//
+// Proposals are candidate syntax forms generated from observed friction.
+// Each has a lifecycle state (governance layer):
+//   0 = experimental  — opt-in, under active development
+//   1 = stable        — promoted after evaluation, safe for production
+//   2 = deprecated    — replaced by something better, still accepted
+//
+// A proposal table holds the current state. `krc lc --list-proposals`
+// prints it. Triggered proposals also appear inline in the report with
+// their current lifecycle state.
+//
+// The state table is currently hardcoded per compiler version. A future
+// iteration (post-v2.7) will move it to a persistent .kernrift/proposals
+// file so projects can pin their own governance decisions.
+//
+// Proposal entry (56 bytes, 7 × 8):
+//   [0]  name ptr
+//   [8]  state (0/1/2)
+//   [16] trigger description ptr
+//   [24] before snippet ptr
+//   [32] after snippet ptr
+//   [40] rationale ptr
+//   [48] fires_flag (0/1, set by detect_proposals)
+
+static uint64 prop_table = 0
+static uint64 prop_count = 0
+
+fn prop_add(uint64 name, uint64 state, uint64 trigger, uint64 before, uint64 after, uint64 rationale) {
+    uint64 entry = prop_table + prop_count * 56
+    unsafe { *(entry as uint64) = name }
+    uint64 e8 = entry + 8
+    unsafe { *(e8 as uint64) = state }
+    uint64 e16 = entry + 16
+    unsafe { *(e16 as uint64) = trigger }
+    uint64 e24 = entry + 24
+    unsafe { *(e24 as uint64) = before }
+    uint64 e32 = entry + 32
+    unsafe { *(e32 as uint64) = after }
+    uint64 e40 = entry + 40
+    unsafe { *(e40 as uint64) = rationale }
+    uint64 e48 = entry + 48
+    unsafe { *(e48 as uint64) = 0 }
+    prop_count = prop_count + 1
+}
+
+fn prop_get_name(uint64 idx) -> uint64 {
+    uint64 e = prop_table + idx * 56
+    uint64 v = 0
+    unsafe { *(e as uint64) -> v }
+    return v
+}
+fn prop_get_state(uint64 idx) -> uint64 {
+    uint64 e = prop_table + idx * 56 + 8
+    uint64 v = 0
+    unsafe { *(e as uint64) -> v }
+    return v
+}
+fn prop_get_trigger(uint64 idx) -> uint64 {
+    uint64 e = prop_table + idx * 56 + 16
+    uint64 v = 0
+    unsafe { *(e as uint64) -> v }
+    return v
+}
+fn prop_get_before(uint64 idx) -> uint64 {
+    uint64 e = prop_table + idx * 56 + 24
+    uint64 v = 0
+    unsafe { *(e as uint64) -> v }
+    return v
+}
+fn prop_get_after(uint64 idx) -> uint64 {
+    uint64 e = prop_table + idx * 56 + 32
+    uint64 v = 0
+    unsafe { *(e as uint64) -> v }
+    return v
+}
+fn prop_get_rationale(uint64 idx) -> uint64 {
+    uint64 e = prop_table + idx * 56 + 40
+    uint64 v = 0
+    unsafe { *(e as uint64) -> v }
+    return v
+}
+fn prop_get_fires(uint64 idx) -> uint64 {
+    uint64 e = prop_table + idx * 56 + 48
+    uint64 v = 0
+    unsafe { *(e as uint64) -> v }
+    return v
+}
+fn prop_set_fires(uint64 idx, uint64 fires) {
+    uint64 e = prop_table + idx * 56 + 48
+    unsafe { *(e as uint64) = fires }
+}
+
+// Initialize the proposal registry with the current compiler's set of
+// candidate syntax evolutions. This is the governance layer's hardcoded
+// state — future versions will read from a per-project state file.
+@export
+fn init_proposals() {
+    prop_table = alloc(64 * 56)
+    prop_count = 0
+
+    // Proposal: slice_for_buffer_params — stable (already in the language)
+    prop_add(
+        "slice_for_buffer_params",
+        1,  // stable (actually implemented in v2.6)
+        "Functions that take a (ptr, len) pair as separate params",
+        "fn foo(u64 data, u64 len) { ... }",
+        "fn foo([u8] data) { u64 n = data.len; ... }",
+        "Symbolic length makes the buffer's boundary obvious at every use site."
+    )
+
+    // Proposal: device_block_from_mmio — stable (already implemented)
+    prop_add(
+        "device_block_from_mmio",
+        1,  // stable
+        "Three or more volatile ops on addresses at fixed offsets from a common base",
+        "vstore32(0x3F201000 + 0x00, val); vstore32(0x3F201000 + 0x18, flag)",
+        "device UART0 at 0x3F201000 { Data at 0x00 : u32; Flag at 0x18 : u32 }",
+        "A device block is self-documenting and compiler-checked for width mismatches."
+    )
+
+    // Proposal: load_store_builtins — stable (already implemented)
+    prop_add(
+        "load_store_builtins",
+        1,  // stable
+        "unsafe{} blocks wrapping a single pointer load or store",
+        "u32 v = 0; unsafe { *(addr as u32) -> v }",
+        "u32 v = loadN(addr)",
+        "Direct builtins are shorter, clearer, and auto-migratable."
+    )
+
+    // Proposal: short_type_aliases — stable (already implemented)
+    prop_add(
+        "short_type_aliases",
+        1,  // stable
+        "Frequent use of long-form uint32/uint64 type names",
+        "uint64 count = 0; uint32 flags = 1",
+        "u64 count = 0; u32 flags = 1",
+        "Short aliases reduce visual noise without losing precision."
+    )
+
+    // Proposal: versioned_language_profiles — experimental (parser accepts them)
+    prop_add(
+        "versioned_language_profiles",
+        0,  // experimental
+        "Files targeting different language stability guarantees",
+        "(no way to declare which surface features a file depends on)",
+        "#lang stable\n...\n#lang experimental\n...",
+        "Pinned profiles let old files keep compiling while new syntax evolves."
+    )
+
+    // Proposal: tail_call_intrinsic — experimental (not yet implemented)
+    prop_add(
+        "tail_call_intrinsic",
+        0,  // experimental
+        "Recursive calls in tail position in fixed-stack (@noreturn/@naked) contexts",
+        "fn poll(u64 head) { ...; poll(next_head) }",
+        "fn poll(u64 head) { ...; tail_call(poll, next_head) }",
+        "Zero stack growth per iteration — required for infinite polling loops in kernels."
+    )
+
+    // Proposal: extern_fn_decls — experimental (deferred)
+    prop_add(
+        "extern_fn_decls",
+        0,  // experimental
+        "Source depends on external C or assembly symbols",
+        "(not currently possible — asm() or syscall_raw only)",
+        "extern fn platform_barrier()\nextern fn kmalloc(u64 size) -> u64",
+        "Link against existing C runtimes, kernel APIs, or hand-rolled assembly shims."
+    )
+}
+
+// Evaluate which proposals fire against the current telemetry.
+// Returns the number of proposals marked as firing.
+@export
+fn detect_proposals(uint64 tel) -> uint64 {
+    uint64 fired = 0
+    uint64 unsafe_c = tel_get(tel, 3)
+    uint64 fn_c = tel_get(tel, 0)
+    // Clear fire flags first
+    uint64 j = 0
+    while j < prop_count {
+        prop_set_fires(j, 0)
+        j = j + 1
+    }
+    // load_store_builtins: any legacy unsafe op fires it
+    if unsafe_c > 0 {
+        uint64 i = 0
+        while i < prop_count {
+            uint64 np = prop_get_name(i)
+            if str_eq(np, "load_store_builtins") != 0 {
+                prop_set_fires(i, 1)
+                fired = fired + 1
+            }
+            i = i + 1
+        }
+    }
+    // All other proposals require structural analysis we don't fully do yet;
+    // they are listed for governance but don't auto-fire.
+    return fired
+}
+
+fn prop_write_state(uint64 state) {
+    if state == 0 {
+        uint64 m = "experimental"
+        write(1, m, 12)
+    }
+    if state == 1 {
+        uint64 m = "stable"
+        write(1, m, 6)
+    }
+    if state == 2 {
+        uint64 m = "deprecated"
+        write(1, m, 10)
+    }
+}
+
+// Print all proposals and their lifecycle state.
+@export
+fn list_proposals() {
+    uint64 msg = "=== KernRift Proposal Registry ===\n"
+    write(1, msg, 35)
+    msg = "  telemetry -> proposals -> fitness -> governance -> migration\n\n"
+    write(1, msg, 65)
+    msg = "Total proposals: "
+    write(1, msg, 17)
+    lc_write_num(prop_count)
+    msg = "\n\n"
+    write(1, msg, 2)
+
+    uint64 i = 0
+    while i < prop_count {
+        msg = "  ["
+        write(1, msg, 3)
+        lc_write_num(i + 1)
+        msg = "] "
+        write(1, msg, 2)
+        lc_write_str(prop_get_name(i))
+        msg = "\n      state:      "
+        write(1, msg, 19)
+        prop_write_state(prop_get_state(i))
+        msg = "\n      trigger:    "
+        write(1, msg, 19)
+        lc_write_str(prop_get_trigger(i))
+        msg = "\n      before:     "
+        write(1, msg, 19)
+        lc_write_str(prop_get_before(i))
+        msg = "\n      after:      "
+        write(1, msg, 19)
+        lc_write_str(prop_get_after(i))
+        msg = "\n      rationale:  "
+        write(1, msg, 19)
+        lc_write_str(prop_get_rationale(i))
+        msg = "\n\n"
+        write(1, msg, 2)
+        i = i + 1
+    }
+
+    msg = "Governance: the state table above is the v2.6 compiler's\n"
+    write(1, msg, 58)
+    msg = "governance snapshot. Persistent per-project state (.kernrift/\n"
+    write(1, msg, 62)
+    msg = "proposals) and `--promote`/`--deprecate` commands arrive in a\n"
+    write(1, msg, 62)
+    msg = "future release.\n"
+    write(1, msg, 16)
+}
+
+// Print proposals that are firing against the current telemetry (for use
+// inside the regular lc report).
+@export
+fn print_firing_proposals() {
+    uint64 any = 0
+    uint64 i = 0
+    while i < prop_count {
+        if prop_get_fires(i) != 0 { any = 1 }
+        i = i + 1
+    }
+    if any == 0 { return }
+
+    uint64 msg = "--- Proposals triggered by telemetry ---\n\n"
+    write(1, msg, 42)
+    uint64 n = 0
+    uint64 j = 0
+    while j < prop_count {
+        if prop_get_fires(j) != 0 {
+            n = n + 1
+            msg = "  ["
+            write(1, msg, 3)
+            lc_write_num(n)
+            msg = "] "
+            write(1, msg, 2)
+            lc_write_str(prop_get_name(j))
+            msg = "  state: "
+            write(1, msg, 9)
+            prop_write_state(prop_get_state(j))
+            msg = "\n      before: "
+            write(1, msg, 15)
+            lc_write_str(prop_get_before(j))
+            msg = "\n      after:  "
+            write(1, msg, 15)
+            lc_write_str(prop_get_after(j))
+            msg = "\n      why:    "
+            write(1, msg, 15)
+            lc_write_str(prop_get_rationale(j))
+            msg = "\n\n"
+            write(1, msg, 2)
+        }
+        j = j + 1
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Migration engine (source-to-source rewriter)
+// ---------------------------------------------------------------------------
+//
+// Applies auto-fixes identified by the pattern detection pass. Today this
+// implements a single rewrite:
+//
+//   unsafe { *(addr as T) -> dest }   →   dest = loadN(addr)
+//   unsafe { *(addr as T) = val }      →   storeN(addr, val)
+//
+// The two forms produce identical code at the codegen level, so the
+// rewrite is safe by construction.
+//
+// Scan strategy: byte-level walk over the source. For each occurrence of
+// the literal "unsafe" at a word boundary, parse the following block as a
+// pointer op. If it matches, record the byte span and the replacement
+// text; otherwise leave it alone.
+
+// Check whether source[off..off+len] equals a literal string
+fn mig_text_eq(uint64 source, uint64 off, uint64 src_len_arg, uint64 literal, uint64 lit_len) -> uint64 {
+    if off + lit_len > src_len_arg { return 0 }
+    uint64 i = 0
+    while i < lit_len {
+        uint64 sp = source + off + i
+        uint64 lp = literal + i
+        uint64 sc = 0
+        uint64 lc = 0
+        unsafe { *(sp as uint8) -> sc }
+        unsafe { *(lp as uint8) -> lc }
+        if sc != lc { return 0 }
+        i = i + 1
+    }
+    return 1
+}
+
+// Is this byte a word character (identifier continuation)?
+fn mig_is_word(uint64 c) -> uint64 {
+    if c >= 48 && c <= 57 { return 1 }   // 0-9
+    if c >= 65 && c <= 90 { return 1 }   // A-Z
+    if c >= 97 && c <= 122 { return 1 }  // a-z
+    if c == 95 { return 1 }              // _
+    return 0
+}
+
+// Skip whitespace (space, tab, CR, LF) from pos. Returns new position.
+fn mig_skip_ws(uint64 source, uint64 p, uint64 src_end) -> uint64 {
+    while p < src_end {
+        uint64 sp = source + p
+        uint64 c = 0
+        unsafe { *(sp as uint8) -> c }
+        if c != 32 && c != 9 && c != 13 && c != 10 { return p }
+        p = p + 1
+    }
+    return p
+}
+
+// Read an expression span (up to but not including the matching close delim).
+// Tracks paren depth; stops when we see " as " at depth 0 (within our enclosing parens).
+// Returns the byte position of the first char of ` as ` (or src_end on failure).
+fn mig_find_as(uint64 source, uint64 p, uint64 src_end) -> uint64 {
+    uint64 depth = 0
+    while p + 4 <= src_end {
+        uint64 sp = source + p
+        uint64 c = 0
+        unsafe { *(sp as uint8) -> c }
+        if c == 40 { depth = depth + 1 }
+        if c == 41 {
+            if depth == 0 { return src_end }
+            depth = depth - 1
+        }
+        if depth == 0 && c == 32 {
+            // Check for " as " — space, a, s, space
+            uint64 p1 = source + p + 1
+            uint64 p2 = source + p + 2
+            uint64 p3 = source + p + 3
+            uint64 c1 = 0
+            uint64 c2 = 0
+            uint64 c3 = 0
+            unsafe { *(p1 as uint8) -> c1 }
+            unsafe { *(p2 as uint8) -> c2 }
+            unsafe { *(p3 as uint8) -> c3 }
+            if c1 == 97 && c2 == 115 && c3 == 32 { return p }
+        }
+        p = p + 1
+    }
+    return src_end
+}
+
+// Parse a type keyword starting at `p`, return (width, new_p). Width=0 on failure.
+// Recognizes: u8, u16, u32, u64, uint8, uint16, uint32, uint64,
+//             i8, i16, i32, i64, int8, int16, int32, int64,
+//             byte (=1), addr (=8)
+fn mig_parse_type(uint64 source, uint64 p, uint64 src_end, uint64 width_out) -> uint64 {
+    // Read an identifier word starting at p
+    uint64 start = p
+    while p < src_end {
+        uint64 sp = source + p
+        uint64 c = 0
+        unsafe { *(sp as uint8) -> c }
+        if mig_is_word(c) == 0 { break }
+        p = p + 1
+    }
+    uint64 tlen = p - start
+    if tlen == 0 {
+        unsafe { *(width_out as uint64) = 0 }
+        return p
+    }
+    uint64 w = 0
+    if tlen == 2 {
+        // u8 or i8
+        if mig_text_eq(source, start, src_end, "u8", 2) != 0 { w = 1 }
+        if mig_text_eq(source, start, src_end, "i8", 2) != 0 { w = 1 }
+    }
+    if tlen == 3 {
+        if mig_text_eq(source, start, src_end, "u16", 3) != 0 { w = 2 }
+        if mig_text_eq(source, start, src_end, "u32", 3) != 0 { w = 4 }
+        if mig_text_eq(source, start, src_end, "u64", 3) != 0 { w = 8 }
+        if mig_text_eq(source, start, src_end, "i16", 3) != 0 { w = 2 }
+        if mig_text_eq(source, start, src_end, "i32", 3) != 0 { w = 4 }
+        if mig_text_eq(source, start, src_end, "i64", 3) != 0 { w = 8 }
+    }
+    if tlen == 4 {
+        if mig_text_eq(source, start, src_end, "int8", 4) != 0 { w = 1 }
+        if mig_text_eq(source, start, src_end, "byte", 4) != 0 { w = 1 }
+        if mig_text_eq(source, start, src_end, "addr", 4) != 0 { w = 8 }
+    }
+    if tlen == 5 {
+        if mig_text_eq(source, start, src_end, "uint8", 5) != 0 { w = 1 }
+        if mig_text_eq(source, start, src_end, "int16", 5) != 0 { w = 2 }
+        if mig_text_eq(source, start, src_end, "int32", 5) != 0 { w = 4 }
+        if mig_text_eq(source, start, src_end, "int64", 5) != 0 { w = 8 }
+    }
+    if tlen == 6 {
+        if mig_text_eq(source, start, src_end, "uint16", 6) != 0 { w = 2 }
+        if mig_text_eq(source, start, src_end, "uint32", 6) != 0 { w = 4 }
+        if mig_text_eq(source, start, src_end, "uint64", 6) != 0 { w = 8 }
+    }
+    unsafe { *(width_out as uint64) = w }
+    return p
+}
+
+// Append bytes from `src[src_off..src_off+len]` to `dst[*dst_pos]` and advance dst_pos
+fn mig_append_bytes(uint64 dst, uint64 dst_pos_ptr, uint64 src, uint64 src_off, uint64 len) {
+    uint64 dp = 0
+    unsafe { *(dst_pos_ptr as uint64) -> dp }
+    uint64 i = 0
+    while i < len {
+        uint64 sp = src + src_off + i
+        uint64 c = 0
+        unsafe { *(sp as uint8) -> c }
+        uint64 tp = dst + dp + i
+        uint8 cb = c
+        unsafe { *(tp as uint8) = cb }
+        i = i + 1
+    }
+    dp = dp + len
+    unsafe { *(dst_pos_ptr as uint64) = dp }
+}
+
+// Append a null-terminated literal string
+fn mig_append_str(uint64 dst, uint64 dst_pos_ptr, uint64 s) {
+    uint64 len = 0
+    uint64 p = s
+    uint64 c = 0
+    unsafe { *(p as uint8) -> c }
+    while c != 0 {
+        len = len + 1
+        p = s + len
+        unsafe { *(p as uint8) -> c }
+    }
+    mig_append_bytes(dst, dst_pos_ptr, s, 0, len)
+}
+
+// Append a width suffix (1/2/4/8 → "8"/"16"/"32"/"64")
+fn mig_append_width(uint64 dst, uint64 dst_pos_ptr, uint64 width) {
+    if width == 1 { mig_append_str(dst, dst_pos_ptr, "8") }
+    if width == 2 { mig_append_str(dst, dst_pos_ptr, "16") }
+    if width == 4 { mig_append_str(dst, dst_pos_ptr, "32") }
+    if width == 8 { mig_append_str(dst, dst_pos_ptr, "64") }
+}
+
+// Main migration pass. Scans `source` and builds a rewritten output in `out_buf`.
+// Returns (bytes_written, matches_applied).
+// If dry_run is non-zero, nothing is written, but matches are still counted.
+@export
+fn mig_scan_and_rewrite(uint64 source, uint64 src_size, uint64 out_buf_a, uint64 matches_out) -> uint64 {
+    uint64 sp_pos = 0
+    uint64 dp = 0
+    uint64 last_copied = 0
+    uint64 applied = 0
+
+    while sp_pos < src_size {
+        uint64 bp = source + sp_pos
+        uint64 ch = 0
+        unsafe { *(bp as uint8) -> ch }
+
+        // Look for 'u' and try to match "unsafe" at a word boundary
+        if ch == 117 && sp_pos + 6 <= src_size {
+            // Word-boundary check: previous char must not be a word character
+            uint64 prev_ok = 1
+            if sp_pos > 0 {
+                uint64 pbp = source + sp_pos - 1
+                uint64 pc = 0
+                unsafe { *(pbp as uint8) -> pc }
+                if mig_is_word(pc) != 0 { prev_ok = 0 }
+            }
+            if prev_ok != 0 && mig_text_eq(source, sp_pos, src_size, "unsafe", 6) != 0 {
+                // Next char after "unsafe" must not be a word character
+                uint64 after = sp_pos + 6
+                uint64 after_ok = 1
+                if after < src_size {
+                    uint64 abp = source + after
+                    uint64 ac = 0
+                    unsafe { *(abp as uint8) -> ac }
+                    if mig_is_word(ac) != 0 { after_ok = 0 }
+                }
+                if after_ok != 0 {
+                    // Try to parse an unsafe pointer-op block starting at sp_pos
+                    uint64 mig_start = sp_pos
+                    uint64 p = after
+                    p = mig_skip_ws(source, p, src_size)
+                    // Expect '{'
+                    if p < src_size {
+                        uint64 bp1 = source + p
+                        uint64 c1 = 0
+                        unsafe { *(bp1 as uint8) -> c1 }
+                        if c1 == 123 {
+                            p = p + 1
+                            p = mig_skip_ws(source, p, src_size)
+                            // Expect '*'
+                            if p < src_size {
+                                uint64 bp2 = source + p
+                                uint64 c2 = 0
+                                unsafe { *(bp2 as uint8) -> c2 }
+                                if c2 == 42 {
+                                    p = p + 1
+                                    p = mig_skip_ws(source, p, src_size)
+                                    // Expect '('
+                                    if p < src_size {
+                                        uint64 bp3 = source + p
+                                        uint64 c3 = 0
+                                        unsafe { *(bp3 as uint8) -> c3 }
+                                        if c3 == 40 {
+                                            p = p + 1
+                                            uint64 expr_start = p
+                                            // Find " as " at depth 0
+                                            uint64 as_pos = mig_find_as(source, p, src_size)
+                                            if as_pos != src_size {
+                                                uint64 expr_end = as_pos
+                                                // Trim trailing whitespace from EXPR
+                                                while expr_end > expr_start {
+                                                    uint64 ep = source + expr_end - 1
+                                                    uint64 ec = 0
+                                                    unsafe { *(ep as uint8) -> ec }
+                                                    if ec != 32 && ec != 9 { break }
+                                                    expr_end = expr_end - 1
+                                                }
+                                                p = as_pos + 4  // skip " as "
+                                                p = mig_skip_ws(source, p, src_size)
+                                                uint64 width = 0
+                                                uint64 wp = 0 + 0
+                                                // Actually allocate a local to capture the width
+                                                uint8[8] width_buf
+                                                uint64 wp_addr = width_buf
+                                                p = mig_parse_type(source, p, src_size, wp_addr)
+                                                unsafe { *(wp_addr as uint64) -> width }
+                                                if width != 0 {
+                                                    p = mig_skip_ws(source, p, src_size)
+                                                    // Expect ')'
+                                                    if p < src_size {
+                                                        uint64 bp4 = source + p
+                                                        uint64 c4 = 0
+                                                        unsafe { *(bp4 as uint8) -> c4 }
+                                                        if c4 == 41 {
+                                                            p = p + 1
+                                                            p = mig_skip_ws(source, p, src_size)
+                                                            // Now either "-> DEST" or "= VAL"
+                                                            uint64 is_load = 0
+                                                            uint64 is_store = 0
+                                                            if p + 2 <= src_size {
+                                                                uint64 tp0 = source + p
+                                                                uint64 tp1 = source + p + 1
+                                                                uint64 t0 = 0
+                                                                uint64 t1 = 0
+                                                                unsafe { *(tp0 as uint8) -> t0 }
+                                                                unsafe { *(tp1 as uint8) -> t1 }
+                                                                if t0 == 45 && t1 == 62 {
+                                                                    is_load = 1
+                                                                    p = p + 2
+                                                                }
+                                                                if t0 == 61 && t1 != 61 {
+                                                                    is_store = 1
+                                                                    p = p + 1
+                                                                }
+                                                            }
+                                                            if is_load != 0 || is_store != 0 {
+                                                                p = mig_skip_ws(source, p, src_size)
+                                                                uint64 rhs_start = p
+                                                                // Scan until '}' at depth 0
+                                                                uint64 depth = 0
+                                                                while p < src_size {
+                                                                    uint64 spb = source + p
+                                                                    uint64 sc = 0
+                                                                    unsafe { *(spb as uint8) -> sc }
+                                                                    if sc == 40 { depth = depth + 1 }
+                                                                    if sc == 41 {
+                                                                        if depth > 0 { depth = depth - 1 }
+                                                                    }
+                                                                    if depth == 0 && sc == 125 { break }
+                                                                    p = p + 1
+                                                                }
+                                                                if p < src_size {
+                                                                    uint64 rhs_end = p
+                                                                    // Trim trailing whitespace
+                                                                    while rhs_end > rhs_start {
+                                                                        uint64 rp2 = source + rhs_end - 1
+                                                                        uint64 rc2 = 0
+                                                                        unsafe { *(rp2 as uint8) -> rc2 }
+                                                                        if rc2 != 32 && rc2 != 9 { break }
+                                                                        rhs_end = rhs_end - 1
+                                                                    }
+                                                                    uint64 mig_end = p + 1  // past '}'
+
+                                                                    // Copy pre-match bytes
+                                                                    uint64 pre_len = mig_start - last_copied
+                                                                    uint64 dpr = dp
+                                                                    unsafe { *(matches_out as uint64) -> applied }
+                                                                    uint8[8] dp_buf
+                                                                    uint64 dp_addr = dp_buf
+                                                                    unsafe { *(dp_addr as uint64) = dpr }
+                                                                    mig_append_bytes(out_buf_a, dp_addr, source, last_copied, pre_len)
+                                                                    // Emit the replacement
+                                                                    if is_load != 0 {
+                                                                        // dest = loadN(expr)
+                                                                        mig_append_bytes(out_buf_a, dp_addr, source, rhs_start, rhs_end - rhs_start)
+                                                                        mig_append_str(out_buf_a, dp_addr, " = load")
+                                                                        mig_append_width(out_buf_a, dp_addr, width)
+                                                                        mig_append_str(out_buf_a, dp_addr, "(")
+                                                                        mig_append_bytes(out_buf_a, dp_addr, source, expr_start, expr_end - expr_start)
+                                                                        mig_append_str(out_buf_a, dp_addr, ")")
+                                                                    } else {
+                                                                        // storeN(expr, val)
+                                                                        mig_append_str(out_buf_a, dp_addr, "store")
+                                                                        mig_append_width(out_buf_a, dp_addr, width)
+                                                                        mig_append_str(out_buf_a, dp_addr, "(")
+                                                                        mig_append_bytes(out_buf_a, dp_addr, source, expr_start, expr_end - expr_start)
+                                                                        mig_append_str(out_buf_a, dp_addr, ", ")
+                                                                        mig_append_bytes(out_buf_a, dp_addr, source, rhs_start, rhs_end - rhs_start)
+                                                                        mig_append_str(out_buf_a, dp_addr, ")")
+                                                                    }
+                                                                    unsafe { *(dp_addr as uint64) -> dp }
+                                                                    applied = applied + 1
+                                                                    unsafe { *(matches_out as uint64) = applied }
+                                                                    last_copied = mig_end
+                                                                    sp_pos = mig_end
+                                                                    continue
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        sp_pos = sp_pos + 1
+    }
+
+    // Copy the tail
+    uint64 tail_len = src_size - last_copied
+    uint8[8] dp_buf2
+    uint64 dp_addr2 = dp_buf2
+    unsafe { *(dp_addr2 as uint64) = dp }
+    mig_append_bytes(out_buf_a, dp_addr2, source, last_copied, tail_len)
+    unsafe { *(dp_addr2 as uint64) -> dp }
+    return dp
+}
+
+// Run the migration engine on `input_path`. If dry_run, print the rewritten
+// source and match count to stdout. If not, write back to the file.
+@export
+fn run_migration(uint64 input_path, uint64 dry_run) {
+    uint64 fd = file_open(input_path, 0)
+    if fd > 0xFFFFFFFFFFFFF000 {
+        write(2, "error: cannot open input file\n", 30)
+        exit(1)
+    }
+    uint64 fsize = file_size(fd)
+    uint64 src_buf = alloc(fsize + 1)
+    file_read(fd, src_buf, fsize)
+    file_close(fd)
+    uint64 tp = src_buf + fsize
+    uint8 z = 0
+    unsafe { *(tp as uint8) = z }
+
+    // Worst-case output: every unsafe{} block becomes a slightly longer
+    // form (never more than 2x), so 4x is a safe upper bound.
+    uint64 out_buf_m = alloc(fsize * 4 + 1024)
+    uint64 matches = 0
+    uint8[8] mbuf
+    uint64 m_addr = mbuf
+    unsafe { *(m_addr as uint64) = 0 }
+
+    uint64 new_size = mig_scan_and_rewrite(src_buf, fsize, out_buf_m, m_addr)
+    unsafe { *(m_addr as uint64) -> matches }
+
+    if dry_run != 0 {
+        // Print matches count and the first 1K of the rewritten file
+        write(1, "migration: ", 11)
+        uint8[32] nb
+        uint64 nl = fmt_uint(nb, matches)
+        write(1, nb, nl)
+        write(1, " legacy_ptr_ops site(s) rewritten\n", 34)
+        write(1, "--- dry-run output preview (first 512 bytes) ---\n", 49)
+        uint64 preview = new_size
+        if preview > 512 { preview = 512 }
+        write(1, out_buf_m, preview)
+        write(1, "\n", 1)
+        return
+    }
+
+    if matches == 0 {
+        write(1, "migration: no legacy_ptr_ops sites found\n", 41)
+        return
+    }
+
+    // Write rewritten source back to the same file
+    uint64 ofd = file_open(input_path, 1)
+    if ofd > 0xFFFFFFFFFFFFF000 {
+        write(2, "error: cannot open output file for writing\n", 44)
+        exit(1)
+    }
+    file_write(ofd, out_buf_m, new_size)
+    file_close(ofd)
+
+    write(1, "migration: ", 11)
+    uint8[32] nb2
+    uint64 nl2 = fmt_uint(nb2, matches)
+    write(1, nb2, nl2)
+    write(1, " legacy_ptr_ops site(s) rewritten in ", 37)
+    uint64 pl = 0
+    uint64 pp = input_path
+    uint64 pc = 0
+    unsafe { *(pp as uint8) -> pc }
+    while pc != 0 {
+        pl = pl + 1
+        pp = input_path + pl
+        unsafe { *(pp as uint8) -> pc }
+    }
+    write(1, input_path, pl)
+    write(1, "\n", 1)
+}

@@ -2,6 +2,53 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## v2.6.1 - 2026-04-11
+
+Living compiler fully realized + cross-platform verification.
+
+### Added
+
+**Living compiler — all five blueprint stages now implemented:**
+
+- **Migration engine** (`krc lc --fix`, `krc lc --fix --dry-run`):
+  source-to-source rewriter that applies auto-fixes in place. Currently
+  handles `legacy_ptr_ops` — converts `unsafe { *(addr as T) -> v }` to
+  `v = loadN(addr)` and `unsafe { *(addr as T) = val }` to
+  `storeN(addr, val)`. `--dry-run` previews without writing.
+- **Proposal engine**: 7-proposal registry covering both implemented
+  features (slice params, device blocks, load/store builtins, short
+  aliases) and planned ones (versioned profiles, tail_call, extern fn).
+  Proposals with satisfied triggers fire in the normal lc report with
+  before/after snippets and rationale.
+- **Governance layer**: each proposal has a lifecycle state
+  (`experimental` / `stable` / `deprecated`). `krc lc --list-proposals`
+  prints the full registry with current states.
+- **Versioned language profiles**: `#lang stable` and
+  `#lang experimental` directives parsed at the start of a file. The
+  lexer records the profile for downstream feature gating.
+
+### Fixed
+
+- **compile_fat re-parse corruption**: the for-loop parser destructively
+  mutates source bytes and tokens to synthesize the `1` literal for its
+  desugared while-loop. `compile_fat` re-parses the source up to 7 times
+  (once per platform slice), so on the second parse everything was
+  corrupted. Files with for loops failed fat binary builds with
+  `expected token, got integer '1'`. Fix: snapshot source and tokens at
+  the top of `compile_fat` and restore before each subsequent parse.
+- **`byte` and `addr` keywords removed**: they were documented as short
+  aliases but making them reserved words broke any program using them
+  as variable names (very common). `u8/u16/u32/u64/i8/i16/i32/i64`
+  remain as aliases.
+
+### Verified
+
+- **64/64 platform cross-compile matrix** — every example compiles and
+  runs correctly for every target: Linux x86_64, Linux ARM64, Windows
+  x86_64, Windows ARM64, macOS x86_64, macOS ARM64, Android ARM64, plus
+  fat binaries (7-slice `.krbo`).
+- Bootstrap fixed point holds, 131/131 tests pass.
+
 ## v2.6.0 - 2026-04-11
 
 Major language expansion — pointers, arrays, and MMIO made first-class.

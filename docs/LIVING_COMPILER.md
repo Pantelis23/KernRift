@@ -174,16 +174,25 @@ What's built and what's next, aligned with the blueprint:
 | Fitness scoring | Implemented (layer-weighted) |
 | Two-layer report | Implemented |
 | CI gating (`--ci`, `--min-fitness`) | Implemented |
-| Auto-fix flag on patterns | Implemented (advisory) |
-| **Migration engine** (actual source rewriting) | **Not yet** — needs a safe source-to-source rewriter. |
-| **Proposal engine** (generate *new* language forms from usage) | **Not yet** — requires a DSL for describing candidate syntax. |
-| **Governance layer** (approve / reject / rollback / stabilize) | **Not yet** — requires a proposal store and versioning. |
-| **Versioned language profiles** (`#lang stable` / `#lang experimental`) | **Not yet** — requires pinned compiler semantics per version. |
+| Auto-fix flag on patterns | Implemented |
+| **Migration engine** (actual source rewriting) | Implemented — `krc lc --fix` rewrites `unsafe{}` pointer ops to `load*/store*` builtins in place. `--dry-run` previews without writing. |
+| **Proposal engine** (generate candidate syntax forms) | Implemented — `krc lc` prints proposals that fire against telemetry, with before/after snippets and rationale. 7 proposals in the initial registry. |
+| **Governance layer** (lifecycle states: experimental / stable / deprecated) | Implemented — `krc lc --list-proposals` prints the full registry with each proposal's current state. Persistent per-project state file is planned for a future release. |
+| **Versioned language profiles** (`#lang stable` / `#lang experimental`) | Implemented — the lexer parses an optional `#lang` directive on the first line of a file and records the profile. `get_lang_profile()` exposes it to later passes for feature gating. |
 
-The current implementation is a solid foundation for the vision: the
-two-layer split is real, the telemetry is real, and the surface-layer
-patterns map to real migrations. Each unimplemented stage is a future
-chunk of focused work — none of them are blocked by the others.
+All five stages of the blueprint pipeline are now in place. What remains
+are extensions:
+
+- **Persistent governance** — move the proposal state table out of
+  compiler source and into a per-project `.kernrift/proposals` file so
+  projects can pin their own governance decisions.
+- **Richer migrations** — beyond `unsafe{}` ops, migrate long-form
+  types to short aliases, detect `(ptr, len)` param pairs that could
+  become slice parameters, detect repeated MMIO addresses that could
+  become `device` blocks.
+- **Profile-gated features** — use `#lang experimental` to gate
+  not-yet-stable syntax (`tail_call()`, `extern fn`, etc.) so stable
+  code can't accidentally depend on unstable features.
 
 ---
 

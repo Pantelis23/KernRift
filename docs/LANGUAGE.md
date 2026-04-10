@@ -61,20 +61,20 @@ ignored — useful when you want to write multiple statements on one line.
 
 ### Scalar types
 
-| Type      | Width | Aliases    | Notes                         |
-|-----------|-------|------------|-------------------------------|
-| `uint8`   | 1 B   | `u8`, `byte` | Unsigned byte                 |
-| `uint16`  | 2 B   | `u16`      | Unsigned 16-bit               |
-| `uint32`  | 4 B   | `u32`      | Unsigned 32-bit               |
-| `uint64`  | 8 B   | `u64`, `addr` | Unsigned 64-bit, pointer-sized |
-| `int8`    | 1 B   | `i8`       | Signed byte                   |
-| `int16`   | 2 B   | `i16`      | Signed 16-bit                 |
-| `int32`   | 4 B   | `i32`      | Signed 32-bit                 |
-| `int64`   | 8 B   | `i64`      | Signed 64-bit                 |
+| Type      | Width | Alias | Notes                         |
+|-----------|-------|-------|-------------------------------|
+| `uint8`   | 1 B   | `u8`  | Unsigned byte                 |
+| `uint16`  | 2 B   | `u16` | Unsigned 16-bit               |
+| `uint32`  | 4 B   | `u32` | Unsigned 32-bit               |
+| `uint64`  | 8 B   | `u64` | Unsigned 64-bit, pointer-sized |
+| `int8`    | 1 B   | `i8`  | Signed byte                   |
+| `int16`   | 2 B   | `i16` | Signed 16-bit                 |
+| `int32`   | 4 B   | `i32` | Signed 32-bit                 |
+| `int64`   | 8 B   | `i64` | Signed 64-bit                 |
 
 All scalar values are stored as 64-bit words in variable slots. The specific
 width matters for pointer load/store and for struct field layout. The short
-aliases (`u8`, `i64`, `byte`, `addr`) are exact synonyms for the long form.
+aliases (`u8`, `u64`, `i32`, ...) are exact synonyms for the long form.
 
 There is no `bool` keyword, and no `float` types. Use `0` / `1` for booleans
 and integer math everywhere.
