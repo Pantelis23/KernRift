@@ -1,0 +1,27 @@
+// Count occurrences of a character in a string.
+// Demonstrates: load8 pointer builtin, print_str for variable strings,
+// while loops, and the string-traversal pattern.
+
+fn count_char(u64 s, u8 target) -> u64 {
+    u64 count = 0
+    u64 i = 0
+    u64 ch = load8(s + i)
+    while ch != 0 {
+        if ch == target {
+            count = count + 1
+        }
+        i = i + 1
+        ch = load8(s + i)
+    }
+    return count
+}
+
+fn main() {
+    u64 msg = "how much wood would a woodchuck chuck if a woodchuck could chuck wood"
+    u64 wood_count = count_char(msg, 119)  // 'w' = 119
+
+    print_str("'w' appears ")
+    print(wood_count)
+    println(" times")
+    exit(0)
+}

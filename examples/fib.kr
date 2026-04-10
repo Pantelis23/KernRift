@@ -1,0 +1,17 @@
+// Recursive Fibonacci — classic benchmark.
+// Shows: recursion, if/else, integer arithmetic.
+
+fn fib(u64 n) -> u64 {
+    if n <= 1 { return n }
+    return fib(n - 1) + fib(n - 2)
+}
+
+fn main() {
+    for i in 0..21 {
+        print_str("fib(")
+        print(i)
+        print_str(") = ")
+        println(fib(i))
+    }
+    exit(0)
+}

@@ -1,0 +1,13 @@
+// Simple echo: read a line from stdin and print it back.
+// Demonstrates: stdlib imports, scan_str, print_str.
+
+import "std/io.kr"
+
+fn main() {
+    print("Your name? ")
+    u64 name = scan_str()
+    print_str("Hello, ")
+    print_str(name)
+    println("!")
+    exit(0)
+}

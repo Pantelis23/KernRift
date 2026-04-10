@@ -6,20 +6,19 @@ A self-hosted systems language compiler for kernel-first development. KernRift c
 
 ## Features
 
-- **Self-hosting** — the compiler compiles itself to a fixed point
-- **Cross-platform** — Linux, Windows, macOS, and Android from a single source (x86_64 + ARM64)
-- **Fat binaries** — default output is KrboFat (7 platform slices, BCJ+LZ4-compressed)
-- **Zero dependencies** — static executables, no libc, no linker
-- **Kernel-first** — inline assembly, `@naked` functions, `@packed` structs, signed comparisons, volatile memory, bitfield ops, `--freestanding` mode
-- **Kernel safety** — context checks, effect tracking, lock graphs, capabilities, undeclared identifier detection
-- **Volatile blocks** — `volatile { ... }` emits memory barriers (`mfence` on x86_64, `DSB SY` on ARM64)
-- **Atomic operations** — `atomic_load`, `atomic_store`, `atomic_cas`, `atomic_add`, `atomic_sub`, `atomic_and`, `atomic_or`, `atomic_xor`
-- **Pointer cast ops** — uint16/uint32/uint64 and int16/int32/int64 pointer operations in `unsafe`/`volatile` blocks
-- **Assembly listing** — `--emit=asm` produces a disassembled listing with function labels
-- **ARM64 system registers** — MSR/MRS access in inline asm (20+ registers including SCTLR_EL1, VBAR_EL1, etc.)
-- **Builtin validation** — argument count validation for builtins in the semantic analyzer
-- **Living compiler** — pattern detection, fitness scoring, auto-fix suggestions
-- **Cross-compilation** — compile for any target from any host
+- **Self-hosting** — the compiler compiles itself to a fixed point. No Rust, no C, no external toolchain in the build.
+- **Cross-platform** — Linux, Windows, macOS, Android on x86_64 and ARM64 from a single source tree.
+- **Fat binaries** — default output is a `.krbo` with 7 platform slices (BCJ+LZ4 compressed). The `kr` runner extracts and executes the right slice at startup.
+- **Zero dependencies at runtime** — static executables, no libc, no dynamic linker.
+- **Kernel-first primitives** — `device` blocks for typed MMIO, `load/store/vload/vstore` builtins for clean pointer access, inline assembly with a large instruction table, signed comparisons, bitfield ops, atomic operations, `--freestanding` mode.
+- **Clean pointer syntax** — `store32(addr, val)` and `load64(addr)` instead of the verbose `unsafe { *(addr as uint32) = val }` form.
+- **Slice parameters** — `fn foo([u8] data)` with `data.len` for buffer-processing functions.
+- **Fixed arrays** — `u8[256] buf` locally, `static u8[4096] page` at module level, and `Point[10] pts` with `pts[i].field` syntax for struct arrays.
+- **Volatile blocks** — `mfence` on x86_64, `DSB SY` on ARM64 — completion barrier, not just ordering.
+- **ARM64 system registers** — MSR/MRS access in inline asm (20+ registers including SCTLR_EL1, VBAR_EL1, MPIDR_EL1).
+- **Semantic analysis** — argument count checking, missing return detection, undeclared identifier detection.
+- **`--emit=asm`** — disassembled listing with function labels.
+- **Cross-compilation** — compile for any target from any host.
 
 ## Quickstart
 
@@ -111,82 +110,97 @@ import "std/string.kr"
 import "std/io.kr"
 
 struct Point {
-    uint64 x
-    uint64 y
+    u64 x
+    u64 y
 }
 
-fn Point.sum(Point self) -> uint64 {
+fn Point.sum(Point self) -> u64 {
     return self.x + self.y
 }
 
-type Size = uint64
-
-fn fib(uint64 n) -> uint64 {
+fn fib(u64 n) -> u64 {
     if n <= 1 { return n }
     return fib(n - 1) + fib(n - 2)
 }
-
-static uint64 counter = 0
 
 fn main() {
     Point p
     p.x = fib(10)
     p.y = 42
 
-    uint64 s = int_to_str(p.sum())
-    println(s)
+    // int_to_str returns a pointer — use print_str, not println
+    u64 s = int_to_str(p.sum())
+    print_str("sum = ")
+    println_str(s)
 
-    match p.x {
-        55 => { exit(p.sum()) }
-    }
     exit(0)
 }
 ```
 
-Types: `uint8/16/32/64`, `int8/16/32/64`, `bool` (`true`/`false`), `char`, structs, enums, arrays. Control: `if/else`, `while`, `for..in`, `break/continue`, `match`. Functions up to 8 args with method syntax (`fn Struct.method`). Imports (`import "file.kr"`) with recursive dependency resolution and stdlib search paths, type aliases (`type Size = uint64`), nested struct access (`a.b.c`). Unsafe and volatile pointer access for kernel memory operations.
+Types: `u8/u16/u32/u64`, `i8/i16/i32/i64` (long forms `uint8`..`int64` also work), structs, enums, fixed-size arrays, device blocks. Control: `if/else`, `while`, `for..in`, `break/continue`, `match`, recursion. Functions with method syntax (`fn Struct.method`), slice parameters (`fn foo([u8] data) { u64 n = data.len; ... }`), imports with recursive resolution.
 
 ## Kernel Features
 
-KernRift is designed for kernel and driver development:
+KernRift is designed for kernel and driver development. The two most
+important primitives:
 
 ```kr
-// Inline assembly — emit raw machine instructions
+// Typed MMIO register blocks — compile to volatile load/store with barriers
+device UART0 at 0x3F201000 {
+    Data at 0x00 : u32
+    Flag at 0x18 : u32
+    Ctrl at 0x30 : u32
+}
+
+fn putc(u8 c) {
+    while (UART0.Flag & 0x20) != 0 { }
+    UART0.Data = c
+}
+
+// Clean pointer builtins (no unsafe blocks required)
+u32 status = vload32(0xFEE000B0)        // volatile load, with mfence / DSB SY
+vstore32(0xFEE000B0, 0x1)                // volatile store, with barrier
+store8(buf + offset, byte_value)         // plain store
+u64 value = load64(addr)                 // plain load
+
+// Inline assembly — raw instructions when you need them
 @naked fn isr_entry() {
-    asm { "cli"; "0x48 0x89 0xE5" }   // raw hex bytes also supported
+    asm { "cli"; "0x48 0x89 0xE5" }
     asm("iretq")
 }
 
-// Signed comparisons for kernel arithmetic
+// Signed comparisons (default < > <= >= are unsigned)
 if signed_lt(offset, 0) { panic() }
 
-// Bitfield operations for hardware registers
-uint64 flags = bit_range(cr0, 0, 16)    // extract bits 0-15
-flags = bit_set(flags, 31)               // set bit 31
-cr0 = bit_insert(cr0, 0, 16, flags)     // insert back
+// Bitfield manipulation for hardware registers
+u64 flags = bit_range(cr0, 0, 16)
+cr0 = bit_insert(cr0, 0, 16, new_flags)
 
-// Volatile memory access (same as unsafe, explicit intent)
-volatile { *(mmio_addr as uint32) -> status }
-
-// Freestanding mode — no _start, no auto-exit, no syscalls
+// Freestanding mode — no main trampoline, no auto-exit
 // krc --freestanding kernel.kr -o kernel.elf
 ```
 
-Annotations: `@noreturn`, `@naked` (no prologue/epilogue), `@packed` (no padding), `@section(".text.init")`. Stack frames >4KB emit a compile-time warning.
+Annotations: `@export`, `@noreturn`, `@naked` (no prologue/epilogue), `@packed` (structs are already packed), `@section(".text.init")`. Stack frames >4KB emit a compile-time warning.
 
 ## Built-in Functions
 
-These are compiler intrinsics — no import needed, available on all platforms:
+Compiler intrinsics — no imports needed.
 
 | Category | Functions |
 |----------|-----------|
-| Core | `alloc(size)`, `dealloc(ptr, size)`, `exit(code)`, `print(arg)`, `println(arg)` |
+| Core | `alloc(size)`, `dealloc(ptr)`, `exit(code)` |
+| Output | `print(literal_or_int)`, `println(literal_or_int)`, `print_str(s)`, `println_str(s)` — use `*_str` for string pointers in variables |
 | I/O | `write(fd, buf, len)`, `file_open(path, flags)`, `file_read(fd, buf, len)`, `file_write(fd, buf, len)`, `file_close(fd)`, `file_size(fd)` |
 | Memory | `memcpy(dst, src, len)`, `memset(dst, val, len)`, `str_len(s)`, `str_eq(a, b)` |
-| Signed cmp | `signed_lt(a, b)`, `signed_gt(a, b)`, `signed_le(a, b)`, `signed_ge(a, b)` |
+| Pointer load | `load8(addr)`, `load16(addr)`, `load32(addr)`, `load64(addr)` — zero-extended to `u64` |
+| Pointer store | `store8(addr, v)`, `store16(addr, v)`, `store32(addr, v)`, `store64(addr, v)` |
+| Volatile (MMIO) | `vload8/16/32/64(addr)`, `vstore8/16/32/64(addr, v)` — with memory barrier |
+| Atomic | `atomic_load(ptr)`, `atomic_store(ptr, v)`, `atomic_cas(ptr, exp, des)`, `atomic_add/sub/and/or/xor(ptr, v)` |
 | Bitfield | `bit_get(v, n)`, `bit_set(v, n)`, `bit_clear(v, n)`, `bit_range(v, start, width)`, `bit_insert(v, start, width, bits)` |
-| Atomic | `atomic_load(ptr)`, `atomic_store(ptr, val)`, `atomic_cas(ptr, exp, des)`, `atomic_add(ptr, val)`, `atomic_sub(ptr, val)`, `atomic_and(ptr, val)`, `atomic_or(ptr, val)`, `atomic_xor(ptr, val)` |
+| Signed cmp | `signed_lt(a, b)`, `signed_gt(a, b)`, `signed_le(a, b)`, `signed_ge(a, b)` |
 | Syscall | `syscall_raw(nr, a1, a2, a3, a4, a5, a6)` |
-| Meta | `fn_addr(name)`, `call_ptr(addr, ...)`, `get_module_path(buf, size)`, `exec_process(path)`, `set_executable(path)`, `get_target_os()`, `get_arch_id()`, `fmt_uint(buf, val)` |
+| Platform | `get_target_os()`, `get_arch_id()`, `exec_process(path)`, `set_executable(path)`, `get_module_path(buf, size)`, `fmt_uint(buf, val)` |
+| Function ptrs | `fn_addr(name)`, `call_ptr(addr, ...)` |
 
 ## Standard Library
 
@@ -220,9 +234,13 @@ A VS Code extension (v0.2.3) is available on the VS Code Marketplace:
 - Syntax highlighting (TextMate grammar)
 - LSP server with diagnostics (`krc check`), completions, hover docs, and go-to-definition
 
+## Examples
+
+See the [`examples/`](examples/) directory for runnable programs covering every feature — pointers, slices, struct arrays, device blocks, recursion, stdin input, and more.
+
 ## Architecture
 
-17,000+ lines of KernRift across 16 source files + 16 stdlib modules (~2500+ lines). Self-compiles to a ~441 KB native binary in 55ms, or a 2.6 MB universal fat binary (7 slices) in ~280ms (AMD Ryzen 9 7900X). 131 tests, bootstrap fixed point verified on 5 platforms (Linux x86_64, Linux ARM64, Windows x86_64, Windows ARM64, Android ARM64).
+~18,000 lines of KernRift across 16 source files + 16 stdlib modules. Self-compiles to a ~480 KB native binary in ~60ms, or a ~2.6 MB universal fat binary (7 slices) in ~280ms (AMD Ryzen 9 7900X). 131 tests, bootstrap fixed point verified on 5 platforms (Linux x86_64, Linux ARM64, Windows x86_64, Windows ARM64, Android ARM64).
 
 | File | Purpose |
 |------|---------|

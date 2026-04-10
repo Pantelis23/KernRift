@@ -1,0 +1,8 @@
+// Hello, World! — the smallest KernRift program.
+// Compile: krc hello.kr -o hello --arch=x86_64
+// Run:     ./hello
+
+fn main() {
+    println("Hello, KernRift!")
+    exit(0)
+}

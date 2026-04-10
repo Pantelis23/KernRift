@@ -2,6 +2,52 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## v2.6.0 - 2026-04-11
+
+Major language expansion — pointers, arrays, and MMIO made first-class.
+
+### Added
+- **Short type aliases**: `u8/u16/u32/u64`, `i8/i16/i32/i64`, `byte`, `addr`.
+  All map to the same storage as the long forms (`uint8`..`int64`).
+- **Pointer load/store builtins**: `load8/16/32/64(addr)` and
+  `store8/16/32/64(addr, val)` — the clean way to read/write memory.
+  Much shorter than `unsafe { *(addr as u32) = val }`.
+- **Volatile pointer builtins**: `vload8/16/32/64` and `vstore8/16/32/64`
+  emit the load/store plus a memory barrier (`mfence` on x86_64, `DSB SY`
+  on ARM64) — for MMIO.
+- **`print_str(s)` / `println_str(s)`**: print the contents of a
+  null-terminated string from a variable pointer. Fixes the long-standing
+  issue where `println(int_to_str(42))` printed the pointer address.
+- **Static arrays**: `static u8[N] name` at module level — allocates N
+  bytes in the data section.
+- **Struct arrays**: `Point[10] pts` with `pts[i].field` read/write syntax.
+- **Slice parameters**: `fn foo([u8] data)` takes a (ptr, len) fat pointer.
+  Inside the function, `data.len` reads the length. Callers pass two
+  arguments (pointer and length).
+- **Device blocks for MMIO**: `device UART0 at 0x3F201000 { Data at 0x00 : u32 ... }`.
+  Reads and writes to device fields compile to volatile load/store with
+  the appropriate barrier.
+- **`examples/` directory**: runnable programs for every feature.
+
+### Fixed
+- **Method calls**: `p.method()` now parses correctly (was a parser error).
+- **Struct-by-value parameters**: `fn foo(Point p)` now registers `p` as
+  a struct variable, so `p.field` inside the function works.
+- **`std/io.kr` `print_line` and `print_kv`**: previously called
+  `println(s)` which printed pointer addresses. Now use `print_str`.
+
+### Docs
+- **LANGUAGE.md**: rewritten to match what the compiler actually does.
+  Removed the kernel-safety sections (`@ctx`, `@eff`, `lock`, `percpu`,
+  `tail_call`, `critical`, etc.) that were documented but not implemented.
+- **README.md** and **getting-started.md**: updated with the new pointer
+  syntax, corrected built-in list, and real examples.
+
+### Deferred
+- `extern fn` declarations with ELF relocation emission — planned, not
+  implemented yet. Requires adding `.rela.text` relocations for
+  `R_X86_64_PLT32` and `R_AARCH64_CALL26`.
+
 ## v2.5.2 - 2026-04-10
 
 ### Added

@@ -1,0 +1,43 @@
+// MMIO driver example using a device block.
+// This shows the kernel-style pattern: declare a hardware block with its
+// base address and typed field offsets, then read/write through clean
+// field accesses.
+//
+// In real kernel code, the base address would be a physical MMIO region
+// (e.g. 0x3F20_1000 for the UART0 on a Raspberry Pi). Here we mmap a
+// private page in userspace so the example actually runs.
+//
+// Behind the scenes, every read emits a volatile load with a memory
+// barrier, and every write emits a volatile store with a barrier.
+// On x86_64 that's mfence; on ARM64 it's DSB SY.
+
+device FakeUART at 0x55550000 {
+    Data   at 0x00 : u32
+    Status at 0x04 : u32
+    Ctrl   at 0x08 : u16
+    ID     at 0x0C : u8
+}
+
+fn main() {
+    // mmap a single page at the device address (userspace stand-in for MMIO)
+    // x86_64 Linux: syscall 9 = mmap
+    u64 page = syscall_raw(9, 0x55550000, 4096, 3, 0x32, 0xFFFFFFFFFFFFFFFF, 0)
+
+    // Write to the "device"
+    FakeUART.Ctrl = 0x8080
+    FakeUART.Data = 0xDEADBEEF
+    FakeUART.Status = 1
+    FakeUART.ID = 0x42
+
+    // Read back
+    u16 c = FakeUART.Ctrl
+    u32 d = FakeUART.Data
+    u32 s = FakeUART.Status
+    u8  i = FakeUART.ID
+
+    print_str("Ctrl   = "); println(c)
+    print_str("Data   = "); println(d)
+    print_str("Status = "); println(s)
+    print_str("ID     = "); println(i)
+    exit(0)
+}

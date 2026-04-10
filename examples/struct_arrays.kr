@@ -1,0 +1,42 @@
+// Struct arrays — fixed-size arrays of struct instances.
+// Pattern: Type[N] name, then pts[i].field for read/write.
+
+struct Point {
+    u64 x
+    u64 y
+}
+
+fn Point.sum(Point self) -> u64 {
+    return self.x + self.y
+}
+
+fn main() {
+    Point[4] pts
+    pts[0].x = 10
+    pts[0].y = 20
+    pts[1].x = 30
+    pts[1].y = 40
+    pts[2].x = 50
+    pts[2].y = 60
+    pts[3].x = 70
+    pts[3].y = 80
+
+    // Iterate
+    for i in 0..4 {
+        print_str("pts[")
+        print(i)
+        print_str("] = (")
+        print(pts[i].x)
+        print_str(", ")
+        print(pts[i].y)
+        println(")")
+    }
+
+    // Methods work the normal way when you copy to a local
+    Point p
+    p.x = pts[0].x
+    p.y = pts[0].y
+    print_str("sum of pts[0]: ")
+    println(p.sum())
+    exit(0)
+}

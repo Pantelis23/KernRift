@@ -1,0 +1,43 @@
+// Pointer operations using the load/store builtins — much cleaner than
+// the raw `unsafe { *(addr as TYPE) -> var }` form.
+//
+// load8 / load16 / load32 / load64 — read a value of the given width
+// store8 / store16 / store32 / store64 — write a value of the given width
+// vload* / vstore* — volatile variants with memory barriers (for MMIO)
+
+fn main() {
+    // Allocate a 32-byte buffer
+    u64 buf = alloc(32)
+
+    // Write values of different widths at different offsets
+    store64(buf + 0,  0x1122334455667788)
+    store32(buf + 8,  0xAABBCCDD)
+    store16(buf + 12, 0x1234)
+    store8(buf  + 14, 0x5A)
+
+    // Read them back
+    u64 q = load64(buf + 0)
+    u64 w = load32(buf + 8)
+    u64 h = load16(buf + 12)
+    u64 b = load8(buf  + 14)
+
+    print_str("u64: "); println(q)
+    print_str("u32: "); println(w)
+    print_str("u16: "); println(h)
+    print_str("u8:  "); println(b)
+
+    // Demonstrate byte-level iteration
+    u64 text = "KernRift"
+    u64 i = 0
+    u64 ch = load8(text + i)
+    while ch != 0 {
+        print(ch)
+        print(" ")
+        i = i + 1
+        ch = load8(text + i)
+    }
+    println("")
+
+    dealloc(buf)
+    exit(0)
+}

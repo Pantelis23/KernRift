@@ -1,6 +1,11 @@
-# Getting Started
+# Getting Started with KernRift
 
-**KernRift is a bare-metal systems programming language and compiler created by Pantelis Christou.**
+**KernRift** is a self-hosted systems programming language and compiler
+created by Pantelis Christou. It produces native binaries for Linux,
+Windows, macOS, and Android on x86_64 and ARM64.
+
+This guide walks through installing the compiler, writing and running your
+first program, and the language features you'll use in day-to-day code.
 
 ## Install
 
@@ -8,15 +13,11 @@
 
 ```bash
 curl -sSf https://raw.githubusercontent.com/Pantelis23/KernRift/main/install.sh | sh
-
-# Or download directly (x86_64)
-curl -L -o krc https://github.com/Pantelis23/KernRift/releases/latest/download/krc-linux-x86_64
-curl -L -o kr  https://github.com/Pantelis23/KernRift/releases/latest/download/kr
-chmod +x krc kr
-sudo mv krc kr /usr/local/bin/
 ```
 
-This installs `krc` and `kr` to `~/.local/bin/` and the standard library to `~/.local/share/kernrift/`.
+Installs `krc` (compiler) and `kr` (runner) to `~/.local/bin/`, and the
+standard library to `~/.local/share/kernrift/`. Make sure `~/.local/bin`
+is on your `PATH`.
 
 ### Windows
 
@@ -24,81 +25,88 @@ This installs `krc` and `kr` to `~/.local/bin/` and the standard library to `~/.
 irm https://raw.githubusercontent.com/Pantelis23/KernRift/main/install.ps1 | iex
 ```
 
-This installs `krc.exe` and `kr.exe` to `%LOCALAPPDATA%\KernRift\bin\` and the standard library to `%LOCALAPPDATA%\KernRift\share\`. The installer adds the bin directory to your `PATH` automatically.
+Installs to `%LOCALAPPDATA%\KernRift\bin\` and adds it to `PATH`.
 
-## Your First Program
+### Verify
+
+```sh
+krc --version
+kr --version
+```
+
+## Your first program
+
+Save this as `hello.kr`:
 
 ```kr
 fn main() {
-    uint64 msg = "Hello, World!\n"
-    write(1, msg, 14)
+    println("Hello, KernRift!")
     exit(0)
 }
 ```
 
-Save as `hello.kr` and compile:
+Compile and run:
 
-```bash
-krc hello.kr -o hello.krbo        # fat binary (7 slices, BCJ+LZ4-compressed)
-kr hello.krbo                     # run on any platform
-
-krc --arch=x86_64 hello.kr -o hello   # native x86_64 ELF
-./hello                               # run directly
+```sh
+krc hello.kr --arch=x86_64 -o hello
+./hello
 ```
 
-## Language Basics
+Or build a cross-platform fat binary and run it through `kr`:
+
+```sh
+krc hello.kr -o hello.krbo
+kr hello.krbo
+```
+
+## Language basics
 
 ```kr
-// Types
-uint64 x = 42
-uint32 y = 10
-uint8 byte = 0xFF
-bool ready = true
-char ch = 'A'
+// Comments — line and /* block */
 
-// Type aliases
-type Size = uint64
-type Offset = uint64
+// Variables: type precedes the name
+u64 x = 42
+u32 count = 0
+u8  byte  = 0xFF
+
+// Short type aliases: u8/u16/u32/u64, i8/i16/i32/i64, byte, addr
+// (The long forms uint8..int64 also work.)
 
 // Control flow
 if x > 10 {
-    exit(1)
+    println("big")
 } else {
-    exit(0)
+    println("small")
 }
 
-while x > 0 {
-    x -= 1
+while count < 10 {
+    count = count + 1
 }
 
 for i in 0..10 {
-    // i goes from 0 to 9
+    println(i)
 }
 
-// Match statement
 match opcode {
-    1 => { do_add() }
-    2 => { do_sub() }
-    3 => { do_mul() }
+    1 => { println("one") }
+    2 => { println("two") }
 }
 
-// Functions
-fn add(uint64 a, uint64 b) -> uint64 {
-    return a + b
+// Functions — recursion works
+fn fib(u64 n) -> u64 {
+    if n <= 1 { return n }
+    return fib(n - 1) + fib(n - 2)
 }
 
-// Structs
+// Structs with methods
 struct Point {
-    uint64 x
-    uint64 y
+    u64 x
+    u64 y
 }
 
-// Method syntax
-fn Point.sum(Point self) -> uint64 {
+fn Point.sum(Point self) -> u64 {
     return self.x + self.y
 }
-
-// Nested struct access: a.b.c
 
 // Enums
 enum Color {
@@ -106,120 +114,231 @@ enum Color {
     Green = 1
     Blue = 2
 }
+```
 
-// Arrays
-uint8[256] buffer
-buffer[0] = 42
+### Printing output
 
-// Imports
+```kr
+println("a literal string")   // works
+println(42)                   // formats as decimal
+println(variable)             // formats as decimal
+
+// Printing the contents of a string pointer variable:
+u64 s = int_to_str(42)
+print_str("answer is ")
+println_str(s)                 // prints "answer is 42"
+```
+
+Rule of thumb: `print` / `println` with a string **literal** or with an
+**integer** does what you expect. If you want to print the contents of a
+string that lives in a variable (e.g. the result of `int_to_str`), use
+`print_str` / `println_str`.
+
+### Pointers made easy
+
+KernRift has no dedicated pointer type — addresses are just `u64` values.
+Use the built-in load/store functions:
+
+```kr
+u64 buf = alloc(32)
+
+store64(buf + 0, 0x1122334455667788)
+store32(buf + 8, 0xAABBCCDD)
+store16(buf + 12, 0x1234)
+store8(buf + 14, 0xAA)
+
+u64 v  = load64(buf)
+u32 w  = load32(buf + 8)
+u16 h  = load16(buf + 12)
+u8  b  = load8(buf + 14)
+```
+
+For MMIO, use the volatile variants: `vload8/16/32/64` and
+`vstore8/16/32/64`. These emit the same load/store instructions but add a
+memory barrier (`mfence` on x86_64, `DSB SY` on ARM64).
+
+### Arrays
+
+```kr
+// Local byte buffer
+u8[256] buf
+buf[0] = 0xAA
+u64 b = buf[0]
+
+// Static array at module level
+static u8[4096] page
+
+fn main() {
+    page[0] = 72
+    page[1] = 0
+    print_str(page)
+    exit(0)
+}
+```
+
+Fixed arrays of structs work the same way:
+
+```kr
+struct Point { u64 x; u64 y }
+
+fn main() {
+    Point[10] pts
+    pts[0].x = 1
+    pts[0].y = 2
+    println(pts[0].x)
+    exit(0)
+}
+```
+
+### Slice parameters
+
+For functions that take a buffer, use the slice syntax. Inside the
+function, `data.len` reads the length and `data` is a plain pointer:
+
+```kr
+fn sum_bytes([u8] data) -> u64 {
+    u64 total = 0
+    u64 i = 0
+    u64 n = data.len
+    while i < n {
+        total = total + load8(data + i)
+        i = i + 1
+    }
+    return total
+}
+
+fn main() {
+    u8[6] buf
+    buf[0] = 10
+    buf[1] = 20
+    buf[2] = 30
+    // Callers pass (pointer, length) — two arguments
+    u64 t = sum_bytes(buf, 3)
+    println(t)
+    exit(0)
+}
+```
+
+### Imports
+
+```kr
+import "std/io.kr"
+import "std/string.kr"
 import "utils.kr"
-
-// Pointer operations (kernel memory access)
-unsafe { *(addr as uint32) = value }
-unsafe { *(addr as uint32) -> result }
-
-// Static variables
-static uint64 counter = 0
 ```
 
-## Safety Analysis
-
-```bash
-krc check module.kr     # context, effect, lock, capability checks
-krc lc module.kr        # living compiler patterns + fitness score
-```
+Paths are resolved relative to the importing file, then under
+`~/.local/share/kernrift/`. Circular imports are detected.
 
 ## Toolchain
 
-| Tool | Purpose |
-|------|---------|
-| `krc` | Compiler — compiles `.kr` source to native ELF, PE, Mach-O, or `.krbo` fat binary |
-| `kr` | Runner — executes `.krbo` fat binaries on any supported platform |
-| `krc check` | Safety analysis — context, effect, lock graph, capability checks |
-| `krc fmt` | Auto-formatter — formats `.kr` source files |
-| `krc lc` | Living compiler — pattern detection and fitness scoring |
+| Tool | What it does |
+|------|--------------|
+| `krc <file.kr>` | Compile a source file (to a fat binary by default). |
+| `krc --arch=x86_64 <file.kr>` | Compile for a single architecture — native ELF. |
+| `krc --emit=asm <file.kr>` | Emit a disassembled listing with function labels. |
+| `krc check <file.kr>` | Run semantic analysis only. |
+| `krc fmt <file.kr>` | Auto-format the file in place. |
+| `kr <file.krbo>` | Run a fat binary on the current platform. |
 
-### Supported platforms
+## Platforms
 
-| Platform | Compile | Run | Self-host |
-|----------|---------|-----|-----------|
-| Linux x86_64 | Yes | Yes | Yes |
-| Linux ARM64 | Yes | Yes | Yes |
-| Windows x86_64 | Yes | Yes | Yes |
-| Windows ARM64 | Yes | Yes | Yes |
-| Android ARM64 | Yes | Yes | Yes |
-| macOS x86_64 | Yes | Yes | Yes |
-| macOS ARM64 | Yes | Blocked | -- |
+| Platform      | Compile | Run     | Self-host |
+|---------------|---------|---------|-----------|
+| Linux x86_64  | Yes     | Yes     | Yes       |
+| Linux ARM64   | Yes     | Yes     | Yes       |
+| Windows x86_64| Yes     | Yes     | Yes       |
+| Windows ARM64 | Yes     | Yes     | Yes       |
+| Android ARM64 | Yes     | Yes     | Yes       |
+| macOS x86_64  | Yes     | Yes     | Yes       |
+| macOS ARM64   | Yes     | Partial | —         |
 
-## Standard Library
+## Standard library
 
-KernRift ships with a standard library (`std/`) that provides common utilities. Import any module with `import "std/module.kr"`. The compiler automatically searches `~/.local/share/kernrift/` for stdlib files.
-
-### Usage examples
+KernRift ships with a standard library in `std/`. Import any module with
+`import "std/module.kr"`. Highlights:
 
 ```kr
 import "std/string.kr"
-import "std/vec.kr"
-import "std/math.kr"
 import "std/io.kr"
+import "std/math.kr"
+import "std/vec.kr"
 
 fn main() {
     // String operations
-    uint64 s = int_to_str(42)
-    println(s)
+    u64 s = int_to_str(42)
+    print_str(s)
+    println("")
 
-    // Dynamic arrays
-    uint64 v = vec_new()
+    // Dynamic array
+    u64 v = vec_new()
     vec_push(v, 10)
     vec_push(v, 20)
     vec_push(v, 30)
-    uint64 val = vec_get(v, 1)  // 20
+    println(vec_get(v, 1))  // 20
 
     // Math
-    uint64 m = max(10, 20)  // 20
-    uint64 g = gcd(48, 18)  // 6
+    println(max(10, 20))     // 20
+    println(gcd(48, 18))     // 6
 
-    // Read input from stdin
+    // Read a number from stdin
     print("Enter a number: ")
-    uint64 n = scan_int()
+    u64 n = scan_int()
     println(n)
 
     exit(0)
 }
 ```
 
-### Available modules
+Available modules:
 
-| Module | Key functions |
-|--------|---------------|
-| `std/string.kr` | `str_cat`, `str_copy`, `str_starts`, `str_ends`, `str_find_byte`, `str_contains`, `str_sub`, `str_at`, `str_to_int`, `int_to_str`, `str_repeat`, `str_trim` |
-| `std/io.kr` | `read_file`, `write_file`, `append_file`, `read_line`, `print_int`, `print_line`, `print_kv`, `print_indent`, `scan_int`, `scan_str` |
+| Module | Highlights |
+|--------|-----------|
+| `std/string.kr` | `str_cat(a,b)`, `str_copy(s)`, `str_sub(s,start,len)`, `str_to_int(s)`, `int_to_str(v)`, `str_trim(s)` — all return newly allocated strings |
+| `std/io.kr` | `read_file`, `write_file`, `read_line`, `scan_int`, `scan_str`, `print_kv`, `print_indent` |
 | `std/math.kr` | `min`, `max`, `abs`, `clamp`, `pow`, `sqrt_int`, `gcd`, `is_prime` |
 | `std/fmt.kr` | `fmt_hex`, `fmt_bin`, `pad_left`, `pad_right` |
 | `std/mem.kr` | `realloc`, `memcmp`, `memzero`, `arena_init`, `arena_alloc`, `arena_reset` |
-| `std/vec.kr` | `vec_new`, `vec_push`, `vec_get`, `vec_set`, `vec_pop`, `vec_remove`, `vec_contains`, `vec_len`, `vec_cap`, `vec_last`, `vec_clear`, `vec_free` |
-| `std/map.kr` | `map_new`, `map_set`, `map_get`, `map_has`, `map_len`, `map_keys`, `map_vals`, `map_free` |
-| `std/color.kr` | `rgb`, `rgba`, `color_r`, `color_g`, `color_b`, `alpha_blend`, `color_lerp` |
-| `std/fb.kr` | `fb_init(addr,w,h,stride,bpp)`, `fb_pixel`, `fb_rect`, `fb_fill`, `fb_clear`, `fb_hline`, `fb_vline`, `fb_line`, `fb_rect_outline`, `fb_blit` |
-| `std/fixedpoint.kr` | `fp_from_int`, `fp_to_int`, `fp_add`, `fp_sub`, `fp_mul`, `fp_div`, `fp_sqrt` |
-| `std/font.kr` | `font_init`, `fb_char`, `fb_text` |
-| `std/memfast.kr` | `memcpy32`, `memcpy64`, `memset32`, `memset64` |
-| `std/widget.kr` | `panel_new`, `panel_draw`, `label_new`, `button_new`, `progress_new`, `textfield_new` |
+| `std/vec.kr` | `vec_new`, `vec_push`, `vec_get`, `vec_set`, `vec_pop`, `vec_len` |
+| `std/map.kr` | `map_new`, `map_set`, `map_get`, `map_has`, `map_len` |
 | `std/time.kr` | `time_now`, `time_sleep_ns`, `time_sleep_ms`, `time_elapsed` |
-| `std/log.kr` | `log_set_level`, `log_debug`, `log_info`, `log_warn`, `log_error`, `log_info_kv`, `log_error_int` |
-| `std/net.kr` | `net_socket`, `net_bind`, `net_listen`, `net_accept`, `net_connect`, `net_send`, `net_recv`, `net_close`, `net_htons`, `net_addr_ipv4` |
+| `std/log.kr` | `log_set_level`, `log_debug`, `log_info`, `log_warn`, `log_error` |
+| `std/net.kr` | `net_socket`, `net_bind`, `net_listen`, `net_accept`, `net_connect`, `net_send`, `net_recv` |
+| `std/fb.kr` | Framebuffer: `fb_init(addr,w,h,stride,bpp)`, `fb_pixel`, `fb_rect`, `fb_line`, `fb_blit` |
+| `std/font.kr` | 8x16 bitmap font: `font_init`, `fb_char`, `fb_text` |
+| `std/widget.kr` | UI widgets: `panel_new`, `label_new`, `button_new`, `progress_new`, `textfield_new` |
+| `std/color.kr` | `rgb`, `rgba`, `color_r/g/b/a`, `alpha_blend`, `color_lerp`, `color_darken`, `color_lighten` |
+| `std/fixedpoint.kr` | 16.16 fixed-point math: `fp_from_int`, `fp_mul`, `fp_div`, `fp_sqrt`, `fp_lerp` |
 
-## Editor Setup
+## Examples
+
+Every runnable example lives in the top-level [`examples/`](../examples/)
+directory. Start with:
+
+- **`hello.kr`** — smallest possible program
+- **`fizzbuzz.kr`** — control flow
+- **`pointers.kr`** — pointer builtins
+- **`slices.kr`** — slice parameters
+- **`struct_arrays.kr`** — fixed arrays of structs
+- **`mmio_driver.kr`** — device blocks
+- **`echo.kr`** — stdin / stdout
+
+## Editor setup
 
 ### VS Code
 
-Install the **KernRift** extension from the VS Code Marketplace (v0.2.3). It provides:
+Install the **KernRift** extension from the VS Code Marketplace. It
+provides:
 
-- **Syntax highlighting** via TextMate grammar
-- **LSP server** with:
-  - Diagnostics (powered by `krc check`)
-  - Completions for keywords, builtins, and imported symbols
-  - Hover documentation
-  - Go-to-definition
+- Syntax highlighting
+- LSP diagnostics (via `krc check`)
+- Completions, hover docs, and go-to-definition
 
 The extension activates automatically for `.kr` files.
+
+## Next steps
+
+- Read the [Language Reference](LANGUAGE.md) for the full syntax and all
+  built-ins.
+- Browse [`examples/`](../examples/) for runnable code.
+- See [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) for compiler internals.

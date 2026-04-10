@@ -1,0 +1,52 @@
+// Slice parameter example — functions that take a (ptr, len) pair as a
+// single "slice" argument. Inside the function, `data.len` gives the length
+// and `data` is a regular pointer for byte indexing.
+// Callers pass 2 arguments: the pointer and the length.
+
+import "std/string.kr"
+
+fn sum_bytes([u8] data) -> u64 {
+    u64 total = 0
+    u64 i = 0
+    u64 n = data.len
+    while i < n {
+        total = total + load8(data + i)
+        i = i + 1
+    }
+    return total
+}
+
+fn find_byte([u8] haystack, u8 needle) -> u64 {
+    u64 i = 0
+    u64 n = haystack.len
+    while i < n {
+        if load8(haystack + i) == needle {
+            return i
+        }
+        i = i + 1
+    }
+    return 0xFFFFFFFFFFFFFFFF  // not found
+}
+
+fn main() {
+    u8[6] buf
+    buf[0] = 10
+    buf[1] = 20
+    buf[2] = 30
+    buf[3] = 40
+    buf[4] = 50
+    buf[5] = 60
+
+    // Slice call: pass (pointer, length)
+    u64 total = sum_bytes(buf, 6)
+    print_str("sum: ")
+    println(total)
+
+    // String literal works the same way as a byte buffer
+    u64 msg = "the quick brown fox"
+    u64 mlen = str_len(msg)
+    u64 pos = find_byte(msg, mlen, 98)  // 'b'
+    print_str("'b' at index: ")
+    println(pos)
+    exit(0)
+}
