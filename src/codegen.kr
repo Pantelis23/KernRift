@@ -1107,30 +1107,31 @@ fn resolve_win_iat_fixups(uint64 text_start, uint64 iat_rva) {
     }
 }
 
-// emit: cmp rcx, rax + setCC al + movzx eax, al
+// emit: setCC al + movzx eax, al (flags already set by caller)
+fn emit_setcc(uint64 op_tok_kind) {
+    emit_byte(0x0F)
+    if op_tok_kind == 35 { emit_byte(0x94) }
+    else if op_tok_kind == 36 { emit_byte(0x95) }
+    else if op_tok_kind == 37 { emit_byte(0x92) }
+    else if op_tok_kind == 38 { emit_byte(0x96) }
+    else if op_tok_kind == 39 { emit_byte(0x97) }
+    else if op_tok_kind == 40 { emit_byte(0x93) }
+    else { emit_byte(0x94) }
+    emit_byte(0xC0)
+    emit_byte(0x0F); emit_byte(0xB6); emit_byte(0xC0) // movzx eax, al
+}
+
+// emit: cmp rax, rcx + setCC al + movzx eax, al
 fn emit_compare(uint64 op_tok_kind) {
     rax_invalidate()
-    // cmp rax, rcx  (computes rax - rcx, sets flags for lhs vs rhs)
+    // cmp rax, rcx
     emit_byte(0x48)
     emit_byte(0x39)
     emit_byte(0xC8)
 
-    // setCC al
-    emit_byte(0x0F)
-    if op_tok_kind == 35 { emit_byte(0x94) }      // == → sete
-    else if op_tok_kind == 36 { emit_byte(0x95) }  // != → setne
-    else if op_tok_kind == 37 { emit_byte(0x92) }  // < → setb (unsigned below)
-    else if op_tok_kind == 38 { emit_byte(0x96) }  // <= → setbe (unsigned below or equal)
-    else if op_tok_kind == 39 { emit_byte(0x97) }  // > → seta (unsigned above)
-    else if op_tok_kind == 40 { emit_byte(0x93) }  // >= → setae (unsigned above or equal)
-    else { emit_byte(0x94) }
-    emit_byte(0xC0)
-
-    // movzx eax, al
-    emit_byte(0x0F)
-    emit_byte(0xB6)
-    emit_byte(0xC0)
+    emit_setcc(op_tok_kind)
 }
+
 
 // ---------------------------------------------------------------------------
 // AST code generation (recursive)
@@ -1357,16 +1358,43 @@ fn gen_expr(uint64 node) {
         uint64 wrhs = rhs_idx
         uint32 rhs_kind_check = ast_kind(wrhs)
         uint64 wrk = rhs_kind_check
+        uint32 lhs_kind_check = ast_kind(wlhs)
+        uint64 wlk = lhs_kind_check
 
-        // Optimization: if RHS is simple (IntLit or Ident), skip stack temp
-        // Simple RHS doesn't make function calls, so rcx is safe to hold LHS
-        if wrk == 30 || wrk == 32 {
-            gen_expr(wlhs)           // rax = lhs
-            // mov rcx, rax (save lhs in rcx — safe because simple RHS won't clobber)
+        // Fast path: pinned_param ± IntLit → lea rax, [rbx ± imm]
+        // Eliminates 5 instructions (mov+mov+mov+xchg+op → lea)
+        uint64 used_lea = 0
+        if wlk == 32 && wrk == 30 && pin_param0_offset != 0xFFFFFFFF {
+            uint32 lhs_tok = ast_data1(wlhs)
+            uint64 loff = var_lookup(lhs_tok)
+            if loff == pin_param0_offset {
+                uint32 op_tok_lea = ast_data1(node)
+                uint64 opl = cg_tokens + op_tok_lea * 16
+                uint32 opk_lea = 0
+                unsafe { *(opl as uint32) -> opk_lea }
+                if opk_lea == 30 || opk_lea == 31 {
+                    // Parse the integer literal
+                    uint32 rhs_tok = ast_data1(wrhs)
+                    uint64 imm_val = parse_int_token(rhs_tok)
+                    uint64 disp = imm_val
+                    if opk_lea == 31 { disp = 0 - imm_val }
+                    // lea rax, [rbx + disp8]: 48 8D 43 <disp8>
+                    uint8 d8 = disp
+                    emit_byte(0x48); emit_byte(0x8D); emit_byte(0x43); emit_byte(d8)
+                    rax_cache = 0
+                    used_lea = 1
+                }
+            }
+        }
+
+        if used_lea != 0 {
+            // LEA already computed the result — skip all expression evaluation
+        } else if wrk == 30 || wrk == 32 {
+            // Simple RHS: skip stack temp
+            gen_expr(wlhs)
             emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
             rax_cache = 0
-            gen_expr(wrhs)           // rax = rhs
-            // xchg rax, rcx (rax = lhs, rcx = rhs)
+            gen_expr(wrhs)
             emit_byte(0x48); emit_byte(0x87); emit_byte(0xC1)
             rax_cache = 0
         } else if r12_in_use == 0 {
@@ -1394,7 +1422,8 @@ fn gen_expr(uint64 node) {
             emit_load_rax_from_stack(binop_temp)
         }
 
-        // Determine operation from token kind
+        // Determine operation from token kind (skip if LEA already computed)
+        if used_lea == 0 {
         uint32 op_tok = ast_data1(node)
         uint64 wop = op_tok
         uint64 p = cg_tokens + wop * 16
@@ -1470,6 +1499,7 @@ fn gen_expr(uint64 node) {
         else if op_kind == 52 {
             emit_byte(0x48); emit_byte(0x31); emit_byte(0xC8) // ^=
         }
+        } // end if used_lea == 0
         return
     }
 
@@ -1506,8 +1536,29 @@ fn gen_expr(uint64 node) {
         uint64 wrhs = rhs_idx
         uint32 rhs_kind_cmp = ast_kind(wrhs)
         uint64 wrk_cmp = rhs_kind_cmp
+        uint32 lhs_kind_cmp2 = ast_kind(wlhs)
+        uint64 wlk_cmp = lhs_kind_cmp2
 
-        if wrk_cmp == 30 || wrk_cmp == 32 {
+        // Fast path: cmp pinned_param, imm → cmp rbx, imm8
+        uint64 used_direct_cmp = 0
+        if wlk_cmp == 32 && wrk_cmp == 30 && pin_param0_offset != 0xFFFFFFFF {
+            uint32 lhs_tok_c = ast_data1(wlhs)
+            uint64 loff_c = var_lookup(lhs_tok_c)
+            if loff_c == pin_param0_offset {
+                uint32 rhs_tok_c = ast_data1(wrhs)
+                uint64 cmp_imm = parse_int_token(rhs_tok_c)
+                // cmp rbx, imm8: 48 83 FB <imm8>
+                if cmp_imm < 128 {
+                    uint8 ci8 = cmp_imm
+                    emit_byte(0x48); emit_byte(0x83); emit_byte(0xFB); emit_byte(ci8)
+                    used_direct_cmp = 1
+                }
+            }
+        }
+
+        if used_direct_cmp != 0 {
+            // Direct cmp already emitted — skip expression evaluation
+        } else if wrk_cmp == 30 || wrk_cmp == 32 {
             // Simple RHS: skip stack temp
             gen_expr(wlhs)
             emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
@@ -1544,7 +1595,13 @@ fn gen_expr(uint64 node) {
         uint32 op_kind = 0
         unsafe { *(p as uint32) -> op_kind }
 
-        emit_compare(op_kind)
+        if used_direct_cmp != 0 {
+            // cmp rbx, imm already set flags — just emit setcc
+            rax_invalidate()
+            emit_setcc(op_kind)
+        } else {
+            emit_compare(op_kind)
+        }
         return
     }
 
