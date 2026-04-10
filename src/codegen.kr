@@ -117,6 +117,7 @@ static uint64 pin_param0_tok = 0
 static uint64 pin_param1_tok = 0
 // Binary op register spill: use r12 instead of stack for outermost binary op
 static uint64 r12_in_use = 0
+static uint64 r12_save_slot = 0
 
 @export
 fn codegen_init(uint64 capacity, uint64 source, uint64 tokens) {
@@ -1368,16 +1369,27 @@ fn gen_expr(uint64 node) {
             // xchg rax, rcx (rax = lhs, rcx = rhs)
             emit_byte(0x48); emit_byte(0x87); emit_byte(0xC1)
             rax_cache = 0
+        } else if r12_in_use == 0 {
+            // Complex RHS: hold lhs in r12 (callee-saved, survives calls)
+            gen_expr(wlhs)
+            r12_in_use = 1
+            emit_byte(0x49); emit_byte(0x89); emit_byte(0xC4) // mov r12, rax
+            rax_cache = 0
+            gen_expr(wrhs)
+            r12_in_use = 0
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1) // mov rcx, rax
+            emit_byte(0x4C); emit_byte(0x89); emit_byte(0xE0) // mov rax, r12
+            rax_cache = 0
         } else {
-            gen_expr(wlhs)           // rax = lhs
+            // r12 in use (nested): fall back to stack
+            gen_expr(wlhs)
             uint64 binop_temp = var_count * 8
             var_count = var_count + 1
             var_frame_size = var_count * 8
             uint64 brem = var_frame_size & 15
             if brem != 0 { var_frame_size = var_frame_size + 16 - brem }
             emit_store_rax_to_stack(binop_temp)
-            gen_expr(wrhs)           // rax = rhs
-            // mov rcx, rax
+            gen_expr(wrhs)
             emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
             emit_load_rax_from_stack(binop_temp)
         }
@@ -1502,6 +1514,16 @@ fn gen_expr(uint64 node) {
             rax_cache = 0
             gen_expr(wrhs)
             emit_byte(0x48); emit_byte(0x87); emit_byte(0xC1)
+            rax_cache = 0
+        } else if r12_in_use == 0 {
+            gen_expr(wlhs)
+            r12_in_use = 1
+            emit_byte(0x49); emit_byte(0x89); emit_byte(0xC4)
+            rax_cache = 0
+            gen_expr(wrhs)
+            r12_in_use = 0
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
+            emit_byte(0x4C); emit_byte(0x89); emit_byte(0xE0)
             rax_cache = 0
         } else {
             gen_expr(wlhs)
@@ -4441,11 +4463,14 @@ fn gen_function(uint64 fn_node) {
     // Reset variable table for this function
     var_reset()
 
-    // Reserve two temp slots for expression evaluation
+    // Reserve temp slots + r12 save slot
     temp_slot_0 = var_count * 8
     var_count = var_count + 1
     temp_slot_1 = var_count * 8
     var_count = var_count + 1
+    r12_save_slot = var_count * 8
+    var_count = var_count + 1
+    r12_in_use = 0
     var_frame_size = var_count * 8
     uint64 rem0 = var_frame_size & 15
     if rem0 != 0 { var_frame_size = var_frame_size + 16 - rem0 }
@@ -4569,6 +4594,14 @@ fn gen_function(uint64 fn_node) {
         emit_byte(0xEC)
         frame_patch = out_len
         emit_u32_le(0)
+        // Save r12 to frame slot (callee-saved, for binop register spill)
+        if r12_save_slot < 128 {
+            emit_byte(0x4C); emit_byte(0x89); emit_byte(0x64)
+            emit_byte(0x24); uint8 r12s = r12_save_slot; emit_byte(r12s)
+        } else {
+            emit_byte(0x4C); emit_byte(0x89); emit_byte(0xA4)
+            emit_byte(0x24); emit_u32_le(r12_save_slot)
+        }
     }
 
     // Spill params to stack
@@ -4723,6 +4756,17 @@ fn gen_function(uint64 fn_node) {
             emit_mov_rdi_rax()
             if target_os == 1 { emit_mov_rax_imm(0x2000001) } else { emit_mov_rax_imm(231) }
             emit_byte(0x0F); emit_byte(0x05)
+        }
+    }
+
+    // Restore r12 from frame slot (doesn't clobber rax = return value)
+    if is_naked == 0 {
+        if r12_save_slot < 128 {
+            emit_byte(0x4C); emit_byte(0x8B); emit_byte(0x64)
+            emit_byte(0x24); uint8 r12r = r12_save_slot; emit_byte(r12r)
+        } else {
+            emit_byte(0x4C); emit_byte(0x8B); emit_byte(0xA4)
+            emit_byte(0x24); emit_u32_le(r12_save_slot)
         }
     }
 
