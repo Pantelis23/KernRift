@@ -819,6 +819,9 @@ krc lc --fix --dry-run <file.kr>     # preview auto-fixes without writing
 krc lc --ci <file.kr>                # CI gate: exit non-zero if patterns fire
 krc lc --min-fitness=N <file.kr>     # filter: only patterns with fitness >= N
 krc lc --list-proposals              # print the proposal registry
+krc lc --promote <name>              # promote a proposal to stable
+krc lc --deprecate <name>            # mark a proposal as deprecated
+krc lc --reject <name>               # revert a proposal to experimental
 krc --version                        # print the compiler version
 krc --help                           # usage info
 ```
@@ -888,8 +891,34 @@ krc lc --list-proposals
 ```
 
 Proposals with triggers that match the current file fire inline in the
-report. The registry is the compiler's governance snapshot — a
-persistent per-project state file is planned for a future release.
+report. Under `#lang stable` (the default), only stable proposals fire.
+Under `#lang experimental`, experimental proposals also fire as
+"coming-soon" hints.
+
+### Governance: persistent per-project state
+
+Each project can override the compiler's baseline proposal states and
+store them in a `.kernrift/proposals` file at the project root:
+
+```sh
+krc lc --promote <name>     # move a proposal to `stable`
+krc lc --deprecate <name>   # move a proposal to `deprecated`
+krc lc --reject <name>      # revert to `experimental`
+```
+
+The first invocation creates `.kernrift/proposals`. Subsequent runs of
+`krc lc` in that directory automatically load the overrides. The format
+is one line per proposal:
+
+```
+slice_for_buffer_params stable
+tail_call_intrinsic experimental
+extern_fn_decls deprecated
+```
+
+This is how the governance layer actually works — the compiler has a
+baseline, each project can pin its own decisions, and everything is
+version-controlled alongside the source.
 
 See [`docs/LIVING_COMPILER.md`](LIVING_COMPILER.md) for the full
 blueprint and the pipeline design.

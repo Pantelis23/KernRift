@@ -1128,13 +1128,183 @@ fn prop_write_state(uint64 state) {
     }
 }
 
+// Set the state of a proposal by name. Returns 1 if found, 0 if not.
+fn prop_set_state_by_name(uint64 name, uint64 state) -> uint64 {
+    uint64 i = 0
+    while i < prop_count {
+        uint64 np = prop_get_name(i)
+        if str_eq(np, name) != 0 {
+            uint64 e = prop_table + i * 56 + 8
+            unsafe { *(e as uint64) = state }
+            return 1
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+// Persistent governance: load overrides from .kernrift/proposals and apply
+// them to the in-memory proposal table. The file format is one line per
+// proposal:
+//
+//   name experimental
+//   name stable
+//   name deprecated
+//
+// Anything else is ignored. Missing file is a no-op.
+@export
+fn load_proposal_overrides() {
+    uint64 fd = file_open(".kernrift/proposals", 0)
+    if fd > 0xFFFFFFFFFFFFF000 { return }
+    uint64 fsize = file_size(fd)
+    if fsize == 0 { file_close(fd); return }
+    uint64 buf = alloc(fsize + 1)
+    file_read(fd, buf, fsize)
+    file_close(fd)
+    uint64 tpn = buf + fsize
+    uint8 nulc = 0
+    unsafe { *(tpn as uint8) = nulc }
+    // Walk the file line by line. For each line, split at the first space.
+    // Left side = name, right side = state keyword.
+    uint64 pos = 0
+    while pos < fsize {
+        uint64 line_start = pos
+        uint64 sp_pos = 0
+        uint64 line_end = pos
+        while line_end < fsize {
+            uint64 lbp = buf + line_end
+            uint64 lc = 0
+            unsafe { *(lbp as uint8) -> lc }
+            if lc == 10 || lc == 0 { break }
+            if lc == 32 && sp_pos == 0 { sp_pos = line_end }
+            line_end = line_end + 1
+        }
+        if sp_pos > line_start {
+            // Null-terminate name
+            uint64 np = buf + sp_pos
+            uint8 zn = 0
+            unsafe { *(np as uint8) = zn }
+            // Skip space
+            uint64 val_start = sp_pos + 1
+            // Null-terminate state value at line_end
+            uint64 vep = buf + line_end
+            uint8 ze = 0
+            unsafe { *(vep as uint8) = ze }
+            uint64 name_ptr = buf + line_start
+            uint64 state_ptr = buf + val_start
+            uint64 st_val = 0
+            if str_eq(state_ptr, "stable") != 0 { st_val = 1 }
+            if str_eq(state_ptr, "experimental") != 0 { st_val = 0 }
+            if str_eq(state_ptr, "deprecated") != 0 { st_val = 2 }
+            prop_set_state_by_name(name_ptr, st_val)
+        }
+        pos = line_end + 1
+    }
+}
+
+// Save a proposal state override to .kernrift/proposals.
+// Simplest approach: replace or append in a freshly-written file.
+// Creates .kernrift/ directory on demand (mkdir via syscall).
+fn save_proposal_override(uint64 name, uint64 new_state) {
+    // Ensure .kernrift directory exists. Ignore failure (likely exists).
+    uint64 mkdir_nr = 83  // x86_64 Linux
+    if get_arch_id() == 2 { mkdir_nr = 34 }  // ARM64 Linux is 34
+    syscall_raw(mkdir_nr, ".kernrift", 0x1C0, 0, 0, 0, 0)
+
+    // Apply the override in memory first
+    prop_set_state_by_name(name, new_state)
+
+    // Rewrite the whole file from prop_table (simple, robust)
+    uint64 out = alloc(4096)
+    uint64 off = 0
+    uint64 i = 0
+    while i < prop_count {
+        uint64 np = prop_get_name(i)
+        uint64 st = prop_get_state(i)
+        // Write name
+        uint64 nl = 0
+        uint64 npw = np
+        uint64 nc = 0
+        unsafe { *(npw as uint8) -> nc }
+        while nc != 0 {
+            uint64 op = out + off + nl
+            uint8 cb = nc
+            unsafe { *(op as uint8) = cb }
+            nl = nl + 1
+            npw = np + nl
+            unsafe { *(npw as uint8) -> nc }
+        }
+        off = off + nl
+        // Write " "
+        uint64 spp = out + off
+        uint8 sp = 32
+        unsafe { *(spp as uint8) = sp }
+        off = off + 1
+        // Write state name
+        uint64 state_str = "experimental"
+        uint64 state_len = 12
+        if st == 1 { state_str = "stable"; state_len = 6 }
+        if st == 2 { state_str = "deprecated"; state_len = 10 }
+        uint64 sj = 0
+        while sj < state_len {
+            uint64 ssp = state_str + sj
+            uint64 ssc = 0
+            unsafe { *(ssp as uint8) -> ssc }
+            uint64 dsp = out + off + sj
+            uint8 dsb = ssc
+            unsafe { *(dsp as uint8) = dsb }
+            sj = sj + 1
+        }
+        off = off + state_len
+        // Write newline
+        uint64 nlp = out + off
+        uint8 nlc = 10
+        unsafe { *(nlp as uint8) = nlc }
+        off = off + 1
+        i = i + 1
+    }
+
+    // Write the buffer back to .kernrift/proposals
+    uint64 fd = file_open(".kernrift/proposals", 1)
+    if fd > 0xFFFFFFFFFFFFF000 {
+        write(2, "error: cannot write .kernrift/proposals\n", 40)
+        return
+    }
+    file_write(fd, out, off)
+    file_close(fd)
+}
+
+@export
+fn promote_proposal(uint64 name) {
+    save_proposal_override(name, 1)  // stable
+    write(1, "promoted: ", 10)
+    lc_write_str(name)
+    write(1, " → stable\n", 12)
+}
+
+@export
+fn deprecate_proposal(uint64 name) {
+    save_proposal_override(name, 2)  // deprecated
+    write(1, "deprecated: ", 12)
+    lc_write_str(name)
+    write(1, " → deprecated\n", 16)
+}
+
+@export
+fn reject_proposal(uint64 name) {
+    save_proposal_override(name, 0)  // experimental (rejected from stable)
+    write(1, "reverted: ", 10)
+    lc_write_str(name)
+    write(1, " → experimental\n", 18)
+}
+
 // Print all proposals and their lifecycle state.
 @export
 fn list_proposals() {
     uint64 msg = "=== KernRift Proposal Registry ===\n"
     write(1, msg, 35)
     msg = "  telemetry -> proposals -> fitness -> governance -> migration\n\n"
-    write(1, msg, 65)
+    write(1, msg, 64)
     msg = "Total proposals: "
     write(1, msg, 17)
     lc_write_num(prop_count)
@@ -1169,14 +1339,12 @@ fn list_proposals() {
         i = i + 1
     }
 
-    msg = "Governance: the state table above is the v2.6 compiler's\n"
-    write(1, msg, 58)
-    msg = "governance snapshot. Persistent per-project state (.kernrift/\n"
-    write(1, msg, 62)
-    msg = "proposals) and `--promote`/`--deprecate` commands arrive in a\n"
-    write(1, msg, 62)
-    msg = "future release.\n"
-    write(1, msg, 16)
+    // Use lc_write_str to avoid length miscounts on multi-line footers
+    lc_write_str("Governance: the state above is the compiler's baseline.\n")
+    lc_write_str("Per-project overrides live in .kernrift/proposals, managed via:\n")
+    lc_write_str("  krc lc --promote <name>     move a proposal to stable\n")
+    lc_write_str("  krc lc --deprecate <name>   move a proposal to deprecated\n")
+    lc_write_str("  krc lc --reject <name>      revert to experimental\n")
 }
 
 // Print proposals that are firing against the current telemetry (for use

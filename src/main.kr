@@ -2970,6 +2970,9 @@ static uint64 lc_min_fitness = 0
 static uint64 lc_fix_mode = 0
 static uint64 lc_dry_run = 0
 static uint64 lc_list_proposals = 0
+static uint64 lc_promote_name = 0
+static uint64 lc_deprecate_name = 0
+static uint64 lc_reject_name = 0
 static uint64 freestanding = 0
 
 fn parse_uint_arg(uint64 s) -> uint64 {
@@ -3097,6 +3100,36 @@ fn main() {
             } else if str_starts_with(arg, "--list-proposals", 16) != 0 {
                 lc_list_proposals = 1
                 mode = 2
+            } else if str_starts_with(arg, "--promote=", 10) != 0 {
+                lc_promote_name = arg + 10
+                mode = 2
+            } else if str_starts_with(arg, "--promote", 9) != 0 {
+                i = i + 1
+                uint64 pnext_ptr = cli_argv + i * 8
+                uint64 pnext_arg = 0
+                unsafe { *(pnext_ptr as uint64) -> pnext_arg }
+                lc_promote_name = pnext_arg
+                mode = 2
+            } else if str_starts_with(arg, "--deprecate=", 12) != 0 {
+                lc_deprecate_name = arg + 12
+                mode = 2
+            } else if str_starts_with(arg, "--deprecate", 11) != 0 {
+                i = i + 1
+                uint64 dnext_ptr = cli_argv + i * 8
+                uint64 dnext_arg = 0
+                unsafe { *(dnext_ptr as uint64) -> dnext_arg }
+                lc_deprecate_name = dnext_arg
+                mode = 2
+            } else if str_starts_with(arg, "--reject=", 9) != 0 {
+                lc_reject_name = arg + 9
+                mode = 2
+            } else if str_starts_with(arg, "--reject", 8) != 0 {
+                i = i + 1
+                uint64 rnext_ptr = cli_argv + i * 8
+                uint64 rnext_arg = 0
+                unsafe { *(rnext_ptr as uint64) -> rnext_arg }
+                lc_reject_name = rnext_arg
+                mode = 2
             } else if str_starts_with(arg, "--min-fitness=", 14) != 0 {
                 lc_min_fitness = parse_uint_arg(arg + 14)
             } else if str_starts_with(arg, "--min-fitness", 13) != 0 {
@@ -3177,7 +3210,28 @@ fn main() {
     // --list-proposals doesn't need an input file
     if lc_list_proposals != 0 && input_path == 0 {
         init_proposals()
+        load_proposal_overrides()
         list_proposals()
+        exit(0)
+    }
+
+    // --promote / --deprecate / --reject: governance commands, no input file
+    if lc_promote_name != 0 && input_path == 0 {
+        init_proposals()
+        load_proposal_overrides()
+        promote_proposal(lc_promote_name)
+        exit(0)
+    }
+    if lc_deprecate_name != 0 && input_path == 0 {
+        init_proposals()
+        load_proposal_overrides()
+        deprecate_proposal(lc_deprecate_name)
+        exit(0)
+    }
+    if lc_reject_name != 0 && input_path == 0 {
+        init_proposals()
+        load_proposal_overrides()
+        reject_proposal(lc_reject_name)
         exit(0)
     }
 
@@ -3235,6 +3289,7 @@ fn main() {
         // --list-proposals: print the governance-layer proposal registry
         if lc_list_proposals != 0 {
             init_proposals()
+            load_proposal_overrides()
             list_proposals()
             exit(0)
         }
@@ -3263,6 +3318,7 @@ fn main() {
         uint64 cycles = check_lock_cycles()
         uint64 fitness = compute_fitness(tel, patterns, cycles)
         init_proposals()
+        load_proposal_overrides()
         detect_proposals(tel)
         if lc_min_fitness > 0 {
             print_living_report_filtered(tel, patterns, fitness, lc_min_fitness)

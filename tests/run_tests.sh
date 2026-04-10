@@ -1335,6 +1335,55 @@ else
 fi
 rm -f /tmp/krc_lc_$$.kr /tmp/krc_lc_out_$$.txt
 
+# Governance: promote + list round-trip
+TOTAL=$((TOTAL + 1))
+GOV_DIR=/tmp/krc_gov_$$
+# Use the raw compiler binary (not the wrapper script) so we can cd elsewhere
+if [ -f "$DIR/../build/krc2" ]; then
+    GOV_KRC=$(cd "$DIR/../build" && pwd)/krc2
+elif [ -f "$DIR/../build/krc3" ]; then
+    GOV_KRC=$(cd "$DIR/../build" && pwd)/krc3
+else
+    GOV_KRC=""
+fi
+mkdir -p "$GOV_DIR" && (cd "$GOV_DIR" && rm -rf .kernrift && \
+    "$GOV_KRC" lc --promote tail_call_intrinsic > /tmp/krc_gov_promote_$$.txt 2>&1)
+if [ -n "$GOV_KRC" ] && \
+   grep -q "promoted: tail_call_intrinsic" /tmp/krc_gov_promote_$$.txt 2>/dev/null && \
+   [ -f "$GOV_DIR/.kernrift/proposals" ] && \
+   grep -q "tail_call_intrinsic stable" "$GOV_DIR/.kernrift/proposals"; then
+    PASS=$((PASS + 1))
+else
+    echo "FAIL: governance_promote (state file not updated)"
+    FAIL=$((FAIL + 1))
+fi
+rm -rf "$GOV_DIR" /tmp/krc_gov_promote_$$.txt
+
+# Migration: long-form types → short aliases
+TOTAL=$((TOTAL + 1))
+cat > /tmp/krc_migtypes_$$.kr <<'KREOF'
+fn main() {
+    uint64 x = 42
+    uint32 y = 1
+    uint16 z = 2
+    exit(x)
+}
+KREOF
+if $KRC lc --fix /tmp/krc_migtypes_$$.kr > /dev/null 2>&1; then
+    if grep -q "u64 x" /tmp/krc_migtypes_$$.kr && \
+       grep -q "u32 y" /tmp/krc_migtypes_$$.kr && \
+       grep -q "u16 z" /tmp/krc_migtypes_$$.kr; then
+        PASS=$((PASS + 1))
+    else
+        echo "FAIL: migration_types (file was not rewritten)"
+        FAIL=$((FAIL + 1))
+    fi
+else
+    echo "FAIL: migration_types (command failed)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f /tmp/krc_migtypes_$$.kr
+
 # --- Bootstrap test ---
 echo ""
 echo "--- Bootstrap test ---"
