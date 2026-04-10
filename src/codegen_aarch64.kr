@@ -2798,44 +2798,6 @@ fn emit_program_header_a64(uint64 text_size) {
     emit_u64_le(0x10000)
 }
 
-// Check if an AST subtree contains any function calls (kind 35 = Call)
-fn ast_has_calls(uint64 node) -> uint64 {
-    if node == 0 { return 0 }
-    uint32 kind = ast_kind(node)
-    uint64 wk = kind
-    if wk == 35 { return 1 }
-    // Check child
-    uint32 child = ast_child(node)
-    uint64 wc = child
-    if ast_has_calls(wc) != 0 { return 1 }
-    // Check data1 (used by ExprStmt, VarDecl, Return, etc. as sub-expression)
-    uint32 d1 = ast_data1(node)
-    uint64 wd1 = d1
-    if wd1 != 0 && wd1 < 100000 {
-        uint32 d1k = ast_kind(wd1)
-        uint64 wd1k = d1k
-        if wd1k == 35 { return 1 }
-        if wd1k > 0 && wd1k < 100 {
-            if ast_has_calls(wd1) != 0 { return 1 }
-        }
-    }
-    // Check data2 (used by assignments, binary ops, etc.)
-    uint32 d2 = ast_data2(node)
-    uint64 wd2 = d2
-    if wd2 != 0 && wd2 < 100000 {
-        uint32 d2k = ast_kind(wd2)
-        uint64 wd2k = d2k
-        if wd2k == 35 { return 1 }
-        if wd2k > 0 && wd2k < 100 {
-            if ast_has_calls(wd2) != 0 { return 1 }
-        }
-    }
-    // Check siblings
-    uint32 next = ast_next(node)
-    uint64 wn = next
-    return ast_has_calls(wn)
-}
-
 // ---------------------------------------------------------------------------
 // AArch64 function codegen (prologue + body + epilogue)
 // ---------------------------------------------------------------------------
@@ -2848,7 +2810,7 @@ fn gen_function_a64(uint64 fn_node) {
     uint32 ann_flags = ast_data4(fn_node)
     uint64 is_naked = ann_flags & 2
 
-    // Leaf detection is done post-codegen by scanning for BL instructions
+    // Leaf function optimization disabled for now — needs register allocator
     uint64 is_leaf = 0
     uint64 is_noreturn = ann_flags & 1
 
@@ -2931,23 +2893,14 @@ fn gen_function_a64(uint64 fn_node) {
         emit_a64(0xD503201F)
     }
     uint64 prologue_start = out_len
-    uint64 stp_patch_1 = 0
-    uint64 stp_patch_2 = 0
-    uint64 stp_patch_3 = 0
     if is_naked == 0 {
         emit_a64(0xD1000000)  // SUB SP, SP, #imm (patched)
-        // Emit STP/MOV/STP as NOPs initially — patched to real STP if non-leaf
-        stp_patch_1 = out_len
-        emit_a64(0xD503201F)  // NOP → STP x29, x30, [sp]
-        stp_patch_2 = out_len
-        emit_a64(0xD503201F)  // NOP → MOV x29, sp
-        stp_patch_3 = out_len
-        emit_a64(0xD503201F)  // NOP → STP x19, x20, [sp, #16]
+        emit_a64(0xA9007BFD)  // stp x29, x30, [sp]
+        emit_a64_add_imm(29, 31, 0)  // mov x29, sp
+        emit_a64(0xA90153F3)  // stp x19, x20, [sp, #16]
     }
 
-    // For leaf functions, variables start at sp+0 (no saved regs)
     uint64 saved_var_base = a64_var_base
-    if is_leaf != 0 { a64_var_base = 0 }
 
     // Spill params to stack (x0-x7)
     uint64 pidx = 0
@@ -3025,11 +2978,10 @@ fn gen_function_a64(uint64 fn_node) {
         }
     }
 
-    // Emit LDP as NOPs — patched to real LDP if non-leaf
-    uint64 ldp_patch_1 = out_len
-    emit_a64(0xD503201F)  // NOP → LDP x19, x20, [sp, #16]
-    uint64 ldp_patch_2 = out_len
-    emit_a64(0xD503201F)  // NOP → LDP x29, x30, [sp]
+    // ldp x19, x20, [sp, #16]
+    emit_a64(0xA94153F3)
+    // ldp x29, x30, [sp]
+    emit_a64(0xA9407BFD)
     // add sp, sp, #FRAME (placeholder, patched)
     uint64 epilogue_add = out_len
     emit_a64(0x91000000)
@@ -3044,37 +2996,8 @@ fn gen_function_a64(uint64 fn_node) {
     // Restore a64_var_base
     a64_var_base = saved_var_base
 
-    // Scan generated code for BL instructions to determine leaf-ness
-    // BL: top 6 bits = 100101 → opcode 0x94000000, mask 0xFC000000
-    if is_naked == 0 {
-        uint64 scan_pos = prologue_start
-        while scan_pos + 4 <= out_len {
-            uint64 sp = out_buf + scan_pos
-            uint32 si = 0
-            unsafe { *(sp as uint32) -> si }
-            uint64 wsi = si
-            if (wsi & 0xFC000000) == 0x94000000 {
-                is_leaf = 0
-                break
-            }
-            scan_pos = scan_pos + 4
-        }
-        if scan_pos + 4 > out_len { is_leaf = 1 }
-    }
-
-    // Patch STP/LDP for non-leaf functions
-    if is_leaf == 0 && is_naked == 0 {
-        patch_u32(stp_patch_1, 0xA9007BFD)  // STP x29, x30, [sp]
-        patch_u32(stp_patch_2, 0x910003FD)  // MOV x29, sp (ADD x29, sp, #0)
-        patch_u32(stp_patch_3, 0xA90153F3)  // STP x19, x20, [sp, #16]
-        patch_u32(ldp_patch_1, 0xA94153F3)  // LDP x19, x20, [sp, #16]
-        patch_u32(ldp_patch_2, 0xA9407BFD)  // LDP x29, x30, [sp]
-    }
-
     // Patch prologue and epilogue frame sizes
-    uint64 effective_base = a64_var_base
-    if is_leaf != 0 { effective_base = 0 }
-    uint64 frame = effective_base + var_frame_size
+    uint64 frame = a64_var_base + var_frame_size
     uint64 fmod = frame & 15
     if fmod != 0 { frame = frame + 16 - fmod }
 
@@ -3122,30 +3045,6 @@ fn gen_function_a64(uint64 fn_node) {
         }
     }
 
-    // Peephole optimization: scan generated code for redundant patterns
-    // Pattern 1: STR Xn,[SP,#off] followed by LDR Xn,[SP,#off] → NOP the LDR
-    // (the register already has the value — the reload is redundant)
-    if is_naked == 0 {
-        uint64 scan = prologue_start
-        while scan + 8 <= out_len {
-            uint64 p1 = out_buf + scan
-            uint64 p2 = out_buf + scan + 4
-            uint32 i1 = 0
-            uint32 i2 = 0
-            unsafe { *(p1 as uint32) -> i1 }
-            unsafe { *(p2 as uint32) -> i2 }
-            uint64 w1 = i1
-            uint64 w2 = i2
-            // STR Xt,[SP,#imm]: 0xF9000000 | (imm12<<10) | (31<<5) | Rt
-            // LDR Xt,[SP,#imm]: 0xF9400000 | (imm12<<10) | (31<<5) | Rt
-            // Difference is bit 22 (L bit). If i1 is STR and i2 is LDR with same offset+reg:
-            if (w1 & 0xFFC00000) == 0xF9000000 && w2 == (w1 | 0x00400000) {
-                // Same register, same SP offset — LDR is redundant
-                patch_u32(scan + 4, 0xD503201F)
-            }
-            scan = scan + 4
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
