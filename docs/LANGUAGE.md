@@ -30,8 +30,10 @@ something that doesn't work, it's a bug, not a typo in the docs.
 16. [Built-in functions](#16-built-in-functions)
 17. [Annotations](#17-annotations)
 18. [Compiler CLI](#18-compiler-cli)
-19. [Freestanding mode](#19-freestanding-mode)
-20. [Binary formats](#20-binary-formats)
+19. [Living compiler](#19-living-compiler)
+20. [Language profiles (#lang)](#20-language-profiles-lang)
+21. [Freestanding mode](#21-freestanding-mode)
+22. [Binary formats](#22-binary-formats)
 
 ---
 
@@ -811,6 +813,12 @@ krc <file.kr> --emit=android -o out  # Android ARM64 PIE ELF
 krc --freestanding <file.kr> -o out  # no main trampoline, no auto-exit
 krc check <file.kr>                  # run semantic checks only
 krc fmt   <file.kr>                  # auto-format the file in place
+krc lc <file.kr>                     # living compiler report (section 19)
+krc lc --fix <file.kr>               # apply auto-fixes in place
+krc lc --fix --dry-run <file.kr>     # preview auto-fixes without writing
+krc lc --ci <file.kr>                # CI gate: exit non-zero if patterns fire
+krc lc --min-fitness=N <file.kr>     # filter: only patterns with fitness >= N
+krc lc --list-proposals              # print the proposal registry
 krc --version                        # print the compiler version
 krc --help                           # usage info
 ```
@@ -828,7 +836,109 @@ from a `.krbo` fat binary and executes it.
 
 ---
 
-## 19. Freestanding mode
+## 19. Living compiler
+
+`krc lc` analyses KernRift source and produces a two-layer report. The
+living compiler separates concerns into a **stable semantic core**
+(correctness and structural issues) and an **adaptive surface layer**
+(ergonomic migrations that lower to the same IR). This lets the language
+evolve without destroying compatibility.
+
+### Basic report
+
+```sh
+krc lc file.kr
+```
+
+Output has three sections: a telemetry summary, a fitness score
+(layer-weighted, 0–100), and the patterns detected in each layer.
+Patterns tagged `(auto-fix available)` can be rewritten mechanically.
+
+### CI gating
+
+```sh
+krc lc --min-fitness=60 file.kr     # filter: only patterns with fitness >= 60
+krc lc --ci file.kr                 # exit non-zero if any pattern fires
+krc lc --ci --min-fitness=50 file.kr  # gate only on patterns >= 50
+```
+
+### Migration engine (auto-fix)
+
+```sh
+krc lc --fix file.kr                # rewrite in place
+krc lc --fix --dry-run file.kr      # preview the rewritten source
+```
+
+The migration engine currently handles the `legacy_ptr_ops` pattern:
+
+- `unsafe { *(addr as T) -> dest }`  →  `dest = loadN(addr)`
+- `unsafe { *(addr as T) = val }`    →  `storeN(addr, val)`
+
+Both forms lower to identical code at the codegen level, so the rewrite
+is safe by construction.
+
+### Proposal registry
+
+The living compiler ships with a registry of candidate syntax evolutions,
+each tagged with a lifecycle state (`experimental`, `stable`, or
+`deprecated`):
+
+```sh
+krc lc --list-proposals
+```
+
+Proposals with triggers that match the current file fire inline in the
+report. The registry is the compiler's governance snapshot — a
+persistent per-project state file is planned for a future release.
+
+See [`docs/LIVING_COMPILER.md`](LIVING_COMPILER.md) for the full
+blueprint and the pipeline design.
+
+---
+
+## 20. Language profiles (`#lang`)
+
+A source file may pin its required language profile on the first line:
+
+```kr
+#lang stable
+
+fn main() {
+    // only features promoted to the stable surface are allowed
+    println("hello")
+    exit(0)
+}
+```
+
+```kr
+#lang experimental
+
+fn main() {
+    // experimental features are also allowed
+    exit(0)
+}
+```
+
+Recognized profiles:
+
+| Profile | Meaning |
+|---|---|
+| `stable` | Default. All stable features. Safe for production code. |
+| `experimental` | Also allows features under active development. |
+
+The directive must be the first non-empty line of the file. If absent,
+the profile defaults to `stable`.
+
+Profiles are part of the Living Compiler's two-layer model: the stable
+semantic core doesn't change, but the adaptive surface layer may gate
+certain features (like `tail_call()` or `extern fn` when those are added)
+behind `#lang experimental`. This lets the language evolve without
+breaking existing files — pin a file to `stable` and it keeps compiling
+forever, even as new experimental features enter the language.
+
+---
+
+## 21. Freestanding mode
 
 `krc --freestanding` produces a binary suitable for bare-metal:
 
@@ -858,7 +968,7 @@ stack.
 
 ---
 
-## 20. Binary formats
+## 22. Binary formats
 
 | Format | Produced by | Use |
 |---|---|---|

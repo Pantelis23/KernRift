@@ -230,6 +230,22 @@ import "utils.kr"
 Paths are resolved relative to the importing file, then under
 `~/.local/share/kernrift/`. Circular imports are detected.
 
+### Language profiles
+
+A file can pin its required language profile on the first line:
+
+```kr
+#lang stable
+
+fn main() { exit(0) }
+```
+
+Two profiles exist today: `stable` (default — production-safe features
+only) and `experimental` (also enables features under active
+development). Pinning a file to `stable` means new experimental syntax
+won't sneak in behind your back, even as the language evolves. See the
+[Living Compiler doc](LIVING_COMPILER.md) for the blueprint.
+
 ## Toolchain
 
 | Tool | What it does |
@@ -239,6 +255,10 @@ Paths are resolved relative to the importing file, then under
 | `krc --emit=asm <file.kr>` | Emit a disassembled listing with function labels. |
 | `krc check <file.kr>` | Run semantic analysis only. |
 | `krc fmt <file.kr>` | Auto-format the file in place. |
+| `krc lc <file.kr>` | Living compiler report: fitness score, pattern detection, proposal triggers. |
+| `krc lc --fix <file.kr>` | Apply auto-fixes in place (e.g. `unsafe{}` pointer ops → `load/store` builtins). |
+| `krc lc --fix --dry-run <file.kr>` | Preview auto-fixes without writing. |
+| `krc lc --list-proposals` | Print the proposal registry with lifecycle states. |
 | `kr <file.krbo>` | Run a fat binary on the current platform. |
 
 ## Platforms
