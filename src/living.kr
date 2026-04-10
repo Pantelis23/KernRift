@@ -44,6 +44,10 @@ struct Telemetry {
     uint64 exprstmt_call_count
     uint64 trivial_fn_count
     uint64 tail_call_candidates
+    // v2.6 additions — proposal triggers
+    uint64 long_type_count       // count of long-form uint8..int64 tokens
+    uint64 ptrlen_param_count    // count of functions with a (ptr, *_len/*_count) adjacent pair
+    uint64 volatile_op_count     // count of vloadN/vstoreN AST nodes (sequential pattern candidate)
 }
 
 // ---------------------------------------------------------------------------
@@ -153,12 +157,84 @@ fn tel_inc(uint64 tel, uint64 field) {
     unsafe { *(p as uint64) = val }
 }
 
+// Return 1 if the given token is a long-form type keyword (uint8..int64),
+// 0 if it's a short alias or something else. Long forms start with 'u' or
+// 'i' and have text length >= 4.
+fn lc_is_long_type_tok(uint64 tok) -> uint64 {
+    uint64 tlen = tok_text_len(tok)
+    if tlen < 4 { return 0 }
+    uint64 tstart = tok_text_start(tok)
+    uint64 sp = cg_source + tstart
+    uint64 c0 = 0
+    unsafe { *(sp as uint8) -> c0 }
+    if c0 != 117 && c0 != 105 { return 0 }  // 'u' or 'i'
+    // Second char: long forms have 'i' (uint*) or a digit (int*)
+    uint64 sp1 = cg_source + tstart + 1
+    uint64 c1 = 0
+    unsafe { *(sp1 as uint8) -> c1 }
+    // u-prefix: uintN — second char 'i', third 'n', fourth 't'
+    if c0 == 117 && c1 == 105 { return 1 }
+    // i-prefix: intN — second char 'n', third 't'
+    if c0 == 105 && c1 == 110 { return 1 }
+    return 0
+}
+
+// Return 1 if param_name (a token) ends in "_len", "_count", or "_size".
+// Used to detect adjacent (ptr, *_len) pairs that could become a slice.
+fn lc_is_len_name(uint64 name_tok) -> uint64 {
+    uint64 nlen = tok_text_len(name_tok)
+    uint64 nstart = tok_text_start(name_tok)
+    if nlen >= 4 {
+        // _len
+        uint64 p1 = cg_source + nstart + nlen - 4
+        uint64 c1 = 0
+        unsafe { *(p1 as uint8) -> c1 }
+        if c1 == 95 {
+            uint64 p2 = cg_source + nstart + nlen - 3
+            uint64 c2 = 0
+            unsafe { *(p2 as uint8) -> c2 }
+            uint64 p3 = cg_source + nstart + nlen - 2
+            uint64 c3 = 0
+            unsafe { *(p3 as uint8) -> c3 }
+            uint64 p4 = cg_source + nstart + nlen - 1
+            uint64 c4 = 0
+            unsafe { *(p4 as uint8) -> c4 }
+            if c2 == 108 && c3 == 101 && c4 == 110 { return 1 }  // "len"
+        }
+    }
+    if nlen >= 5 {
+        // _size
+        uint64 q1 = cg_source + nstart + nlen - 5
+        uint64 qc1 = 0
+        unsafe { *(q1 as uint8) -> qc1 }
+        if qc1 == 95 {
+            uint64 qp = cg_source + nstart + nlen - 4
+            uint64 qpc = 0
+            unsafe { *(qp as uint8) -> qpc }
+            if qpc == 115 { return 1 }  // _s... treat as potential size
+        }
+    }
+    if nlen >= 6 {
+        // _count
+        uint64 r1 = cg_source + nstart + nlen - 6
+        uint64 rc1 = 0
+        unsafe { *(r1 as uint8) -> rc1 }
+        if rc1 == 95 {
+            uint64 rp = cg_source + nstart + nlen - 5
+            uint64 rpc = 0
+            unsafe { *(rp as uint8) -> rpc }
+            if rpc == 99 { return 1 }  // _c... treat as potential count
+        }
+    }
+    return 0
+}
+
 @export
 fn collect_telemetry(uint64 root) -> uint64 {
-    uint64 tel = alloc(80)
+    uint64 tel = alloc(128)
     // Zero fill
     uint64 i = 0
-    while i < 80 {
+    while i < 128 {
         uint64 p = tel + i
         uint8 z = 0
         unsafe { *(p as uint8) = z }
@@ -174,6 +250,54 @@ fn collect_telemetry(uint64 root) -> uint64 {
         if ck == 2 {
             // FnDecl
             tel_inc(tel, 0)
+
+            // Scan param list: count long-form types and detect (ptr, _len) pairs
+            uint32 first_param = ast_child(wchild)
+            uint64 wp = first_param
+            uint64 prev_was_ptr_like = 0
+            while wp != 0 {
+                uint32 pk = ast_kind(wp)
+                if pk == 3 {
+                    uint32 ptype_tok = ast_data1(wp)
+                    uint64 wpt = ptype_tok
+                    if lc_is_long_type_tok(wpt) != 0 {
+                        tel_inc(tel, 10)
+                    }
+                    // Pointer-like param: a u64 (short) or uint64 (long) with
+                    // a name that doesn't look like a length. If the next
+                    // param's name ends in _len/_count/_size, count as a
+                    // ptrlen pair.
+                    uint32 pname_tok = ast_data2(wp)
+                    uint64 wpn = pname_tok
+                    if prev_was_ptr_like != 0 && lc_is_len_name(wpn) != 0 {
+                        tel_inc(tel, 11)
+                        prev_was_ptr_like = 0
+                    } else {
+                        // Is this param a plain u64/uint64 that could be a pointer?
+                        if tok_text_eq(wpt, wpt) != 0 {
+                            // (placeholder — actual is-u64 test below)
+                        }
+                        uint64 ptlen = tok_text_len(wpt)
+                        prev_was_ptr_like = 0
+                        if ptlen == 3 {
+                            // "u64"
+                            uint64 tp = cg_source + tok_text_start(wpt)
+                            uint64 tc0 = 0
+                            unsafe { *(tp as uint8) -> tc0 }
+                            if tc0 == 117 { prev_was_ptr_like = 1 }
+                        }
+                        if ptlen == 6 {
+                            // "uint64"
+                            uint64 tp2 = cg_source + tok_text_start(wpt)
+                            uint64 tc2 = 0
+                            unsafe { *(tp2 as uint8) -> tc2 }
+                            if tc2 == 117 { prev_was_ptr_like = 1 }
+                        }
+                    }
+                }
+                uint32 pnxt = ast_next(wp)
+                wp = pnxt
+            }
 
             // Check if it has a body — no body means extern-like
             uint32 body = ast_data3(wchild)
@@ -228,6 +352,15 @@ fn lc_count_in_stmt(uint64 node, uint64 tel) {
     uint32 kind = ast_kind(node)
     // Count total ops
     tel_inc(tel, 6)
+
+    // VarDecl: check the declared type for long-form
+    if kind == 10 {
+        uint32 vtype_tok = ast_data1(node)
+        uint64 wvt = vtype_tok
+        if wvt != 0 && lc_is_long_type_tok(wvt) != 0 {
+            tel_inc(tel, 10)
+        }
+    }
 
     // ExprStmt containing a Call = unchecked call result
     if kind == 16 {
@@ -513,8 +646,17 @@ fn lc_print_pattern(uint64 idx, uint64 n) {
 fn print_living_report(uint64 tel, uint64 patterns, uint64 fitness) {
     uint64 msg = "=== KernRift Living Compiler Report ===\n"
     write(1, msg, 40)
-    msg = "    stable semantic core + adaptive surface layer\n\n"
-    write(1, msg, 52)
+    msg = "    stable semantic core + adaptive surface layer\n"
+    write(1, msg, 51)
+    // Show the active language profile from #lang (if any)
+    uint64 prof = get_lang_profile()
+    if prof == 0 {
+        msg = "    #lang stable        (default — production-safe features only)\n\n"
+        write(1, msg, 68)
+    } else {
+        msg = "    #lang experimental (also allows features under active development)\n\n"
+        write(1, msg, 73)
+    }
 
     msg = "Telemetry\n"
     write(1, msg, 10)
@@ -894,31 +1036,80 @@ fn init_proposals() {
 
 // Evaluate which proposals fire against the current telemetry.
 // Returns the number of proposals marked as firing.
+//
+// Language profile gating: proposals in the experimental state only fire
+// when the file has `#lang experimental`. Stable proposals always fire.
+// This is the governance layer's live effect — files pinned to stable
+// don't get pestered about features that are still under evaluation.
 @export
 fn detect_proposals(uint64 tel) -> uint64 {
     uint64 fired = 0
     uint64 unsafe_c = tel_get(tel, 3)
     uint64 fn_c = tel_get(tel, 0)
+    uint64 profile = get_lang_profile()
     // Clear fire flags first
     uint64 j = 0
     while j < prop_count {
         prop_set_fires(j, 0)
         j = j + 1
     }
-    // load_store_builtins: any legacy unsafe op fires it
+    uint64 long_type_c = tel_get(tel, 10)
+    uint64 ptrlen_c = tel_get(tel, 11)
+
+    // load_store_builtins: any legacy unsafe op fires it (stable, always)
     if unsafe_c > 0 {
         uint64 i = 0
         while i < prop_count {
             uint64 np = prop_get_name(i)
             if str_eq(np, "load_store_builtins") != 0 {
-                prop_set_fires(i, 1)
-                fired = fired + 1
+                uint64 st = prop_get_state(i)
+                if st == 1 || profile == 1 {
+                    prop_set_fires(i, 1)
+                    fired = fired + 1
+                }
             }
             i = i + 1
         }
     }
-    // All other proposals require structural analysis we don't fully do yet;
-    // they are listed for governance but don't auto-fire.
+
+    // short_type_aliases: fires if there are 3+ long-form type uses
+    if long_type_c >= 3 {
+        uint64 i2 = 0
+        while i2 < prop_count {
+            uint64 np2 = prop_get_name(i2)
+            if str_eq(np2, "short_type_aliases") != 0 {
+                prop_set_fires(i2, 1)
+                fired = fired + 1
+            }
+            i2 = i2 + 1
+        }
+    }
+
+    // slice_for_buffer_params: fires if any function has a (ptr, _len/_size/_count) pair
+    if ptrlen_c > 0 {
+        uint64 i3 = 0
+        while i3 < prop_count {
+            uint64 np3 = prop_get_name(i3)
+            if str_eq(np3, "slice_for_buffer_params") != 0 {
+                prop_set_fires(i3, 1)
+                fired = fired + 1
+            }
+            i3 = i3 + 1
+        }
+    }
+    // Under #lang experimental, also surface the experimental-state proposals
+    // as "coming soon" hints so users see what's planned.
+    if profile == 1 {
+        uint64 k = 0
+        while k < prop_count {
+            uint64 st2 = prop_get_state(k)
+            if st2 == 0 && prop_get_fires(k) == 0 {
+                prop_set_fires(k, 1)
+                fired = fired + 1
+            }
+            k = k + 1
+        }
+    }
     return fired
 }
 
@@ -1228,6 +1419,75 @@ fn mig_scan_and_rewrite(uint64 source, uint64 src_size, uint64 out_buf_a, uint64
         uint64 ch = 0
         unsafe { *(bp as uint8) -> ch }
 
+        // Look for 'u' or 'i' at a word boundary and try to match a long-form
+        // type name (uint8..int64). If matched, emit the short form alias.
+        if (ch == 117 || ch == 105) && sp_pos + 4 <= src_size {
+            uint64 lprev_ok = 1
+            if sp_pos > 0 {
+                uint64 lpbp = source + sp_pos - 1
+                uint64 lpc = 0
+                unsafe { *(lpbp as uint8) -> lpc }
+                if mig_is_word(lpc) != 0 { lprev_ok = 0 }
+            }
+            if lprev_ok != 0 {
+                uint64 matched_long = 0
+                uint64 short_form = 0
+                uint64 match_len = 0
+                // Try longest matches first to avoid prefix ambiguity
+                if mig_text_eq(source, sp_pos, src_size, "uint64", 6) != 0 {
+                    matched_long = 1; short_form = "u64"; match_len = 6
+                }
+                if matched_long == 0 && mig_text_eq(source, sp_pos, src_size, "uint32", 6) != 0 {
+                    matched_long = 1; short_form = "u32"; match_len = 6
+                }
+                if matched_long == 0 && mig_text_eq(source, sp_pos, src_size, "uint16", 6) != 0 {
+                    matched_long = 1; short_form = "u16"; match_len = 6
+                }
+                if matched_long == 0 && mig_text_eq(source, sp_pos, src_size, "int64", 5) != 0 {
+                    matched_long = 1; short_form = "i64"; match_len = 5
+                }
+                if matched_long == 0 && mig_text_eq(source, sp_pos, src_size, "int32", 5) != 0 {
+                    matched_long = 1; short_form = "i32"; match_len = 5
+                }
+                if matched_long == 0 && mig_text_eq(source, sp_pos, src_size, "int16", 5) != 0 {
+                    matched_long = 1; short_form = "i16"; match_len = 5
+                }
+                if matched_long == 0 && mig_text_eq(source, sp_pos, src_size, "uint8", 5) != 0 {
+                    matched_long = 1; short_form = "u8"; match_len = 5
+                }
+                if matched_long == 0 && mig_text_eq(source, sp_pos, src_size, "int8", 4) != 0 {
+                    matched_long = 1; short_form = "i8"; match_len = 4
+                }
+                if matched_long != 0 {
+                    // Verify the next char is NOT a word character (word boundary)
+                    uint64 nafter = sp_pos + match_len
+                    uint64 nafter_ok = 1
+                    if nafter < src_size {
+                        uint64 nap = source + nafter
+                        uint64 nac = 0
+                        unsafe { *(nap as uint8) -> nac }
+                        if mig_is_word(nac) != 0 { nafter_ok = 0 }
+                    }
+                    if nafter_ok != 0 {
+                        // Copy pre-match bytes
+                        uint64 pre_len = sp_pos - last_copied
+                        uint8[8] dp_bufm
+                        uint64 dpm = dp_bufm
+                        unsafe { *(dpm as uint64) = dp }
+                        mig_append_bytes(out_buf_a, dpm, source, last_copied, pre_len)
+                        // Emit short form
+                        mig_append_str(out_buf_a, dpm, short_form)
+                        unsafe { *(dpm as uint64) -> dp }
+                        last_copied = sp_pos + match_len
+                        sp_pos = sp_pos + match_len
+                        applied = applied + 1
+                        unsafe { *(matches_out as uint64) = applied }
+                        continue
+                    }
+                }
+            }
+        }
+
         // Look for 'u' and try to match "unsafe" at a word boundary
         if ch == 117 && sp_pos + 6 <= src_size {
             // Word-boundary check: previous char must not be a word character
@@ -1450,7 +1710,7 @@ fn run_migration(uint64 input_path, uint64 dry_run) {
         uint8[32] nb
         uint64 nl = fmt_uint(nb, matches)
         write(1, nb, nl)
-        write(1, " legacy_ptr_ops site(s) rewritten\n", 34)
+        write(1, " migration site(s) rewritten\n", 34)
         write(1, "--- dry-run output preview (first 512 bytes) ---\n", 49)
         uint64 preview = new_size
         if preview > 512 { preview = 512 }
@@ -1460,7 +1720,7 @@ fn run_migration(uint64 input_path, uint64 dry_run) {
     }
 
     if matches == 0 {
-        write(1, "migration: no legacy_ptr_ops sites found\n", 41)
+        write(1, "migration: no sites found\n", 26)
         return
     }
 
@@ -1477,7 +1737,7 @@ fn run_migration(uint64 input_path, uint64 dry_run) {
     uint8[32] nb2
     uint64 nl2 = fmt_uint(nb2, matches)
     write(1, nb2, nl2)
-    write(1, " legacy_ptr_ops site(s) rewritten in ", 37)
+    write(1, " migration site(s) rewritten in ", 32)
     uint64 pl = 0
     uint64 pp = input_path
     uint64 pc = 0

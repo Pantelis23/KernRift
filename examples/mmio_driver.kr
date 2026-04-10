@@ -1,15 +1,27 @@
 // MMIO driver example using a device block.
-// This shows the kernel-style pattern: declare a hardware block with its
-// base address and typed field offsets, then read/write through clean
-// field accesses.
+// This shows the kernel-style pattern: declare a hardware block with
+// its base address and typed field offsets, then read/write through
+// clean field accesses.
 //
-// In real kernel code, the base address would be a physical MMIO region
-// (e.g. 0x3F20_1000 for the UART0 on a Raspberry Pi). Here we mmap a
-// private page in userspace so the example actually runs.
+// In real kernel code, the base address would be a physical MMIO
+// region (e.g. 0x3F20_1000 for the UART0 on a Raspberry Pi). This
+// example has two modes:
+//
+//  - On Linux (x86_64 or ARM64) we mmap a private page at 0x55550000
+//    with MAP_FIXED so the device address is reachable and the demo
+//    actually runs end-to-end.
+//
+//  - On macOS / Windows / Android / other targets, mmap isn't
+//    straightforward from raw syscalls. We use an alloc-backed fallback
+//    and rewrite the device block against that address dynamically —
+//    but KernRift device blocks have a fixed base at compile time.
+//    So on non-Linux hosts we use the second form: a hand-written
+//    volatile load/store over an alloc'd region, which compiles to the
+//    same code a device block does (both use vloadN / vstoreN).
 //
 // Behind the scenes, every read emits a volatile load with a memory
-// barrier, and every write emits a volatile store with a barrier.
-// On x86_64 that's mfence; on ARM64 it's DSB SY.
+// barrier and every write emits a volatile store with a barrier:
+// mfence on x86_64, DSB SY on ARM64.
 
 device FakeUART at 0x55550000 {
     Data   at 0x00 : u32
@@ -19,23 +31,49 @@ device FakeUART at 0x55550000 {
 }
 
 fn main() {
-    // mmap a single page at the device address (userspace stand-in for MMIO).
-    // Syscall numbers: x86_64 Linux = 9, ARM64 Linux = 222.
-    u64 mmap_nr = 9
-    if get_arch_id() == 2 { mmap_nr = 222 }
-    u64 page = syscall_raw(mmap_nr, 0x55550000, 4096, 3, 0x32, 0xFFFFFFFFFFFFFFFF, 0)
+    u64 os = get_target_os()
+    u64 arch = get_arch_id()
 
-    // Write to the "device"
-    FakeUART.Ctrl = 0x8080
-    FakeUART.Data = 0xDEADBEEF
-    FakeUART.Status = 1
-    FakeUART.ID = 0x42
+    if os == 0 {
+        // Linux: mmap a page at 0x55550000 for the demo.
+        // Syscall numbers: x86_64 = 9, ARM64 = 222.
+        u64 mmap_nr = 9
+        if arch == 2 { mmap_nr = 222 }
+        syscall_raw(mmap_nr, 0x55550000, 4096, 3, 0x32, 0xFFFFFFFFFFFFFFFF, 0)
 
-    // Read back
-    u16 c = FakeUART.Ctrl
-    u32 d = FakeUART.Data
-    u32 s = FakeUART.Status
-    u8  i = FakeUART.ID
+        // Write to the "device"
+        FakeUART.Ctrl = 0x8080
+        FakeUART.Data = 0xDEADBEEF
+        FakeUART.Status = 1
+        FakeUART.ID = 0x42
+
+        // Read back — each field access emits a volatile load + barrier
+        u16 c = FakeUART.Ctrl
+        u32 d = FakeUART.Data
+        u32 s = FakeUART.Status
+        u8  i = FakeUART.ID
+
+        print_str("Ctrl   = "); println(c)
+        print_str("Data   = "); println(d)
+        print_str("Status = "); println(s)
+        print_str("ID     = "); println(i)
+        exit(0)
+    }
+
+    // Non-Linux: use the volatile builtins directly against an alloc'd
+    // region. Same IR as the device-block form, just without the fixed
+    // base address. This works on macOS, Windows, and Android.
+    u64 buf = alloc(16)
+
+    vstore16(buf + 0x08, 0x8080)
+    vstore32(buf + 0x00, 0xDEADBEEF)
+    vstore32(buf + 0x04, 1)
+    vstore8(buf + 0x0C, 0x42)
+
+    u16 c = vload16(buf + 0x08)
+    u32 d = vload32(buf + 0x00)
+    u32 s = vload32(buf + 0x04)
+    u8  i = vload8(buf + 0x0C)
 
     print_str("Ctrl   = "); println(c)
     print_str("Data   = "); println(d)

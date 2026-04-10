@@ -1263,7 +1263,7 @@ fn main() {
 }
 KREOF
 if $KRC lc --fix --dry-run /tmp/krc_mig_$$.kr > /tmp/krc_mig_out_$$.txt 2>&1; then
-    if grep -q "1 legacy_ptr_ops site(s) rewritten" /tmp/krc_mig_out_$$.txt && grep -q "load32" /tmp/krc_mig_out_$$.txt; then
+    if grep -q "1 migration site(s) rewritten" /tmp/krc_mig_out_$$.txt && grep -q "load32" /tmp/krc_mig_out_$$.txt; then
         PASS=$((PASS + 1))
     else
         echo "FAIL: migration_dry_run (output missing expected content)"
