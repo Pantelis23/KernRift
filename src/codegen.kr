@@ -1491,29 +1491,31 @@ fn gen_expr(uint64 node) {
             return
         }
 
-        gen_expr(wlhs)
-
-        // Allocate a fresh temp slot
-        uint64 cmp_temp = var_count * 8
-        var_count = var_count + 1
-        var_frame_size = var_count * 8
-        uint64 crem = var_frame_size & 15
-        if crem != 0 { var_frame_size = var_frame_size + 16 - crem }
-
-        // Save lhs to cmp_temp
-        emit_store_rax_to_stack(cmp_temp)
-
         uint32 rhs_idx = ast_data2(node)
         uint64 wrhs = rhs_idx
-        gen_expr(wrhs)
+        uint32 rhs_kind_cmp = ast_kind(wrhs)
+        uint64 wrk_cmp = rhs_kind_cmp
 
-        // mov rcx, rax (rhs)
-        emit_byte(0x48)
-        emit_byte(0x89)
-        emit_byte(0xC1)
-
-        // Restore lhs → rax
-        emit_load_rax_from_stack(cmp_temp)
+        if wrk_cmp == 30 || wrk_cmp == 32 {
+            // Simple RHS: skip stack temp
+            gen_expr(wlhs)
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
+            rax_cache = 0
+            gen_expr(wrhs)
+            emit_byte(0x48); emit_byte(0x87); emit_byte(0xC1)
+            rax_cache = 0
+        } else {
+            gen_expr(wlhs)
+            uint64 cmp_temp = var_count * 8
+            var_count = var_count + 1
+            var_frame_size = var_count * 8
+            uint64 crem = var_frame_size & 15
+            if crem != 0 { var_frame_size = var_frame_size + 16 - crem }
+            emit_store_rax_to_stack(cmp_temp)
+            gen_expr(wrhs)
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
+            emit_load_rax_from_stack(cmp_temp)
+        }
 
         uint32 op_tok = ast_data1(node)
         uint64 wop = op_tok
