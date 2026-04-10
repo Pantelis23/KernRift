@@ -3059,7 +3059,10 @@ fn gen_function_a64(uint64 fn_node) {
             uint32 si = 0
             unsafe { *(sp2 as uint32) -> si }
             uint64 wsi = si
+            // BL rel26: 0x94000000 (direct call)
+            // BLR Xn:  0xD63F0000 (indirect call, used by Windows IAT)
             if (wsi & 0xFC000000) == 0x94000000 { has_bl = 1; break }
+            if (wsi & 0xFFFFF000) == 0xD63F0000 { has_bl = 1; break }
             scan = scan + 4
         }
         if has_bl == 0 {
