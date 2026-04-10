@@ -1097,6 +1097,244 @@ fn main() { exit(add(10, 32)) }' 42
 fn main() { x = 42; exit(x) }' 42
 fi
 
+# --- v2.6 feature tests ---
+echo ""
+echo "--- v2.6 short type aliases ---"
+run_test "alias_u8"  'fn main() { u8 x = 42; exit(x) }' 42
+run_test "alias_u16" 'fn main() { u16 x = 42; exit(x) }' 42
+run_test "alias_u32" 'fn main() { u32 x = 42; exit(x) }' 42
+run_test "alias_u64" 'fn main() { u64 x = 42; exit(x) }' 42
+run_test "alias_i8"  'fn main() { i8  x = 42; exit(x) }' 42
+run_test "alias_i16" 'fn main() { i16 x = 42; exit(x) }' 42
+run_test "alias_i32" 'fn main() { i32 x = 42; exit(x) }' 42
+run_test "alias_i64" 'fn main() { i64 x = 42; exit(x) }' 42
+
+echo ""
+echo "--- v2.6 pointer load/store builtins ---"
+run_test "load_store_u8"  'fn main() { u64 buf = alloc(16); store8(buf, 42); exit(load8(buf)) }' 42
+run_test "load_store_u16" 'fn main() { u64 buf = alloc(16); store16(buf, 42); exit(load16(buf)) }' 42
+run_test "load_store_u32" 'fn main() { u64 buf = alloc(16); store32(buf, 42); exit(load32(buf)) }' 42
+run_test "load_store_u64" 'fn main() { u64 buf = alloc(16); store64(buf, 42); exit(load64(buf)) }' 42
+run_test "load_store_offsets" 'fn main() {
+    u64 buf = alloc(32)
+    store8(buf + 0, 1)
+    store8(buf + 1, 2)
+    store8(buf + 2, 3)
+    store8(buf + 3, 4)
+    exit(load8(buf + 0) + load8(buf + 1) + load8(buf + 2) + load8(buf + 3))
+}' 10
+run_test "load_store_widths_mixed" 'fn main() {
+    u64 buf = alloc(32)
+    store32(buf, 0x11223344)
+    exit(load8(buf) + load8(buf + 1) + load8(buf + 2) + load8(buf + 3))
+}' 170
+run_test "vload_vstore_u32" 'fn main() { u64 buf = alloc(16); vstore32(buf, 42); exit(vload32(buf)) }' 42
+run_test "vload_vstore_u64" 'fn main() { u64 buf = alloc(16); vstore64(buf, 42); exit(vload64(buf)) }' 42
+
+echo ""
+echo "--- v2.6 print_str / println_str ---"
+run_test "print_str_roundtrip" 'import "std/string.kr"
+fn main() {
+    u64 s = int_to_str(42)
+    u64 back = str_to_int(s)
+    exit(back)
+}' 42
+
+echo ""
+echo "--- v2.6 static arrays ---"
+run_test "static_array_u8" 'static u8[16] buf
+fn main() { buf[0] = 42; exit(buf[0]) }' 42
+run_test "static_array_roundtrip" 'static u8[32] buf
+fn main() {
+    buf[5] = 10
+    buf[6] = 20
+    buf[7] = 12
+    exit(buf[5] + buf[6] + buf[7])
+}' 42
+
+echo ""
+echo "--- v2.6 struct arrays ---"
+run_test "struct_array_basic" 'struct P { u64 x; u64 y }
+fn main() {
+    P[4] pts
+    pts[0].x = 10
+    pts[0].y = 20
+    pts[3].x = 5
+    pts[3].y = 7
+    exit(pts[0].x + pts[0].y + pts[3].x + pts[3].y)
+}' 42
+run_test "struct_array_iteration" 'struct Row { u64 a; u64 b }
+fn main() {
+    Row[5] rows
+    for i in 0..5 {
+        rows[i].a = i
+        rows[i].b = 0
+    }
+    u64 sum = 0
+    for j in 0..5 {
+        sum = sum + rows[j].a
+    }
+    exit(sum)
+}' 10
+
+echo ""
+echo "--- v2.6 slice parameters ---"
+run_test "slice_param_len" 'fn sum_bytes([u8] data) -> u64 {
+    u64 total = 0
+    u64 i = 0
+    u64 n = data.len
+    while i < n {
+        total = total + load8(data + i)
+        i = i + 1
+    }
+    return total
+}
+fn main() {
+    u8[6] buf
+    buf[0] = 10
+    buf[1] = 20
+    buf[2] = 12
+    exit(sum_bytes(buf, 3))
+}' 42
+
+echo ""
+echo "--- v2.6 device blocks ---"
+run_test "device_block_read_write" 'device Fake at 0x66666000 {
+    Data at 0x00 : u32
+    Status at 0x04 : u8
+}
+fn main() {
+    // mmap a page at 0x66666000 (Linux x86_64 syscall 9, ARM64 222)
+    u64 nr = 9
+    if get_arch_id() == 2 { nr = 222 }
+    syscall_raw(nr, 0x66666000, 4096, 3, 0x32, 0xFFFFFFFFFFFFFFFF, 0)
+    Fake.Data = 42
+    Fake.Status = 7
+    u32 v = Fake.Data
+    u8  s = Fake.Status
+    exit(v + s)
+}' 49
+
+echo ""
+echo "--- v2.6 method calls ---"
+run_test "method_call" 'struct P { u64 x; u64 y }
+fn P.sum(P self) -> u64 { return self.x + self.y }
+fn main() {
+    P p
+    p.x = 10
+    p.y = 32
+    exit(p.sum())
+}' 42
+
+echo ""
+echo "--- v2.6 #lang directive ---"
+run_test "lang_stable" '#lang stable
+
+fn main() { exit(42) }' 42
+run_test "lang_experimental" '#lang experimental
+
+fn main() { exit(42) }' 42
+
+echo ""
+echo "--- v2.6 living compiler ---"
+# --list-proposals should work without an input file and exit 0
+TOTAL=$((TOTAL + 1))
+if $KRC lc --list-proposals > /tmp/krc_prop_$$.txt 2>&1; then
+    if grep -q "KernRift Proposal Registry" /tmp/krc_prop_$$.txt && grep -q "load_store_builtins" /tmp/krc_prop_$$.txt; then
+        PASS=$((PASS + 1))
+    else
+        echo "FAIL: list_proposals (output did not contain expected strings)"
+        FAIL=$((FAIL + 1))
+    fi
+else
+    echo "FAIL: list_proposals (command failed)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f /tmp/krc_prop_$$.txt
+
+# --fix --dry-run on a legacy file should show a migration
+TOTAL=$((TOTAL + 1))
+cat > /tmp/krc_mig_$$.kr <<'KREOF'
+fn main() {
+    u64 buf = alloc(16)
+    u64 v = 0
+    unsafe { *(buf as u32) -> v }
+    exit(v)
+}
+KREOF
+if $KRC lc --fix --dry-run /tmp/krc_mig_$$.kr > /tmp/krc_mig_out_$$.txt 2>&1; then
+    if grep -q "1 legacy_ptr_ops site(s) rewritten" /tmp/krc_mig_out_$$.txt && grep -q "load32" /tmp/krc_mig_out_$$.txt; then
+        PASS=$((PASS + 1))
+    else
+        echo "FAIL: migration_dry_run (output missing expected content)"
+        FAIL=$((FAIL + 1))
+    fi
+else
+    echo "FAIL: migration_dry_run (command failed)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f /tmp/krc_mig_$$.kr /tmp/krc_mig_out_$$.txt
+
+# --fix (actual) on a legacy file should rewrite and the result should compile
+TOTAL=$((TOTAL + 1))
+cat > /tmp/krc_mig2_$$.kr <<'KREOF'
+fn main() {
+    u64 buf = alloc(16)
+    u64 v = 0
+    store32(buf, 42)
+    unsafe { *(buf as u32) -> v }
+    exit(v)
+}
+KREOF
+if $KRC lc --fix /tmp/krc_mig2_$$.kr > /dev/null 2>&1; then
+    if grep -q "v = load32(buf)" /tmp/krc_mig2_$$.kr; then
+        # Now verify the rewritten file still compiles and runs
+        if $KRC $KRC_FLAGS /tmp/krc_mig2_$$.kr -o /tmp/krc_mig2_bin_$$ > /dev/null 2>&1; then
+            chmod +x /tmp/krc_mig2_bin_$$
+            /tmp/krc_mig2_bin_$$ > /dev/null 2>&1
+            if [ "$?" = "42" ]; then
+                PASS=$((PASS + 1))
+            else
+                echo "FAIL: migration_apply (rewritten binary exit != 42)"
+                FAIL=$((FAIL + 1))
+            fi
+        else
+            echo "FAIL: migration_apply (rewritten file did not compile)"
+            FAIL=$((FAIL + 1))
+        fi
+    else
+        echo "FAIL: migration_apply (file was not rewritten)"
+        FAIL=$((FAIL + 1))
+    fi
+else
+    echo "FAIL: migration_apply (command failed)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f /tmp/krc_mig2_$$.kr /tmp/krc_mig2_bin_$$
+
+# krc lc on a file with unsafe ops should report legacy_ptr_ops
+TOTAL=$((TOTAL + 1))
+cat > /tmp/krc_lc_$$.kr <<'KREOF'
+fn main() {
+    u64 buf = alloc(16)
+    u64 v = 0
+    unsafe { *(buf as u32) -> v }
+    exit(v)
+}
+KREOF
+if $KRC lc /tmp/krc_lc_$$.kr > /tmp/krc_lc_out_$$.txt 2>&1; then
+    if grep -q "legacy_ptr_ops" /tmp/krc_lc_out_$$.txt && grep -q "auto-fix available" /tmp/krc_lc_out_$$.txt; then
+        PASS=$((PASS + 1))
+    else
+        echo "FAIL: lc_reports_legacy (missing expected strings in output)"
+        FAIL=$((FAIL + 1))
+    fi
+else
+    echo "FAIL: lc_reports_legacy (command failed)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f /tmp/krc_lc_$$.kr /tmp/krc_lc_out_$$.txt
+
 # --- Bootstrap test ---
 echo ""
 echo "--- Bootstrap test ---"
