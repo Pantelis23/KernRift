@@ -108,6 +108,14 @@ static uint64 pe_iat_rva = 0
 static uint64 type_alias_table = 0
 static uint64 type_alias_count = 0
 
+// Parameter pinning: read-only params pinned to callee-saved registers
+// pin_param0_offset = stack offset of pinned param 0 (rbx), 0xFFFFFFFF = not pinned
+// pin_param1_offset = stack offset of pinned param 1 (r12), 0xFFFFFFFF = not pinned
+static uint64 pin_param0_offset = 0xFFFFFFFF
+static uint64 pin_param1_offset = 0xFFFFFFFF
+static uint64 pin_param0_tok = 0
+static uint64 pin_param1_tok = 0
+
 @export
 fn codegen_init(uint64 capacity, uint64 source, uint64 tokens) {
     out_buf = alloc(capacity)
@@ -152,6 +160,8 @@ fn codegen_init(uint64 capacity, uint64 source, uint64 tokens) {
     type_alias_count = 0
     fnaddr_fixup_table = alloc(256 * 8)
     fnaddr_fixup_count = 0
+    pin_param0_offset = 0xFFFFFFFF
+    pin_param1_offset = 0xFFFFFFFF
 }
 
 // ---------------------------------------------------------------------------
@@ -825,6 +835,14 @@ fn emit_store_rax_to_stack(uint64 offset) {
 
 // emit: mov rax, [rsp+off] — skipped if rax already holds this value
 fn emit_load_rax_from_stack(uint64 offset) {
+    // Pinned param0: use rbx instead of stack
+    if offset == pin_param0_offset && pin_param0_offset != 0xFFFFFFFF {
+        if rax_cache == offset + 1 { return }
+        // mov rax, rbx (48 89 D8)
+        emit_byte(0x48); emit_byte(0x89); emit_byte(0xD8)
+        rax_cache = offset + 1
+        return
+    }
     // Check cache: if rax already holds [rsp+offset], skip the load
     if rax_cache == offset + 1 { return }
     emit_byte(0x48)
@@ -4352,6 +4370,50 @@ fn gen_block(uint64 block_node) {
     }
 }
 
+// Scan AST subtree for assignments to a variable at target_offset.
+// Returns 1 if any assignment/write targets that offset, 0 otherwise.
+fn scan_assigns(uint64 node, uint64 target_offset) -> uint64 {
+    if node == 0 { return 0 }
+    uint32 kind = ast_kind(node)
+    uint64 wk = kind
+    // Assignment kind 11: target is data1 (a token index)
+    if wk == 11 {
+        uint32 t = ast_data1(node)
+        uint64 off = var_lookup(t)
+        if off == target_offset { return 1 }
+    }
+    // PtrLoad kind 41: dest is data2
+    if wk == 41 {
+        uint32 d = ast_data2(node)
+        uint64 off = var_lookup(d)
+        if off == target_offset { return 1 }
+    }
+    // VarDecl kind 10: name is data2 — re-declaration shadows the param
+    if wk == 10 {
+        uint32 vn = ast_data2(node)
+        uint64 off = var_lookup(vn)
+        if off == target_offset { return 1 }
+    }
+    // Recurse into child chain
+    uint32 ch = ast_child(node)
+    uint64 wch = ch
+    while wch != 0 {
+        if scan_assigns(wch, target_offset) != 0 { return 1 }
+        uint32 nxt = ast_next(wch)
+        wch = nxt
+    }
+    // If/While/For/Switch bodies stored in data1/data2
+    if wk == 13 || wk == 14 || wk == 15 || wk == 19 || wk == 20 {
+        uint32 d1 = ast_data1(node)
+        uint64 wd1 = d1
+        if scan_assigns(wd1, target_offset) != 0 { return 1 }
+        uint32 d2 = ast_data2(node)
+        uint64 wd2 = d2
+        if scan_assigns(wd2, target_offset) != 0 { return 1 }
+    }
+    return 0
+}
+
 // Generate code for a function declaration
 @export
 fn gen_function(uint64 fn_node) {
@@ -4446,6 +4508,43 @@ fn gen_function(uint64 fn_node) {
         wparam = pnxt
     }
 
+    // Parameter pinning: pin read-only params to callee-saved registers
+    pin_param0_offset = 0xFFFFFFFF
+    pin_param1_offset = 0xFFFFFFFF
+    pin_param0_tok = 0
+    pin_param1_tok = 0
+
+    // Collect first two param offsets
+    uint64 p0_off = 0xFFFFFFFF
+    uint64 p1_off = 0xFFFFFFFF
+    uint64 pidx_scan = 0
+    uint64 wp_scan = first_param
+    while wp_scan != 0 {
+        uint32 pks = ast_kind(wp_scan)
+        if pks == 3 {
+            uint32 pns = ast_data2(wp_scan)
+            uint64 poffs = var_lookup(pns)
+            if pidx_scan == 0 { p0_off = poffs }
+            if pidx_scan == 1 { p1_off = poffs }
+            pidx_scan = pidx_scan + 1
+        }
+        uint32 pnxts = ast_next(wp_scan)
+        wp_scan = pnxts
+    }
+
+    // Use the body block (data3) for scanning assignments
+    uint32 body_scan = ast_data3(fn_node)
+    uint64 wbs = body_scan
+
+    // Check if params are read-only AND function is not naked/Windows/overflow
+    if is_naked == 0 && pidx_scan <= 6 && target_os != 2 {
+        if p0_off != 0xFFFFFFFF && wbs != 0 {
+            if scan_assigns(wbs, p0_off) == 0 {
+                pin_param0_offset = p0_off
+            }
+        }
+    }
+
     // Pre-scan body to count local variables
     // (For simplicity, emit a placeholder frame setup and patch later)
     uint64 prologue_start = out_len
@@ -4499,9 +4598,14 @@ fn gen_function(uint64 fn_node) {
                 } else {
                     // SysV calling convention
                     if pidx == 0 {
-                        // mov [rsp+off], rdi
-                        emit_byte(0x48); emit_byte(0x89); emit_byte(0x7C)
-                        emit_byte(0x24); emit_byte(po8)
+                        if pin_param0_offset != 0xFFFFFFFF {
+                            // mov rbx, rdi (48 89 FB)
+                            emit_byte(0x48); emit_byte(0x89); emit_byte(0xFB)
+                        } else {
+                            // mov [rsp+off], rdi
+                            emit_byte(0x48); emit_byte(0x89); emit_byte(0x7C)
+                            emit_byte(0x24); emit_byte(po8)
+                        }
                     }
                     if pidx == 1 {
                         // mov [rsp+off], rsi
