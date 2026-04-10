@@ -12,7 +12,7 @@ A self-hosted systems language compiler for kernel-first development. KernRift c
 - **Zero dependencies** — static executables, no libc, no linker
 - **Kernel-first** — inline assembly, `@naked` functions, `@packed` structs, signed comparisons, volatile memory, bitfield ops, `--freestanding` mode
 - **Kernel safety** — context checks, effect tracking, lock graphs, capabilities, undeclared identifier detection
-- **Volatile blocks** — `volatile { ... }` emits memory barriers (`mfence` on x86_64, `DMB ISH` on ARM64)
+- **Volatile blocks** — `volatile { ... }` emits memory barriers (`mfence` on x86_64, `DSB SY` on ARM64)
 - **Atomic operations** — `atomic_load`, `atomic_store`, `atomic_cas`, `atomic_add`, `atomic_sub`, `atomic_and`, `atomic_or`, `atomic_xor`
 - **Pointer cast ops** — uint16/uint32/uint64 and int16/int32/int64 pointer operations in `unsafe`/`volatile` blocks
 - **Assembly listing** — `--emit=asm` produces a disassembled listing with function labels
@@ -82,8 +82,8 @@ winget install Pantelis23.KernRift
 
 **Debian/Ubuntu** (.deb):
 ```bash
-curl -sSLO https://github.com/Pantelis23/KernRift/releases/latest/download/kernrift_2.5.0_amd64.deb
-sudo dpkg -i kernrift_2.5.0_amd64.deb
+curl -sSLO https://github.com/Pantelis23/KernRift/releases/latest/download/kernrift_2.5.2_amd64.deb
+sudo dpkg -i kernrift_2.5.2_amd64.deb
 ```
 
 **AUR** (Arch Linux):
@@ -133,8 +133,7 @@ fn main() {
     p.x = fib(10)
     p.y = 42
 
-    uint64 buf = alloc(64)
-    uint64 s = int_to_str(p.sum(), buf)
+    uint64 s = int_to_str(p.sum())
     println(s)
 
     match p.x {
@@ -184,8 +183,9 @@ These are compiler intrinsics — no import needed, available on all platforms:
 | I/O | `write(fd, buf, len)`, `file_open(path, flags)`, `file_read(fd, buf, len)`, `file_write(fd, buf, len)`, `file_close(fd)`, `file_size(fd)` |
 | Memory | `memcpy(dst, src, len)`, `memset(dst, val, len)`, `str_len(s)`, `str_eq(a, b)` |
 | Signed cmp | `signed_lt(a, b)`, `signed_gt(a, b)`, `signed_le(a, b)`, `signed_ge(a, b)` |
-| Bitfield | `bit_get(v, n)`, `bit_set(v, n)`, `bit_clear(v, n)`, `bit_range(v, lo, hi)`, `bit_insert(v, lo, hi, bits)` |
+| Bitfield | `bit_get(v, n)`, `bit_set(v, n)`, `bit_clear(v, n)`, `bit_range(v, start, width)`, `bit_insert(v, start, width, bits)` |
 | Atomic | `atomic_load(ptr)`, `atomic_store(ptr, val)`, `atomic_cas(ptr, exp, des)`, `atomic_add(ptr, val)`, `atomic_sub(ptr, val)`, `atomic_and(ptr, val)`, `atomic_or(ptr, val)`, `atomic_xor(ptr, val)` |
+| Syscall | `syscall_raw(nr, a1, a2, a3, a4, a5, a6)` |
 | Meta | `fn_addr(name)`, `call_ptr(addr, ...)`, `get_module_path(buf, size)`, `exec_process(path)`, `set_executable(path)`, `get_target_os()`, `get_arch_id()`, `fmt_uint(buf, val)` |
 
 ## Standard Library
@@ -195,21 +195,21 @@ These are compiler intrinsics — no import needed, available on all platforms:
 | Module | Functions |
 |--------|-----------|
 | `std/string.kr` | `str_cat`, `str_copy`, `str_starts`, `str_ends`, `str_find_byte`, `str_contains`, `str_sub`, `str_at`, `str_to_int`, `int_to_str`, `str_repeat`, `str_trim` |
-| `std/io.kr` | `read_file`, `write_file`, `append_file`, `read_line`, `print_kv`, `print_indent` |
+| `std/io.kr` | `read_file`, `write_file`, `append_file`, `read_line`, `print_int`, `print_line`, `print_kv`, `print_indent`, `scan_int`, `scan_str` |
 | `std/math.kr` | `min`, `max`, `abs`, `clamp`, `pow`, `sqrt_int`, `gcd`, `is_prime` |
 | `std/fmt.kr` | `fmt_hex`, `fmt_bin`, `pad_left`, `pad_right` |
 | `std/mem.kr` | `realloc`, `memcmp`, `memzero`, `arena_init`, `arena_alloc`, `arena_reset` |
-| `std/vec.kr` | `vec_new`, `push`, `get`, `set`, `pop`, `remove`, `contains` |
-| `std/map.kr` | `map_new`, `set`, `get`, `has` |
+| `std/vec.kr` | `vec_new`, `vec_push`, `vec_get`, `vec_set`, `vec_pop`, `vec_remove`, `vec_contains`, `vec_len`, `vec_cap`, `vec_last`, `vec_clear`, `vec_free` |
+| `std/map.kr` | `map_new`, `map_set`, `map_get`, `map_has`, `map_len`, `map_keys`, `map_vals`, `map_free` |
 | `std/color.kr` | Color utilities: `rgb`, `rgba`, `alpha_blend` |
 | `std/fixedpoint.kr` | 16.16 fixed-point math |
 | `std/memfast.kr` | Fast block memory ops |
 | `std/fb.kr` | Framebuffer primitives |
 | `std/font.kr` | 8x16 bitmap font renderer |
 | `std/widget.kr` | UI widgets: panel, label, button, progress bar, text field |
-| `std/time.kr` | Clock access: `clock_gettime`, `nanosleep` |
-| `std/log.kr` | Structured logging with levels |
-| `std/net.kr` | Raw socket operations |
+| `std/time.kr` | `time_now`, `time_sleep_ns`, `time_sleep_ms`, `time_elapsed` |
+| `std/log.kr` | `log_set_level`, `log_debug`, `log_info`, `log_warn`, `log_error`, `log_info_kv`, `log_error_int` |
+| `std/net.kr` | `net_socket`, `net_bind`, `net_listen`, `net_accept`, `net_connect`, `net_send`, `net_recv`, `net_close`, `net_htons`, `net_addr_ipv4` |
 
 Import with `import "std/string.kr"` etc. The compiler searches `~/.local/share/kernrift/` automatically.
 
@@ -222,7 +222,7 @@ A VS Code extension (v0.2.3) is available on the VS Code Marketplace:
 
 ## Architecture
 
-17,000+ lines of KernRift across 16 source files + 16 stdlib modules (~2500+ lines). Self-compiles to a 383 KB native binary in 55ms, or a 2.6 MB universal fat binary (7 slices) in ~280ms (AMD Ryzen 9 7900X). 131 tests, bootstrap fixed point verified on 5 platforms (Linux x86_64, Linux ARM64, Windows x86_64, Windows ARM64, Android ARM64).
+17,000+ lines of KernRift across 16 source files + 16 stdlib modules (~2500+ lines). Self-compiles to a ~441 KB native binary in 55ms, or a 2.6 MB universal fat binary (7 slices) in ~280ms (AMD Ryzen 9 7900X). 131 tests, bootstrap fixed point verified on 5 platforms (Linux x86_64, Linux ARM64, Windows x86_64, Windows ARM64, Android ARM64).
 
 | File | Purpose |
 |------|---------|

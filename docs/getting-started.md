@@ -136,6 +136,7 @@ krc lc module.kr        # living compiler patterns + fitness score
 | `krc` | Compiler — compiles `.kr` source to native ELF, PE, Mach-O, or `.krbo` fat binary |
 | `kr` | Runner — executes `.krbo` fat binaries on any supported platform |
 | `krc check` | Safety analysis — context, effect, lock graph, capability checks |
+| `krc fmt` | Auto-formatter — formats `.kr` source files |
 | `krc lc` | Living compiler — pattern detection and fitness scoring |
 
 ### Supported platforms
@@ -160,23 +161,28 @@ KernRift ships with a standard library (`std/`) that provides common utilities. 
 import "std/string.kr"
 import "std/vec.kr"
 import "std/math.kr"
+import "std/io.kr"
 
 fn main() {
     // String operations
-    uint64 buf = alloc(256)
-    uint64 s = int_to_str(42, buf)
+    uint64 s = int_to_str(42)
     println(s)
 
     // Dynamic arrays
-    uint64 v = vec_new(8)
-    push(v, 10)
-    push(v, 20)
-    push(v, 30)
-    uint64 val = get(v, 1)  // 20
+    uint64 v = vec_new()
+    vec_push(v, 10)
+    vec_push(v, 20)
+    vec_push(v, 30)
+    uint64 val = vec_get(v, 1)  // 20
 
     // Math
     uint64 m = max(10, 20)  // 20
     uint64 g = gcd(48, 18)  // 6
+
+    // Read input from stdin
+    print("Enter a number: ")
+    uint64 n = scan_int()
+    println(n)
 
     exit(0)
 }
@@ -187,21 +193,21 @@ fn main() {
 | Module | Key functions |
 |--------|---------------|
 | `std/string.kr` | `str_cat`, `str_copy`, `str_starts`, `str_ends`, `str_find_byte`, `str_contains`, `str_sub`, `str_at`, `str_to_int`, `int_to_str`, `str_repeat`, `str_trim` |
-| `std/io.kr` | `read_file`, `write_file`, `append_file`, `read_line`, `print_kv`, `print_indent` |
+| `std/io.kr` | `read_file`, `write_file`, `append_file`, `read_line`, `print_int`, `print_line`, `print_kv`, `print_indent`, `scan_int`, `scan_str` |
 | `std/math.kr` | `min`, `max`, `abs`, `clamp`, `pow`, `sqrt_int`, `gcd`, `is_prime` |
 | `std/fmt.kr` | `fmt_hex`, `fmt_bin`, `pad_left`, `pad_right` |
 | `std/mem.kr` | `realloc`, `memcmp`, `memzero`, `arena_init`, `arena_alloc`, `arena_reset` |
-| `std/vec.kr` | `vec_new`, `push`, `get`, `set`, `pop`, `remove`, `contains` |
-| `std/map.kr` | `map_new`, `set`, `get`, `has` |
+| `std/vec.kr` | `vec_new`, `vec_push`, `vec_get`, `vec_set`, `vec_pop`, `vec_remove`, `vec_contains`, `vec_len`, `vec_cap`, `vec_last`, `vec_clear`, `vec_free` |
+| `std/map.kr` | `map_new`, `map_set`, `map_get`, `map_has`, `map_len`, `map_keys`, `map_vals`, `map_free` |
 | `std/color.kr` | `rgb`, `rgba`, `color_r`, `color_g`, `color_b`, `alpha_blend`, `color_lerp` |
-| `std/fb.kr` | `fb_init`, `fb_pixel`, `fb_rect`, `fb_fill`, `fb_line`, `fb_blit` |
+| `std/fb.kr` | `fb_init(addr,w,h,stride,bpp)`, `fb_pixel`, `fb_rect`, `fb_fill`, `fb_clear`, `fb_hline`, `fb_vline`, `fb_line`, `fb_rect_outline`, `fb_blit` |
 | `std/fixedpoint.kr` | `fp_from_int`, `fp_to_int`, `fp_add`, `fp_sub`, `fp_mul`, `fp_div`, `fp_sqrt` |
 | `std/font.kr` | `font_init`, `fb_char`, `fb_text` |
 | `std/memfast.kr` | `memcpy32`, `memcpy64`, `memset32`, `memset64` |
 | `std/widget.kr` | `panel_new`, `panel_draw`, `label_new`, `button_new`, `progress_new`, `textfield_new` |
-| `std/time.kr` | `clock_gettime`, `nanosleep` |
-| `std/log.kr` | `log_info`, `log_warn`, `log_error`, `log_debug` |
-| `std/net.kr` | `socket_open`, `socket_close`, `socket_send`, `socket_recv` |
+| `std/time.kr` | `time_now`, `time_sleep_ns`, `time_sleep_ms`, `time_elapsed` |
+| `std/log.kr` | `log_set_level`, `log_debug`, `log_info`, `log_warn`, `log_error`, `log_info_kv`, `log_error_int` |
+| `std/net.kr` | `net_socket`, `net_bind`, `net_listen`, `net_accept`, `net_connect`, `net_send`, `net_recv`, `net_close`, `net_htons`, `net_addr_ipv4` |
 
 ## Editor Setup
 

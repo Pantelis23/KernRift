@@ -828,21 +828,104 @@ dynamic extent — including any function called from inside the block.
 ## 17. Unsafe Blocks
 
 An `unsafe { }` block enables operations that bypass the compiler's normal
-safety checks, such as inline assembly via `asm!`.  The compiler emits
-`UnsafeEnter`/`UnsafeExit` markers in KRIR so the unsafe region is visible
-to downstream analysis passes.
+safety checks: raw pointer loads and stores, and inline assembly.  All
+capability and context rules still apply inside an unsafe block.
+
+### Pointer load (read from memory)
+
+```kr
+unsafe { *(address as TYPE) -> destination }
+```
+
+Reads a value of `TYPE` width from `address` and stores it in `destination`.
+The cast type determines the access width:
+
+| Cast type  | Width | x86_64 instruction        | ARM64 instruction |
+|------------|-------|---------------------------|-------------------|
+| `uint8`    | 1 B   | `movzbl (%rax), %eax`     | `LDRB`            |
+| `uint16`   | 2 B   | `movzwl (%rax), %eax`     | `LDRH`            |
+| `uint32`   | 4 B   | `movl (%rax), %eax`       | `LDR W`           |
+| `uint64`   | 8 B   | `movq (%rax), %rax`       | `LDR X`           |
+| `int8`     | 1 B   | `movzbl (%rax), %eax`     | `LDRB`            |
+| `int16`    | 2 B   | `movzwl (%rax), %eax`     | `LDRH`            |
+| `int32`    | 4 B   | `movl (%rax), %eax`       | `LDR W`           |
+| `int64`    | 8 B   | `movq (%rax), %rax`       | `LDR X`           |
+
+```kr
+fn read_byte(uint64 addr) -> uint64 {
+    uint64 val = 0
+    unsafe { *(addr as uint8) -> val }
+    return val
+}
+
+fn read_word(uint64 addr) -> uint64 {
+    uint64 val = 0
+    unsafe { *(addr as uint32) -> val }
+    return val
+}
+```
+
+### Pointer store (write to memory)
+
+```kr
+unsafe { *(address as TYPE) = value }
+```
+
+Writes `value` at `address` with the width determined by `TYPE`:
+
+| Cast type  | Width | x86_64 instruction        | ARM64 instruction |
+|------------|-------|---------------------------|-------------------|
+| `uint8`    | 1 B   | `movb %cl, (%rax)`        | `STRB`            |
+| `uint16`   | 2 B   | `mov word [rax], cx`       | `STRH`            |
+| `uint32`   | 4 B   | `movl %ecx, (%rax)`       | `STR W`           |
+| `uint64`   | 8 B   | `movq %rcx, (%rax)`       | `STR X`           |
+| `int8`     | 1 B   | `movb %cl, (%rax)`        | `STRB`            |
+| `int16`    | 2 B   | `mov word [rax], cx`       | `STRH`            |
+| `int32`    | 4 B   | `movl %ecx, (%rax)`       | `STR W`           |
+| `int64`    | 8 B   | `movq %rcx, (%rax)`       | `STR X`           |
+
+```kr
+fn write_byte(uint64 addr, uint64 val) {
+    uint8 b = val
+    unsafe { *(addr as uint8) = b }
+}
+
+fn null_terminate(uint64 buf, uint64 len) {
+    uint64 end = buf + len
+    uint8 z = 0
+    unsafe { *(end as uint8) = z }
+}
+```
+
+### Multiple pointer operations
+
+An unsafe block can contain multiple operations:
+
+```kr
+fn swap_bytes(uint64 a, uint64 b) {
+    uint64 va = 0
+    uint64 vb = 0
+    unsafe { *(a as uint8) -> va }
+    unsafe { *(b as uint8) -> vb }
+    uint8 ba = va
+    uint8 bb = vb
+    unsafe { *(a as uint8) = bb }
+    unsafe { *(b as uint8) = ba }
+}
+```
+
+### Inline assembly in unsafe blocks
 
 ```kr
 fn flush_tlb() {
     unsafe {
-        asm!(invlpg)
+        asm("invlpg [rax]")
     }
 }
 ```
 
 Use `unsafe` only for unavoidable hardware interactions that have no safe
-surface equivalent.  All capability and context rules still apply inside an
-unsafe block.
+surface equivalent.
 
 ---
 
@@ -999,29 +1082,32 @@ status_reg = bit_insert(status_reg, 4, 4, 0xF) // set bits 7:4 to 0xF
 ## 22. Volatile Blocks
 
 `volatile { ... }` performs memory-mapped I/O accesses with hardware memory
-barriers to prevent reordering. Unlike `unsafe { ... }`, volatile blocks emit
-a fence instruction after every load and before every store:
+barriers to ensure write completion and prevent reordering. Unlike
+`unsafe { ... }`, volatile blocks emit a barrier instruction after every load
+and before every store:
 
 - x86_64: `mfence` (full memory barrier)
-- ARM64: `DMB ISH` (data memory barrier, inner-shareable)
+- ARM64: `DSB SY` (data synchronization barrier, full system — ensures the
+  memory access completes before any subsequent instruction executes)
 
-Use volatile blocks for MMIO register access where ordering matters:
+The syntax is identical to `unsafe` pointer operations:
 
 ```kr
 volatile { *(mmio_base as uint32) = 0x01 }   // barrier before store
 volatile { *(mmio_base as uint32) -> status } // barrier after load
 ```
 
-The cast type determines the access width. Supported types are `uint8`,
-`uint16`, `uint32`, `uint64`, `int16`, `int32`, and `int64`:
+The cast type determines the access width. All pointer types are supported:
+`uint8`, `uint16`, `uint32`, `uint64`, `int8`, `int16`, `int32`, and `int64`:
 
 ```kr
 volatile { *(port_base as uint16) -> reg16 }
 volatile { *(port_base as uint16) = 0x1234 }
 ```
 
-For device register access requiring stronger ordering (e.g., `DSB SY`), use
-inline assembly barriers explicitly after the volatile block.
+Use volatile blocks for MMIO register access where ordering and completion
+matter — for example, I2C control registers where a write must commit to the
+bus before a subsequent hold loop reads status.
 
 ---
 
@@ -1160,8 +1246,9 @@ available without any `extern fn` declaration.  The compiler maps these to
 | `str_copy(dst, src)`                         | Copy a null-terminated string from `src` to `dst`. |
 | `str_cat(dst, src)`                          | Append `src` to the end of `dst`.                  |
 | `str_len(s) -> uint64`                       | Return the length of null-terminated string `s`.   |
-| `get_target_os() -> uint64`                  | Return the target OS identifier (e.g. `1` = Linux, `2` = Windows, `3` = macOS). |
+| `get_target_os() -> uint64`                  | Return the target OS identifier (`0` = Linux, `1` = macOS, `2` = Windows, `3` = Android). |
 | `get_arch_id() -> uint64`                    | Return the target architecture (`1` = x86-64, `2` = AArch64). |
+| `syscall_raw(nr, a1, a2, a3, a4, a5, a6) -> uint64` | Issue a raw syscall with up to 6 arguments. Maps to `syscall` on x86_64 and `svc #0` on AArch64. |
 | `exec_process(path) -> uint32`               | Spawn and wait on an executable at `path`. Returns the exit code. |
 | `set_executable(path)`                       | Set execute permission on a file (`chmod 755` on Unix, no-op on Windows). |
 | `get_module_path(buf, size) -> uint64`        | Write the path of the current module into `buf` (up to `size` bytes). Returns bytes written. |
