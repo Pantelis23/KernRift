@@ -2140,6 +2140,31 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
 }
 
 // Produce KrboFat: compile for both x86_64 and ARM64, LZ4-compress, wrap in fat binary
+// Restore source and token buffers from snapshot before a re-parse in compile_fat.
+// The for-loop parser (and others) destructively mutate both; this rolls them back.
+fn restore_src_and_tokens(uint64 source, uint64 size, uint64 src_snap, uint64 tokens, uint64 tok_bytes, uint64 tok_snap) {
+    uint64 i = 0
+    while i < size {
+        uint64 sp = src_snap + i
+        uint64 dp = source + i
+        uint64 b = 0
+        unsafe { *(sp as uint8) -> b }
+        uint8 bb = b
+        unsafe { *(dp as uint8) = bb }
+        i = i + 1
+    }
+    uint64 j = 0
+    while j < tok_bytes {
+        uint64 sp2 = tok_snap + j
+        uint64 dp2 = tokens + j
+        uint64 b2 = 0
+        unsafe { *(sp2 as uint8) -> b2 }
+        uint8 bb2 = b2
+        unsafe { *(dp2 as uint8) = bb2 }
+        j = j + 1
+    }
+}
+
 fn compile_fat(uint64 input_path, uint64 output_path) {
     imp_init()
     imp_check_file(input_path)
@@ -2154,6 +2179,35 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
 
     // Save token count for reuse
     uint64 saved_tcount = tcount
+
+    // Snapshot source and tokens before the first parse.
+    // The parser MUTATES source and tokens (the for-loop parser in
+    // particular rewrites byte positions and token kinds). compile_fat
+    // re-parses once per platform slice, so we need to restore the
+    // pristine state between passes.
+    uint64 src_snapshot = alloc(size)
+    uint64 cpi = 0
+    while cpi < size {
+        uint64 sp_src = source + cpi
+        uint64 dp_src = src_snapshot + cpi
+        uint64 bv_src = 0
+        unsafe { *(sp_src as uint8) -> bv_src }
+        uint8 bb_src = bv_src
+        unsafe { *(dp_src as uint8) = bb_src }
+        cpi = cpi + 1
+    }
+    uint64 tok_bytes = saved_tcount * 16
+    uint64 tok_snapshot = alloc(tok_bytes)
+    uint64 cti = 0
+    while cti < tok_bytes {
+        uint64 sp_tk = my_tokens + cti
+        uint64 dp_tk = tok_snapshot + cti
+        uint64 bv_tk = 0
+        unsafe { *(sp_tk as uint8) -> bv_tk }
+        uint8 bb_tk = bv_tk
+        unsafe { *(dp_tk as uint8) = bb_tk }
+        cti = cti + 1
+    }
 
     // === Compile x86_64 ELF (Linux) ===
     target_os = 0
@@ -2241,7 +2295,8 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     str_fixup_count = 0
     str_len = 0
 
-    // Re-parse (need fresh AST)
+    // Re-parse (need fresh AST; restore source+tokens to pristine state first)
+    restore_src_and_tokens(source, size, src_snapshot, my_tokens, tok_bytes, tok_snapshot)
     ast_init(131072)
     parser_init(my_tokens, saved_tcount)
     uint64 root2 = parse_module()
@@ -2308,6 +2363,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     win_iat_fixup_count = 0
     fnaddr_fixup_count = 0
 
+    restore_src_and_tokens(source, size, src_snapshot, my_tokens, tok_bytes, tok_snapshot)
     ast_init(131072)
     parser_init(my_tokens, saved_tcount)
     uint64 root3 = parse_module()
@@ -2381,6 +2437,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     a64_win_iat_fixup_count = 0
     fnaddr_fixup_count = 0
 
+    restore_src_and_tokens(source, size, src_snapshot, my_tokens, tok_bytes, tok_snapshot)
     ast_init(131072)
     parser_init(my_tokens, saved_tcount)
     uint64 root4 = parse_module()
@@ -2476,6 +2533,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     str_len = 0
     fnaddr_fixup_count = 0
 
+    restore_src_and_tokens(source, size, src_snapshot, my_tokens, tok_bytes, tok_snapshot)
     ast_init(131072)
     parser_init(my_tokens, saved_tcount)
     uint64 root5 = parse_module()
@@ -2540,6 +2598,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     str_len = 0
     fnaddr_fixup_count = 0
 
+    restore_src_and_tokens(source, size, src_snapshot, my_tokens, tok_bytes, tok_snapshot)
     ast_init(131072)
     parser_init(my_tokens, saved_tcount)
     uint64 root6 = parse_module()
@@ -2638,6 +2697,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     str_len = 0
     fnaddr_fixup_count = 0
 
+    restore_src_and_tokens(source, size, src_snapshot, my_tokens, tok_bytes, tok_snapshot)
     ast_init(131072)
     parser_init(my_tokens, saved_tcount)
     uint64 root7 = parse_module()
