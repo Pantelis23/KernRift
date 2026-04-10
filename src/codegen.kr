@@ -598,7 +598,8 @@ fn static_declare(uint64 name_tok) -> uint64 {
     unsafe { *(e4 as uint32) = off32 }
     // Mark as scalar (0 in array_sizes)
     uint64 ae = static_array_sizes + static_count * 4
-    store32(ae, 0)
+    uint32 zero32 = 0
+    unsafe { *(ae as uint32) = zero32 }
     static_count = static_count + 1
     static_data_size = static_data_size + 8
     return offset
@@ -751,7 +752,7 @@ fn static_declare_array(uint64 name_tok, uint64 byte_size) -> uint64 {
     // Mark as array by storing byte_size in parallel table
     uint64 ae = static_array_sizes + static_count * 4
     uint32 bs32 = byte_size
-    store32(ae, bs32)
+    unsafe { *(ae as uint32) = bs32 }
     static_count = static_count + 1
     // Allocate byte_size bytes, padded to 8-byte boundary
     uint64 padded = byte_size
