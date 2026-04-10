@@ -82,3 +82,54 @@ fn print_indent(uint64 n) {
         i = i + 1
     }
 }
+
+// Read an integer from stdin (reads one line, parses as int)
+// Handles optional leading whitespace and negative sign
+fn scan_int() -> uint64 {
+    uint64 buf = alloc(65)
+    uint64 i = 0
+    uint8[1] byte_buf
+    while i < 64 {
+        file_read(0, byte_buf, 1)
+        uint64 ch = byte_buf[0]
+        if ch == 10 { break }
+        if ch == 13 { break }
+        if ch == 0 { break }
+        uint64 p = buf + i
+        uint8 cb = ch
+        unsafe { *(p as uint8) = cb }
+        i = i + 1
+    }
+    uint64 tp = buf + i
+    uint8 z = 0
+    unsafe { *(tp as uint8) = z }
+    // Parse integer
+    uint64 result = 0
+    uint64 pos = 0
+    uint64 neg = 0
+    uint64 p2 = buf
+    uint64 c = 0
+    unsafe { *(p2 as uint8) -> c }
+    // Skip leading whitespace
+    while c == 32 || c == 9 {
+        pos = pos + 1
+        p2 = buf + pos
+        unsafe { *(p2 as uint8) -> c }
+    }
+    if c == 45 { neg = 1; pos = pos + 1 }
+    p2 = buf + pos
+    unsafe { *(p2 as uint8) -> c }
+    while c >= 48 && c <= 57 {
+        result = result * 10 + c - 48
+        pos = pos + 1
+        p2 = buf + pos
+        unsafe { *(p2 as uint8) -> c }
+    }
+    if neg != 0 { return 0 - result }
+    return result
+}
+
+// Read a string from stdin (reads one line, max 1024 bytes)
+fn scan_str() -> uint64 {
+    return read_line(1024)
+}

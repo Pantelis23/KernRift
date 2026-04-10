@@ -2,6 +2,17 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## v2.5.2 - 2026-04-10
+
+### Added
+- **`scan_int()` in std/io.kr**: reads a line from stdin and parses it as an integer (handles whitespace and negative sign).
+- **`scan_str()` in std/io.kr**: reads a line from stdin (up to 1024 bytes).
+
+### Fixed
+- **ARM64 volatile barriers**: changed `DMB ISH` to `DSB SY` for MMIO correctness (ensures write completion, not just ordering).
+- **x86_64 LEA optimization**: `pinned_param ± imm` emits `lea rax, [rbx ± imm]` (4 bytes vs 18).
+- **Buffer size increases**: `fn_table`, `static_table`, `fnaddr_fixup_table` increased to 1024; `ret_fixups` to 256.
+
 ## v2.5.0 - 2026-04-09
 
 ### Added
