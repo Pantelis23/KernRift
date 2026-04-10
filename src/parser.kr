@@ -1026,6 +1026,30 @@ fn parse_param_list() -> uint64 {
 
     expect(10)
     while cur_kind() != 11 && cur_kind() != 0 {
+        // Slice parameter: [TYPE] name — a fat pointer (ptr, len)
+        if cur_kind() == 14 {
+            advance_tok()
+            uint64 elem_type_tok = advance_tok()
+            expect(15)
+            uint64 name_tok = expect(1)
+            uint64 param = ast_alloc(AstKind.Param)
+            uint32 tt = elem_type_tok
+            uint32 nt = name_tok
+            ast_set_data1(param, tt)
+            ast_set_data2(param, nt)
+            // Mark as slice: data4 = 1
+            uint32 one = 1
+            ast_set_data4(param, one)
+            if first == 0 {
+                first = param
+            } else {
+                uint32 p32 = param
+                ast_set_next(last, p32)
+            }
+            last = param
+            eat(16)
+            continue
+        }
         uint64 type_tok = 0
         if is_type_keyword(cur_kind()) != 0 {
             type_tok = advance_tok()
@@ -1337,6 +1361,115 @@ fn parse_module() -> uint64 {
             if wtk == 86 { tsize = 4 }
             if wtk == 87 { tsize = 8 }
             type_alias_register(alias_tok, tsize)
+        } else if kind == 92 {
+            // device NAME at ADDR { FIELD at OFF : TYPE [rw|ro|wo] ... }
+            advance_tok()
+            uint64 dev_name = expect(1)
+            expect(93)  // `at`
+            // Parse base address literal
+            uint64 base_tok = advance_tok()
+            uint64 base_start = tok_start_at(base_tok)
+            uint64 base_len = tok_len_at(base_tok)
+            uint64 base_val = 0
+            uint64 bi = 0
+            uint64 bp0 = src_ptr + base_start
+            uint64 bc0 = 0
+            unsafe { *(bp0 as uint8) -> bc0 }
+            uint64 bp1 = src_ptr + base_start + 1
+            uint64 bc1 = 0
+            if base_len > 1 { unsafe { *(bp1 as uint8) -> bc1 } }
+            if bc0 == 48 && bc1 == 120 {
+                bi = 2
+                while bi < base_len {
+                    uint64 bpx = src_ptr + base_start + bi
+                    uint64 bcx = 0
+                    unsafe { *(bpx as uint8) -> bcx }
+                    uint64 dv = 0
+                    if bcx >= 48 && bcx <= 57 { dv = bcx - 48 }
+                    else if bcx >= 97 && bcx <= 102 { dv = bcx - 87 }
+                    else if bcx >= 65 && bcx <= 70 { dv = bcx - 55 }
+                    base_val = base_val * 16 + dv
+                    bi = bi + 1
+                }
+            } else {
+                while bi < base_len {
+                    uint64 bp = src_ptr + base_start + bi
+                    uint64 bc = 0
+                    unsafe { *(bp as uint8) -> bc }
+                    base_val = base_val * 10 + (bc - 48)
+                    bi = bi + 1
+                }
+            }
+            uint64 dev_idx = device_register(dev_name, base_val)
+            expect(12)
+            while cur_kind() != 13 && cur_kind() != 0 {
+                uint64 fname_tok = expect(1)
+                expect(93)  // `at`
+                // Parse field offset literal
+                uint64 off_tok = advance_tok()
+                uint64 off_start = tok_start_at(off_tok)
+                uint64 off_len = tok_len_at(off_tok)
+                uint64 off_val = 0
+                uint64 oi = 0
+                uint64 op0 = src_ptr + off_start
+                uint64 oc0 = 0
+                unsafe { *(op0 as uint8) -> oc0 }
+                uint64 op1 = src_ptr + off_start + 1
+                uint64 oc1 = 0
+                if off_len > 1 { unsafe { *(op1 as uint8) -> oc1 } }
+                if oc0 == 48 && oc1 == 120 {
+                    oi = 2
+                    while oi < off_len {
+                        uint64 opx = src_ptr + off_start + oi
+                        uint64 ocx = 0
+                        unsafe { *(opx as uint8) -> ocx }
+                        uint64 dv2 = 0
+                        if ocx >= 48 && ocx <= 57 { dv2 = ocx - 48 }
+                        else if ocx >= 97 && ocx <= 102 { dv2 = ocx - 87 }
+                        else if ocx >= 65 && ocx <= 70 { dv2 = ocx - 55 }
+                        off_val = off_val * 16 + dv2
+                        oi = oi + 1
+                    }
+                } else {
+                    while oi < off_len {
+                        uint64 op = src_ptr + off_start + oi
+                        uint64 oc = 0
+                        unsafe { *(op as uint8) -> oc }
+                        off_val = off_val * 10 + (oc - 48)
+                        oi = oi + 1
+                    }
+                }
+                expect(19)  // `:`
+                // Parse field type keyword
+                uint64 ft_tok = advance_tok()
+                uint32 ftk = tok_kind_at(ft_tok)
+                uint64 wftk = ftk
+                uint64 fsize = 8
+                if wftk == 80 || wftk == 84 { fsize = 1 }
+                if wftk == 81 || wftk == 85 { fsize = 2 }
+                if wftk == 82 || wftk == 86 { fsize = 4 }
+                if wftk == 83 || wftk == 87 { fsize = 8 }
+                // Optional access spec: consume only if the next token is literally rw, ro, or wo
+                if cur_kind() == 1 {
+                    uint64 acc_s = tok_start_at(p_tok_pos)
+                    uint64 acc_l = tok_len_at(p_tok_pos)
+                    if acc_l == 2 {
+                        uint64 ac0p = src_ptr + acc_s
+                        uint64 ac0 = 0
+                        unsafe { *(ac0p as uint8) -> ac0 }
+                        uint64 ac1p = src_ptr + acc_s + 1
+                        uint64 ac1 = 0
+                        unsafe { *(ac1p as uint8) -> ac1 }
+                        if (ac0 == 114 && ac1 == 119) || (ac0 == 114 && ac1 == 111) || (ac0 == 119 && ac1 == 111) {
+                            advance_tok()
+                        }
+                    }
+                }
+                device_add_field(dev_idx, fname_tok, off_val, fsize)
+                eat(18)
+                eat(16)
+            }
+            expect(13)
         } else {
             advance_tok()
         }

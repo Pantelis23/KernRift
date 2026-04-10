@@ -103,6 +103,8 @@ enum TokenKind {
     FatArrow = 29    // =>
     KwAsm = 90
     KwVolatile = 91
+    KwDevice = 92
+    KwAt = 93
 
     // Error
     Error = 255
@@ -309,6 +311,8 @@ fn classify_keyword(uint64 start, uint64 len) -> uint32 {
     if match_keyword(start, len, "addr", 4) != 0 { return TokenKind.KwUint64 }
     if match_keyword(start, len, "asm", 3) != 0 { return TokenKind.KwAsm }
     if match_keyword(start, len, "volatile", 8) != 0 { return TokenKind.KwVolatile }
+    if match_keyword(start, len, "device", 6) != 0 { return TokenKind.KwDevice }
+    if match_keyword(start, len, "at", 2) != 0 { return TokenKind.KwAt }
     return TokenKind.Ident
 }
 

@@ -117,6 +117,23 @@ static uint64 pin_param0_offset = 0xFFFFFFFF
 static uint64 pin_param1_offset = 0xFFFFFFFF
 static uint64 pin_param0_tok = 0
 static uint64 pin_param1_tok = 0
+
+// Slice parameter length slot table
+// Maps a slice param's ptr-slot offset → its len-slot offset.
+// Used by FieldAccess to resolve `slice.len` to a load from the len slot.
+// Max 32 slice params per function (way more than needed).
+// Format: [ptr_off(4), len_off(4)] × 32
+static uint64 slice_len_table = 0
+static uint64 slice_len_count = 0
+
+// Device block table (MMIO registers)
+// Format: [name_tok(4), pad(4), base_addr(8)] × 64  (16 bytes each)
+static uint64 device_table = 0
+static uint64 device_count = 0
+// Device field table
+// Format: [dev_idx(4), field_tok(4), offset(4), size(4)] × 256  (16 bytes each)
+static uint64 device_field_table = 0
+static uint64 device_field_count = 0
 // Binary op register spill: use r12 instead of stack for outermost binary op
 static uint64 r12_in_use = 0
 static uint64 r12_save_slot = 0
@@ -148,6 +165,9 @@ fn codegen_init(uint64 capacity, uint64 source, uint64 tokens) {
     enum_count = 0
     static_table = alloc(1024 * 8)
     static_array_sizes = alloc(1024 * 4)
+    slice_len_table = alloc(32 * 8)
+    device_table = alloc(64 * 16)
+    device_field_table = alloc(256 * 16)
     static_count = 0
     static_data_size = 0
     static_fixups = alloc(8192 * 8)
@@ -582,6 +602,138 @@ fn static_declare(uint64 name_tok) -> uint64 {
     static_count = static_count + 1
     static_data_size = static_data_size + 8
     return offset
+}
+
+// Device table helpers: device_register returns the new device index.
+@export
+fn device_register(uint64 name_tok, uint64 base_addr) -> uint64 {
+    uint64 entry = device_table + device_count * 16
+    uint32 nt = name_tok
+    unsafe { *(entry as uint32) = nt }
+    uint64 e8 = entry + 8
+    unsafe { *(e8 as uint64) = base_addr }
+    uint64 idx = device_count
+    device_count = device_count + 1
+    return idx
+}
+
+@export
+fn device_add_field(uint64 dev_idx, uint64 field_tok, uint64 offset, uint64 size) {
+    uint64 entry = device_field_table + device_field_count * 16
+    uint32 di = dev_idx
+    unsafe { *(entry as uint32) = di }
+    uint64 e4 = entry + 4
+    uint32 ft = field_tok
+    unsafe { *(e4 as uint32) = ft }
+    uint64 e8 = entry + 8
+    uint32 off32 = offset
+    unsafe { *(e8 as uint32) = off32 }
+    uint64 ec = entry + 12
+    uint32 sz32 = size
+    unsafe { *(ec as uint32) = sz32 }
+    device_field_count = device_field_count + 1
+}
+
+// Look up device by name_tok. Returns 0xFFFFFFFF if not found.
+fn device_lookup(uint64 name_tok) -> uint64 {
+    uint64 i = 0
+    while i < device_count {
+        uint64 entry = device_table + i * 16
+        uint32 stored = 0
+        unsafe { *(entry as uint32) -> stored }
+        uint64 ws = stored
+        if tok_text_eq(ws, name_tok) != 0 { return i }
+        i = i + 1
+    }
+    return 0xFFFFFFFF
+}
+
+// Get base address of a device
+fn device_base(uint64 dev_idx) -> uint64 {
+    uint64 entry = device_table + dev_idx * 16
+    uint64 e8 = entry + 8
+    uint64 base = 0
+    unsafe { *(e8 as uint64) -> base }
+    return base
+}
+
+// Look up a device field. Returns offset OR 0xFFFFFFFF if not found.
+fn device_field_offset_of(uint64 dev_idx, uint64 field_tok) -> uint64 {
+    uint64 i = 0
+    while i < device_field_count {
+        uint64 entry = device_field_table + i * 16
+        uint32 stored_dev = 0
+        unsafe { *(entry as uint32) -> stored_dev }
+        uint64 wsd = stored_dev
+        if wsd == dev_idx {
+            uint64 e4 = entry + 4
+            uint32 stored_field = 0
+            unsafe { *(e4 as uint32) -> stored_field }
+            uint64 wsf = stored_field
+            if tok_text_eq(wsf, field_tok) != 0 {
+                uint64 e8 = entry + 8
+                uint32 off = 0
+                unsafe { *(e8 as uint32) -> off }
+                return off
+            }
+        }
+        i = i + 1
+    }
+    return 0xFFFFFFFF
+}
+
+fn device_field_size_of(uint64 dev_idx, uint64 field_tok) -> uint64 {
+    uint64 i = 0
+    while i < device_field_count {
+        uint64 entry = device_field_table + i * 16
+        uint32 stored_dev = 0
+        unsafe { *(entry as uint32) -> stored_dev }
+        uint64 wsd = stored_dev
+        if wsd == dev_idx {
+            uint64 e4 = entry + 4
+            uint32 stored_field = 0
+            unsafe { *(e4 as uint32) -> stored_field }
+            uint64 wsf = stored_field
+            if tok_text_eq(wsf, field_tok) != 0 {
+                uint64 ec = entry + 12
+                uint32 sz = 0
+                unsafe { *(ec as uint32) -> sz }
+                return sz
+            }
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+// Record a slice parameter's length slot. Per-function, cleared on function entry.
+fn slice_len_register(uint64 ptr_off, uint64 len_off) {
+    uint64 entry = slice_len_table + slice_len_count * 8
+    uint32 po = ptr_off
+    unsafe { *(entry as uint32) = po }
+    uint64 e4 = entry + 4
+    uint32 lo = len_off
+    unsafe { *(e4 as uint32) = lo }
+    slice_len_count = slice_len_count + 1
+}
+
+// Look up a slice's length slot offset by its ptr slot offset. Returns 0xFFFFFFFF if not a slice.
+fn slice_len_lookup(uint64 ptr_off) -> uint64 {
+    uint64 i = 0
+    while i < slice_len_count {
+        uint64 entry = slice_len_table + i * 8
+        uint32 stored = 0
+        unsafe { *(entry as uint32) -> stored }
+        uint64 ws = stored
+        if ws == ptr_off {
+            uint64 e4 = entry + 4
+            uint32 lo = 0
+            unsafe { *(e4 as uint32) -> lo }
+            return lo
+        }
+        i = i + 1
+    }
+    return 0xFFFFFFFF
 }
 
 @export
@@ -1391,6 +1543,51 @@ fn gen_expr(uint64 node) {
             uint64 wck = child_kind
             if wck == 32 {
                 obj_tok = ast_data1(wchild)
+            }
+        }
+        // Slice length access: slice_var.len → load from the slice's length slot
+        if obj_tok != 0 {
+            uint64 wot_sl = obj_tok
+            uint64 ptr_off_sl = var_lookup(wot_sl)
+            if ptr_off_sl != 0xFFFFFFFF {
+                uint64 len_off_sl = slice_len_lookup(ptr_off_sl)
+                if len_off_sl != 0xFFFFFFFF {
+                    // Confirm the field name is "len"
+                    uint64 wft_sl = field_tok
+                    if tok_matches(wft_sl, "len", 3) != 0 {
+                        emit_load_rax_from_stack(len_off_sl)
+                        return
+                    }
+                }
+            }
+        }
+        // Device field read: UART0.Data → vloadN(base + offset)
+        if obj_tok != 0 {
+            uint64 wdt = obj_tok
+            uint64 dev_idx = device_lookup(wdt)
+            if dev_idx != 0xFFFFFFFF {
+                uint64 wft_d = field_tok
+                uint64 dev_off = device_field_offset_of(dev_idx, wft_d)
+                if dev_off != 0xFFFFFFFF {
+                    uint64 dev_sz = device_field_size_of(dev_idx, wft_d)
+                    uint64 dev_addr = device_base(dev_idx) + dev_off
+                    // rax = address
+                    emit_mov_rax_imm(dev_addr)
+                    // volatile load width-aware + mfence
+                    if dev_sz == 1 {
+                        emit_byte(0x48); emit_byte(0x0F); emit_byte(0xB6); emit_byte(0x00)
+                    } else if dev_sz == 2 {
+                        emit_byte(0x48); emit_byte(0x0F); emit_byte(0xB7); emit_byte(0x00)
+                    } else if dev_sz == 4 {
+                        emit_byte(0x8B); emit_byte(0x00)
+                    } else {
+                        emit_byte(0x48); emit_byte(0x8B); emit_byte(0x00)
+                    }
+                    // mfence (barrier after load)
+                    emit_byte(0x0F); emit_byte(0xAE); emit_byte(0xF0)
+                    rax_cache = 0
+                    return
+                }
             }
         }
         // Check if obj_tok is a struct variable
@@ -4496,6 +4693,36 @@ fn gen_stmt(uint64 node) {
                     obj_tok = ast_data1(wfachild)
                 }
             }
+            // Device field write: UART0.Data = val → vstoreN
+            if obj_tok != 0 {
+                uint64 wdtw = obj_tok
+                uint64 dev_idx_w = device_lookup(wdtw)
+                if dev_idx_w != 0xFFFFFFFF {
+                    uint64 wftw_d = field_tok
+                    uint64 dev_off_w = device_field_offset_of(dev_idx_w, wftw_d)
+                    if dev_off_w != 0xFFFFFFFF {
+                        uint64 dev_sz_w = device_field_size_of(dev_idx_w, wftw_d)
+                        uint64 dev_addr_w = device_base(dev_idx_w) + dev_off_w
+                        // Evaluate value → rax, save
+                        gen_expr(wval)
+                        emit_mov_rcx_rax()
+                        // rcx = value. Load address into rax.
+                        emit_mov_rax_imm(dev_addr_w)
+                        // mfence (barrier before store)
+                        emit_byte(0x0F); emit_byte(0xAE); emit_byte(0xF0)
+                        if dev_sz_w == 1 {
+                            emit_byte(0x88); emit_byte(0x08)
+                        } else if dev_sz_w == 2 {
+                            emit_byte(0x66); emit_byte(0x89); emit_byte(0x08)
+                        } else if dev_sz_w == 4 {
+                            emit_byte(0x89); emit_byte(0x08)
+                        } else {
+                            emit_byte(0x48); emit_byte(0x89); emit_byte(0x08)
+                        }
+                        return
+                    }
+                }
+            }
             // Evaluate value
             gen_expr(wval)
             emit_store_rax_to_stack(temp_slot_0)
@@ -5091,6 +5318,9 @@ fn gen_function(uint64 fn_node) {
         }
     }
 
+    // Clear per-function slice table
+    slice_len_count = 0
+
     // Parse params (declare as variables)
     uint32 first_param = ast_child(fn_node)
     uint64 wparam = first_param
@@ -5098,7 +5328,18 @@ fn gen_function(uint64 fn_node) {
         uint32 pk = ast_kind(wparam)
         if pk == 3 {
             uint32 param_name = ast_data2(wparam)
-            var_declare(param_name)
+            uint64 ptr_off_x = var_declare(param_name)
+            // Slice parameter: also reserve a length slot (no name)
+            uint32 pflag = ast_data4(wparam)
+            uint64 wpflag = pflag
+            if wpflag == 1 {
+                uint64 len_off_x = var_count * 8
+                var_count = var_count + 1
+                var_frame_size = var_count * 8
+                uint64 srem_sp = var_frame_size & 15
+                if srem_sp != 0 { var_frame_size = var_frame_size + 16 - srem_sp }
+                slice_len_register(ptr_off_x, len_off_x)
+            }
             // If the param's type is a struct name, register it as a struct var
             // so that field access on it works inside the function body.
             uint32 param_type = ast_data1(wparam)
@@ -5183,6 +5424,9 @@ fn gen_function(uint64 fn_node) {
         if pk2 == 3 {
             uint32 pn2 = ast_data2(wp2)
             uint64 poff = var_lookup(pn2)
+            // Track slice flag for this param
+            uint32 pflag_s = ast_data4(wp2)
+            uint64 wpflag_s = pflag_s
             if poff != 0xFFFFFFFF {
                 uint8 po8 = poff
                 if target_os == 2 {
@@ -5264,6 +5508,49 @@ fn gen_function(uint64 fn_node) {
                     }
                 }
                 pidx = pidx + 1
+                // Slice param: also spill the length register to the len slot
+                if wpflag_s == 1 {
+                    uint64 len_off = slice_len_lookup(poff)
+                    if len_off != 0xFFFFFFFF {
+                        uint8 lo8 = len_off
+                        if target_os == 2 {
+                            if pidx == 1 {
+                                emit_byte(0x48); emit_byte(0x89); emit_byte(0x54)
+                                emit_byte(0x24); emit_byte(lo8)
+                            }
+                            if pidx == 2 {
+                                emit_byte(0x4C); emit_byte(0x89); emit_byte(0x44)
+                                emit_byte(0x24); emit_byte(lo8)
+                            }
+                            if pidx == 3 {
+                                emit_byte(0x4C); emit_byte(0x89); emit_byte(0x4C)
+                                emit_byte(0x24); emit_byte(lo8)
+                            }
+                        } else {
+                            if pidx == 1 {
+                                emit_byte(0x48); emit_byte(0x89); emit_byte(0x74)
+                                emit_byte(0x24); emit_byte(lo8)
+                            }
+                            if pidx == 2 {
+                                emit_byte(0x48); emit_byte(0x89); emit_byte(0x54)
+                                emit_byte(0x24); emit_byte(lo8)
+                            }
+                            if pidx == 3 {
+                                emit_byte(0x48); emit_byte(0x89); emit_byte(0x4C)
+                                emit_byte(0x24); emit_byte(lo8)
+                            }
+                            if pidx == 4 {
+                                emit_byte(0x4C); emit_byte(0x89); emit_byte(0x44)
+                                emit_byte(0x24); emit_byte(lo8)
+                            }
+                            if pidx == 5 {
+                                emit_byte(0x4C); emit_byte(0x89); emit_byte(0x4C)
+                                emit_byte(0x24); emit_byte(lo8)
+                            }
+                        }
+                    }
+                    pidx = pidx + 1
+                }
             }
         }
         uint32 pn3 = ast_next(wp2)

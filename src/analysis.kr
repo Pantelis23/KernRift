@@ -551,7 +551,13 @@ fn sema_collect_signatures(uint64 root) {
             uint64 wpchild = pchild
             while wpchild != 0 {
                 uint32 pk = ast_kind(wpchild)
-                if pk == 3 { param_count = param_count + 1 }
+                if pk == 3 {
+                    param_count = param_count + 1
+                    // Slice params take 2 positions: ptr + len
+                    uint32 pflag_sp = ast_data4(wpchild)
+                    uint64 wpflag_sp = pflag_sp
+                    if wpflag_sp == 1 { param_count = param_count + 1 }
+                }
                 uint32 pnxt = ast_next(wpchild)
                 wpchild = pnxt
             }
