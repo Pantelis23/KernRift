@@ -1,16 +1,33 @@
 // KernRift self-hosted compiler — Living Compiler
 //
-// Implements pattern detection, fitness scoring, and per-pattern reporting.
-// Matches and extends the Rust bootstrap compiler's living compiler features.
+// Implements the blueprint vision (see docs/LIVING_COMPILER.md) at its
+// current maturity stage: a governed, two-layer analysis that separates
+// stable semantic-core concerns from adaptive surface suggestions.
 //
-// Patterns detected:
-//   1. try_tail_call      — function ends with return of a call (tail-call candidate)
-//   2. high_extern_ratio  — >50% of functions are extern declarations
-//   3. deep_lock_nesting  — lock edge count suggests deep nesting (>= 3 edges)
-//   4. large_unsafe_ratio — >25% of operations are unsafe pointer ops
-//   5. unchecked_call     — call in expression-statement (result discarded)
-//   6. many_trivial_fns   — >30% of functions have <=2 statements
-//   7. high_call_density  — call-to-function ratio > 10 (complex call graph)
+// Two layers, explicitly:
+//
+//   SEMANTIC CORE — correctness, safety, structural health. Patterns here
+//     reflect things that can cause wrong behavior or hide real bugs.
+//
+//   ADAPTIVE SURFACE — ergonomic/stylistic improvements. Patterns here
+//     suggest migrating to newer syntax that lowers to the same IR. These
+//     are candidates for an automated migration pass.
+//
+// The blueprint also calls for: a proposal engine, a governance layer,
+// versioned language profiles, and a full migration engine. Those are
+// future work — this file lays the ground rules they will build on.
+//
+// Patterns currently detected
+//
+//   Core:
+//     - unchecked_call       — high fraction of discarded call results
+//     - large_unsafe_ratio   — too many unsafe pointer ops vs total ops
+//     - high_call_density    — complex call graph, hard to audit
+//
+//   Surface:
+//     - legacy_ptr_ops       — unsafe { *(addr as T) -> v } — can migrate
+//                              to load8/16/32/64 or store8/16/32/64
+//     - many_trivial_fns     — many 1-2 statement functions (inline hints)
 
 // ---------------------------------------------------------------------------
 // Telemetry struct (80 bytes, 10 fields × 8)
@@ -30,19 +47,21 @@ struct Telemetry {
 }
 
 // ---------------------------------------------------------------------------
-// Pattern entry (40 bytes: 5 × 8)
+// Pattern entry (48 bytes: 6 × 8)
 // ---------------------------------------------------------------------------
 // [0]  id string ptr
 // [8]  title string ptr
 // [16] suggestion string ptr
 // [24] fitness (uint64)
 // [32] signal value (uint64, context-dependent)
+// [40] flags: bit 0 = layer (0 = semantic core, 1 = adaptive surface),
+//             bit 1 = auto-fix available
 
 static uint64 lc_patterns = 0
 static uint64 lc_pattern_count = 0
 
-fn lc_add_pattern(uint64 id, uint64 title, uint64 suggestion, uint64 fitness, uint64 signal_val) {
-    uint64 entry = lc_patterns + lc_pattern_count * 40
+fn lc_add_pattern(uint64 id, uint64 title, uint64 suggestion, uint64 fitness, uint64 signal_val, uint64 flags) {
+    uint64 entry = lc_patterns + lc_pattern_count * 48
     unsafe { *(entry as uint64) = id }
     uint64 e8 = entry + 8
     unsafe { *(e8 as uint64) = title }
@@ -52,42 +71,62 @@ fn lc_add_pattern(uint64 id, uint64 title, uint64 suggestion, uint64 fitness, ui
     unsafe { *(e24 as uint64) = fitness }
     uint64 e32 = entry + 32
     unsafe { *(e32 as uint64) = signal_val }
+    uint64 e40 = entry + 40
+    unsafe { *(e40 as uint64) = flags }
     lc_pattern_count = lc_pattern_count + 1
 }
 
 fn lc_get_pattern_id(uint64 idx) -> uint64 {
-    uint64 entry = lc_patterns + idx * 40
+    uint64 entry = lc_patterns + idx * 48
     uint64 val = 0
     unsafe { *(entry as uint64) -> val }
     return val
 }
 
 fn lc_get_pattern_title(uint64 idx) -> uint64 {
-    uint64 entry = lc_patterns + idx * 40 + 8
+    uint64 entry = lc_patterns + idx * 48 + 8
     uint64 val = 0
     unsafe { *(entry as uint64) -> val }
     return val
 }
 
 fn lc_get_pattern_suggestion(uint64 idx) -> uint64 {
-    uint64 entry = lc_patterns + idx * 40 + 16
+    uint64 entry = lc_patterns + idx * 48 + 16
     uint64 val = 0
     unsafe { *(entry as uint64) -> val }
     return val
 }
 
 fn lc_get_pattern_fitness(uint64 idx) -> uint64 {
-    uint64 entry = lc_patterns + idx * 40 + 24
+    uint64 entry = lc_patterns + idx * 48 + 24
     uint64 val = 0
     unsafe { *(entry as uint64) -> val }
     return val
 }
 
 fn lc_get_pattern_signal(uint64 idx) -> uint64 {
-    uint64 entry = lc_patterns + idx * 40 + 32
+    uint64 entry = lc_patterns + idx * 48 + 32
     uint64 val = 0
     unsafe { *(entry as uint64) -> val }
     return val
+}
+
+fn lc_get_pattern_flags(uint64 idx) -> uint64 {
+    uint64 entry = lc_patterns + idx * 48 + 40
+    uint64 val = 0
+    unsafe { *(entry as uint64) -> val }
+    return val
+}
+
+// Layer classification: 0 = semantic core, 1 = adaptive surface
+fn lc_pattern_layer(uint64 idx) -> uint64 {
+    uint64 f = lc_get_pattern_flags(idx)
+    return f & 1
+}
+
+fn lc_pattern_can_fix(uint64 idx) -> uint64 {
+    uint64 f = lc_get_pattern_flags(idx)
+    return (f >> 1) & 1
 }
 
 // ---------------------------------------------------------------------------
@@ -164,10 +203,6 @@ fn collect_telemetry(uint64 root) -> uint64 {
                 }
             }
         }
-        if ck == 3 {
-            // Param at top level — this is an extern function param, count parent
-            // (Actually top-level kind 3 shouldn't appear; externs are FnDecl with no body)
-        }
 
         uint32 nxt = ast_next(wchild)
         wchild = nxt
@@ -222,7 +257,7 @@ fn lc_count_in_stmt(uint64 node, uint64 tel) {
         }
     }
 
-    // Unsafe PtrLoad/PtrStore
+    // Unsafe PtrLoad/PtrStore — legacy syntax that can migrate to load*/store*
     if kind == 41 || kind == 42 {
         tel_inc(tel, 3)
     }
@@ -272,6 +307,7 @@ fn check_tail_call_candidate(uint64 block_node) -> uint64 {
 // ---------------------------------------------------------------------------
 // Pattern detection
 // ---------------------------------------------------------------------------
+// Flag layout: bit 0 = layer (0 core, 1 surface), bit 1 = auto-fix available
 
 @export
 fn detect_patterns(uint64 root, uint64 tel) -> uint64 {
@@ -282,56 +318,13 @@ fn detect_patterns(uint64 root, uint64 tel) -> uint64 {
     uint64 ext_c = tel_get(tel, 1)
     uint64 call_c = tel_get(tel, 2)
     uint64 unsafe_c = tel_get(tel, 3)
-    uint64 ledge_c = tel_get(tel, 4)
     uint64 total_ops = tel_get(tel, 6)
     uint64 exprstmt_c = tel_get(tel, 7)
     uint64 trivial_c = tel_get(tel, 8)
-    uint64 tail_c = tel_get(tel, 9)
 
-    // Pattern 1: try_tail_call
-    // Functions whose last statement returns a call — could use tail-call optimization
-    if tail_c > 0 {
-        uint64 fit = tail_c * 15
-        if fit > 100 { fit = 100 }
-        lc_add_pattern(
-            "try_tail_call",
-            "Tail-call opportunity",
-            "Replace loop-back call() with tail_call() for zero stack growth.",
-            fit,
-            tail_c
-        )
-    }
+    // --- SEMANTIC CORE patterns ---
 
-    // Pattern 2: high_extern_ratio
-    // More than 50% of functions are extern declarations (no body)
-    if ext_c > 0 && fn_c > 0 && ext_c * 2 >= fn_c {
-        uint64 fit = ext_c * 20
-        if fit > 100 { fit = 100 }
-        lc_add_pattern(
-            "high_extern_ratio",
-            "High extern density",
-            "Verify that all extern @ctx/@eff/@caps annotations match C-side contracts.",
-            fit,
-            ext_c
-        )
-    }
-
-    // Pattern 3: deep_lock_nesting
-    // Lock edge count >= 3 suggests deep nesting (potential deadlock territory)
-    if ledge_c >= 3 {
-        uint64 fit = 20 + (ledge_c - 2) * 15
-        if fit > 75 { fit = 75 }
-        lc_add_pattern(
-            "deep_lock_nesting",
-            "Deep lock nesting",
-            "Restructure lock acquisition so no path holds more than 2 locks simultaneously.",
-            fit,
-            ledge_c
-        )
-    }
-
-    // Pattern 4: large_unsafe_ratio
-    // More than 25% of all operations are unsafe pointer ops
+    // large_unsafe_ratio — too many raw unsafe ops vs total ops
     if total_ops > 0 && unsafe_c * 4 > total_ops {
         uint64 pct = unsafe_c * 100 / total_ops
         uint64 fit = 20 + pct
@@ -339,15 +332,14 @@ fn detect_patterns(uint64 root, uint64 tel) -> uint64 {
         lc_add_pattern(
             "large_unsafe_ratio",
             "High unsafe operation density",
-            "Consider wrapping repeated unsafe patterns in safe helper functions.",
+            "Consider wrapping repeated unsafe patterns in safe helper functions, or migrate to the load*/store* builtins.",
             fit,
-            pct
+            pct,
+            0
         )
     }
 
-    // Pattern 5: unchecked_call
-    // Calls in expression-statements whose results are discarded
-    // Only flag if a significant fraction of calls are unchecked (>80%)
+    // unchecked_call — significant fraction of calls discard their results
     if call_c > 0 && exprstmt_c * 5 > call_c * 4 && exprstmt_c > 10 {
         uint64 pct = exprstmt_c * 100 / call_c
         uint64 fit = 20 + pct / 4
@@ -357,12 +349,46 @@ fn detect_patterns(uint64 root, uint64 tel) -> uint64 {
             "Unchecked call results",
             "Check return values of calls, especially for file I/O and allocation.",
             fit,
-            pct
+            pct,
+            0
         )
     }
 
-    // Pattern 6: many_trivial_fns
-    // More than 30% of functions have <= 2 statements
+    // high_call_density — complex call graph (> 10 calls per function average)
+    if fn_c > 0 && call_c > fn_c * 10 {
+        uint64 ratio = call_c / fn_c
+        uint64 fit = 20 + ratio * 3
+        if fit > 70 { fit = 70 }
+        lc_add_pattern(
+            "high_call_density",
+            "Complex call graph",
+            "Consider splitting functions with many call sites to improve readability and auditability.",
+            fit,
+            ratio,
+            0
+        )
+    }
+
+    // --- ADAPTIVE SURFACE patterns ---
+
+    // legacy_ptr_ops — raw unsafe { *(addr as T) -> v } / = val syntax
+    // These migrate mechanically to load8/16/32/64 and store8/16/32/64 builtins
+    // which produce identical code but are much easier to read.
+    if unsafe_c > 0 {
+        uint64 fit = 25 + unsafe_c * 2
+        if fit > 60 { fit = 60 }
+        // flags: layer=1 (surface), can_fix=1 (bit 1 = 2)
+        lc_add_pattern(
+            "legacy_ptr_ops",
+            "Legacy unsafe{} pointer syntax",
+            "Migrate `unsafe { *(addr as T) -> dest }` to `dest = loadN(addr)` and `unsafe { *(addr as T) = val }` to `storeN(addr, val)`. Same codegen, much cleaner.",
+            fit,
+            unsafe_c,
+            3
+        )
+    }
+
+    // many_trivial_fns — many 1-2 statement functions suggest inlining
     if fn_c > 4 && trivial_c * 10 > fn_c * 3 {
         uint64 fit = 15 + trivial_c * 5
         if fit > 50 { fit = 50 }
@@ -371,22 +397,8 @@ fn detect_patterns(uint64 root, uint64 tel) -> uint64 {
             "Many trivial functions",
             "Consider inlining trivial 1-2 statement functions at call sites.",
             fit,
-            trivial_c
-        )
-    }
-
-    // Pattern 7: high_call_density
-    // Average calls per function > 10 suggests complex call graph
-    if fn_c > 0 && call_c > fn_c * 10 {
-        uint64 ratio = call_c / fn_c
-        uint64 fit = 20 + ratio * 3
-        if fit > 70 { fit = 70 }
-        lc_add_pattern(
-            "high_call_density",
-            "Complex call graph",
-            "Consider splitting functions with many call sites to improve readability.",
-            fit,
-            ratio
+            trivial_c,
+            1
         )
     }
 
@@ -396,7 +408,8 @@ fn detect_patterns(uint64 root, uint64 tel) -> uint64 {
 // ---------------------------------------------------------------------------
 // Fitness scoring (0-100)
 // ---------------------------------------------------------------------------
-// Global fitness = base score with deductions for detected issues
+// Global fitness = base score with deductions for detected issues.
+// Core-layer issues weigh more than surface-layer suggestions.
 
 @export
 fn compute_fitness(uint64 tel, uint64 patterns, uint64 has_lock_cycles) -> uint64 {
@@ -409,12 +422,14 @@ fn compute_fitness(uint64 tel, uint64 patterns, uint64 has_lock_cycles) -> uint6
     // No functions: can't score meaningfully
     if fn_c == 0 { return 50 }
 
-    // Deduct for each detected pattern based on its fitness
+    // Deduct for each detected pattern based on its fitness and layer
     uint64 i = 0
     while i < lc_pattern_count {
         uint64 fit = lc_get_pattern_fitness(i)
-        // Higher pattern fitness = more important issue = bigger deduction
-        uint64 deduct = fit / 5
+        uint64 layer = lc_pattern_layer(i)
+        // Core issues: bigger deduction (fit/4). Surface: smaller (fit/8).
+        uint64 deduct = fit / 4
+        if layer == 1 { deduct = fit / 8 }
         if deduct > 15 { deduct = 15 }
         if score > deduct {
             score = score - deduct
@@ -424,15 +439,14 @@ fn compute_fitness(uint64 tel, uint64 patterns, uint64 has_lock_cycles) -> uint6
         i = i + 1
     }
 
-    // Deduct for lock cycles
+    // Deduct for lock cycles (if the analysis module reported any)
     if has_lock_cycles != 0 {
         if score > 20 { score = score - 20 } else { score = 0 }
     }
 
-    // Deduct for high unsafe ratio
+    // Deduct for high unsafe ratio (>10% of all ops)
     if total_ops > 0 {
         if unsafe_c * 10 > total_ops {
-            // >10% unsafe
             if score > 10 { score = score - 10 } else { score = 0 }
         }
     }
@@ -441,7 +455,7 @@ fn compute_fitness(uint64 tel, uint64 patterns, uint64 has_lock_cycles) -> uint6
 }
 
 // ---------------------------------------------------------------------------
-// Report generation
+// Report helpers
 // ---------------------------------------------------------------------------
 
 fn lc_write_str(uint64 s) {
@@ -463,69 +477,121 @@ fn lc_write_num(uint64 val) {
     write(1, nb, nl)
 }
 
+// Print one pattern entry. Numbering index `n` (1-based) is caller-supplied.
+fn lc_print_pattern(uint64 idx, uint64 n) {
+    uint64 msg = "  ["
+    write(1, msg, 3)
+    lc_write_num(n)
+    msg = "] "
+    write(1, msg, 2)
+    lc_write_str(lc_get_pattern_id(idx))
+    msg = "  fitness: "
+    write(1, msg, 11)
+    lc_write_num(lc_get_pattern_fitness(idx))
+    if lc_pattern_can_fix(idx) != 0 {
+        msg = "  (auto-fix available)"
+        write(1, msg, 22)
+    }
+    msg = "\n      title: "
+    write(1, msg, 14)
+    lc_write_str(lc_get_pattern_title(idx))
+    msg = "\n      signal: "
+    write(1, msg, 15)
+    lc_write_num(lc_get_pattern_signal(idx))
+    msg = " occurrence(s)\n      suggestion: "
+    write(1, msg, 33)
+    lc_write_str(lc_get_pattern_suggestion(idx))
+    msg = "\n\n"
+    write(1, msg, 2)
+}
+
+// ---------------------------------------------------------------------------
+// Full report
+// ---------------------------------------------------------------------------
+
 @export
 fn print_living_report(uint64 tel, uint64 patterns, uint64 fitness) {
     uint64 msg = "=== KernRift Living Compiler Report ===\n"
     write(1, msg, 40)
+    msg = "    stable semantic core + adaptive surface layer\n\n"
+    write(1, msg, 52)
 
-    // Telemetry summary
-    msg = "Functions: "
-    write(1, msg, 11)
-    lc_write_num(tel_get(tel, 0))
-
-    msg = "\nExterns: "
-    write(1, msg, 9)
-    lc_write_num(tel_get(tel, 1))
-
-    msg = "\nCalls: "
-    write(1, msg, 7)
-    lc_write_num(tel_get(tel, 2))
-
-    msg = "\nUnsafe ops: "
-    write(1, msg, 12)
-    lc_write_num(tel_get(tel, 3))
-
-    msg = "\nTotal ops: "
-    write(1, msg, 11)
-    lc_write_num(tel_get(tel, 6))
-
-    msg = "\nPatterns found: "
-    write(1, msg, 16)
-    lc_write_num(patterns)
-
-    msg = "\nFitness score: "
+    msg = "Telemetry\n"
+    write(1, msg, 10)
+    msg = "  Functions:   "
     write(1, msg, 15)
+    lc_write_num(tel_get(tel, 0))
+    msg = "\n  Calls:       "
+    write(1, msg, 15)
+    lc_write_num(tel_get(tel, 2))
+    msg = "\n  Unsafe ops:  "
+    write(1, msg, 15)
+    lc_write_num(tel_get(tel, 3))
+    msg = "\n  Total ops:   "
+    write(1, msg, 15)
+    lc_write_num(tel_get(tel, 6))
+    msg = "\n  Patterns:    "
+    write(1, msg, 15)
+    lc_write_num(patterns)
+    msg = "\n\nFitness: "
+    write(1, msg, 10)
     lc_write_num(fitness)
-    msg = "/100\n"
-    write(1, msg, 5)
+    msg = "/100\n\n"
+    write(1, msg, 6)
 
-    // Per-pattern details
-    if patterns > 0 {
-        msg = "\n"
-        write(1, msg, 1)
+    if patterns == 0 {
+        msg = "No patterns detected.\n"
+        write(1, msg, 22)
+        return
+    }
+
+    // Count patterns per layer
+    uint64 core_count = 0
+    uint64 surface_count = 0
+    uint64 ci = 0
+    while ci < lc_pattern_count {
+        uint64 layer = lc_pattern_layer(ci)
+        if layer == 0 {
+            core_count = core_count + 1
+        } else {
+            surface_count = surface_count + 1
+        }
+        ci = ci + 1
+    }
+
+    // Core section
+    if core_count > 0 {
+        msg = "--- Semantic Core ("
+        write(1, msg, 19)
+        lc_write_num(core_count)
+        msg = ") ---\n\n"
+        write(1, msg, 7)
+        uint64 n = 0
         uint64 i = 0
         while i < lc_pattern_count {
-            msg = "["
-            write(1, msg, 1)
-            lc_write_num(i + 1)
-            msg = "] "
-            write(1, msg, 2)
-            lc_write_str(lc_get_pattern_id(i))
-            msg = "  fitness: "
-            write(1, msg, 11)
-            lc_write_num(lc_get_pattern_fitness(i))
-            msg = "\n    title: "
-            write(1, msg, 11)
-            lc_write_str(lc_get_pattern_title(i))
-            msg = "\n    signal: "
-            write(1, msg, 12)
-            lc_write_num(lc_get_pattern_signal(i))
-            msg = " occurrence(s)\n    suggestion: "
-            write(1, msg, 31)
-            lc_write_str(lc_get_pattern_suggestion(i))
-            msg = "\n\n"
-            write(1, msg, 2)
+            if lc_pattern_layer(i) == 0 {
+                n = n + 1
+                lc_print_pattern(i, n)
+            }
             i = i + 1
+        }
+    }
+
+    // Surface section
+    if surface_count > 0 {
+        msg = "--- Adaptive Surface ("
+        write(1, msg, 22)
+        lc_write_num(surface_count)
+        msg = ") ---\n\n"
+        write(1, msg, 7)
+        uint64 n2 = 0
+        uint64 j = 0
+        while j < lc_pattern_count {
+            if lc_pattern_layer(j) == 1 {
+                n2 = n2 + 1
+                lc_print_pattern(j, n2)
+            }
+            j = j + 1
         }
     }
 }
@@ -556,84 +622,98 @@ fn lc_check_ci_gate(uint64 min_fitness) -> uint64 {
 fn print_living_report_filtered(uint64 tel, uint64 patterns, uint64 fitness, uint64 min_fitness) {
     uint64 msg = "=== KernRift Living Compiler Report ===\n"
     write(1, msg, 40)
+    msg = "    stable semantic core + adaptive surface layer\n\n"
+    write(1, msg, 52)
 
-    msg = "Functions: "
-    write(1, msg, 11)
-    lc_write_num(tel_get(tel, 0))
-
-    msg = "  Calls: "
-    write(1, msg, 9)
-    lc_write_num(tel_get(tel, 2))
-
-    msg = "  Unsafe: "
+    msg = "Telemetry\n"
     write(1, msg, 10)
+    msg = "  Functions:   "
+    write(1, msg, 15)
+    lc_write_num(tel_get(tel, 0))
+    msg = "\n  Calls:       "
+    write(1, msg, 15)
+    lc_write_num(tel_get(tel, 2))
+    msg = "\n  Unsafe ops:  "
+    write(1, msg, 15)
     lc_write_num(tel_get(tel, 3))
-
-    msg = "  Ops: "
-    write(1, msg, 7)
+    msg = "\n  Total ops:   "
+    write(1, msg, 15)
     lc_write_num(tel_get(tel, 6))
-
-    msg = "\nFitness: "
-    write(1, msg, 9)
+    msg = "\n\nFitness: "
+    write(1, msg, 10)
     lc_write_num(fitness)
-    msg = "/100\n"
-    write(1, msg, 5)
+    msg = "/100\n\n"
+    write(1, msg, 6)
 
-    // Count filtered patterns
-    uint64 shown = 0
+    // Count filtered patterns per layer
+    uint64 shown_core = 0
+    uint64 shown_surface = 0
     uint64 i = 0
     while i < lc_pattern_count {
         uint64 fit = lc_get_pattern_fitness(i)
         if fit >= min_fitness {
-            shown = shown + 1
+            if lc_pattern_layer(i) == 0 {
+                shown_core = shown_core + 1
+            } else {
+                shown_surface = shown_surface + 1
+            }
         }
         i = i + 1
     }
 
-    if shown > 0 {
-        msg = "\nliving-compiler: "
-        write(1, msg, 17)
-        lc_write_num(shown)
-        msg = " suggestion(s) at fitness >= "
-        write(1, msg, 28)
-        lc_write_num(min_fitness)
-        msg = "\n\n"
-        write(1, msg, 2)
+    uint64 shown = shown_core + shown_surface
 
-        uint64 n = 0
-        i = 0
-        while i < lc_pattern_count {
-            uint64 fit = lc_get_pattern_fitness(i)
-            if fit >= min_fitness {
-                n = n + 1
-                msg = "["
-                write(1, msg, 1)
-                lc_write_num(n)
-                msg = "] "
-                write(1, msg, 2)
-                lc_write_str(lc_get_pattern_id(i))
-                msg = "  fitness: "
-                write(1, msg, 11)
-                lc_write_num(fit)
-                msg = "\n    title: "
-                write(1, msg, 11)
-                lc_write_str(lc_get_pattern_title(i))
-                msg = "\n    signal: "
-                write(1, msg, 12)
-                lc_write_num(lc_get_pattern_signal(i))
-                msg = " occurrence(s)\n    suggestion: "
-                write(1, msg, 31)
-                lc_write_str(lc_get_pattern_suggestion(i))
-                msg = "\n\n"
-                write(1, msg, 2)
-            }
-            i = i + 1
-        }
-    } else {
-        msg = "\nliving-compiler: 0 suggestion(s) at fitness >= "
+    if shown == 0 {
+        msg = "living-compiler: 0 suggestion(s) at fitness >= "
         write(1, msg, 47)
         lc_write_num(min_fitness)
         msg = "\n"
         write(1, msg, 1)
+        return
+    }
+
+    msg = "living-compiler: "
+    write(1, msg, 17)
+    lc_write_num(shown)
+    msg = " suggestion(s) at fitness >= "
+    write(1, msg, 28)
+    lc_write_num(min_fitness)
+    msg = "\n\n"
+    write(1, msg, 2)
+
+    if shown_core > 0 {
+        msg = "--- Semantic Core ("
+        write(1, msg, 19)
+        lc_write_num(shown_core)
+        msg = ") ---\n\n"
+        write(1, msg, 7)
+        uint64 n = 0
+        uint64 j = 0
+        while j < lc_pattern_count {
+            uint64 fit = lc_get_pattern_fitness(j)
+            if fit >= min_fitness && lc_pattern_layer(j) == 0 {
+                n = n + 1
+                lc_print_pattern(j, n)
+            }
+            j = j + 1
+        }
+    }
+
+    if shown_surface > 0 {
+        msg = "--- Adaptive Surface ("
+        write(1, msg, 22)
+        lc_write_num(shown_surface)
+        msg = ") ---\n\n"
+        write(1, msg, 7)
+        uint64 n2 = 0
+        uint64 k = 0
+        while k < lc_pattern_count {
+            uint64 fit = lc_get_pattern_fitness(k)
+            if fit >= min_fitness && lc_pattern_layer(k) == 1 {
+                n2 = n2 + 1
+                lc_print_pattern(k, n2)
+            }
+            k = k + 1
+        }
     }
 }
