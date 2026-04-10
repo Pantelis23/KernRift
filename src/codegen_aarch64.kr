@@ -2893,10 +2893,14 @@ fn gen_function_a64(uint64 fn_node) {
         emit_a64(0xD503201F)
     }
     uint64 prologue_start = out_len
+    uint64 stp_fp_off = 0
+    uint64 stp_callee_off = 0
     if is_naked == 0 {
         emit_a64(0xD1000000)  // SUB SP, SP, #imm (patched)
+        stp_fp_off = out_len
         emit_a64(0xA9007BFD)  // stp x29, x30, [sp]
         emit_a64_add_imm(29, 31, 0)  // mov x29, sp
+        stp_callee_off = out_len
         emit_a64(0xA90153F3)  // stp x19, x20, [sp, #16]
     }
 
@@ -2978,10 +2982,10 @@ fn gen_function_a64(uint64 fn_node) {
         }
     }
 
-    // ldp x19, x20, [sp, #16]
-    emit_a64(0xA94153F3)
-    // ldp x29, x30, [sp]
-    emit_a64(0xA9407BFD)
+    uint64 ldp_callee_off = out_len
+    emit_a64(0xA94153F3)  // ldp x19, x20, [sp, #16]
+    uint64 ldp_fp_off = out_len
+    emit_a64(0xA9407BFD)  // ldp x29, x30, [sp]
     // add sp, sp, #FRAME (placeholder, patched)
     uint64 epilogue_add = out_len
     emit_a64(0x91000000)
@@ -3045,6 +3049,29 @@ fn gen_function_a64(uint64 fn_node) {
         }
     }
 
+    // Leaf function optimization: if no BL was emitted, NOP out the STP/LDP
+    // Stack layout stays the same (a64_var_base=32), just skip the memory ops
+    if is_naked == 0 {
+        uint64 has_bl = 0
+        uint64 scan = prologue_start
+        while scan + 4 <= out_len {
+            uint64 sp2 = out_buf + scan
+            uint32 si = 0
+            unsafe { *(sp2 as uint32) -> si }
+            uint64 wsi = si
+            if (wsi & 0xFC000000) == 0x94000000 { has_bl = 1; break }
+            scan = scan + 4
+        }
+        if has_bl == 0 {
+            // Leaf: NOP out STP x29,x30 + MOV x29,sp + STP x19,x20
+            patch_u32(stp_fp_off, 0xD503201F)
+            patch_u32(stp_fp_off + 4, 0xD503201F)
+            patch_u32(stp_callee_off, 0xD503201F)
+            // NOP out LDP x19,x20 + LDP x29,x30
+            patch_u32(ldp_callee_off, 0xD503201F)
+            patch_u32(ldp_fp_off, 0xD503201F)
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
