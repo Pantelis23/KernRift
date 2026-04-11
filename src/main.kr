@@ -1431,6 +1431,52 @@ fn emit_asm_listing(uint64 output_path, uint64 arch, uint64 text_start, uint64 s
                     uint64 mov_eax_imm = m0 | (m1 << 8) | (m2 << 16) | (m3 << 24)
                     write_hex32(fd, mov_eax_imm)
                     pos = pos + 5
+                } else if (b0 == 0x4C) && pos + 3 <= fn_end {
+                    // REX.WR prefix (r8-r15 in reg field) + mov r/m,r or mov r,r/m
+                    uint64 bp1_c = bp + 1
+                    uint64 b1_c = 0
+                    unsafe { *(bp1_c as uint8) -> b1_c }
+                    if (b1_c == 0x89 || b1_c == 0x8B) && pos + 3 <= fn_end {
+                        uint64 bp2c = bp + 2
+                        uint64 modrm_c = 0
+                        unsafe { *(bp2c as uint8) -> modrm_c }
+                        uint64 mod_c = (modrm_c >> 6) & 3
+                        uint64 rm_c  = modrm_c & 7
+                        uint64 extra_c = 0
+                        if mod_c != 3 {
+                            if rm_c == 4 { extra_c = extra_c + 1 }
+                            if mod_c == 1 { extra_c = extra_c + 1 }
+                            if mod_c == 2 { extra_c = extra_c + 4 }
+                            if mod_c == 0 && rm_c == 5 { extra_c = extra_c + 4 }
+                        }
+                        uint64 tlen_c = 3 + extra_c
+                        if pos + tlen_c > fn_end { tlen_c = fn_end - pos }
+                        uint64 dbic = 0
+                        while dbic < tlen_c {
+                            uint64 dppc = bp + dbic
+                            uint64 dbbc = 0
+                            unsafe { *(dppc as uint8) -> dbbc }
+                            write_hex8(fd, dbbc)
+                            if dbic + 1 < tlen_c { write(fd, " ", 1) }
+                            dbic = dbic + 1
+                        }
+                        write(fd, "  mov <r8-r15>", 14)
+                        pos = pos + tlen_c
+                    } else {
+                        // Unknown 4C-prefixed — dump 3 bytes raw
+                        uint64 cnt_c = 3
+                        if cnt_c + pos > fn_end { cnt_c = fn_end - pos }
+                        uint64 dic = 0
+                        while dic < cnt_c {
+                            uint64 dpc = bp + dic
+                            uint64 dbc = 0
+                            unsafe { *(dpc as uint8) -> dbc }
+                            write_hex8(fd, dbc)
+                            write(fd, " ", 1)
+                            dic = dic + 1
+                        }
+                        pos = pos + cnt_c
+                    }
                 } else if b0 == 0x48 && pos + 3 <= fn_end {
                     // REX.W instructions
                     uint64 bp1 = bp + 1
@@ -1620,37 +1666,137 @@ fn emit_asm_listing(uint64 output_path, uint64 arch, uint64 text_start, uint64 s
                         else if xor_reg == 6 { write(fd, "rsi", 3) }
                         else { write(fd, "rdi", 3) }
                         pos = pos + 3
-                    } else if b1 == 0x89 && pos + 3 <= fn_end {
-                        // REX.W mov reg, reg: 48 89 XX
+                    } else if (b1 == 0x89 || b1 == 0x8B) && pos + 3 <= fn_end {
+                        // REX.W mov  — 0x89 = mov r/m, reg (store direction)
+                        //               0x8B = mov reg, r/m (load direction)
+                        // ModR/M: mod:2, reg:3, rm:3.
+                        // mod==3 → reg-reg (3 bytes total)
+                        // mod!=3 → memory operand; rm==4 adds SIB;
+                        //          mod==1 adds disp8; mod==2 adds disp32;
+                        //          mod==0 && rm==5 is RIP-relative disp32.
                         uint64 bp2 = bp + 2
                         uint64 modrm_mov = 0
                         unsafe { *(bp2 as uint8) -> modrm_mov }
-                        write_hex8(fd, b0)
-                        write(fd, " ", 1)
-                        write_hex8(fd, b1)
-                        write(fd, " ", 1)
-                        write_hex8(fd, modrm_mov)
-                        write(fd, "           mov ", 15)
-                        uint64 mov_rm = modrm_mov & 0x07
-                        uint64 mov_src = (modrm_mov >> 3) & 0x07
-                        if mov_rm == 0 { write(fd, "rax", 3) }
-                        else if mov_rm == 1 { write(fd, "rcx", 3) }
-                        else if mov_rm == 2 { write(fd, "rdx", 3) }
-                        else if mov_rm == 3 { write(fd, "rbx", 3) }
-                        else if mov_rm == 4 { write(fd, "rsp", 3) }
-                        else if mov_rm == 5 { write(fd, "rbp", 3) }
-                        else if mov_rm == 6 { write(fd, "rsi", 3) }
-                        else { write(fd, "rdi", 3) }
-                        write(fd, ", ", 2)
-                        if mov_src == 0 { write(fd, "rax", 3) }
-                        else if mov_src == 1 { write(fd, "rcx", 3) }
-                        else if mov_src == 2 { write(fd, "rdx", 3) }
-                        else if mov_src == 3 { write(fd, "rbx", 3) }
-                        else if mov_src == 4 { write(fd, "rsp", 3) }
-                        else if mov_src == 5 { write(fd, "rbp", 3) }
-                        else if mov_src == 6 { write(fd, "rsi", 3) }
-                        else { write(fd, "rdi", 3) }
-                        pos = pos + 3
+                        uint64 mod_f = (modrm_mov >> 6) & 3
+                        uint64 rm_f  = modrm_mov & 7
+                        uint64 reg_f = (modrm_mov >> 3) & 7
+                        // Compute number of bytes after ModR/M
+                        uint64 extra = 0
+                        if mod_f != 3 {
+                            if rm_f == 4 { extra = extra + 1 }   // SIB
+                            if mod_f == 1 { extra = extra + 1 }  // disp8
+                            if mod_f == 2 { extra = extra + 4 }  // disp32
+                            if mod_f == 0 && rm_f == 5 { extra = extra + 4 }  // rip+disp32
+                        }
+                        uint64 total_len = 3 + extra
+                        if pos + total_len > fn_end { total_len = fn_end - pos }
+                        // Dump raw bytes (space-separated)
+                        uint64 dbi = 0
+                        while dbi < total_len {
+                            uint64 dpp = bp + dbi
+                            uint64 dbb = 0
+                            unsafe { *(dpp as uint8) -> dbb }
+                            write_hex8(fd, dbb)
+                            if dbi + 1 < total_len { write(fd, " ", 1) }
+                            dbi = dbi + 1
+                        }
+                        write(fd, "  mov ", 6)
+                        if mod_f == 3 {
+                            // reg-reg: "mov <rm>, <reg>" for 0x89; "mov <reg>, <rm>" for 0x8B
+                            uint64 left = rm_f
+                            uint64 right = reg_f
+                            if b1 == 0x8B { left = reg_f; right = rm_f }
+                            if left == 0 { write(fd, "rax", 3) }
+                            else if left == 1 { write(fd, "rcx", 3) }
+                            else if left == 2 { write(fd, "rdx", 3) }
+                            else if left == 3 { write(fd, "rbx", 3) }
+                            else if left == 4 { write(fd, "rsp", 3) }
+                            else if left == 5 { write(fd, "rbp", 3) }
+                            else if left == 6 { write(fd, "rsi", 3) }
+                            else { write(fd, "rdi", 3) }
+                            write(fd, ", ", 2)
+                            if right == 0 { write(fd, "rax", 3) }
+                            else if right == 1 { write(fd, "rcx", 3) }
+                            else if right == 2 { write(fd, "rdx", 3) }
+                            else if right == 3 { write(fd, "rbx", 3) }
+                            else if right == 4 { write(fd, "rsp", 3) }
+                            else if right == 5 { write(fd, "rbp", 3) }
+                            else if right == 6 { write(fd, "rsi", 3) }
+                            else { write(fd, "rdi", 3) }
+                        } else {
+                            // Memory operand. Resolve base register (SIB if rm==4).
+                            uint64 base_r = rm_f
+                            uint64 disp_ofs = 3
+                            if rm_f == 4 {
+                                uint64 bp_s = bp + 3
+                                uint64 sib_b = 0
+                                unsafe { *(bp_s as uint8) -> sib_b }
+                                base_r = sib_b & 7
+                                disp_ofs = 4
+                            }
+                            if b1 == 0x89 {
+                                // store: mov [base+disp], reg
+                                write(fd, "[", 1)
+                            } else {
+                                // load: mov reg, [base+disp]
+                                if reg_f == 0 { write(fd, "rax", 3) }
+                                else if reg_f == 1 { write(fd, "rcx", 3) }
+                                else if reg_f == 2 { write(fd, "rdx", 3) }
+                                else if reg_f == 3 { write(fd, "rbx", 3) }
+                                else if reg_f == 4 { write(fd, "rsp", 3) }
+                                else if reg_f == 5 { write(fd, "rbp", 3) }
+                                else if reg_f == 6 { write(fd, "rsi", 3) }
+                                else { write(fd, "rdi", 3) }
+                                write(fd, ", [", 3)
+                            }
+                            if mod_f == 0 && rm_f == 5 {
+                                write(fd, "rip", 3)
+                            } else if base_r == 0 { write(fd, "rax", 3) }
+                            else if base_r == 1 { write(fd, "rcx", 3) }
+                            else if base_r == 2 { write(fd, "rdx", 3) }
+                            else if base_r == 3 { write(fd, "rbx", 3) }
+                            else if base_r == 4 { write(fd, "rsp", 3) }
+                            else if base_r == 5 { write(fd, "rbp", 3) }
+                            else if base_r == 6 { write(fd, "rsi", 3) }
+                            else { write(fd, "rdi", 3) }
+                            if mod_f == 1 {
+                                write(fd, "+0x", 3)
+                                uint64 bp_d = bp + disp_ofs
+                                uint64 d8v = 0
+                                unsafe { *(bp_d as uint8) -> d8v }
+                                write_hex8(fd, d8v)
+                            } else if mod_f == 2 || (mod_f == 0 && rm_f == 5) {
+                                write(fd, "+0x", 3)
+                                uint64 bp_d0 = bp + disp_ofs
+                                uint64 bp_d1 = bp + disp_ofs + 1
+                                uint64 bp_d2 = bp + disp_ofs + 2
+                                uint64 bp_d3 = bp + disp_ofs + 3
+                                uint64 d32_0 = 0
+                                uint64 d32_1 = 0
+                                uint64 d32_2 = 0
+                                uint64 d32_3 = 0
+                                unsafe { *(bp_d0 as uint8) -> d32_0 }
+                                unsafe { *(bp_d1 as uint8) -> d32_1 }
+                                unsafe { *(bp_d2 as uint8) -> d32_2 }
+                                unsafe { *(bp_d3 as uint8) -> d32_3 }
+                                uint64 d32 = d32_0 | (d32_1 << 8) | (d32_2 << 16) | (d32_3 << 24)
+                                write_hex32(fd, d32)
+                            }
+                            if b1 == 0x89 {
+                                write(fd, "], ", 3)
+                                if reg_f == 0 { write(fd, "rax", 3) }
+                                else if reg_f == 1 { write(fd, "rcx", 3) }
+                                else if reg_f == 2 { write(fd, "rdx", 3) }
+                                else if reg_f == 3 { write(fd, "rbx", 3) }
+                                else if reg_f == 4 { write(fd, "rsp", 3) }
+                                else if reg_f == 5 { write(fd, "rbp", 3) }
+                                else if reg_f == 6 { write(fd, "rsi", 3) }
+                                else { write(fd, "rdi", 3) }
+                            } else {
+                                write(fd, "]", 1)
+                            }
+                        }
+                        pos = pos + total_len
                     } else if b1 == 0x8D && pos + 7 <= fn_end {
                         // lea r64, [rip+disp32]: 48 8D 05 disp32
                         uint64 bp2 = bp + 2

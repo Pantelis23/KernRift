@@ -1322,6 +1322,7 @@ fn parse_module() -> uint64 {
                 if wstk == 82 || wstk == 86 { elem_sz = 4 }
                 if wstk == 83 || wstk == 87 { elem_sz = 8 }
                 static_declare_array(name_tok, stsz_val * elem_sz)
+                static_set_elem_size_last(elem_sz)
                 // Optional initializer — skip for now (zero-initialized by BSS)
                 if eat(34) != 0 {
                     while cur_kind() != 60 && cur_kind() != 71 && cur_kind() != 72 && cur_kind() != 73 && cur_kind() != 21 && cur_kind() != 89 && cur_kind() != 0 {
