@@ -988,6 +988,42 @@ else
 fi
 rm -f /tmp/krc_android_$$.kr /tmp/krc_android_$$
 
+# --- Android x86_64 emit test ---
+echo ""
+echo "--- Android x86_64 emit test ---"
+TOTAL=$((TOTAL + 1))
+printf 'fn main() { exit(42) }\n' > /tmp/krc_androidx_$$.kr
+if $KRC --arch=x86_64 --emit=android /tmp/krc_androidx_$$.kr -o /tmp/krc_androidx_$$ > /dev/null 2>&1; then
+    magic=$(xxd -l 4 -p /tmp/krc_androidx_$$ 2>/dev/null)
+    etype=$(xxd -s 16 -l 2 -p /tmp/krc_androidx_$$ 2>/dev/null)
+    emach=$(xxd -s 18 -l 2 -p /tmp/krc_androidx_$$ 2>/dev/null)
+    if [ "$magic" = "7f454c46" ] && [ "$etype" = "0300" ] && [ "$emach" = "3e00" ]; then
+        # Execute via glibc loader (bypasses PT_INTERP=/system/bin/linker64)
+        if [ -x /lib64/ld-linux-x86-64.so.2 ] && [ "$(uname -m)" = "x86_64" ]; then
+            actual=0
+            /lib64/ld-linux-x86-64.so.2 /tmp/krc_androidx_$$ > /dev/null 2>&1
+            actual=$?
+            if [ "$actual" = "42" ]; then
+                PASS=$((PASS + 1))
+                echo "  android_emit_x86_64: PASS (PIE ELF x86-64, exec=42)"
+            else
+                FAIL=$((FAIL + 1))
+                echo "  android_emit_x86_64: FAIL (exec exit=$actual, expected 42)"
+            fi
+        else
+            PASS=$((PASS + 1))
+            echo "  android_emit_x86_64: PASS (structural; no glibc loader)"
+        fi
+    else
+        FAIL=$((FAIL + 1))
+        echo "  android_emit_x86_64: FAIL (bad ELF: magic=$magic etype=$etype mach=$emach)"
+    fi
+else
+    FAIL=$((FAIL + 1))
+    echo "  android_emit_x86_64: FAIL (compilation failed)"
+fi
+rm -f /tmp/krc_androidx_$$.kr /tmp/krc_androidx_$$
+
 # --- For loop ---
 run_test "for_range" 'fn main() { uint64 s = 0; for i in 0..10 { s = s + i }; exit(s) }' 45
 

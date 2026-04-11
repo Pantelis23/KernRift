@@ -71,6 +71,7 @@ jobs:
           ./build/krc2 --arch=arm64  --emit=macho build/krc.kr -o dist/krc-macos-arm64
           # krc for Android
           ./build/krc2 --emit=android build/krc.kr -o dist/krc-android-arm64
+          ./build/krc2 --arch=x86_64 --emit=android build/krc.kr -o dist/krc-android-x86_64
           # kr runner (merge bcj.kr + runner.kr)
           cat src/bcj.kr src/runner.kr > build/kr.kr
           ./build/krc2 --arch=x86_64 build/kr.kr -o dist/kr-linux-x86_64
@@ -84,6 +85,7 @@ jobs:
           ./build/krc2 --arch=arm64  --emit=macho build/kr.kr -o dist/kr-macos-arm64
           # kr runner (Android)
           ./build/krc2 --emit=android build/kr.kr -o dist/kr-android-arm64
+          ./build/krc2 --arch=x86_64 --emit=android build/kr.kr -o dist/kr-android-x86_64
 
       - name: Verify binaries
         run: |
@@ -96,11 +98,11 @@ jobs:
           sha256sum krc-linux-x86_64 krc-linux-arm64 \
                     krc-windows-x86_64.exe krc-windows-arm64.exe \
                     krc-macos-x86_64 krc-macos-arm64 \
-                    krc-android-arm64 \
+                    krc-android-arm64 krc-android-x86_64 \
                     kr-linux-x86_64 kr-linux-arm64 \
                     kr-windows-x86_64.exe kr-windows-arm64.exe \
                     kr-macos-x86_64 kr-macos-arm64 \
-                    kr-android-arm64 \
+                    kr-android-arm64 kr-android-x86_64 \
                     krc.krbo krc-source.kr > SHA256SUMS
 
       - name: Upload release assets
@@ -114,6 +116,7 @@ jobs:
             dist/krc-macos-x86_64
             dist/krc-macos-arm64
             dist/krc-android-arm64
+            dist/krc-android-x86_64
             dist/kr-linux-x86_64
             dist/kr-linux-arm64
             dist/kr-windows-x86_64.exe
@@ -121,6 +124,7 @@ jobs:
             dist/kr-macos-x86_64
             dist/kr-macos-arm64
             dist/kr-android-arm64
+            dist/kr-android-x86_64
             dist/krc.krbo
             dist/krc-source.kr
             dist/SHA256SUMS

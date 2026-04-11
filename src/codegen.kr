@@ -4409,6 +4409,8 @@ fn gen_expr(uint64 node) {
                 emit_mov_rax_imm(3)
             } else if target_os == 1 {
                 emit_mov_rax_imm(5)
+            } else if target_os == 3 {
+                emit_mov_rax_imm(8)
             } else {
                 emit_mov_rax_imm(1)
             }

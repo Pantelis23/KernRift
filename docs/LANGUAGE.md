@@ -816,7 +816,7 @@ signed_le(a, b)    signed_ge(a, b)
 |---|---|
 | `exit(code)` | Terminate the process with an exit code. |
 | `get_target_os()` | Host OS: `0`=Linux, `1`=macOS, `2`=Windows, `3`=Android. |
-| `get_arch_id()` | Host arch: `1`=x86_64, `2`=ARM64. |
+| `get_arch_id()` | Compile-time arch ID: `1` Linux x86_64, `2` Linux arm64, `3` Win x86_64, `4` Win arm64, `5` macOS x86_64, `6` macOS arm64, `7` Android arm64, `8` Android x86_64. |
 | `exec_process(path)` | Spawn and wait for a process. Returns exit code. |
 | `set_executable(path)` | `chmod +x` equivalent. |
 | `get_module_path(buf, size)` | Write the current binary's path into `buf`. |
@@ -904,7 +904,8 @@ krc <file.kr> --emit=asm -o out.s    # disassembled listing
 krc <file.kr> --emit=obj -o out.o    # ELF relocatable object
 krc <file.kr> --emit=pe -o out.exe   # Windows PE
 krc <file.kr> --emit=macho -o out    # macOS Mach-O
-krc <file.kr> --emit=android -o out  # Android ARM64 PIE ELF
+krc <file.kr> --emit=android -o out  # Android ARM64 PIE ELF (default)
+krc <file.kr> --arch=x86_64 --emit=android -o out  # Android x86_64 PIE ELF
 krc --freestanding <file.kr> -o out  # no main trampoline, no auto-exit
 krc check <file.kr>                  # run semantic checks only
 krc fmt   <file.kr>                  # auto-format the file in place
@@ -1187,13 +1188,13 @@ fn main() {
 | ELF relocatable | `--emit=obj` | Link into an external object (`.o`) |
 | Mach-O | `--emit=macho` | macOS executable (x86_64 or arm64) |
 | PE | `--emit=pe` | Windows `.exe` |
-| Android PIE ELF | `--emit=android` | Android ARM64 |
+| Android PIE ELF | `--emit=android` | Android ARM64 (default) or x86_64 (`--arch=x86_64`) |
 | Assembly listing | `--emit=asm` | Human-readable disassembly with labels |
 
-A `.krbo` fat binary packs up to 7 platform slices (Linux x86_64, Linux
+A `.krbo` fat binary packs up to 8 platform slices (Linux x86_64, Linux
 ARM64, Windows x86_64, Windows ARM64, macOS x86_64, macOS ARM64, Android
-ARM64), each BCJ+LZ4 compressed. The `kr` runner extracts and executes
-the slice matching the current host at startup.
+ARM64, Android x86_64), each BCJ+LZ4 compressed. The `kr` runner
+extracts and executes the slice matching the current host at startup.
 
 ---
 
@@ -1408,12 +1409,13 @@ offset  size  field
 | 5  | macOS    | x86_64 |
 | 6  | macOS    | arm64  |
 | 7  | Android  | arm64  |
+| 8  | Android  | x86_64 |
 
 **Decompression**: each slice is LZ4-compressed with a BCJ filter
 applied *before* compression. On extraction the runner first LZ4-
 decompresses, then runs the matching BCJ filter in reverse to restore
 the original call/jmp offsets. BCJ filter selection:
-- x86-family arch_ids (1, 3, 5): x86_64 BCJ filter (rewrites `E8`/`E9`
+- x86-family arch_ids (1, 3, 5, 8): x86_64 BCJ filter (rewrites `E8`/`E9`
   disp32 offsets to absolute, for better compression).
 - arm-family arch_ids (2, 4, 6, 7): AArch64 BCJ filter (rewrites `BL`
   imm26 fields).

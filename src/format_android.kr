@@ -1,13 +1,14 @@
-// KernRift self-hosted compiler — Android ARM64 ELF output format
+// KernRift self-hosted compiler — Android PIE ELF output format
 //
-// PIE ELF for Android ARM64. Minimal dynamic linking structures.
+// PIE ELF for Android (ARM64 and x86_64). Minimal dynamic linking structures.
+// Both arches share the same layout — only e_machine differs.
 //
 // Sections: .dynstr .dynsym .gnu.hash .dynamic .shstrtab
 // Dynamic entries: DT_STRTAB DT_STRSZ DT_SYMTAB DT_SYMENT DT_GNU_HASH DT_NULL
 //
 // Program headers: PT_PHDR, PT_INTERP, PT_LOAD(RX), PT_DYNAMIC, PT_LOAD(RW)
 //
-// Patch offsets:
+// Patch offsets (same for both arches):
 //   e_entry          @24
 //   PT_LOAD RX:  p_filesz @208  p_memsz @216
 //   PT_LOAD RW:  p_offset @296  p_vaddr @304  p_paddr @312
@@ -15,6 +16,15 @@
 
 @export
 fn emit_elf_header_android_a64() {
+    emit_elf_header_android_pie(0xB7)
+}
+
+@export
+fn emit_elf_header_android_x86_64() {
+    emit_elf_header_android_pie(0x3E)
+}
+
+fn emit_elf_header_android_pie(uint64 e_machine) {
     // All offsets pre-calculated (5 phdrs):
     // phdr: 64, interp_str: 344, dynstr: 368, dynsym: 376, gnu_hash: 400
     // dynamic: 432, shstrtab: 528, shdr: 576
@@ -24,8 +34,8 @@ fn emit_elf_header_android_a64() {
     emit_byte(2); emit_byte(1); emit_byte(1); emit_byte(0)
     uint64 i = 0
     while i < 8 { emit_byte(0); i = i + 1 }
-    emit_u16_le(3)      // e_type = ET_DYN
-    emit_u16_le(0xB7)   // e_machine
+    emit_u16_le(3)          // e_type = ET_DYN
+    emit_u16_le(e_machine)  // 0xB7 arm64 | 0x3E x86_64
     emit_u32_le(1)
     emit_u64_le(0)      // e_entry @24 (patched)
     emit_u64_le(64)     // e_phoff

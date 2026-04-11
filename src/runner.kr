@@ -260,9 +260,9 @@ fn main() {
     uint64 decomp_size = lz4_decompress_frame_r(comp_data, slice_comp_size, binary)
 
     // BCJ decode: reverse the filter applied before compression
-    // x86_64 archs: 1 (Linux), 3 (Windows), 5 (macOS)
-    // arm64 archs: 2 (Linux), 4 (Windows), 6 (macOS)
-    if host_arch == 1 || host_arch == 3 || host_arch == 5 {
+    // x86_64 archs: 1 (Linux), 3 (Windows), 5 (macOS), 8 (Android)
+    // arm64 archs:  2 (Linux), 4 (Windows), 6 (macOS), 7 (Android)
+    if host_arch == 1 || host_arch == 3 || host_arch == 5 || host_arch == 8 {
         filter_x86_64_bcj(binary, decomp_size, 0)
     }
     if host_arch == 2 || host_arch == 4 || host_arch == 6 || host_arch == 7 {

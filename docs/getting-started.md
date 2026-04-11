@@ -332,6 +332,7 @@ won't sneak in behind your back, even as the language evolves. See the
 | Windows x86_64| Yes     | Yes     | Yes       |
 | Windows ARM64 | Yes     | Yes     | Yes       |
 | Android ARM64 | Yes     | Yes     | Yes       |
+| Android x86_64| Yes     | Yes     | —         |
 | macOS x86_64  | Yes     | Yes     | Yes       |
 | macOS ARM64   | Yes     | Partial | —         |
 

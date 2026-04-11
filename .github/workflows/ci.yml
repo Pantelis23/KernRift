@@ -166,6 +166,28 @@ jobs:
           file /tmp/cross-android-arm | grep -q "ARM aarch64"
           echo "Android ARM64 PIE: OK"
 
+          ./build/krc2 --arch=x86_64 --emit=android /tmp/cross.kr -o /tmp/cross-android-x86
+          file /tmp/cross-android-x86 | grep -q "x86-64"
+          file /tmp/cross-android-x86 | grep -q "DYN"
+          echo "Android x86_64 PIE: OK"
+
+      - name: Android x86_64 execution test
+        run: |
+          # Run PIE ELF directly via glibc loader (bypasses PT_INTERP=/system/bin/linker64)
+          echo 'fn main() { exit(42) }' > /tmp/androidx.kr
+          ./build/krc2 --arch=x86_64 --emit=android /tmp/androidx.kr -o /tmp/androidx-exit42
+          chmod +x /tmp/androidx-exit42
+          set +e; /lib64/ld-linux-x86-64.so.2 /tmp/androidx-exit42; CODE=$?; set -e
+          [ "$CODE" -eq 42 ] && echo "PASS: Android x86_64 exit(42)" || { echo "FAIL: expected 42, got $CODE"; exit 1; }
+
+          echo 'static uint64 c = 0
+          fn inc() { c = c + 1 }
+          fn main() { println("Android x86_64!"); inc(); inc(); inc(); exit(c) }' > /tmp/androidx.kr
+          ./build/krc2 --arch=x86_64 --emit=android /tmp/androidx.kr -o /tmp/androidx-static
+          chmod +x /tmp/androidx-static
+          set +e; /lib64/ld-linux-x86-64.so.2 /tmp/androidx-static; CODE=$?; set -e
+          [ "$CODE" -eq 3 ] && echo "PASS: Android x86_64 statics (exit=3)" || { echo "FAIL: expected 3, got $CODE"; exit 1; }
+
       - name: Android ARM64 execution test (QEMU)
         run: |
           sudo apt-get update -qq >/dev/null 2>&1

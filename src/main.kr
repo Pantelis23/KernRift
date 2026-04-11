@@ -1973,8 +1973,12 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
         // ELF relocatable (.o) — no header at start, code goes at offset 0
         header_size = 0
     } else if emit_mode == 4 {
-        // Android PIE ELF
-        emit_elf_header_android_a64()
+        // Android PIE ELF (ARM64 or x86_64)
+        if arch == 0 {
+            emit_elf_header_android_x86_64()
+        } else {
+            emit_elf_header_android_a64()
+        }
         header_size = 1024
     } else if emit_mode == 5 {
         // ASM listing — no header, code at offset 0
@@ -2299,11 +2303,15 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
         uint64 a_dal = (a_draw + 0xFFFF) & ~0xFFFF
         if a_dal == 0 { a_dal = 0x10000 }
         while codegen_output_len() < a_dfoff + a_dal { emit_byte(0) }
-        // Re-resolve static fixups to point into RW segment
-        // a64_compute_va returns file_offset for target_os==3, and the data
-        // is at file offset a_dfoff which maps to VA rx_aligned (page-aligned
-        // vaddr right after the RX segment). Pass a_dfoff directly.
-        resolve_static_fixups_a64(a_dfoff)
+        // Re-resolve static fixups to point into RW segment.
+        // x86_64: RIP-relative disp from (code_off + 4) to (a_dfoff + data_off).
+        // arm64: a64_compute_va returns file_offset for target_os==3, so
+        // passing a_dfoff directly gives the right VA for the RW data copy.
+        if arch == 0 {
+            resolve_static_fixups(a_dfoff)
+        } else {
+            resolve_static_fixups_a64(a_dfoff)
+        }
         // Patch PT_LOAD RW @288: p_offset, p_vaddr, p_paddr, p_filesz, p_memsz
         patch_u32(296, a_dfoff & 0xFFFFFFFF)
         patch_u32(300, (a_dfoff >> 32) & 0xFFFFFFFF)
@@ -2928,6 +2936,90 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
         mai = mai + 1
     }
 
+    // === Compile x86_64 Android PIE ELF ===
+    target_os = 3
+    out_len = 0
+    fn_count = 0
+    fixup_count = 0
+    static_fixup_count = 0
+    str_fixup_count = 0
+    str_len = 0
+    extern_fn_count = 0
+    extern_call_count = 0
+    fnaddr_fixup_count = 0
+
+    restore_src_and_tokens(source, size, src_snapshot, my_tokens, tok_bytes, tok_snapshot)
+    ast_init(131072)
+    parser_init(my_tokens, saved_tcount)
+    uint64 root8 = parse_module()
+    dce_init()
+    dce_scan(root8)
+
+    emit_elf_header_android_x86_64()
+    uint64 text_start8 = codegen_output_len()
+
+    uint32 child8 = ast_child(root8)
+    uint64 wchild8 = child8
+    while wchild8 != 0 {
+        uint32 ck8 = ast_kind(wchild8)
+        if ck8 == 2 {
+            uint32 fn_name8 = ast_data1(wchild8)
+            if dce_is_live(fn_name8) != 0 { gen_function(wchild8) }
+        }
+        uint32 nxt8 = ast_next(wchild8)
+        wchild8 = nxt8
+    }
+    resolve_fixups()
+    resolve_fnaddr_fixups()
+    uint64 data_start8 = codegen_output_len()
+    emit_static_data()
+    resolve_static_fixups(data_start8)
+    uint64 str_start8 = codegen_output_len()
+    emit_string_data()
+    resolve_string_fixups(str_start8)
+
+    // Android PIE ELF: separate RX code + RW data segments
+    uint64 androidx_entry = find_main_offset()
+    patch_u32(24, androidx_entry & 0xFFFFFFFF)
+    patch_u32(28, (androidx_entry >> 32) & 0xFFFFFFFF)
+    uint64 androidx_rx = codegen_output_len()
+    patch_u32(208, androidx_rx & 0xFFFFFFFF)
+    patch_u32(212, (androidx_rx >> 32) & 0xFFFFFFFF)
+    patch_u32(216, androidx_rx & 0xFFFFFFFF)
+    patch_u32(220, (androidx_rx >> 32) & 0xFFFFFFFF)
+    uint64 androidx_rx_aligned = (androidx_rx + 0xFFFF) & ~0xFFFF
+    while codegen_output_len() < androidx_rx_aligned { emit_byte(0) }
+    uint64 ax_dfoff = codegen_output_len()
+    emit_static_data()
+    uint64 ax_draw = codegen_output_len() - ax_dfoff
+    uint64 ax_dal = (ax_draw + 0xFFFF) & ~0xFFFF
+    if ax_dal == 0 { ax_dal = 0x10000 }
+    while codegen_output_len() < ax_dfoff + ax_dal { emit_byte(0) }
+    resolve_static_fixups(ax_dfoff)
+    patch_u32(296, ax_dfoff & 0xFFFFFFFF)
+    patch_u32(300, (ax_dfoff >> 32) & 0xFFFFFFFF)
+    patch_u32(304, androidx_rx_aligned & 0xFFFFFFFF)
+    patch_u32(308, (androidx_rx_aligned >> 32) & 0xFFFFFFFF)
+    patch_u32(312, androidx_rx_aligned & 0xFFFFFFFF)
+    patch_u32(316, (androidx_rx_aligned >> 32) & 0xFFFFFFFF)
+    patch_u32(320, ax_draw & 0xFFFFFFFF)
+    patch_u32(324, (ax_draw >> 32) & 0xFFFFFFFF)
+    patch_u32(328, ax_draw & 0xFFFFFFFF)
+    patch_u32(332, (ax_draw >> 32) & 0xFFFFFFFF)
+
+    uint64 androidx_len = codegen_output_len()
+    uint64 androidx_buf = alloc(androidx_len)
+    uint64 axi = 0
+    while axi < androidx_len {
+        uint64 sp = out_buf + axi
+        uint64 dp = androidx_buf + axi
+        uint64 bv = 0
+        unsafe { *(sp as uint8) -> bv }
+        uint8 bb = bv
+        unsafe { *(dp as uint8) = bb }
+        axi = axi + 1
+    }
+
     // === Compile ARM64 Android PIE ELF ===
     target_os = 3
     out_len = 0
@@ -3025,6 +3117,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     filter_x86_64_bcj(x86_buf, x86_len, 1)
     filter_x86_64_bcj(pe_x86_buf, pe_x86_len, 1)
     filter_x86_64_bcj(macho_x86_buf, macho_x86_len, 1)
+    filter_x86_64_bcj(androidx_buf, androidx_len, 1)
     // arm64 slices: filter B/BL instructions
     filter_aarch64_bcj(a64_buf, a64_len, 1)
     filter_aarch64_bcj(pe_a64_buf, pe_a64_len, 1)
@@ -3053,11 +3146,14 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     uint64 android_comp = alloc(android_len + 256)
     uint64 android_comp_len = lz4_compress_frame(android_buf, android_len, android_comp)
 
+    uint64 androidx_comp = alloc(androidx_len + 256)
+    uint64 androidx_comp_len = lz4_compress_frame(androidx_buf, androidx_len, androidx_comp)
+
     // === Emit KrboFat v2 ===
     out_len = 0
-    emit_krbofat_v2_header(7)
-    // 7 entries x 48 bytes = 336
-    uint64 data_offset = 16 + 7 * 48
+    emit_krbofat_v2_header(8)
+    // 8 entries x 48 bytes = 384
+    uint64 data_offset = 16 + 8 * 48
     uint64 pad = (16 - (data_offset & 15)) & 15
     data_offset = data_offset + pad
     uint64 x86_data_off = data_offset
@@ -3067,6 +3163,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     uint64 macho_x86_data_off = pe_a64_data_off + pe_a64_comp_len
     uint64 macho_a64_data_off = macho_x86_data_off + macho_x86_comp_len
     uint64 android_data_off = macho_a64_data_off + macho_a64_comp_len
+    uint64 androidx_data_off = android_data_off + android_comp_len
 
     emit_krbofat_v2_entry_hdr(1, 1, x86_data_off, x86_comp_len, x86_len)
     emit_krbofat_v2_entry_rt(0, 0)
@@ -3081,6 +3178,8 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     emit_krbofat_v2_entry_hdr(6, 1, macho_a64_data_off, macho_a64_comp_len, macho_a64_len)
     emit_krbofat_v2_entry_rt(0, 0)
     emit_krbofat_v2_entry_hdr(7, 1, android_data_off, android_comp_len, android_len)
+    emit_krbofat_v2_entry_rt(0, 0)
+    emit_krbofat_v2_entry_hdr(8, 1, androidx_data_off, androidx_comp_len, androidx_len)
     emit_krbofat_v2_entry_rt(0, 0)
 
     // Padding
@@ -3164,6 +3263,17 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
         adi = adi + 1
     }
 
+    // Compressed Android x86_64 blob
+    uint64 axci = 0
+    while axci < androidx_comp_len {
+        uint64 p = androidx_comp + axci
+        uint64 bv = 0
+        unsafe { *(p as uint8) -> bv }
+        uint8 bb = bv
+        emit_byte(bb)
+        axci = axci + 1
+    }
+
     codegen_write_output(output_path)
 
     uint8[64] nb
@@ -3194,6 +3304,10 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     msg = ") + android-arm64("
     write(1, msg, 18)
     nl = fmt_uint(nb, android_len)
+    write(1, nb, nl)
+    msg = ") + android-x64("
+    write(1, msg, 16)
+    nl = fmt_uint(nb, androidx_len)
     write(1, nb, nl)
     msg = ") -> "
     write(1, msg, 5)
@@ -3399,7 +3513,8 @@ fn main() {
     if emit_mode == 1 && target_os == 0 { target_os = 1 }
     if emit_mode == 2 && target_os == 0 { target_os = 2 }
     if emit_mode == 4 && target_os == 0 { target_os = 3 }
-    if emit_mode == 4 { arch = 1 }
+    // emit_mode=4 (android): default to arm64 unless --arch was explicitly set
+    if emit_mode == 4 && arch_set == 0 { arch = 1 }
 
     // Derive output name from input if not specified with -o
     if str_eq_full(output_path, "a.krbo") != 0 && input_path != 0 {
