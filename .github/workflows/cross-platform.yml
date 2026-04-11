@@ -251,13 +251,16 @@ jobs:
           uname -a
           echo
 
-          echo "=== clang reference binary (same target as ours) ==="
+          echo "=== clang reference binary (full load command dump) ==="
           echo 'int main() { return 42; }' > /tmp/ref.c
-          clang -o /tmp/ref_arm64 /tmp/ref.c -arch arm64 -Wl,-no_pie
+          clang -o /tmp/ref_arm64 /tmp/ref.c -arch arm64
           echo "ref build exit: $?"
-          otool -l /tmp/ref_arm64 | grep -A3 "cmd LC_\|segname\|maxprot\|initprot" | head -40
+          echo "--- all load commands of clang ref ---"
+          otool -l /tmp/ref_arm64 2>&1
           echo "--- run reference ---"
           /tmp/ref_arm64; echo "ref exit: $?"
+          echo "--- reference codesign verdict ---"
+          codesign -dvvv /tmp/ref_arm64 2>&1 || true
           echo
 
           echo "=== our exit42 binary ==="
@@ -265,17 +268,42 @@ jobs:
           xattr -cr bins/ 2>/dev/null || true
           ls -la bins/macos-arm-exit42
           file bins/macos-arm-exit42
-          otool -l bins/macos-arm-exit42 | head -120
-          echo "--- codesign ---"
+          echo "--- full load commands of our binary ---"
+          otool -l bins/macos-arm-exit42 2>&1
+          echo "--- signature before signing ---"
+          codesign -dvvv bins/macos-arm-exit42 2>&1 || true
+          echo "--- xattrs before signing ---"
+          xattr -l bins/macos-arm-exit42 2>&1 || true
+          echo "--- codesign (adhoc) ---"
           codesign -f -s - bins/macos-arm-exit42; echo "codesign: $?"
           codesign -vvv bins/macos-arm-exit42; echo "verify: $?"
+          echo "--- codesign after signing ---"
+          codesign -dvvv bins/macos-arm-exit42 2>&1 || true
+          echo "--- spctl (Gatekeeper verdict) ---"
+          spctl -a -vvv bins/macos-arm-exit42 2>&1 || true
           echo "--- dependencies ---"
           otool -L bins/macos-arm-exit42 || echo "(no deps)"
-          echo "--- attempted run ---"
+          echo
+          echo "--- attempt 1: direct run ---"
           bins/macos-arm-exit42; echo "run exit: $?"
-          echo "--- last 30s of console for this binary ---"
+          echo
+          echo "--- attempt 2: via 'arch -arm64' ---"
+          arch -arm64 bins/macos-arm-exit42; echo "arch run exit: $?"
+          echo
+          echo "--- attempt 3: with hardened runtime ---"
+          codesign -f -s - --options=runtime bins/macos-arm-exit42 2>&1 || true
+          bins/macos-arm-exit42; echo "runtime run exit: $?"
+          echo
+          echo "--- attempt 4: re-sign and run with DYLD_* ---"
+          codesign -f -s - bins/macos-arm-exit42 2>&1 || true
+          DYLD_PRINT_APIS=1 DYLD_PRINT_LIBRARIES=1 bins/macos-arm-exit42 2>&1 | head -30; echo "dyld-print exit: $?"
+          echo
+          echo "--- last 2 min of kernel log (unfiltered) ---"
           sleep 2
-          log show --predicate 'eventMessage CONTAINS "macos-arm" OR eventMessage CONTAINS "exit42" OR (process == "kernel" AND eventMessage CONTAINS "AMFI")' --last 60s --style compact 2>&1 | tail -60
+          log show --predicate '(process == "kernel") AND (eventMessage CONTAINS "macos-arm" OR eventMessage CONTAINS "AMFI" OR eventMessage CONTAINS "codesigning" OR eventMessage CONTAINS "cs_invalid" OR eventMessage CONTAINS "SIGKILL")' --last 120s --style compact 2>&1 | tail -80
+          echo
+          echo "--- last 30s of ALL kernel log entries ---"
+          log show --predicate 'process == "kernel"' --last 30s --style compact 2>&1 | tail -40
           echo
 
           echo "=== Running full test suite ==="
