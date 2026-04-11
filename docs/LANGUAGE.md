@@ -1190,5 +1190,253 @@ the slice matching the current host at startup.
 
 ---
 
+## Appendix A. ABI reference
+
+This is a quick reference for anyone reading the code `krc` generates or
+linking it against other toolchains. It's the minimum you need to
+reason about register allocation, interoperate with C, or write
+`@naked` functions.
+
+### x86_64
+
+| Target  | Arg regs (1..6/8)                   | Return | Callee-saved                    | Stack align at CALL |
+|---------|-------------------------------------|--------|---------------------------------|---------------------|
+| Linux   | `rdi rsi rdx rcx r8 r9` (then stack) | `rax`  | `rbx rbp r12 r13 r14 r15 rsp`   | 16                  |
+| macOS   | same (System V)                     | `rax`  | same                            | 16                  |
+| Windows | `rcx rdx r8 r9` (then stack, +32 shadow) | `rax` | `rbx rbp rdi rsi rsp r12..r15 xmm6..xmm15` | 16 |
+
+- KernRift currently allocates only GPRs — no XMM usage in generated
+  code, so the caller-saved XMM registers are irrelevant to user code
+  but matter when you link against C.
+- On Windows, the first 32 bytes of the stack below `rsp` at call time
+  are a **shadow** area owned by the callee. `krc` allocates it for you.
+- `@naked` functions get no prologue/epilogue — you're responsible for
+  stack alignment if you call into user code.
+
+### arm64 (AArch64)
+
+| Target       | Arg regs  | Return | Callee-saved       | Syscall nr in |
+|--------------|-----------|--------|--------------------|---------------|
+| Linux        | `x0..x7`  | `x0`   | `x19..x28 sp fp lr` | `x8`          |
+| macOS        | `x0..x7`  | `x0`   | same               | `x16`         |
+| Android      | `x0..x7`  | `x0`   | same               | `x8`          |
+| Windows arm64| `x0..x7`  | `x0`   | same               | (no syscalls; uses kernel32 IAT) |
+
+## Appendix B. Syscall numbers
+
+`krc`'s builtins lower to real kernel syscalls. The table below is the
+number used by each builtin on each supported (OS × arch) target.
+Useful when reading `--emit=asm` output, stepping through with a
+debugger, or writing portable code that uses `syscall_raw`.
+
+### Linux x86_64
+
+| Builtin    | nr  | C name          |
+|------------|-----|-----------------|
+| `write`    | 1   | `write`         |
+| `read`     | 0   | `read`          |
+| `exit`     | 231 | `exit_group`    |
+| `alloc`    | 9   | `mmap`          |
+| `dealloc`  | 11  | `munmap`        |
+| `file_open`| 2   | `open`          |
+| `file_read`| 0   | `read`          |
+| `file_write`|1   | `write`         |
+| `file_close`|3   | `close`         |
+| `time_ns`  | 228 | `clock_gettime` |
+| `set_executable` | 90 | `chmod` |
+
+`syscall_raw(nr, a1, a2, a3, a4, a5, a6)` passes `nr` in `rax` and the
+arguments in `rdi rsi rdx r10 r8 r9` (standard Linux x86_64 ABI).
+
+### Linux arm64
+
+| Builtin    | nr  |
+|------------|-----|
+| `write`    | 64  |
+| `read`     | 63  |
+| `exit`     | 93  |
+| `alloc`    | 222 (`mmap`)  |
+| `dealloc`  | 215 (`munmap`) |
+| `file_open`| 56  (`openat`) |
+| `time_ns`  | 113 (`clock_gettime`) |
+| `set_executable` | 53 (`fchmodat`) |
+
+`syscall_raw` passes nr in `x8` and args in `x0..x5`.
+
+### macOS x86_64
+
+macOS syscall numbers use the high nibble to encode the syscall class
+(2 = Unix class). The numbers below are the full 32-bit values passed
+in `rax`; arguments go in `rdi rsi rdx rcx r8 r9` like Linux.
+
+| Builtin    | nr          | C name   |
+|------------|-------------|----------|
+| `exit`     | `0x2000001` | `exit`   |
+| `write`    | `0x2000004` | `write`  |
+| `read`     | `0x2000003` | `read`   |
+| `alloc`    | `0x20000C5` | `mmap`   |
+
+### macOS arm64
+
+On arm64 macOS, the syscall number goes in **`x16`** (not `x8` as on
+Linux). Numbers are the plain Darwin numbers, not the class-tagged form.
+
+| Builtin    | nr  |
+|------------|-----|
+| `exit`     | 1   |
+| `write`    | 4   |
+| `read`     | 3   |
+| `alloc`    | 197 |
+
+### Windows
+
+Windows x86_64 and arm64 do not use direct syscalls — every I/O and
+process-control builtin lowers to a call through the binary's Import
+Address Table (IAT) against `kernel32.dll`:
+
+| Builtin            | kernel32 import            |
+|--------------------|----------------------------|
+| `exit`             | `ExitProcess`              |
+| `write`            | `GetStdHandle` + `WriteFile` |
+| `read`             | `GetStdHandle` + `ReadFile` |
+| `alloc`            | `VirtualAlloc`             |
+| `dealloc`          | `VirtualFree`              |
+| `file_open`        | `CreateFileA`              |
+| `file_read`        | `ReadFile`                 |
+| `file_write`       | `WriteFile`                |
+| `file_close`       | `CloseHandle`              |
+| `exec_process`     | `CreateProcessA` + `WaitForSingleObject` + `GetExitCodeProcess` + `ExitProcess` |
+| `set_executable`   | no-op (Windows has no executable bit) |
+
+`syscall_raw` is **not supported** on Windows — the platform has no
+stable syscall numbering. The `--target=windows` PE output uses IAT
+imports exclusively.
+
+## Appendix C. `--emit=obj` section layout
+
+A relocatable object file (`.o` on Linux/macOS, `.obj` on Windows) produced
+by `--emit=obj` contains the minimum set of sections the platform linker
+needs. No `.rodata`, no `.bss`, no `.data` — string literals and static
+scalars are placed at the end of `.text` and referenced with RIP-relative
+addressing.
+
+### Linux x86_64 / arm64 (ELF)
+
+| Index | Name              | Type      | Purpose |
+|-------|-------------------|-----------|---------|
+| 0     | (null)            | NULL      | required by ELF |
+| 1     | `.text`           | PROGBITS  | code + string literals + static scalars |
+| 2     | `.data`           | PROGBITS  | (emitted empty — static data lives inside `.text`) |
+| 3     | `.symtab`         | SYMTAB    | every `fn` is a symbol; `main` is `GLOBAL`, others `LOCAL` |
+| 4     | `.strtab`         | STRTAB    | symbol name strings |
+| 5     | `.shstrtab`       | STRTAB    | section header names |
+| 6     | `.note.GNU-stack` | PROGBITS (flags=0) | marks the binary as non-exec-stack so `ld` doesn't warn |
+| 7     | `.rela.text`      | RELA      | only present if the program uses `extern fn` |
+
+Relocation types for `extern fn` call sites:
+- **x86_64**: `R_X86_64_PLT32` (disp32 = -4 addend)
+- **arm64**: `R_AARCH64_CALL26` (addend 0)
+
+### macOS x86_64 / arm64 (Mach-O)
+
+One `__TEXT,__text` section containing code + string literals. Symbol
+names are prefixed with an underscore (`_main`, `_write`) as required
+by the Darwin C ABI. `extern fn` call sites use relocations
+`X86_64_RELOC_BRANCH` (x86_64) and `ARM64_RELOC_BRANCH26` (arm64).
+
+### Windows x86_64 / arm64 (COFF `.obj`)
+
+One `.text` section, one COFF symbol table. No underscore prefix on
+x86_64. `extern fn` call sites use relocations
+`IMAGE_REL_AMD64_REL32` (x86_64) and `IMAGE_REL_ARM64_BRANCH26` (arm64).
+
+### Linking with gcc or clang
+
+```sh
+# Linux
+krc --emit=obj prog.kr -o prog.o
+gcc prog.o -o prog -no-pie
+
+# No more "missing .note.GNU-stack" warning as of v2.6.3 — the compiler
+# emits the section by default so linked binaries get a non-executable
+# stack.
+```
+
+## Appendix D. `.krbo` fat-binary format (v2)
+
+The runtime format for `.krbo` files — directly parseable without any
+KernRift toolchain.
+
+**Layout**:
+```
+offset  size  field
+0x00    8     magic:        "KRBOFAT\0"
+0x08    4     version:      u32 = 2
+0x0C    4     arch_count:   u32 (≤ 7)
+0x10    (arch_count × 48)   arch descriptor table
+...     compressed slice blobs (per arch)
+...     runtime blobs (per arch)
+```
+
+**Arch descriptor** (48 bytes each, one per slice):
+```
+offset  size  field
++0x00   4     arch_id:           u32 (see table below)
++0x04   4     compression:       u32 (1 = LZ4 frame, preceded by BCJ filter)
++0x08   8     slice_offset:      u64 (from start of file)
++0x10   8     slice_comp_size:   u64
++0x18   8     slice_uncomp_size: u64
++0x20   8     runtime_offset:    u64 (kr runner blob for this arch)
++0x28   8     runtime_len:       u64
+```
+
+**Arch IDs**:
+
+| id | OS       | arch   |
+|----|----------|--------|
+| 1  | Linux    | x86_64 |
+| 2  | Linux    | arm64  |
+| 3  | Windows  | x86_64 |
+| 4  | Windows  | arm64  |
+| 5  | macOS    | x86_64 |
+| 6  | macOS    | arm64  |
+| 7  | Android  | arm64  |
+
+**Decompression**: each slice is LZ4-compressed with a BCJ filter
+applied *before* compression. On extraction the runner first LZ4-
+decompresses, then runs the matching BCJ filter in reverse to restore
+the original call/jmp offsets. BCJ filter selection:
+- x86-family arch_ids (1, 3, 5): x86_64 BCJ filter (rewrites `E8`/`E9`
+  disp32 offsets to absolute, for better compression).
+- arm-family arch_ids (2, 4, 6, 7): AArch64 BCJ filter (rewrites `BL`
+  imm26 fields).
+
+**Minimal Python decoder**:
+```python
+import struct, lz4.frame
+
+def parse_krbo(path):
+    d = open(path, 'rb').read()
+    assert d[:8] == b'KRBOFAT\0'
+    ver, n = struct.unpack_from('<II', d, 8)
+    assert ver == 2
+    slices = []
+    for i in range(n):
+        off = 16 + i * 48
+        (arch_id, compression,
+         slice_off, comp_sz, uncomp_sz,
+         rt_off, rt_len) = struct.unpack_from('<IIQQQQQ', d, off)
+        raw_lz4 = d[slice_off:slice_off + comp_sz]
+        # NOTE: you still need to reverse the BCJ filter after lz4 decode
+        decompressed = lz4.frame.decompress(raw_lz4)
+        slices.append((arch_id, decompressed))
+    return slices
+```
+
+`arch_count` is capped at 7 by the current emitter; the format has
+room for more if future targets are added.
+
+---
+
 *See the `examples/` directory for runnable programs demonstrating every
 feature in this reference.*
