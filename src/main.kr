@@ -660,6 +660,97 @@ fn write_a64_sysreg(uint64 fd, uint64 op0, uint64 op1, uint64 crn, uint64 crm, u
     }
 }
 
+// x86_64 64-bit register name. Accepts 0..15; the high-bit encoded
+// r8..r15 come from the REX.R/B prefix bits added upstream.
+fn write_x86_reg64(uint64 fd, uint64 r) {
+    uint8[4] rb
+    if r == 0 { write(fd, "rax", 3) }
+    else if r == 1 { write(fd, "rcx", 3) }
+    else if r == 2 { write(fd, "rdx", 3) }
+    else if r == 3 { write(fd, "rbx", 3) }
+    else if r == 4 { write(fd, "rsp", 3) }
+    else if r == 5 { write(fd, "rbp", 3) }
+    else if r == 6 { write(fd, "rsi", 3) }
+    else if r == 7 { write(fd, "rdi", 3) }
+    else {
+        write(fd, "r", 1)
+        uint64 rl = fmt_uint(rb, r)
+        write(fd, rb, rl)
+    }
+}
+
+// Decode and print an x86_64 memory operand from a ModR/M byte.
+// `bp_modrm` points to the ModR/M byte; disp/SIB bytes follow.
+// `base_hi` is 1 if REX.B is set (base register is r8..r15).
+// Returns the number of bytes consumed after the ModR/M (SIB + disp).
+fn write_x86_mem(uint64 fd, uint64 bp_modrm, uint64 base_hi) -> uint64 {
+    uint64 modrm = 0
+    unsafe { *(bp_modrm as uint8) -> modrm }
+    uint64 mod_f = (modrm >> 6) & 3
+    uint64 rm_f  = modrm & 7
+    uint64 base_r = rm_f | (base_hi << 3)
+    uint64 disp_ofs = 1
+    uint64 has_sib = 0
+    uint64 sib_base = 0
+    if mod_f != 3 && rm_f == 4 {
+        uint64 bp_s = bp_modrm + 1
+        uint64 sib_b = 0
+        unsafe { *(bp_s as uint8) -> sib_b }
+        sib_base = (sib_b & 7) | (base_hi << 3)
+        base_r = sib_base
+        has_sib = 1
+        disp_ofs = 2
+    }
+    write(fd, "[", 1)
+    if mod_f == 0 && rm_f == 5 {
+        write(fd, "rip", 3)
+    } else {
+        write_x86_reg64(fd, base_r)
+    }
+    uint64 consumed = disp_ofs - 1
+    if mod_f == 1 {
+        uint64 bp_d = bp_modrm + disp_ofs
+        uint64 d8v = 0
+        unsafe { *(bp_d as uint8) -> d8v }
+        write(fd, "+0x", 3)
+        write_hex8(fd, d8v)
+        consumed = consumed + 1
+    } else if mod_f == 2 || (mod_f == 0 && rm_f == 5) {
+        uint64 bp_d0 = bp_modrm + disp_ofs
+        uint64 bp_d1 = bp_modrm + disp_ofs + 1
+        uint64 bp_d2 = bp_modrm + disp_ofs + 2
+        uint64 bp_d3 = bp_modrm + disp_ofs + 3
+        uint64 d32_0 = 0
+        uint64 d32_1 = 0
+        uint64 d32_2 = 0
+        uint64 d32_3 = 0
+        unsafe { *(bp_d0 as uint8) -> d32_0 }
+        unsafe { *(bp_d1 as uint8) -> d32_1 }
+        unsafe { *(bp_d2 as uint8) -> d32_2 }
+        unsafe { *(bp_d3 as uint8) -> d32_3 }
+        uint64 d32 = d32_0 | (d32_1 << 8) | (d32_2 << 16) | (d32_3 << 24)
+        write(fd, "+0x", 3)
+        write_hex32(fd, d32)
+        consumed = consumed + 4
+    }
+    write(fd, "]", 1)
+    return consumed
+}
+
+// Length of an x86_64 ModR/M operand (SIB + displacement), not counting the
+// ModR/M byte itself. Mirrors the consumed-bytes computation in write_x86_mem.
+fn x86_modrm_extra(uint64 modrm) -> uint64 {
+    uint64 mod_f = (modrm >> 6) & 3
+    uint64 rm_f  = modrm & 7
+    if mod_f == 3 { return 0 }
+    uint64 extra = 0
+    if rm_f == 4 { extra = extra + 1 }
+    if mod_f == 1 { extra = extra + 1 }
+    if mod_f == 2 { extra = extra + 4 }
+    if mod_f == 0 && rm_f == 5 { extra = extra + 4 }
+    return extra
+}
+
 fn emit_asm_listing(uint64 output_path, uint64 arch, uint64 text_start, uint64 source, uint64 tokens) {
     uint64 fd = file_open(output_path, 1)
     uint64 code_end = codegen_output_len()
@@ -1442,13 +1533,8 @@ fn emit_asm_listing(uint64 output_path, uint64 arch, uint64 text_start, uint64 s
                         unsafe { *(bp2c as uint8) -> modrm_c }
                         uint64 mod_c = (modrm_c >> 6) & 3
                         uint64 rm_c  = modrm_c & 7
-                        uint64 extra_c = 0
-                        if mod_c != 3 {
-                            if rm_c == 4 { extra_c = extra_c + 1 }
-                            if mod_c == 1 { extra_c = extra_c + 1 }
-                            if mod_c == 2 { extra_c = extra_c + 4 }
-                            if mod_c == 0 && rm_c == 5 { extra_c = extra_c + 4 }
-                        }
+                        uint64 reg_c = (modrm_c >> 3) & 7
+                        uint64 extra_c = x86_modrm_extra(modrm_c)
                         uint64 tlen_c = 3 + extra_c
                         if pos + tlen_c > fn_end { tlen_c = fn_end - pos }
                         uint64 dbic = 0
@@ -1460,7 +1546,31 @@ fn emit_asm_listing(uint64 output_path, uint64 arch, uint64 text_start, uint64 s
                             if dbic + 1 < tlen_c { write(fd, " ", 1) }
                             dbic = dbic + 1
                         }
-                        write(fd, "  mov <r8-r15>", 14)
+                        write(fd, "  mov ", 6)
+                        // REX.R → reg field (bit 3); REX.B would be 0x4D, unhandled here
+                        // so rm stays 0..7 (rax..rdi), reg becomes r8..r15.
+                        uint64 reg_hi = reg_c | 8
+                        if mod_c == 3 {
+                            if b1_c == 0x89 {
+                                write_x86_reg64(fd, rm_c)
+                                write(fd, ", ", 2)
+                                write_x86_reg64(fd, reg_hi)
+                            } else {
+                                write_x86_reg64(fd, reg_hi)
+                                write(fd, ", ", 2)
+                                write_x86_reg64(fd, rm_c)
+                            }
+                        } else {
+                            if b1_c == 0x89 {
+                                write_x86_mem(fd, bp2c, 0)
+                                write(fd, ", ", 2)
+                                write_x86_reg64(fd, reg_hi)
+                            } else {
+                                write_x86_reg64(fd, reg_hi)
+                                write(fd, ", ", 2)
+                                write_x86_mem(fd, bp2c, 0)
+                            }
+                        }
                         pos = pos + tlen_c
                     } else {
                         // Unknown 4C-prefixed — dump 3 bytes raw
@@ -1666,6 +1776,107 @@ fn emit_asm_listing(uint64 output_path, uint64 arch, uint64 text_start, uint64 s
                         else if xor_reg == 6 { write(fd, "rsi", 3) }
                         else { write(fd, "rdi", 3) }
                         pos = pos + 3
+                    } else if b1 == 0x87 && pos + 3 <= fn_end {
+                        // xchg reg, r/m
+                        uint64 bp2x = bp + 2
+                        uint64 modrm_x = 0
+                        unsafe { *(bp2x as uint8) -> modrm_x }
+                        uint64 extra_x = x86_modrm_extra(modrm_x)
+                        uint64 tlen_x = 3 + extra_x
+                        if pos + tlen_x > fn_end { tlen_x = fn_end - pos }
+                        uint64 dbi_x = 0
+                        while dbi_x < tlen_x {
+                            uint64 dp_x = bp + dbi_x
+                            uint64 db_x = 0
+                            unsafe { *(dp_x as uint8) -> db_x }
+                            write_hex8(fd, db_x)
+                            if dbi_x + 1 < tlen_x { write(fd, " ", 1) }
+                            dbi_x = dbi_x + 1
+                        }
+                        write(fd, "  xchg ", 7)
+                        uint64 xch_reg = (modrm_x >> 3) & 7
+                        write_x86_reg64(fd, xch_reg)
+                        write(fd, ", ", 2)
+                        if (modrm_x >> 6) == 3 {
+                            write_x86_reg64(fd, modrm_x & 7)
+                        } else {
+                            write_x86_mem(fd, bp2x, 0)
+                        }
+                        pos = pos + tlen_x
+                    } else if (b1 == 0x01 || b1 == 0x29) && pos + 3 <= fn_end {
+                        // 0x01 = add r/m, reg ; 0x29 = sub r/m, reg
+                        uint64 bp2a = bp + 2
+                        uint64 modrm_a = 0
+                        unsafe { *(bp2a as uint8) -> modrm_a }
+                        uint64 extra_a = x86_modrm_extra(modrm_a)
+                        uint64 tlen_a = 3 + extra_a
+                        if pos + tlen_a > fn_end { tlen_a = fn_end - pos }
+                        uint64 dbi_a = 0
+                        while dbi_a < tlen_a {
+                            uint64 dp_a = bp + dbi_a
+                            uint64 db_a = 0
+                            unsafe { *(dp_a as uint8) -> db_a }
+                            write_hex8(fd, db_a)
+                            if dbi_a + 1 < tlen_a { write(fd, " ", 1) }
+                            dbi_a = dbi_a + 1
+                        }
+                        if b1 == 0x01 { write(fd, "  add ", 6) }
+                        else           { write(fd, "  sub ", 6) }
+                        if (modrm_a >> 6) == 3 {
+                            write_x86_reg64(fd, modrm_a & 7)
+                        } else {
+                            write_x86_mem(fd, bp2a, 0)
+                        }
+                        write(fd, ", ", 2)
+                        write_x86_reg64(fd, (modrm_a >> 3) & 7)
+                        pos = pos + tlen_a
+                    } else if b1 == 0x0F && pos + 4 <= fn_end {
+                        // Two-byte opcode under REX.W
+                        uint64 bp2o = bp + 2
+                        uint64 b2 = 0
+                        unsafe { *(bp2o as uint8) -> b2 }
+                        if b2 == 0xAF && pos + 4 <= fn_end {
+                            // imul reg, r/m
+                            uint64 bp3o = bp + 3
+                            uint64 modrm_im = 0
+                            unsafe { *(bp3o as uint8) -> modrm_im }
+                            uint64 extra_im = x86_modrm_extra(modrm_im)
+                            uint64 tlen_im = 4 + extra_im
+                            if pos + tlen_im > fn_end { tlen_im = fn_end - pos }
+                            uint64 dbi2 = 0
+                            while dbi2 < tlen_im {
+                                uint64 dpp2 = bp + dbi2
+                                uint64 dbb2 = 0
+                                unsafe { *(dpp2 as uint8) -> dbb2 }
+                                write_hex8(fd, dbb2)
+                                if dbi2 + 1 < tlen_im { write(fd, " ", 1) }
+                                dbi2 = dbi2 + 1
+                            }
+                            write(fd, "  imul ", 7)
+                            uint64 im_reg = (modrm_im >> 3) & 7
+                            write_x86_reg64(fd, im_reg)
+                            write(fd, ", ", 2)
+                            if (modrm_im >> 6) == 3 {
+                                write_x86_reg64(fd, modrm_im & 7)
+                            } else {
+                                write_x86_mem(fd, bp3o, 0)
+                            }
+                            pos = pos + tlen_im
+                        } else {
+                            // Other 0F xx under REX.W — dump 4 bytes raw
+                            uint64 cnt_o = 4
+                            if cnt_o + pos > fn_end { cnt_o = fn_end - pos }
+                            uint64 di_o = 0
+                            while di_o < cnt_o {
+                                uint64 dp_o = bp + di_o
+                                uint64 db_o = 0
+                                unsafe { *(dp_o as uint8) -> db_o }
+                                write_hex8(fd, db_o)
+                                write(fd, " ", 1)
+                                di_o = di_o + 1
+                            }
+                            pos = pos + cnt_o
+                        }
                     } else if (b1 == 0x89 || b1 == 0x8B) && pos + 3 <= fn_end {
                         // REX.W mov  — 0x89 = mov r/m, reg (store direction)
                         //               0x8B = mov reg, r/m (load direction)
@@ -1797,57 +2008,29 @@ fn emit_asm_listing(uint64 output_path, uint64 arch, uint64 text_start, uint64 s
                             }
                         }
                         pos = pos + total_len
-                    } else if b1 == 0x8D && pos + 7 <= fn_end {
-                        // lea r64, [rip+disp32]: 48 8D 05 disp32
+                    } else if b1 == 0x8D && pos + 3 <= fn_end {
+                        // LEA reg, [mem]: 48 8D <modrm> [sib] [disp]
                         uint64 bp2 = bp + 2
                         uint64 modrm_lea = 0
                         unsafe { *(bp2 as uint8) -> modrm_lea }
-                        if modrm_lea == 0x05 {
-                            uint64 bp3 = bp + 3
-                            uint64 bp4 = bp + 4
-                            uint64 bp5 = bp + 5
-                            uint64 bp6 = bp + 6
-                            uint64 ld0 = 0
-                            uint64 ld1 = 0
-                            uint64 ld2 = 0
-                            uint64 ld3 = 0
-                            unsafe { *(bp3 as uint8) -> ld0 }
-                            unsafe { *(bp4 as uint8) -> ld1 }
-                            unsafe { *(bp5 as uint8) -> ld2 }
-                            unsafe { *(bp6 as uint8) -> ld3 }
-                            write_hex8(fd, b0)
-                            write(fd, " ", 1)
-                            write_hex8(fd, b1)
-                            write(fd, " ", 1)
-                            write_hex8(fd, modrm_lea)
-                            write(fd, " ", 1)
-                            write_hex8(fd, ld0)
-                            write(fd, " ", 1)
-                            write_hex8(fd, ld1)
-                            write(fd, " ", 1)
-                            write_hex8(fd, ld2)
-                            write(fd, " ", 1)
-                            write_hex8(fd, ld3)
-                            uint64 lea_disp = ld0 | (ld1 << 8) | (ld2 << 16) | (ld3 << 24)
-                            write(fd, " lea rax, [rip+0x", 17)
-                            write_hex32(fd, lea_disp)
-                            write(fd, "]", 1)
-                            pos = pos + 7
-                        } else {
-                            // 8D with other modrm, dump 3 bytes raw
-                            uint64 cnt = 3
-                            if cnt + pos > fn_end { cnt = fn_end - pos }
-                            uint64 di = 0
-                            while di < cnt {
-                                uint64 dp = bp + di
-                                uint64 db = 0
-                                unsafe { *(dp as uint8) -> db }
-                                write_hex8(fd, db)
-                                write(fd, " ", 1)
-                                di = di + 1
-                            }
-                            pos = pos + cnt
+                        uint64 extra_lea = x86_modrm_extra(modrm_lea)
+                        uint64 total_len = 3 + extra_lea
+                        if pos + total_len > fn_end { total_len = fn_end - pos }
+                        uint64 dbi = 0
+                        while dbi < total_len {
+                            uint64 dpp = bp + dbi
+                            uint64 dbb = 0
+                            unsafe { *(dpp as uint8) -> dbb }
+                            write_hex8(fd, dbb)
+                            if dbi + 1 < total_len { write(fd, " ", 1) }
+                            dbi = dbi + 1
                         }
+                        write(fd, "  lea ", 6)
+                        uint64 lea_reg = (modrm_lea >> 3) & 7
+                        write_x86_reg64(fd, lea_reg)
+                        write(fd, ", ", 2)
+                        write_x86_mem(fd, bp2, 0)
+                        pos = pos + total_len
                     } else {
                         // Other REX.W instructions — dump with byte count heuristic
                         uint64 cnt = 3
