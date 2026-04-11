@@ -907,6 +907,16 @@ fn parse_stmt() -> uint64 {
             // Mark as struct: data4 = struct_idx + 1 (0 = not struct)
             uint32 si4 = maybe_struct + 1
             ast_set_data4(node, si4)
+            // Optional heap-struct initializer:  Node n = alloc(24)
+            // When present, the slot holds the pointer returned by the
+            // init expression (instead of pointing at stack-allocated
+            // storage). Field access already reads the slot as a base
+            // address + field offset, so n.next = other Just Works.
+            if eat(34) != 0 {
+                uint64 init_expr = parse_expr()
+                uint32 ie = init_expr
+                ast_set_child(node, ie)
+            }
             return node
         }
         // Check if current token is a type alias

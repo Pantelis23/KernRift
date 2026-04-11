@@ -4836,6 +4836,21 @@ fn gen_stmt(uint64 node) {
 
         if wsm != 0 {
             uint64 sidx = wsm - 1
+            // Heap-struct form: `StructName n = expr` — the slot holds the
+            // pointer returned by the initializer, not a stack LEA. Field
+            // access already dereferences the slot as a base address, so
+            // `n.field = x` works identically to stack-allocated structs.
+            uint32 struct_init = ast_child(node)
+            uint64 wstruct_init = struct_init
+            uint32 sarr_size_tok_i = ast_data3(node)
+            uint64 wsast_i = sarr_size_tok_i
+            if wstruct_init != 0 && wsast_i == 0 {
+                uint64 ptr_off_h = var_declare(name_tok)
+                gen_expr(wstruct_init)
+                emit_store_rax_to_stack(ptr_off_h)
+                struct_var_register(name_tok, sidx)
+                return
+            }
             uint64 ssize = struct_total_size(sidx)
             // Struct array: data3 = array size token
             uint32 sarr_size_tok = ast_data3(node)

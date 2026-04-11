@@ -1451,6 +1451,32 @@ run_test "bubble_sort_u64" 'fn main() {
 }' 4
 
 echo ""
+echo "--- heap struct pointers (regression) ---"
+run_test "heap_struct_basic" 'struct P { u64 x; u64 y }
+fn main() {
+    P p = alloc(16)
+    p.x = 11
+    p.y = 31
+    exit(p.x + p.y)
+}' 42
+run_test "heap_linked_list" 'struct N { u64 v; u64 next }
+fn main() {
+    N a = alloc(16)
+    N b = alloc(16)
+    a.v = 2
+    a.next = b
+    b.v = 40
+    b.next = 0
+    u64 sum = 0
+    N cur = a
+    while cur != 0 {
+        sum = sum + cur.v
+        cur = cur.next
+    }
+    exit(sum)
+}' 42
+
+echo ""
 echo "--- const initializers (regression) ---"
 run_test "const_int"    'const u64 X = 42; fn main() { exit(X) }' 42
 run_test "const_hex"    'const u64 X = 0x2A; fn main() { exit(X) }' 42

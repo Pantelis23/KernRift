@@ -289,11 +289,47 @@ declaration order at increasing offsets. Field sizes are determined by
 their type (`u8` = 1 byte, `u32` = 4 bytes, `u64` = 8 bytes, etc.).
 
 ```kr
-Point p
+Point p            // stack-allocated struct value
 p.x = 10
 p.y = 20
 println(p.x)
 ```
+
+### Heap-allocated structs
+
+A struct variable can also be initialized with an expression that
+returns a pointer — typically `alloc(size)`. When written this way,
+the variable holds the pointer and field access dereferences it:
+
+```kr
+struct Node {
+    u64 value
+    u64 next
+}
+
+fn main() {
+    Node a = alloc(16)        // a holds the heap pointer
+    Node b = alloc(16)
+    a.value = 10
+    a.next  = b               // field store on a pointer-backed struct
+    b.value = 20
+    b.next  = 0
+
+    Node cur = a
+    while cur != 0 {
+        println(cur.value)
+        cur = cur.next        // reassign pointer variable
+    }
+    exit(0)
+}
+```
+
+This is the idiomatic form for linked lists, BSTs, graph nodes, and
+any tree-shaped data. Field size is inferred from the struct
+declaration just like stack structs; the only difference is that the
+variable's slot holds a pointer to heap memory instead of stack
+memory. Reassigning the pointer variable is allowed, so traversal
+patterns like `cur = cur.next` work as expected.
 
 ### Methods
 

@@ -2801,6 +2801,16 @@ fn gen_stmt_a64(uint64 node) {
         }
         if wsm != 0 {
             uint64 sidx = wsm - 1
+            // Heap-struct initializer form: `StructName n = expr`
+            uint32 sinit_a = ast_child(node)
+            uint64 wsinit_a = sinit_a
+            if wsinit_a != 0 && was == 0 {
+                uint64 ptr_off_h = var_declare(name_tok)
+                gen_expr_a64(wsinit_a)
+                emit_a64_store_x0(ptr_off_h)
+                struct_var_register(name_tok, sidx)
+                return
+            }
             uint64 ssize = struct_total_size(sidx)
             // Struct array support: count from data3 (if set)
             uint64 count = 1
