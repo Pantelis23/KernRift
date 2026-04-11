@@ -394,6 +394,13 @@ enum Color {
 in any integer context (assignments, comparisons, match arms, switch bases,
 etc.). Enums are a compile-time convenience; no runtime object is created.
 
+> **Reminder**: all struct and array comparisons done with `<`, `<=`,
+> `>`, `>=` are **unsigned** (see §4). If you need signed comparisons
+> — for example when computing an AVL balance factor or a graph
+> distance that can go negative — use the `signed_lt`/`signed_le`/
+> `signed_gt`/`signed_ge` builtins. This trips people up in tree and
+> heap code surprisingly often.
+
 ---
 
 ## 8. Arrays

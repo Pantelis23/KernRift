@@ -44,8 +44,9 @@ fn fmt_hex(u64 val) -> u64 {
 }
 
 // Format an unsigned integer as a decimal string: fmt_dec(42) → "42".
-// Returns a heap-allocated null-terminated buffer — pair with print_str
-// or println_str to print it, e.g.
+// Returns a heap-allocated null-terminated buffer. To print it, pair with
+// the compiler's built-in `print_str` / `println_str` — these are
+// intrinsics, no import required:
 //   print_str("x = "); println_str(fmt_dec(x))
 fn fmt_dec(u64 val) -> u64 {
     if val == 0 {
