@@ -63,9 +63,9 @@ fn tok_kind_name(uint64 kind) -> uint64 {
     if kind == 13 { return "'}'" }
     if kind == 14 { return "'['" }
     if kind == 15 { return "']'" }
-    if kind == 16 { return "';'" }
+    if kind == 16 { return "','" }
     if kind == 17 { return "'.'" }
-    if kind == 18 { return "','" }
+    if kind == 18 { return "';'" }
     if kind == 29 { return "'=>'" }
     if kind == 34 { return "'='" }
     if kind == 60 { return "'fn'" }
@@ -476,6 +476,45 @@ fn parse_stmt() -> uint64 {
     // No special assignment handling here — it's handled below
     // after parsing the expression (check for = after LHS).
 
+    // 2-tuple destructure: `(T1 a, T2 b) = rhs_expr`
+    // Pattern: `(` TYPE IDENT `,` TYPE IDENT `)` `=`
+    // We fully validate the 8-token shape before committing so any
+    // unrelated `(`-led expression statement still parses normally.
+    if kind == 10 {
+        uint32 k1 = tok_kind_at(p_tok_pos + 1)
+        uint32 k2 = tok_kind_at(p_tok_pos + 2)
+        uint32 k3 = tok_kind_at(p_tok_pos + 3)
+        uint32 k4 = tok_kind_at(p_tok_pos + 4)
+        uint32 k5 = tok_kind_at(p_tok_pos + 5)
+        uint32 k6 = tok_kind_at(p_tok_pos + 6)
+        uint32 k7 = tok_kind_at(p_tok_pos + 7)
+        if is_type_keyword(k1) != 0 && k2 == 1 && k3 == 16
+           && is_type_keyword(k4) != 0 && k5 == 1 && k6 == 11 && k7 == 34 {
+            advance_tok()                   // (
+            uint64 type1_tok = advance_tok()
+            uint64 name1_tok = advance_tok()
+            advance_tok()                   // ,
+            uint64 type2_tok = advance_tok()
+            uint64 name2_tok = advance_tok()
+            advance_tok()                   // )
+            advance_tok()                   // =
+            uint64 rhs = parse_expr()
+            uint64 node = ast_alloc(AstKind.TupleDestruct)
+            uint32 tt1 = type1_tok
+            uint32 nt1 = name1_tok
+            uint32 tt2 = type2_tok
+            uint32 nt2 = name2_tok
+            ast_set_data1(node, tt1)
+            ast_set_data2(node, nt1)
+            ast_set_data3(node, tt2)
+            ast_set_data4(node, nt2)
+            ast_set_tok(node, tt1)
+            uint32 rc = rhs
+            ast_set_child(node, rc)
+            return node
+        }
+    }
+
     // Variable declaration: TYPE name = expr  OR  TYPE[SIZE] name
     if is_type_keyword(kind) != 0 {
         uint64 type_tok = advance_tok()
@@ -522,6 +561,28 @@ fn parse_stmt() -> uint64 {
         ast_set_tok(node, t32)
         // Check if there's a return value (not } or EOF)
         if cur_kind() != 13 && cur_kind() != 0 {
+            // `return (a, b)` — 2-tuple return. Distinguish from the
+            // parenthesized single-expression form `return (a + 1)` by
+            // saving the token position, trying the tuple path, and
+            // rewinding to normal parsing if there is no comma.
+            if cur_kind() == 10 {
+                uint64 save_pos = p_tok_pos
+                advance_tok()  // consume (
+                uint64 first = parse_expr()
+                if cur_kind() == 16 {
+                    advance_tok()  // consume ,
+                    uint64 second = parse_expr()
+                    expect(11)     // )
+                    uint32 e32 = first
+                    ast_set_child(node, e32)
+                    uint32 e32b = second
+                    ast_set_data3(node, e32b)
+                    return node
+                }
+                // Not a tuple — rewind and parse as a normal expression
+                // so the grouping form still works.
+                p_tok_pos = save_pos
+            }
             uint64 expr = parse_expr()
             uint32 e32 = expr
             ast_set_child(node, e32)

@@ -2945,7 +2945,19 @@ fn gen_stmt_a64(uint64 node) {
     if kind == 12 {
         uint32 expr_child = ast_child(node)
         uint64 wec = expr_child
-        if wec != 0 {
+        uint32 second_idx_r = ast_data3(node)
+        uint64 wsi_r = second_idx_r
+        if wsi_r != 0 {
+            // 2-tuple return: evaluate first into x0, stash in temp_slot_0,
+            // evaluate second into x0, move to x1, reload first into x0.
+            // On AAPCS64 x1 is a caller-saved arg/return reg so it flows
+            // unchanged through the epilogue to the caller.
+            gen_expr_a64(wec)
+            emit_a64_str(0, 31, a64_var_base + temp_slot_0)
+            gen_expr_a64(wsi_r)
+            emit_a64(0xAA0003E1)          // mov x1, x0  (ORR x1, xzr, x0)
+            emit_a64_ldr(0, 31, a64_var_base + temp_slot_0)
+        } else if wec != 0 {
             gen_expr_a64(wec)
         }
         // Jump to epilogue
@@ -2955,6 +2967,25 @@ fn gen_stmt_a64(uint64 node) {
         uint32 rp32 = ret_patch
         unsafe { *(rentry as uint32) = rp32 }
         ret_fixup_count = ret_fixup_count + 1
+        return
+    }
+
+    // TupleDestruct: (T1 a, T2 b) = rhs_expr
+    // Mirrors the x86_64 path: the RHS leaves (x0, x1) from a tuple call.
+    if kind == 44 {
+        uint32 name1_tok = ast_data2(node)
+        uint32 name2_tok = ast_data4(node)
+        uint64 off1 = var_declare(name1_tok)
+        uint64 off2 = var_declare(name2_tok)
+        uint32 rhs = ast_child(node)
+        uint64 wrhs = rhs
+        if wrhs != 0 {
+            gen_expr_a64(wrhs)
+            // Store x1 (second) first so the x0 caching isn't needed;
+            // then store x0 (first) into slot 1.
+            emit_a64_str(1, 31, a64_var_base + off2)
+            emit_a64_store_x0(off1)
+        }
         return
     }
 

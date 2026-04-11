@@ -51,6 +51,12 @@ enum AstKind {
 
     // Inline assembly
     AsmBlock = 43      // data1=first_str_tok, child=linked list of string nodes (each StrLit)
+
+    // 2-tuple destructuring assignment: `(T1 a, T2 b) = rhs_expr`
+    // Scoped to two elements for now. Returns are signalled by Return.data3
+    // holding the second expression index (child is still the first).
+    TupleDestruct = 44 // data1=type1_tok, data2=name1_tok, data3=type2_tok,
+                       // data4=name2_tok, child=rhs_expr
 }
 
 // ---------------------------------------------------------------------------

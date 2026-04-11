@@ -1024,6 +1024,22 @@ else
 fi
 rm -f /tmp/krc_androidx_$$.kr /tmp/krc_androidx_$$
 
+# --- 2-tuple return and destructure ---
+run_test "tuple_basic" 'fn divmod(uint64 x, uint64 y) -> uint64 { return (x / y, x % y) }
+fn main() { (uint64 q, uint64 r) = divmod(17, 5); exit(q + r) }' 5
+
+run_test "tuple_branch" 'fn minmax(uint64 a, uint64 b) -> uint64 { if a < b { return (a, b) } return (b, a) }
+fn main() { (uint64 lo, uint64 hi) = minmax(42, 7); exit(hi - lo) }' 35
+
+run_test "tuple_nested_call" 'fn pair(uint64 x) -> uint64 { return (x, x + 1) }
+fn main() { (uint64 a, uint64 b) = pair(10); exit(a * b) }' 110
+
+run_test "tuple_void_context" 'fn split(uint64 n) -> uint64 { return (n * 2, n * 3) }
+fn main() { uint64 sum = 0; (uint64 a, uint64 b) = split(5); sum = a + b; exit(sum) }' 25
+
+run_test "tuple_reuse" 'fn step(uint64 x) -> uint64 { return (x + 1, x + 2) }
+fn main() { (uint64 p, uint64 q) = step(10); (uint64 r, uint64 s) = step(20); exit(p + q + r + s) }' 66
+
 # --- Opt-in: run on a real Android emulator via adb (ANDROID_EMULATOR=1) ---
 # Requires: adb on PATH, one device online, and write access to
 # /data/local/tmp. Cross-compiles a handful of programs as

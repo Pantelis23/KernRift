@@ -869,11 +869,23 @@ fn sema_check_stmt(uint64 node) {
         return
     }
 
-    // Return: child=expr
+    // Return: child=first_expr, data3=second_expr (for 2-tuple returns)
     if kind == 12 {
         uint32 expr = ast_child(node)
         uint64 wexpr = expr
         if wexpr != 0 { sema_check_expr(wexpr) }
+        uint32 second = ast_data3(node)
+        uint64 wsecond = second
+        if wsecond != 0 { sema_check_expr(wsecond) }
+        return
+    }
+
+    // TupleDestruct: (T1 a, T2 b) = rhs_expr — walk the RHS only; the
+    // two LHS slots are fresh declarations handled entirely in codegen.
+    if kind == 44 {
+        uint32 rhs = ast_child(node)
+        uint64 wrhs = rhs
+        if wrhs != 0 { sema_check_expr(wrhs) }
         return
     }
 

@@ -1280,6 +1280,26 @@ fn emit_store_rax_to_stack(uint64 offset) {
     rax_cache = offset + 1
 }
 
+// Store rdx into [rsp+offset]. ModR/M reg field = rdx (2), so the middle
+// byte differs from the rax version by 0x10. Used for 2-tuple destructure.
+fn emit_store_rdx_to_stack(uint64 offset) {
+    emit_byte(0x48)
+    emit_byte(0x89)
+    if offset == 0 {
+        emit_byte(0x14)
+        emit_byte(0x24)
+    } else if offset < 128 {
+        emit_byte(0x54)
+        emit_byte(0x24)
+        uint8 off8 = offset
+        emit_byte(off8)
+    } else {
+        emit_byte(0x94)
+        emit_byte(0x24)
+        emit_u32_le(offset)
+    }
+}
+
 // emit: mov rax, [rsp+off] — skipped if rax already holds this value
 fn emit_load_rax_from_stack(uint64 offset) {
     // Pinned param0: use rbx instead of stack
@@ -5156,11 +5176,25 @@ fn gen_stmt(uint64 node) {
         return
     }
 
-    // Return: return expr
+    // Return: return expr  OR  return (expr1, expr2)
     if kind == 12 {
         uint32 expr_child = ast_child(node)
         uint64 wec = expr_child
-        if wec != 0 {
+        uint32 second_idx = ast_data3(node)
+        uint64 wsi = second_idx
+        if wsi != 0 {
+            // 2-tuple return: evaluate first into rax, stash in temp_slot_0
+            // (using push/pop would shift rsp and break every cached
+            // [rsp+N] offset), evaluate second into rax, move to rdx,
+            // then reload first into rax. rdx is caller-saved on SysV so
+            // it flows to the caller unchanged through the epilogue.
+            gen_expr(wec)
+            emit_store_rax_to_stack(temp_slot_0)
+            gen_expr(wsi)
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC2)  // mov rdx, rax
+            rax_cache = 0
+            emit_load_rax_from_stack(temp_slot_0)
+        } else if wec != 0 {
             gen_expr(wec)
         }
         // Jump to epilogue (placeholder — patched after function body)
@@ -5172,6 +5206,25 @@ fn gen_stmt(uint64 node) {
         uint32 rp32 = ret_patch
         unsafe { *(rentry as uint32) = rp32 }
         ret_fixup_count = ret_fixup_count + 1
+        return
+    }
+
+    // TupleDestruct: (T1 a, T2 b) = rhs_expr
+    // The RHS must evaluate to a function call whose callee packed its
+    // two return values into (rax, rdx); we simply store both into
+    // fresh local slots.
+    if kind == 44 {
+        uint32 name1_tok = ast_data2(node)
+        uint32 name2_tok = ast_data4(node)
+        uint64 off1 = var_declare(name1_tok)
+        uint64 off2 = var_declare(name2_tok)
+        uint32 rhs = ast_child(node)
+        uint64 wrhs = rhs
+        if wrhs != 0 {
+            gen_expr(wrhs)
+            emit_store_rdx_to_stack(off2)
+            emit_store_rax_to_stack(off1)
+        }
         return
     }
 
@@ -6431,6 +6484,13 @@ fn dce_scan_node(uint64 node) {
         uint32 ps_val = ast_data2(node)
         uint64 wpv = ps_val
         if wpv != 0 { dce_scan_node(wpv) }
+    }
+    // Return: data3=second_expr (2-tuple returns) — child is first expr
+    // and is already covered by the generic recurse above.
+    if kind == 12 {
+        uint32 ret_second = ast_data3(node)
+        uint64 wrs = ret_second
+        if wrs != 0 { dce_scan_node(wrs) }
     }
 }
 

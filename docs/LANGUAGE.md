@@ -293,6 +293,46 @@ instantiations — `max_t(3, 42)` and `max_t(struct_ptr_a, struct_ptr_b)`
 compile to the same machine code. Use the syntax when it makes the
 caller clearer; don't rely on it for type safety.
 
+### 2-tuple return and destructure
+
+A function can return a pair of values and the caller can destructure
+them in one statement. First iteration is exactly two elements — three
+or more requires a struct (or an out-pointer parameter).
+
+```kr
+fn divmod(u64 x, u64 y) -> u64 {
+    return (x / y, x % y)
+}
+
+fn main() {
+    (u64 q, u64 r) = divmod(17, 5)
+    println(q)    // 3
+    println(r)    // 2
+    exit(0)
+}
+```
+
+Runtime convention:
+- **x86_64** — first value in `rax`, second in `rdx`. Both registers
+  are caller-saved on the SysV ABI, so the second value flows through
+  the epilogue untouched.
+- **arm64** — first in `x0`, second in `x1`. Same AAPCS64 reasoning.
+
+The function's declared return type stays scalar (`-> u64` above) —
+the tuple shape lives entirely in the `return (a, b)` expression and
+the `(T1 a, T2 b) = call(…)` destructure. If you `return (a, b)` from
+a function but only call it as a scalar expression, you get the first
+value and the second is silently discarded. Calling a scalar-returning
+function as a destructure picks up whatever the callee happened to
+leave in `rdx` / `x1` (likely garbage). There is no arity check yet —
+match the two sides yourself.
+
+Destructuring is only recognised at statement position, and both
+element types must be type keywords (`u8`..`u64`, `i8`..`i64`). You
+can't destructure a struct field or an element of a literal tuple;
+the RHS must be an expression whose tail evaluates into the two
+return registers — in practice, a call to a tuple-returning function.
+
 ---
 
 ## 7. Structs, methods, and enums
