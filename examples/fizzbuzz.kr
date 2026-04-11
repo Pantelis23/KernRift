@@ -1,21 +1,17 @@
 // FizzBuzz — prints 1..100 with Fizz/Buzz/FizzBuzz substitutions.
-// Demonstrates: for loops, if/else chains, println with string literals
+// Demonstrates: for loops, if/else if chains, println with string literals
 // and with integer variables.
 
 fn main() {
     for i in 1..101 {
         if i % 15 == 0 {
             println("FizzBuzz")
+        } else if i % 3 == 0 {
+            println("Fizz")
+        } else if i % 5 == 0 {
+            println("Buzz")
         } else {
-            if i % 3 == 0 {
-                println("Fizz")
-            } else {
-                if i % 5 == 0 {
-                    println("Buzz")
-                } else {
-                    println(i)
-                }
-            }
+            println(i)
         }
     }
     exit(0)

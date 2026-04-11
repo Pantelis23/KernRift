@@ -77,6 +77,12 @@ fn emit_a64_add(uint64 rd, uint64 rn, uint64 rm) {
     emit_a64(insn)
 }
 
+// ADD Xd, Xn, Xm, LSL #shift — shifted add for scaled addressing.
+fn emit_a64_add_lsl(uint64 rd, uint64 rn, uint64 rm, uint64 shift) {
+    uint64 insn = 0x8B000000 | (shift << 10) | (rm << 16) | (rn << 5) | rd
+    emit_a64(insn)
+}
+
 // SUB Xd, Xn, Xm
 fn emit_a64_sub(uint64 rd, uint64 rn, uint64 rm) {
     uint64 insn = 0xCB000000 | (rm << 16) | (rn << 5) | rd
@@ -754,15 +760,15 @@ fn gen_expr_a64(uint64 node) {
         return
     }
 
-    // Array indexing
+    // Array indexing: scale index by elem_size, load elem_size bytes.
     if kind == 37 {
         uint32 arr_tok = ast_data1(node)
         uint64 warrta = arr_tok
         uint64 arr_offset = var_lookup(arr_tok)
+        uint64 elem_sz_r = arr_elem_lookup(arr_tok)
         uint32 idx_child = ast_child(node)
         uint64 wi = idx_child
         gen_expr_a64(wi)
-        // x0 = index. Save in x10, then load base into x0.
         emit_a64_mov(10, 0)
         if arr_offset != 0xFFFFFFFF {
             emit_a64_load_x0(arr_offset)
@@ -776,9 +782,21 @@ fn gen_expr_a64(uint64 node) {
                 emit_a64_load_x0(arr_offset)
             }
         }
-        // x0 = base, x10 = index. ldrb x0, [x0+x10]
-        emit_a64_add(0, 0, 10)
-        emit_a64_ldrb(0, 0, 0)
+        // x0 = base, x10 = index. Compute x0 = base + (index << log2(elem_sz)).
+        uint64 shift_r = 0
+        if elem_sz_r == 2 { shift_r = 1 }
+        if elem_sz_r == 4 { shift_r = 2 }
+        if elem_sz_r == 8 { shift_r = 3 }
+        emit_a64_add_lsl(0, 0, 10, shift_r)
+        if elem_sz_r == 1 {
+            emit_a64_ldrb(0, 0, 0)
+        } else if elem_sz_r == 2 {
+            emit_a64_ldrh(0, 0, 0)
+        } else if elem_sz_r == 4 {
+            emit_a64_ldr32(0, 0, 0)
+        } else {
+            emit_a64_ldr(0, 0, 0)
+        }
         return
     }
 
@@ -3052,7 +3070,7 @@ fn gen_stmt_a64(uint64 node) {
         return
     }
 
-    // Indexed assignment (arr[i] = val)
+    // Indexed assignment (arr[i] = val): scale index by elem_size, store N bytes.
     if kind == 37 {
         uint32 idx_d3 = ast_data3(node)
         uint64 wd3 = idx_d3
@@ -3068,6 +3086,7 @@ fn gen_stmt_a64(uint64 node) {
             uint32 arr_tok = ast_data1(node)
             uint64 warrtb = arr_tok
             uint64 arr_offset = var_lookup(arr_tok)
+            uint64 elem_sz_w = arr_elem_lookup(arr_tok)
             if arr_offset != 0xFFFFFFFF {
                 emit_a64_load_x0(arr_offset)
             } else {
@@ -3080,11 +3099,23 @@ fn gen_stmt_a64(uint64 node) {
                     emit_a64_load_x0(arr_offset)
                 }
             }
-            emit_a64_mov(10, 0)
-            emit_a64_load_x0(temp_slot_1)
-            emit_a64_add(10, 10, 0)
-            emit_a64_load_x0(temp_slot_0)
-            emit_a64_strb(0, 10, 0)
+            emit_a64_mov(10, 0)              // x10 = base
+            emit_a64_load_x0(temp_slot_1)    // x0 = index
+            uint64 shift_w = 0
+            if elem_sz_w == 2 { shift_w = 1 }
+            if elem_sz_w == 4 { shift_w = 2 }
+            if elem_sz_w == 8 { shift_w = 3 }
+            emit_a64_add_lsl(10, 10, 0, shift_w)  // x10 = base + (idx << shift)
+            emit_a64_load_x0(temp_slot_0)    // x0 = value
+            if elem_sz_w == 1 {
+                emit_a64_strb(0, 10, 0)
+            } else if elem_sz_w == 2 {
+                emit_a64_strh(0, 10, 0)
+            } else if elem_sz_w == 4 {
+                emit_a64_str32(0, 10, 0)
+            } else {
+                emit_a64_str(0, 10, 0)
+            }
             return
         }
     }

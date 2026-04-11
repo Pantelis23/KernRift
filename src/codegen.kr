@@ -120,6 +120,14 @@ static uint64 a64_win_iat_fixup_count = 0
 // PE IAT RVA (set during PE header emission)
 static uint64 pe_iat_rva = 0
 
+// Local array element size table — records the per-element size of each
+// local `TYPE[N] name` declaration so that index reads/writes can scale the
+// index and use the right load/store width. Without this, u64[N]/u32[N]/
+// u16[N] arrays silently miscompile (byte indexing with byte load/store).
+// Keyed by variable name token; [name_tok(4), elem_size(4)] × 512.
+static uint64 arr_elem_table = 0
+static uint64 arr_elem_count = 0
+
 // Type alias table: [alias_name_tok(4), target_size(4)] × 64
 static uint64 type_alias_table = 0
 static uint64 type_alias_count = 0
@@ -163,7 +171,7 @@ fn codegen_init(uint64 capacity, uint64 source, uint64 tokens) {
     var_count = 0
     fn_table = alloc(1024 * 8)
     fn_count = 0
-    fixup_table = alloc(8192 * 8)
+    fixup_table = alloc(32768 * 8)
     fixup_count = 0
     ret_fixups = alloc(256 * 4)
     ret_fixup_count = 0
@@ -202,6 +210,8 @@ fn codegen_init(uint64 capacity, uint64 source, uint64 tokens) {
     a64_digit_buf = alloc(32)
     type_alias_table = alloc(64 * 8)
     type_alias_count = 0
+    arr_elem_table = alloc(512 * 8)
+    arr_elem_count = 0
     fnaddr_fixup_table = alloc(1024 * 8)
     fnaddr_fixup_count = 0
     pin_param0_offset = 0xFFFFFFFF
@@ -371,6 +381,7 @@ fn var_reset() {
     var_count = 0
     var_frame_size = 0
     var_table_size = 0
+    arr_elem_count = 0
 }
 
 fn var_declare(uint64 name_tok) -> uint64 {
@@ -868,6 +879,55 @@ fn type_alias_lookup(uint64 name_tok) -> uint64 {
         i = i + 1
     }
     return 0xFFFFFFFF
+}
+
+// Map a type keyword token (u8..u64 / i8..i64 / uint8..uint64) to its byte size.
+// Default 1 (byte) for anything else, so legacy u8 arrays keep working.
+fn type_tok_elem_size(uint64 type_tok) -> uint64 {
+    uint64 p = cg_tokens + type_tok * 16
+    uint32 k = 0
+    unsafe { *(p as uint32) -> k }
+    uint64 wk = k
+    if wk == 80 { return 1 }
+    if wk == 81 { return 2 }
+    if wk == 82 { return 4 }
+    if wk == 83 { return 8 }
+    if wk == 84 { return 1 }
+    if wk == 85 { return 2 }
+    if wk == 86 { return 4 }
+    if wk == 87 { return 8 }
+    return 1
+}
+
+// Register a local array's element size so that index ops can scale correctly.
+fn arr_elem_register(uint64 name_tok, uint64 elem_size) {
+    uint64 entry = arr_elem_table + arr_elem_count * 8
+    uint32 nt = name_tok
+    unsafe { *(entry as uint32) = nt }
+    uint64 e4 = entry + 4
+    uint32 es = elem_size
+    unsafe { *(e4 as uint32) = es }
+    arr_elem_count = arr_elem_count + 1
+}
+
+// Look up a local array's element size. Returns 1 (byte) if not registered,
+// which keeps byte-indexed code paths (raw alloc, static byte arrays) unchanged.
+fn arr_elem_lookup(uint64 name_tok) -> uint64 {
+    uint64 i = 0
+    while i < arr_elem_count {
+        uint64 entry = arr_elem_table + i * 8
+        uint32 stored = 0
+        unsafe { *(entry as uint32) -> stored }
+        uint64 ws = stored
+        if tok_text_eq(ws, name_tok) != 0 {
+            uint64 e4 = entry + 4
+            uint32 es = 0
+            unsafe { *(e4 as uint32) -> es }
+            return es
+        }
+        i = i + 1
+    }
+    return 1
 }
 
 // Emit: load static at data_offset into rax (RIP-relative, placeholder)
@@ -1509,11 +1569,12 @@ fn gen_expr(uint64 node) {
         return
     }
 
-    // Array indexing: arr[i] → load byte from arr base + i
+    // Array indexing: arr[i] → load elem_size bytes from base + i*elem_size
     if kind == 37 {
         uint32 arr_tok = ast_data1(node)
         uint64 warrt = arr_tok
         uint64 arr_offset = var_lookup(arr_tok)
+        uint64 elem_sz = arr_elem_lookup(arr_tok)
         // Evaluate index expression
         uint32 idx_child = ast_child(node)
         uint64 wi = idx_child
@@ -1521,10 +1582,8 @@ fn gen_expr(uint64 node) {
         // mov rcx, rax (save index)
         emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
         if arr_offset != 0xFFFFFFFF {
-            // Local array: variable holds base pointer
             emit_load_rax_from_stack(arr_offset)
         } else {
-            // Maybe a static array: emit LEA to get its base address
             uint64 sas = static_array_size_of(warrt)
             if sas != 0xFFFFFFFF && sas != 0 {
                 uint64 soff_a = static_lookup(warrt)
@@ -1534,8 +1593,26 @@ fn gen_expr(uint64 node) {
                 emit_load_rax_from_stack(arr_offset)
             }
         }
-        // rax = base, rcx = index. Load byte: movzbl (%rax,%rcx), %eax
-        emit_byte(0x0F); emit_byte(0xB6); emit_byte(0x04); emit_byte(0x08)
+        // rax = base, rcx = index. Load with scaled SIB addressing.
+        // SIB byte = (log2(scale) << 6) | (1 << 3) | 0  where index=rcx, base=rax
+        //   scale 1 → 0x08, scale 2 → 0x48, scale 4 → 0x88, scale 8 → 0xC8
+        uint8 sib = 0x08
+        if elem_sz == 2 { sib = 0x48 }
+        if elem_sz == 4 { sib = 0x88 }
+        if elem_sz == 8 { sib = 0xC8 }
+        if elem_sz == 1 {
+            // movzbl (%rax,%rcx,1), %eax
+            emit_byte(0x0F); emit_byte(0xB6); emit_byte(0x04); emit_byte(sib)
+        } else if elem_sz == 2 {
+            // movzwl (%rax,%rcx,2), %eax
+            emit_byte(0x0F); emit_byte(0xB7); emit_byte(0x04); emit_byte(sib)
+        } else if elem_sz == 4 {
+            // movl (%rax,%rcx,4), %eax  (zero-extends to rax)
+            emit_byte(0x8B); emit_byte(0x04); emit_byte(sib)
+        } else {
+            // movq (%rax,%rcx,8), %rax
+            emit_byte(0x48); emit_byte(0x8B); emit_byte(0x04); emit_byte(sib)
+        }
         return
     }
 
@@ -4614,8 +4691,11 @@ fn gen_stmt(uint64 node) {
         if was != 0 && wsm == 0 {
             // Plain byte/word array declaration: allocate N*elem_size bytes on stack
             uint64 arr_size = parse_int_token(was)
+            uint32 type_tok_v = ast_data1(node)
+            uint64 elem_size_v = type_tok_elem_size(type_tok_v)
+            uint64 total_bytes = arr_size * elem_size_v
             // Round up to 8-byte slots
-            uint64 n_slots = (arr_size + 7) / 8
+            uint64 n_slots = (total_bytes + 7) / 8
             // Allocate slots
             uint64 arr_offset = var_count * 8
             uint64 si = 0
@@ -4629,6 +4709,8 @@ fn gen_stmt(uint64 node) {
             // The variable stores a pointer to the array on the stack
             // Declare the name variable and store the address
             uint64 ptr_offset = var_declare(name_tok)
+            // Record per-element size for correct index scaling later
+            arr_elem_register(name_tok, elem_size_v)
             // lea rax, [rsp + arr_offset]
             emit_byte(0x48)
             emit_byte(0x8D)
@@ -5085,10 +5167,11 @@ fn gen_stmt(uint64 node) {
             uint64 wi = idx_child
             gen_expr(wi)
             emit_store_rax_to_stack(temp_slot_1)
-            // Load array base (local var or static array)
+            // Load array base
             uint32 arr_tok = ast_data1(node)
             uint64 warrt2 = arr_tok
             uint64 arr_offset = var_lookup(arr_tok)
+            uint64 elem_sz_w = arr_elem_lookup(arr_tok)
             if arr_offset != 0xFFFFFFFF {
                 emit_load_rax_from_stack(arr_offset)
             } else {
@@ -5101,15 +5184,30 @@ fn gen_stmt(uint64 node) {
                     emit_load_rax_from_stack(arr_offset)
                 }
             }
-            // rax = base. Add index: rax = rax + [temp_slot_1]
-            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1) // mov rcx, rax
-            emit_load_rax_from_stack(temp_slot_1) // rax = index
-            emit_byte(0x48); emit_byte(0x01); emit_byte(0xC8) // add rcx, rax → rax = base+idx
-            // Load value from temp_slot_0 → cl
-            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1) // mov rcx, rax (save addr)
-            emit_load_rax_from_stack(temp_slot_0) // rax = value
-            // Store byte: mov (%rcx), al
-            emit_byte(0x88); emit_byte(0x01)
+            // rax = base. Save to rcx, then load index, scale it, add to base.
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1) // mov rcx, rax (base)
+            emit_load_rax_from_stack(temp_slot_1)              // rax = index
+            // Scale rax by elem_sz_w: shl rax, log2(elem_sz_w)
+            if elem_sz_w == 2 {
+                emit_byte(0x48); emit_byte(0xD1); emit_byte(0xE0) // shl rax, 1
+            } else if elem_sz_w == 4 {
+                emit_byte(0x48); emit_byte(0xC1); emit_byte(0xE0); emit_byte(2) // shl rax, 2
+            } else if elem_sz_w == 8 {
+                emit_byte(0x48); emit_byte(0xC1); emit_byte(0xE0); emit_byte(3) // shl rax, 3
+            }
+            emit_byte(0x48); emit_byte(0x01); emit_byte(0xC1)    // add rcx, rax → rcx = base+idx*elem
+            // Load value from temp_slot_0 → rax
+            emit_load_rax_from_stack(temp_slot_0)
+            // Store elem_sz_w bytes at [rcx]
+            if elem_sz_w == 1 {
+                emit_byte(0x88); emit_byte(0x01)                  // mov byte [rcx], al
+            } else if elem_sz_w == 2 {
+                emit_byte(0x66); emit_byte(0x89); emit_byte(0x01) // mov word [rcx], ax
+            } else if elem_sz_w == 4 {
+                emit_byte(0x89); emit_byte(0x01)                  // mov dword [rcx], eax
+            } else {
+                emit_byte(0x48); emit_byte(0x89); emit_byte(0x01) // mov qword [rcx], rax
+            }
             return
         }
     }

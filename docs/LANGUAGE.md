@@ -86,7 +86,9 @@ and integer math everywhere.
 - Decimal: `42`, `1000000`
 - Hex: `0x1000`, `0xDEADBEEF`
 - String: `"hello"` with `\n`, `\t`, `\\`, `\"`, `\0` escapes
-- Character values: use the numeric ASCII code (`65` for `'A'`)
+- Character: `'A'`, `'\n'`, `'\t'`, `'\r'`, `'\0'`, `'\\'`, `'\''` — evaluates
+  to the byte value of the character (e.g. `'A'` is 65, `'\n'` is 10).
+  Use them directly in comparisons and arithmetic: `if c == 'a' { ... }`.
 
 ---
 
@@ -159,8 +161,19 @@ if x > 10 {
 }
 ```
 
-Parentheses around the condition are optional. `else if` is chained via a
-nested `else { if ... }` block — no sugar for chained conditions yet.
+Parentheses around the condition are optional. `else if` works as a chain:
+
+```kr
+if n < 0 {
+    println("negative")
+} else if n == 0 {
+    println("zero")
+} else if n < 10 {
+    println("small")
+} else {
+    println("big")
+}
+```
 
 ### while
 
@@ -330,14 +343,21 @@ etc.). Enums are a compile-time convenience; no runtime object is created.
 ### Local arrays
 
 ```kr
-u8[256] buffer
-buffer[0] = 0xAA
-u64 b = buffer[0]
+u8[256]  buffer         // byte buffer
+u16[16]  samples        // 16 × 2-byte values
+u32[10]  pixels         // 10 × 4-byte values
+u64[10]  numbers        // 10 × 8-byte values
+
+buffer[0]  = 0xAA
+numbers[2] = 300
+u64 first  = numbers[0]
 ```
 
-Local arrays are allocated on the stack. The variable holds a pointer to
-the first element, so `buffer` alone evaluates to the base address.
-Indexing is unchecked.
+Local arrays are allocated on the stack. The element size follows the
+declared type — `u64[10]` reserves 80 bytes, `u32[10]` reserves 40, etc.
+Indexing is scaled automatically (`numbers[2]` loads 8 bytes from offset
+`2*8`). The variable holds a pointer to the first element, so `buffer`
+alone evaluates to the base address. Indexing is unchecked.
 
 ### Static arrays
 

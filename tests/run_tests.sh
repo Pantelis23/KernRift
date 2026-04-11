@@ -1416,6 +1416,51 @@ else
 fi
 
 echo ""
+echo "--- typed local arrays (regression) ---"
+run_test "u8_arr"  'fn main() { u8[4] a; a[0] = 10; a[3] = 40; exit(a[0] + a[3]) }' 50
+run_test "u16_arr" 'fn main() { u16[4] a; a[0] = 1000; a[3] = 4000; exit((a[0] + a[3]) / 100) }' 50
+run_test "u32_arr" 'fn main() { u32[4] a; a[0] = 100000; a[3] = 400000; exit((a[0] + a[3]) / 10000) }' 50
+run_test "u64_arr" 'fn main() { u64[4] a; a[0] = 100; a[1] = 200; a[2] = 300; a[3] = 400; exit(a[2] - a[0] - 100) }' 100
+run_test "u64_arr_loop" 'fn main() {
+    u64[5] a
+    a[0] = 1
+    a[1] = 2
+    a[2] = 3
+    a[3] = 4
+    a[4] = 5
+    u64 sum = 0
+    for i in 0..5 { sum = sum + a[i] }
+    exit(sum)
+}' 15
+run_test "bubble_sort_u64" 'fn main() {
+    u64[4] a
+    a[0] = 3
+    a[1] = 1
+    a[2] = 4
+    a[3] = 2
+    for i in 0..4 {
+        for j in 0..3 {
+            if a[j] > a[j+1] {
+                u64 t = a[j]
+                a[j] = a[j+1]
+                a[j+1] = t
+            }
+        }
+    }
+    exit(a[0] * 0 + a[1] * 0 + a[2] * 0 + a[3])
+}' 4
+
+echo ""
+echo "--- char literals ---"
+run_test "char_a"    "fn main() { exit('A') }" 65
+run_test "char_z"    "fn main() { exit('z') }" 122
+run_test "char_nl"   "fn main() { exit('\\n') }" 10
+run_test "char_tab"  "fn main() { exit('\\t') }" 9
+run_test "char_bs"   "fn main() { exit('\\\\') }" 92
+run_test "char_nul"  "fn main() { exit('\\0') }" 0
+run_test "char_cmp"  "fn main() { u64 c = 97; if c == 'a' { exit(1) } exit(0) }" 1
+
+echo ""
 echo "--- extern fn (libc linking) ---"
 if command -v gcc > /dev/null 2>&1; then
     TOTAL=$((TOTAL + 1))
