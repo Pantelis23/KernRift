@@ -74,12 +74,22 @@ Compound assigns: `+=` `-=` `*=` `/=` `%=` `&=` `|=` `^=` `<<=` `>>=`.
 All scalar types are `u8`/`u16`/`u32`/`u64` and their signed siblings
 `i8`/`i16`/`i32`/`i64`. `u64` is the default — use it when in doubt.
 
+**No `bool` type.** `if` and `while` take an integer condition: `0` is
+false, any non-zero value is true. Stdlib predicates (e.g. `is_prime`,
+`str_eq`) return `0` or `1`, so `if is_prime(n) { ... }` works the way
+you'd expect.
+
 **Integer division** is truncating: `7 / 2 == 3`, `(-7) / 2` rounds toward
 zero. Remainder: `7 % 2 == 1`.
 
 **Ranges in `for` are half-open**: `for i in 0..10` iterates `0, 1, …, 9`
 (exactly like Python's `range(10)` or Rust's `0..10`). Write `0..n+1` if
 you want the upper bound included.
+
+**Loops**: `while cond { ... }`, `for i in a..b { ... }`. Use `break` to
+exit a loop early and `continue` to skip to the next iteration. For an
+unbounded "loop forever" (until you `break` or `exit`), write
+`while 1 == 1 { ... }` — there is no dedicated `loop` keyword.
 
 **Literals**: decimal `42`, hex `0x2A`, character `'A'` / `'\n'` / `'\t'`
 / `'\\'` / `'\''` / `'\0'` (evaluate to their byte value; use them
