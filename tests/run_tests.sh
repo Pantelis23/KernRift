@@ -1024,6 +1024,51 @@ else
 fi
 rm -f /tmp/krc_androidx_$$.kr /tmp/krc_androidx_$$
 
+# --- Opt-in: run on a real Android emulator via adb (ANDROID_EMULATOR=1) ---
+# Requires: adb on PATH, one device online, and write access to
+# /data/local/tmp. Cross-compiles a handful of programs as
+# android-x86_64, pushes them, and executes under real bionic.
+if [ "${ANDROID_EMULATOR:-0}" = "1" ] && command -v adb > /dev/null 2>&1; then
+    DEV=$(adb get-state 2>/dev/null | tr -d '\r')
+    if [ "$DEV" = "device" ]; then
+        echo ""
+        echo "--- Android emulator (adb, x86_64) ---"
+        _adb_run() {
+            local name="$1" src="$2" expected="$3"
+            TOTAL=$((TOTAL + 1))
+            printf '%s\n' "$src" > /tmp/krc_adb_$$.kr
+            if $KRC --arch=x86_64 --emit=android /tmp/krc_adb_$$.kr -o /tmp/krc_adb_$$ > /dev/null 2>&1; then
+                adb push /tmp/krc_adb_$$ /data/local/tmp/krc_adb_$$ > /dev/null 2>&1
+                adb shell chmod 755 /data/local/tmp/krc_adb_$$ > /dev/null 2>&1
+                got=$(adb shell "/data/local/tmp/krc_adb_$$ > /dev/null 2>&1; echo \$?" | tr -d '\r')
+                if [ "$got" = "$expected" ]; then
+                    PASS=$((PASS + 1))
+                    echo "  adb_$name: PASS"
+                else
+                    FAIL=$((FAIL + 1))
+                    echo "  adb_$name: FAIL (expected $expected, got $got)"
+                fi
+                adb shell rm -f /data/local/tmp/krc_adb_$$ > /dev/null 2>&1
+            else
+                FAIL=$((FAIL + 1))
+                echo "  adb_$name: FAIL (compile)"
+            fi
+            rm -f /tmp/krc_adb_$$.kr /tmp/krc_adb_$$
+        }
+        _adb_run "exit42"   'fn main() { exit(42) }' 42
+        _adb_run "add"      'fn main() { exit(2 + 3) }' 5
+        _adb_run "loop"     'fn main() { uint64 s = 0; for i in 1..11 { s = s + i }; exit(s) }' 55
+        _adb_run "recurse"  'fn fib(uint64 n) -> uint64 { if n <= 1 { return n } return fib(n-1)+fib(n-2) }
+fn main() { exit(fib(10)) }' 55
+        _adb_run "statics"  'static uint64 c = 0
+fn inc() { c = c + 1 }
+fn main() { inc(); inc(); inc(); inc(); exit(c) }' 4
+        _adb_run "println"  'fn main() { println("android bionic"); exit(7) }' 7
+    else
+        echo "  android_emulator: SKIP (ANDROID_EMULATOR=1 but no device online)"
+    fi
+fi
+
 # --- For loop ---
 run_test "for_range" 'fn main() { uint64 s = 0; for i in 0..10 { s = s + i }; exit(s) }' 45
 
