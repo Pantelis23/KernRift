@@ -3,12 +3,14 @@
   "name": "KernRift",
   "scopeName": "source.kr",
   "patterns": [
+    { "include": "#lang-directive" },
     { "include": "#comments" },
     { "include": "#strings" },
     { "include": "#chars" },
     { "include": "#numbers" },
     { "include": "#annotations" },
     { "include": "#import-statement" },
+    { "include": "#device-block" },
     { "include": "#function-definition" },
     { "include": "#struct-definition" },
     { "include": "#enum-definition" },
@@ -21,11 +23,28 @@
     { "include": "#operators" }
   ],
   "repository": {
-    "comments": {
+    "lang-directive": {
       "patterns": [{
-        "name": "comment.line.double-slash.kr",
-        "match": "//.*$"
+        "comment": "#lang stable / #lang experimental directive (first line only)",
+        "match": "^\\s*(#lang)\\s+(stable|experimental)\\b",
+        "captures": {
+          "1": { "name": "keyword.directive.lang.kr" },
+          "2": { "name": "constant.language.profile.kr" }
+        }
       }]
+    },
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.kr",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.block.kr",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
     },
     "strings": {
       "patterns": [{
@@ -59,19 +78,19 @@
     "annotations": {
       "patterns": [
         {
-          "comment": "Annotation with args: @ctx(thread, boot)",
-          "match": "(@)(export|ctx|eff|caps)(\\()([^)]*)(\\))",
+          "comment": "Annotation with args: @section(\"name\")",
+          "match": "(@)(export|noreturn|naked|packed|section)(\\()([^)]*)(\\))",
           "captures": {
             "1": { "name": "constant.character.kr" },
             "2": { "name": "support.function.kr" },
             "3": { "name": "punctuation.brackets.round.kr" },
-            "4": { "name": "variable.parameter.kr" },
+            "4": { "name": "string.quoted.double.kr" },
             "5": { "name": "punctuation.brackets.round.kr" }
           }
         },
         {
-          "comment": "Annotation without args: @export",
-          "match": "(@)(export|ctx|eff|caps)\\b",
+          "comment": "Annotation without args: @export, @noreturn, @naked, @packed",
+          "match": "(@)(export|noreturn|naked|packed|section)\\b",
           "captures": {
             "1": { "name": "constant.character.kr" },
             "2": { "name": "support.function.kr" }
@@ -87,6 +106,30 @@
           "2": { "name": "string.quoted.double.module.kr" }
         }
       }]
+    },
+    "device-block": {
+      "patterns": [
+        {
+          "comment": "Device declaration: device NAME at ADDR",
+          "match": "\\b(device)\\s+([A-Z][a-zA-Z0-9_]*)\\s+(at)\\s+",
+          "captures": {
+            "1": { "name": "keyword.declaration.device.kr" },
+            "2": { "name": "entity.name.type.device.kr" },
+            "3": { "name": "keyword.other.at.kr" }
+          }
+        },
+        {
+          "comment": "Field inside device block: FIELD at OFFSET : TYPE",
+          "match": "^\\s+([A-Z][a-zA-Z0-9_]*)\\s+(at)\\s+(0x[0-9a-fA-F]+|[0-9]+)\\s*:\\s*(u8|u16|u32|u64|i8|i16|i32|i64|uint8|uint16|uint32|uint64|int8|int16|int32|int64)(\\s+(rw|ro|wo))?",
+          "captures": {
+            "1": { "name": "variable.other.member.device.kr" },
+            "2": { "name": "keyword.other.at.kr" },
+            "3": { "name": "constant.numeric.kr" },
+            "4": { "name": "storage.type.kr" },
+            "6": { "name": "storage.modifier.access.kr" }
+          }
+        }
+      ]
     },
     "function-definition": {
       "patterns": [
@@ -143,32 +186,60 @@
       }]
     },
     "variable-declaration": {
-      "patterns": [{
-        "comment": "Type followed by variable name: uint64 name",
-        "match": "\\b(uint8|uint16|uint32|uint64|int8|int16|int32|int64|u8|u16|u32|u64|i8|i16|i32|i64|bool|char|addr|byte)\\s+([a-z_][a-zA-Z0-9_]*)\\b",
-        "captures": {
-          "1": { "name": "storage.type.kr" },
-          "2": { "name": "variable.other.kr" }
+      "patterns": [
+        {
+          "comment": "Slice parameter: [T] name",
+          "match": "\\[\\s*(u8|u16|u32|u64|i8|i16|i32|i64|uint8|uint16|uint32|uint64|int8|int16|int32|int64)\\s*\\]\\s+([a-z_][a-zA-Z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.kr" },
+            "2": { "name": "variable.parameter.kr" }
+          }
+        },
+        {
+          "comment": "Fixed array: TYPE[N] name",
+          "match": "\\b(u8|u16|u32|u64|i8|i16|i32|i64|uint8|uint16|uint32|uint64|int8|int16|int32|int64)\\[([0-9]+)\\]\\s+([a-z_][a-zA-Z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.kr" },
+            "2": { "name": "constant.numeric.kr" },
+            "3": { "name": "variable.other.kr" }
+          }
+        },
+        {
+          "comment": "Struct array: Point[N] name",
+          "match": "\\b([A-Z][a-zA-Z0-9_]*)\\[([0-9]+)\\]\\s+([a-z_][a-zA-Z0-9_]*)",
+          "captures": {
+            "1": { "name": "entity.name.type.struct.kr" },
+            "2": { "name": "constant.numeric.kr" },
+            "3": { "name": "variable.other.kr" }
+          }
+        },
+        {
+          "comment": "Type followed by variable name",
+          "match": "\\b(u8|u16|u32|u64|i8|i16|i32|i64|uint8|uint16|uint32|uint64|int8|int16|int32|int64)\\s+([a-z_][a-zA-Z0-9_]*)\\b",
+          "captures": {
+            "1": { "name": "storage.type.kr" },
+            "2": { "name": "variable.other.kr" }
+          }
+        },
+        {
+          "comment": "Struct type variable: Point name",
+          "match": "\\b([A-Z][a-zA-Z0-9_]*)\\s+([a-z_][a-zA-Z0-9_]*)\\b",
+          "captures": {
+            "1": { "name": "entity.name.type.struct.kr" },
+            "2": { "name": "variable.other.kr" }
+          }
         }
-      },
-      {
-        "comment": "Struct type variable: Point name",
-        "match": "\\b([A-Z][a-zA-Z0-9_]*)\\s+([a-z_][a-zA-Z0-9_]*)\\b",
-        "captures": {
-          "1": { "name": "entity.name.type.struct.kr" },
-          "2": { "name": "variable.other.kr" }
-        }
-      }]
+      ]
     },
     "keywords": {
       "patterns": [
         {
           "name": "keyword.control.kr",
-          "match": "\\b(if|else|while|for|in|break|continue|return|match)\\b"
+          "match": "\\b(if|else|while|for|in|break|continue|loop|return|match)\\b"
         },
         {
           "name": "keyword.declaration.kr",
-          "match": "\\b(fn|struct|enum|static|const|type|unsafe|import)\\b"
+          "match": "\\b(fn|struct|enum|static|const|type|unsafe|volatile|asm|import|device|at)\\b"
         },
         {
           "name": "constant.language.boolean.kr",
@@ -181,6 +252,10 @@
         {
           "name": "variable.language.self.kr",
           "match": "\\b(self)\\b"
+        },
+        {
+          "name": "storage.modifier.access.kr",
+          "match": "\\b(rw|ro|wo)\\b(?=\\s*$|\\s*(//|;|$))"
         }
       ]
     },
@@ -188,10 +263,10 @@
       "patterns": [
         {
           "name": "storage.type.primitive.kr",
-          "match": "\\b(uint8|uint16|uint32|uint64|int8|int16|int32|int64|u8|u16|u32|u64|i8|i16|i32|i64|bool|char|addr|byte)\\b"
+          "match": "\\b(u8|u16|u32|u64|i8|i16|i32|i64|uint8|uint16|uint32|uint64|int8|int16|int32|int64)\\b"
         },
         {
-          "comment": "Capitalized names as types (structs, enums, aliases)",
+          "comment": "Capitalized names as types (structs, enums, aliases, devices)",
           "name": "entity.name.type.kr",
           "match": "\\b([A-Z][a-zA-Z0-9_]*)\\b"
         }
@@ -200,18 +275,44 @@
     "function-call": {
       "patterns": [
         {
-          "comment": "Built-in function call",
-          "match": "\\b(exit|write|alloc|file_open|file_read|file_write|file_close|file_size)\\s*\\(",
-          "captures": {
-            "1": { "name": "support.function.builtin.kr" }
-          }
+          "comment": "Built-in I/O",
+          "match": "\\b(print|println|print_str|println_str|write|read_line|exit|file_open|file_read|file_write|file_close|file_size)\\s*\\(",
+          "captures": { "1": { "name": "support.function.builtin.kr" } }
+        },
+        {
+          "comment": "Built-in memory",
+          "match": "\\b(alloc|dealloc|memcpy|memset|str_len|str_eq|fmt_uint)\\s*\\(",
+          "captures": { "1": { "name": "support.function.builtin.kr" } }
+        },
+        {
+          "comment": "Built-in pointer load/store",
+          "match": "\\b(load8|load16|load32|load64|store8|store16|store32|store64|vload8|vload16|vload32|vload64|vstore8|vstore16|vstore32|vstore64)\\s*\\(",
+          "captures": { "1": { "name": "support.function.builtin.kr" } }
+        },
+        {
+          "comment": "Built-in atomic ops",
+          "match": "\\b(atomic_load|atomic_store|atomic_cas|atomic_add|atomic_sub|atomic_and|atomic_or|atomic_xor)\\s*\\(",
+          "captures": { "1": { "name": "support.function.builtin.kr" } }
+        },
+        {
+          "comment": "Built-in bitfield ops",
+          "match": "\\b(bit_get|bit_set|bit_clear|bit_range|bit_insert)\\s*\\(",
+          "captures": { "1": { "name": "support.function.builtin.kr" } }
+        },
+        {
+          "comment": "Built-in signed comparison",
+          "match": "\\b(signed_lt|signed_gt|signed_le|signed_ge)\\s*\\(",
+          "captures": { "1": { "name": "support.function.builtin.kr" } }
+        },
+        {
+          "comment": "Built-in platform/process",
+          "match": "\\b(get_target_os|get_arch_id|get_module_path|exec_process|set_executable|syscall_raw|fn_addr|call_ptr)\\s*\\(",
+          "captures": { "1": { "name": "support.function.builtin.kr" } }
         },
         {
           "comment": "Regular function call",
           "match": "\\b([a-z_][a-zA-Z0-9_]*)\\s*\\(",
-          "captures": {
-            "1": { "name": "entity.name.function.call.kr" }
-          }
+          "captures": { "1": { "name": "entity.name.function.call.kr" } }
         }
       ]
     },
@@ -231,6 +332,14 @@
           "match": "=>"
         },
         {
+          "name": "keyword.operator.store-arrow.kr",
+          "match": "->"
+        },
+        {
+          "name": "keyword.operator.range.kr",
+          "match": "\\.\\."
+        },
+        {
           "name": "keyword.operator.comparison.kr",
           "match": "==|!=|<=|>=|<|>"
         },
@@ -240,11 +349,11 @@
         },
         {
           "name": "keyword.operator.arithmetic.kr",
-          "match": "\\+=|-=|\\*=|/=|<<|>>|[+\\-*/%]"
+          "match": "\\+=|-=|\\*=|/=|%=|<<=|>>=|<<|>>|[+\\-*/%]"
         },
         {
           "name": "keyword.operator.bitwise.kr",
-          "match": "[&|^~]"
+          "match": "&=|\\|=|\\^=|[&|^~]"
         },
         {
           "name": "keyword.operator.assignment.kr",

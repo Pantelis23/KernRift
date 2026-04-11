@@ -17,34 +17,100 @@ let krcPath = 'krc';
 // --- Keywords and builtins ---
 
 const KEYWORDS = [
-    'fn', 'struct', 'enum', 'static', 'const', 'type', 'unsafe', 'import',
-    'if', 'else', 'while', 'for', 'in', 'break', 'continue', 'return', 'match',
-    'true', 'false', 'extern', 'export'
+    'fn', 'struct', 'enum', 'static', 'const', 'type', 'unsafe', 'volatile',
+    'asm', 'import', 'device', 'at',
+    'if', 'else', 'while', 'for', 'in', 'break', 'continue', 'loop',
+    'return', 'match', 'true', 'false', 'extern', 'export'
 ];
 
 const TYPES = [
+    // Long forms
     'uint8', 'uint16', 'uint32', 'uint64',
     'int8', 'int16', 'int32', 'int64',
-    'bool', 'char', 'u8', 'u16', 'u32', 'u64',
-    'i8', 'i16', 'i32', 'i64', 'addr', 'byte'
+    // Short aliases
+    'u8', 'u16', 'u32', 'u64',
+    'i8', 'i16', 'i32', 'i64'
 ];
 
 const BUILTINS: Record<string, { sig: string, doc: string }> = {
-    'exit': { sig: 'fn exit(code: uint64)', doc: 'Terminate the process with the given exit code.' },
-    'write': { sig: 'fn write(fd: uint64, buf: uint64, len: uint64)', doc: 'Write `len` bytes from `buf` to file descriptor `fd`.' },
-    'alloc': { sig: 'fn alloc(size: uint64) -> uint64', doc: 'Allocate `size` bytes of memory. Returns pointer to allocated block.' },
-    'dealloc': { sig: 'fn dealloc(ptr: uint64)', doc: 'Free allocated memory (no-op on most platforms).' },
-    'print': { sig: 'fn print(arg)', doc: 'Print a string literal or format an integer to stdout.' },
+    // Core I/O
+    'exit': { sig: 'fn exit(code: u64)', doc: 'Terminate the process with the given exit code.' },
+    'print': { sig: 'fn print(arg)', doc: 'Print a string literal or format an integer to stdout (no newline).' },
     'println': { sig: 'fn println(arg)', doc: 'Print a string literal or integer followed by a newline.' },
-    'str_len': { sig: 'fn str_len(s: uint64) -> uint64', doc: 'Return the length of a null-terminated string.' },
-    'str_eq': { sig: 'fn str_eq(a: uint64, b: uint64) -> uint64', doc: 'Compare two strings. Returns 1 if equal, 0 if not.' },
-    'memcpy': { sig: 'fn memcpy(dst: uint64, src: uint64, len: uint64) -> uint64', doc: 'Copy `len` bytes from `src` to `dst`. Returns `dst`.' },
-    'memset': { sig: 'fn memset(dst: uint64, val: uint64, len: uint64) -> uint64', doc: 'Fill `len` bytes at `dst` with `val`. Returns `dst`.' },
-    'file_open': { sig: 'fn file_open(path: uint64, flags: uint64) -> uint64', doc: 'Open a file. flags: 0=read, 1=write. Returns file descriptor.' },
-    'file_read': { sig: 'fn file_read(fd: uint64, buf: uint64, len: uint64)', doc: 'Read `len` bytes from `fd` into `buf`.' },
-    'file_write': { sig: 'fn file_write(fd: uint64, buf: uint64, len: uint64)', doc: 'Write `len` bytes from `buf` to `fd`.' },
-    'file_close': { sig: 'fn file_close(fd: uint64)', doc: 'Close a file descriptor.' },
-    'file_size': { sig: 'fn file_size(fd: uint64) -> uint64', doc: 'Return the size of the file in bytes.' },
+    'print_str': { sig: 'fn print_str(s: u64)', doc: 'Print a null-terminated string from a pointer variable.' },
+    'println_str': { sig: 'fn println_str(s: u64)', doc: 'Print a null-terminated string followed by a newline.' },
+    'write': { sig: 'fn write(fd: u64, buf: u64, len: u64)', doc: 'Write `len` bytes from `buf` to file descriptor `fd`.' },
+
+    // Files
+    'file_open': { sig: 'fn file_open(path: u64, flags: u64) -> u64', doc: 'Open a file. flags: 0=read, 1=write. Returns file descriptor.' },
+    'file_read': { sig: 'fn file_read(fd: u64, buf: u64, len: u64)', doc: 'Read `len` bytes from `fd` into `buf`.' },
+    'file_write': { sig: 'fn file_write(fd: u64, buf: u64, len: u64)', doc: 'Write `len` bytes from `buf` to `fd`.' },
+    'file_close': { sig: 'fn file_close(fd: u64)', doc: 'Close a file descriptor.' },
+    'file_size': { sig: 'fn file_size(fd: u64) -> u64', doc: 'Return the size of the file in bytes.' },
+
+    // Memory
+    'alloc': { sig: 'fn alloc(size: u64) -> u64', doc: 'Allocate `size` bytes of memory. Returns pointer.' },
+    'dealloc': { sig: 'fn dealloc(ptr: u64)', doc: 'Free previously allocated memory.' },
+    'memcpy': { sig: 'fn memcpy(dst: u64, src: u64, len: u64)', doc: 'Copy `len` bytes from `src` to `dst`.' },
+    'memset': { sig: 'fn memset(dst: u64, val: u64, len: u64)', doc: 'Fill `len` bytes at `dst` with `val`.' },
+    'str_len': { sig: 'fn str_len(s: u64) -> u64', doc: 'Return the length of a null-terminated string.' },
+    'str_eq': { sig: 'fn str_eq(a: u64, b: u64) -> u64', doc: 'Compare two strings. Returns 1 if equal, 0 if not.' },
+
+    // Pointer load/store (v2.6)
+    'load8':  { sig: 'fn load8(addr: u64) -> u64',  doc: 'Read a byte from memory at `addr`, zero-extended to u64.' },
+    'load16': { sig: 'fn load16(addr: u64) -> u64', doc: 'Read a 16-bit word from memory at `addr`, zero-extended.' },
+    'load32': { sig: 'fn load32(addr: u64) -> u64', doc: 'Read a 32-bit word from memory at `addr`, zero-extended.' },
+    'load64': { sig: 'fn load64(addr: u64) -> u64', doc: 'Read a 64-bit word from memory at `addr`.' },
+    'store8':  { sig: 'fn store8(addr: u64, val: u64)',  doc: 'Write a byte to memory at `addr`.' },
+    'store16': { sig: 'fn store16(addr: u64, val: u64)', doc: 'Write a 16-bit word to memory at `addr`.' },
+    'store32': { sig: 'fn store32(addr: u64, val: u64)', doc: 'Write a 32-bit word to memory at `addr`.' },
+    'store64': { sig: 'fn store64(addr: u64, val: u64)', doc: 'Write a 64-bit word to memory at `addr`.' },
+
+    // Volatile (for MMIO)
+    'vload8':  { sig: 'fn vload8(addr: u64) -> u64',  doc: 'Volatile byte load with memory barrier (for MMIO).' },
+    'vload16': { sig: 'fn vload16(addr: u64) -> u64', doc: 'Volatile 16-bit load with memory barrier.' },
+    'vload32': { sig: 'fn vload32(addr: u64) -> u64', doc: 'Volatile 32-bit load with memory barrier.' },
+    'vload64': { sig: 'fn vload64(addr: u64) -> u64', doc: 'Volatile 64-bit load with memory barrier.' },
+    'vstore8':  { sig: 'fn vstore8(addr: u64, val: u64)',  doc: 'Volatile byte store with memory barrier.' },
+    'vstore16': { sig: 'fn vstore16(addr: u64, val: u64)', doc: 'Volatile 16-bit store with memory barrier.' },
+    'vstore32': { sig: 'fn vstore32(addr: u64, val: u64)', doc: 'Volatile 32-bit store with memory barrier.' },
+    'vstore64': { sig: 'fn vstore64(addr: u64, val: u64)', doc: 'Volatile 64-bit store with memory barrier.' },
+
+    // Atomic
+    'atomic_load':  { sig: 'fn atomic_load(ptr: u64) -> u64', doc: 'Sequentially-consistent atomic load.' },
+    'atomic_store': { sig: 'fn atomic_store(ptr: u64, val: u64)', doc: 'Sequentially-consistent atomic store.' },
+    'atomic_cas':   { sig: 'fn atomic_cas(ptr: u64, exp: u64, des: u64) -> u64', doc: 'Compare-and-swap. Returns 1 on success, 0 on failure.' },
+    'atomic_add':   { sig: 'fn atomic_add(ptr: u64, val: u64) -> u64', doc: 'Atomically add. Returns old value.' },
+    'atomic_sub':   { sig: 'fn atomic_sub(ptr: u64, val: u64) -> u64', doc: 'Atomically subtract. Returns old value.' },
+    'atomic_and':   { sig: 'fn atomic_and(ptr: u64, val: u64) -> u64', doc: 'Atomically AND. Returns old value.' },
+    'atomic_or':    { sig: 'fn atomic_or(ptr: u64, val: u64) -> u64', doc: 'Atomically OR. Returns old value.' },
+    'atomic_xor':   { sig: 'fn atomic_xor(ptr: u64, val: u64) -> u64', doc: 'Atomically XOR. Returns old value.' },
+
+    // Bitfield
+    'bit_get':    { sig: 'fn bit_get(v: u64, n: u64) -> u64', doc: 'Return bit `n` of `v` (0 or 1).' },
+    'bit_set':    { sig: 'fn bit_set(v: u64, n: u64) -> u64', doc: 'Return `v` with bit `n` set.' },
+    'bit_clear':  { sig: 'fn bit_clear(v: u64, n: u64) -> u64', doc: 'Return `v` with bit `n` cleared.' },
+    'bit_range':  { sig: 'fn bit_range(v: u64, start: u64, width: u64) -> u64', doc: 'Extract `width` bits starting at `start`.' },
+    'bit_insert': { sig: 'fn bit_insert(v: u64, start: u64, width: u64, bits: u64) -> u64', doc: 'Insert `bits` into `v` at position `start`.' },
+
+    // Signed comparison
+    'signed_lt': { sig: 'fn signed_lt(a: u64, b: u64) -> u64', doc: 'Signed less-than (default <, <=, >, >= are unsigned).' },
+    'signed_gt': { sig: 'fn signed_gt(a: u64, b: u64) -> u64', doc: 'Signed greater-than.' },
+    'signed_le': { sig: 'fn signed_le(a: u64, b: u64) -> u64', doc: 'Signed less-than-or-equal.' },
+    'signed_ge': { sig: 'fn signed_ge(a: u64, b: u64) -> u64', doc: 'Signed greater-than-or-equal.' },
+
+    // Platform / process
+    'get_target_os':    { sig: 'fn get_target_os() -> u64', doc: 'Host OS: 0=Linux, 1=macOS, 2=Windows, 3=Android.' },
+    'get_arch_id':      { sig: 'fn get_arch_id() -> u64', doc: 'Host architecture: 1=x86_64, 2=ARM64.' },
+    'exec_process':     { sig: 'fn exec_process(path: u64) -> u64', doc: 'Execute a process at `path`. Returns exit code.' },
+    'set_executable':   { sig: 'fn set_executable(path: u64)', doc: 'chmod +x equivalent.' },
+    'get_module_path':  { sig: 'fn get_module_path(buf: u64, size: u64) -> u64', doc: "Write the current binary's path into `buf`." },
+    'fmt_uint':         { sig: 'fn fmt_uint(buf: u64, val: u64) -> u64', doc: 'Format `val` as decimal into `buf`. Returns length.' },
+    'syscall_raw':      { sig: 'fn syscall_raw(nr, a1, a2, a3, a4, a5, a6) -> u64', doc: 'Raw syscall with up to 6 arguments.' },
+
+    // Function pointers
+    'fn_addr':  { sig: 'fn fn_addr(name) -> u64', doc: 'Get the address of a named function.' },
+    'call_ptr': { sig: 'fn call_ptr(addr, ...)', doc: 'Call a function by address with any number of arguments.' },
 };
 
 // --- Initialize ---
