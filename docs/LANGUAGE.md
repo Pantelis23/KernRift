@@ -1254,7 +1254,12 @@ debugger, or writing portable code that uses `syscall_raw`.
 | `set_executable` | 90 | `chmod` |
 
 `syscall_raw(nr, a1, a2, a3, a4, a5, a6)` passes `nr` in `rax` and the
-arguments in `rdi rsi rdx r10 r8 r9` (standard Linux x86_64 ABI).
+arguments in `rdi rsi rdx r10 r8 r9` (standard Linux x86_64 ABI). The
+table above covers every `krc` builtin that lowers to a syscall — for
+anything else you're calling directly, get the number from the kernel's
+own table at
+[`arch/x86/entry/syscalls/syscall_64.tbl`](https://github.com/torvalds/linux/blob/master/arch/x86/entry/syscalls/syscall_64.tbl).
+Example: `getpid` is syscall 39 — `uint64 pid = syscall_raw(39, 0, 0, 0, 0, 0, 0)`.
 
 ### Linux arm64
 
@@ -1269,7 +1274,10 @@ arguments in `rdi rsi rdx r10 r8 r9` (standard Linux x86_64 ABI).
 | `time_ns`  | 113 (`clock_gettime`) |
 | `set_executable` | 53 (`fchmodat`) |
 
-`syscall_raw` passes nr in `x8` and args in `x0..x5`.
+`syscall_raw` passes nr in `x8` and args in `x0..x5`. Complete numbering
+list: Linux kernel
+[`include/uapi/asm-generic/unistd.h`](https://github.com/torvalds/linux/blob/master/include/uapi/asm-generic/unistd.h)
+(arm64 uses the generic table).
 
 ### macOS x86_64
 
@@ -1295,6 +1303,11 @@ Linux). Numbers are the plain Darwin numbers, not the class-tagged form.
 | `write`    | 4   |
 | `read`     | 3   |
 | `alloc`    | 197 |
+
+Darwin syscall table (both arches): xnu
+[`bsd/kern/syscalls.master`](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/syscalls.master).
+On x86_64 macOS, OR the base number with `0x2000000` to form the `rax`
+value (e.g. `exit` = `1 | 0x2000000 = 0x2000001`).
 
 ### Windows
 
@@ -1380,11 +1393,15 @@ KernRift toolchain.
 offset  size  field
 0x00    8     magic:        "KRBOFAT\0"
 0x08    4     version:      u32 = 2
-0x0C    4     arch_count:   u32 (≤ 7)
+0x0C    4     arch_count:   u32 (currently emitted as 8)
 0x10    (arch_count × 48)   arch descriptor table
 ...     compressed slice blobs (per arch)
-...     runtime blobs (per arch)
 ```
+
+> **Note**: the descriptor reserves `runtime_offset` / `runtime_len`
+> for per-arch kr-runner blobs, but the current emitter writes them
+> as `0` and the runner ignores them. Decoders should treat those
+> fields as informational only.
 
 **Arch descriptor** (48 bytes each, one per slice):
 ```
@@ -1394,8 +1411,8 @@ offset  size  field
 +0x08   8     slice_offset:      u64 (from start of file)
 +0x10   8     slice_comp_size:   u64
 +0x18   8     slice_uncomp_size: u64
-+0x20   8     runtime_offset:    u64 (kr runner blob for this arch)
-+0x28   8     runtime_len:       u64
++0x20   8     runtime_offset:    u64 (reserved, emitted as 0)
++0x28   8     runtime_len:       u64 (reserved, emitted as 0)
 ```
 
 **Arch IDs**:
@@ -1420,6 +1437,13 @@ the original call/jmp offsets. BCJ filter selection:
 - arm-family arch_ids (2, 4, 6, 7): AArch64 BCJ filter (rewrites `BL`
   imm26 fields).
 
+Edge case: the x86_64 BCJ filter is a no-op when the slice is shorter
+than 5 bytes (the minimum length of an `E8`/`E9` disp32 instruction),
+and the arm64 filter is a no-op on slices shorter than 4 bytes. Both
+conditions happen only for pathologically tiny test programs and are
+safe — there is nothing to rewrite in either direction, so
+encode+decode remains a perfect round-trip.
+
 **Minimal Python decoder**:
 ```python
 import struct, lz4.frame
@@ -1442,8 +1466,12 @@ def parse_krbo(path):
     return slices
 ```
 
-`arch_count` is capped at 7 by the current emitter; the format has
-room for more if future targets are added.
+`arch_count` is currently 8 (Linux x86_64, Linux arm64, Windows x86_64,
+Windows arm64, macOS x86_64, macOS arm64, Android arm64, Android x86_64).
+The descriptor table is fixed-stride so decoders can skip ahead by
+`16 + arch_count × 48` to locate the first compressed blob. Future
+targets (e.g. FreeBSD) can be added by bumping `arch_count` without
+format-version changes.
 
 ---
 
