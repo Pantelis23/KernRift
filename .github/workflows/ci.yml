@@ -35,23 +35,38 @@ jobs:
           # segfault). The in-tree fix bumps it to 32768, but until we cut
           # a new release, retry self-compile until one attempt succeeds
           # or we've burned the budget.
+          # Retry bootstrap until we get a valid ELF that actually runs.
+          # The released bootstrap non-deterministically produces corrupt
+          # output ("Exec format error") or segfaults outright.
           attempt=0
-          max=20
+          max=40
           while [ $attempt -lt $max ]; do
             attempt=$((attempt+1))
-            if timeout 60 ./build/krc-bootstrap --arch=x86_64 build/krc.kr -o build/krc2 2>&1; then
+            rm -f build/krc2 build/krc2.probe
+            if timeout 60 ./build/krc-bootstrap --arch=x86_64 build/krc.kr -o build/krc2 2>/dev/null; then
               if [ -s build/krc2 ]; then
-                echo "self-compile succeeded on attempt $attempt"
-                break
+                chmod +x build/krc2
+                # Verify it's a real ELF AND runs on a trivial input
+                if file build/krc2 | grep -q 'ELF 64-bit'; then
+                  echo 'fn main() { exit(0) }' > /tmp/probe.kr
+                  if timeout 10 ./build/krc2 --arch=x86_64 /tmp/probe.kr -o build/krc2.probe 2>/dev/null; then
+                    if [ -s build/krc2.probe ]; then
+                      chmod +x build/krc2.probe
+                      if ./build/krc2.probe; then
+                        echo "self-compile OK on attempt $attempt"
+                        break
+                      fi
+                    fi
+                  fi
+                fi
               fi
             fi
-            echo "attempt $attempt failed, retrying..."
-            rm -f build/krc2
+            echo "attempt $attempt: bootstrap output was broken, retrying..."
           done
-          [ -s build/krc2 ] || { echo "self-compile failed after $max attempts"; exit 1; }
-          chmod +x build/krc2
-          # Re-bootstrap once with the new krc (which has fixup_table=32768)
-          # so the downstream steps use a deterministic binary.
+          [ -x build/krc2 ] || { echo "self-compile failed after $max attempts"; exit 1; }
+          rm -f build/krc2.probe /tmp/probe.kr
+          # Re-bootstrap once with the new krc (bumped fixup_table=32768)
+          # to get a deterministic binary for downstream steps.
           ./build/krc2 --arch=x86_64 build/krc.kr -o build/krc2.stable
           mv build/krc2.stable build/krc2
           chmod +x build/krc2
