@@ -17,6 +17,24 @@ fn str_len_r(uint64 s) -> uint64 {
     return i
 }
 
+// Compare two null-terminated strings byte-for-byte.
+fn str_eq_r(uint64 a, uint64 b) -> uint64 {
+    uint64 i = 0
+    uint64 done = 0
+    while done == 0 {
+        uint64 ap = a + i
+        uint64 bp = b + i
+        uint64 ac = 0
+        uint64 bc = 0
+        unsafe { *(ap as uint8) -> ac }
+        unsafe { *(bp as uint8) -> bc }
+        if ac != bc { return 0 }
+        if ac == 0 { return 1 }
+        i = i + 1
+    }
+    return 1
+}
+
 // Decompress a single LZ4 block in-place from [src, src+src_len) into
 // [dst, ...). Returns the number of output bytes. Must byte-wise forward
 // copy matches to handle the LZ4 RLE case where offset < match_len.
@@ -197,17 +215,28 @@ fn main() {
     if cli_argc == 0xFFFFFFFF {
         win_init_args_r()
     }
-    // On Android, linker64 may inject the full exe path as argv[1],
-    // shifting real arguments to argv[2]+. Detect and adjust.
+    // Linker-as-program shift: if someone ran this binary via
+    //   /system/bin/linker64 ./kr test.krbo args...
+    // then the kernel passes the linker its own argv starting at the
+    // linker path, so our main() sees argv[0]="/system/bin/linker64",
+    // argv[1]="./kr", argv[2]="test.krbo", ... — every slot shifted by
+    // one. Modern Android's PT_INTERP exec path does NOT shift, nor
+    // does Linux or macOS. We must only compensate when argv[0] is
+    // literally one of Android's known dynamic-linker paths; doing
+    // anything looser (e.g. "argv[0] starts with /") misfires on every
+    // normal shell invocation because Bash resolves `kr` to its
+    // absolute path via PATH, making every Linux run look like Android.
     uint64 arg_offset = 8
-    uint64 rt_os = get_target_os()
-    if rt_os == 3 && cli_argc >= 3 {
-        uint64 a1p = cli_argv + 8
-        uint64 a1v = 0
-        unsafe { *(a1p as uint64) -> a1v }
-        uint64 a1c = 0
-        unsafe { *(a1v as uint8) -> a1c }
-        if a1c == 47 { arg_offset = 16 }
+    if cli_argc >= 2 {
+        uint64 argv0_p = 0
+        unsafe { *(cli_argv as uint64) -> argv0_p }
+        if argv0_p != 0 {
+            if str_eq_r(argv0_p, "/system/bin/linker64") != 0 {
+                arg_offset = 16
+            } else if str_eq_r(argv0_p, "/apex/com.android.runtime/bin/linker64") != 0 {
+                arg_offset = 16
+            }
+        }
     }
 
     // Effective argc (adjusted for Android linker shift)
