@@ -1,13 +1,13 @@
 // KernRift standard library — UI widget system
 // Minimal widget toolkit for bare-metal framebuffer UIs.
-// Each widget is a heap-allocated descriptor block of uint64 fields
+// Each widget is a heap-allocated descriptor block of u64 fields
 // accessed at fixed 8-byte offsets via unsafe pointer operations.
 //
 // Depends on: fb.kr, font.kr, color.kr, string.kr
 
 // ---------------------------------------------------------------------------
 // Panel — rectangular area with background color and optional border
-// Descriptor layout (7 x uint64 = 56 bytes):
+// Descriptor layout (7 x u64 = 56 bytes):
 //   +0  fb          framebuffer pointer
 //   +8  x           left edge
 //   +16 y           top edge
@@ -17,45 +17,45 @@
 //   +48 border_color  outline color (0 = no border)
 // ---------------------------------------------------------------------------
 
-fn panel_new(uint64 fb, uint64 x, uint64 y, uint64 w, uint64 h, uint64 bg_color, uint64 border_color) -> uint64 {
-    uint64 p = alloc(56)
-    unsafe { *(p as uint64) = fb }
-    uint64 p1 = p + 8
-    unsafe { *(p1 as uint64) = x }
-    uint64 p2 = p + 16
-    unsafe { *(p2 as uint64) = y }
-    uint64 p3 = p + 24
-    unsafe { *(p3 as uint64) = w }
-    uint64 p4 = p + 32
-    unsafe { *(p4 as uint64) = h }
-    uint64 p5 = p + 40
-    unsafe { *(p5 as uint64) = bg_color }
-    uint64 p6 = p + 48
-    unsafe { *(p6 as uint64) = border_color }
+fn panel_new(u64 fb, u64 x, u64 y, u64 w, u64 h, u64 bg_color, u64 border_color) -> u64 {
+    u64 p = alloc(56)
+    store64(p, fb)
+    u64 p1 = p + 8
+    store64(p1, x)
+    u64 p2 = p + 16
+    store64(p2, y)
+    u64 p3 = p + 24
+    store64(p3, w)
+    u64 p4 = p + 32
+    store64(p4, h)
+    u64 p5 = p + 40
+    store64(p5, bg_color)
+    u64 p6 = p + 48
+    store64(p6, border_color)
     return p
 }
 
-fn panel_draw(uint64 panel) {
-    uint64 fb = 0
-    unsafe { *(panel as uint64) -> fb }
-    uint64 x = 0
-    uint64 px = panel + 8
-    unsafe { *(px as uint64) -> x }
-    uint64 y = 0
-    uint64 py = panel + 16
-    unsafe { *(py as uint64) -> y }
-    uint64 w = 0
-    uint64 pw = panel + 24
-    unsafe { *(pw as uint64) -> w }
-    uint64 h = 0
-    uint64 ph = panel + 32
-    unsafe { *(ph as uint64) -> h }
-    uint64 bg = 0
-    uint64 pb = panel + 40
-    unsafe { *(pb as uint64) -> bg }
-    uint64 border = 0
-    uint64 pc = panel + 48
-    unsafe { *(pc as uint64) -> border }
+fn panel_draw(u64 panel) {
+    u64 fb = 0
+    fb = load64(panel)
+    u64 x = 0
+    u64 px = panel + 8
+    x = load64(px)
+    u64 y = 0
+    u64 py = panel + 16
+    y = load64(py)
+    u64 w = 0
+    u64 pw = panel + 24
+    w = load64(pw)
+    u64 h = 0
+    u64 ph = panel + 32
+    h = load64(ph)
+    u64 bg = 0
+    u64 pb = panel + 40
+    bg = load64(pb)
+    u64 border = 0
+    u64 pc = panel + 48
+    border = load64(pc)
 
     fb_rect(fb, x, y, w, h, bg)
     if border != 0 {
@@ -65,7 +65,7 @@ fn panel_draw(uint64 panel) {
 
 // ---------------------------------------------------------------------------
 // Label — single-line text display
-// Descriptor layout (6 x uint64 = 48 bytes):
+// Descriptor layout (6 x u64 = 48 bytes):
 //   +0  fb          framebuffer pointer
 //   +8  x           left edge
 //   +16 y           top edge
@@ -74,58 +74,58 @@ fn panel_draw(uint64 panel) {
 //   +40 bg_color    background color (0 = transparent / no background)
 // ---------------------------------------------------------------------------
 
-fn label_new(uint64 fb, uint64 x, uint64 y, uint64 text, uint64 color, uint64 bg_color) -> uint64 {
-    uint64 p = alloc(48)
-    unsafe { *(p as uint64) = fb }
-    uint64 p1 = p + 8
-    unsafe { *(p1 as uint64) = x }
-    uint64 p2 = p + 16
-    unsafe { *(p2 as uint64) = y }
-    uint64 p3 = p + 24
-    unsafe { *(p3 as uint64) = text }
-    uint64 p4 = p + 32
-    unsafe { *(p4 as uint64) = color }
-    uint64 p5 = p + 40
-    unsafe { *(p5 as uint64) = bg_color }
+fn label_new(u64 fb, u64 x, u64 y, u64 text, u64 color, u64 bg_color) -> u64 {
+    u64 p = alloc(48)
+    store64(p, fb)
+    u64 p1 = p + 8
+    store64(p1, x)
+    u64 p2 = p + 16
+    store64(p2, y)
+    u64 p3 = p + 24
+    store64(p3, text)
+    u64 p4 = p + 32
+    store64(p4, color)
+    u64 p5 = p + 40
+    store64(p5, bg_color)
     return p
 }
 
-fn label_draw(uint64 label) {
-    uint64 fb = 0
-    unsafe { *(label as uint64) -> fb }
-    uint64 x = 0
-    uint64 px = label + 8
-    unsafe { *(px as uint64) -> x }
-    uint64 y = 0
-    uint64 py = label + 16
-    unsafe { *(py as uint64) -> y }
-    uint64 text = 0
-    uint64 pt = label + 24
-    unsafe { *(pt as uint64) -> text }
-    uint64 color = 0
-    uint64 pc = label + 32
-    unsafe { *(pc as uint64) -> color }
-    uint64 bg = 0
-    uint64 pb = label + 40
-    unsafe { *(pb as uint64) -> bg }
+fn label_draw(u64 label) {
+    u64 fb = 0
+    fb = load64(label)
+    u64 x = 0
+    u64 px = label + 8
+    x = load64(px)
+    u64 y = 0
+    u64 py = label + 16
+    y = load64(py)
+    u64 text = 0
+    u64 pt = label + 24
+    text = load64(pt)
+    u64 color = 0
+    u64 pc = label + 32
+    color = load64(pc)
+    u64 bg = 0
+    u64 pb = label + 40
+    bg = load64(pb)
 
     // Draw background rectangle behind text if bg is non-zero
     if bg != 0 {
-        uint64 len = str_len(text)
-        uint64 tw = len * 8
+        u64 len = str_len(text)
+        u64 tw = len * 8
         fb_rect(fb, x, y, tw, 16, bg)
     }
     fb_text(fb, x, y, text, color)
 }
 
-fn label_set_text(uint64 label, uint64 text) {
-    uint64 pt = label + 24
-    unsafe { *(pt as uint64) = text }
+fn label_set_text(u64 label, u64 text) {
+    u64 pt = label + 24
+    store64(pt, text)
 }
 
 // ---------------------------------------------------------------------------
 // Button — clickable rectangle with centered text
-// Descriptor layout (9 x uint64 = 72 bytes):
+// Descriptor layout (9 x u64 = 72 bytes):
 //   +0  fb          framebuffer pointer
 //   +8  x           left edge
 //   +16 y           top edge
@@ -137,59 +137,59 @@ fn label_set_text(uint64 label, uint64 text) {
 //   +64 pressed     1 = visually pressed, 0 = normal
 // ---------------------------------------------------------------------------
 
-fn button_new(uint64 fb, uint64 x, uint64 y, uint64 w, uint64 h, uint64 text, uint64 fg, uint64 bg) -> uint64 {
-    uint64 p = alloc(72)
-    unsafe { *(p as uint64) = fb }
-    uint64 p1 = p + 8
-    unsafe { *(p1 as uint64) = x }
-    uint64 p2 = p + 16
-    unsafe { *(p2 as uint64) = y }
-    uint64 p3 = p + 24
-    unsafe { *(p3 as uint64) = w }
-    uint64 p4 = p + 32
-    unsafe { *(p4 as uint64) = h }
-    uint64 p5 = p + 40
-    unsafe { *(p5 as uint64) = text }
-    uint64 p6 = p + 48
-    unsafe { *(p6 as uint64) = fg }
-    uint64 p7 = p + 56
-    unsafe { *(p7 as uint64) = bg }
-    uint64 p8 = p + 64
-    unsafe { *(p8 as uint64) = 0 }
+fn button_new(u64 fb, u64 x, u64 y, u64 w, u64 h, u64 text, u64 fg, u64 bg) -> u64 {
+    u64 p = alloc(72)
+    store64(p, fb)
+    u64 p1 = p + 8
+    store64(p1, x)
+    u64 p2 = p + 16
+    store64(p2, y)
+    u64 p3 = p + 24
+    store64(p3, w)
+    u64 p4 = p + 32
+    store64(p4, h)
+    u64 p5 = p + 40
+    store64(p5, text)
+    u64 p6 = p + 48
+    store64(p6, fg)
+    u64 p7 = p + 56
+    store64(p7, bg)
+    u64 p8 = p + 64
+    store64(p8, 0)
     return p
 }
 
-fn button_draw(uint64 button) {
-    uint64 fb = 0
-    unsafe { *(button as uint64) -> fb }
-    uint64 x = 0
-    uint64 px = button + 8
-    unsafe { *(px as uint64) -> x }
-    uint64 y = 0
-    uint64 py = button + 16
-    unsafe { *(py as uint64) -> y }
-    uint64 w = 0
-    uint64 pw = button + 24
-    unsafe { *(pw as uint64) -> w }
-    uint64 h = 0
-    uint64 ph = button + 32
-    unsafe { *(ph as uint64) -> h }
-    uint64 text = 0
-    uint64 pt = button + 40
-    unsafe { *(pt as uint64) -> text }
-    uint64 fg = 0
-    uint64 pf = button + 48
-    unsafe { *(pf as uint64) -> fg }
-    uint64 bg = 0
-    uint64 pb = button + 56
-    unsafe { *(pb as uint64) -> bg }
-    uint64 pressed = 0
-    uint64 pp = button + 64
-    unsafe { *(pp as uint64) -> pressed }
+fn button_draw(u64 button) {
+    u64 fb = 0
+    fb = load64(button)
+    u64 x = 0
+    u64 px = button + 8
+    x = load64(px)
+    u64 y = 0
+    u64 py = button + 16
+    y = load64(py)
+    u64 w = 0
+    u64 pw = button + 24
+    w = load64(pw)
+    u64 h = 0
+    u64 ph = button + 32
+    h = load64(ph)
+    u64 text = 0
+    u64 pt = button + 40
+    text = load64(pt)
+    u64 fg = 0
+    u64 pf = button + 48
+    fg = load64(pf)
+    u64 bg = 0
+    u64 pb = button + 56
+    bg = load64(pb)
+    u64 pressed = 0
+    u64 pp = button + 64
+    pressed = load64(pp)
 
     // Swap colors when pressed for visual feedback
-    uint64 fill = bg
-    uint64 txt = fg
+    u64 fill = bg
+    u64 txt = fg
     if pressed != 0 {
         fill = fg
         txt = bg
@@ -200,26 +200,26 @@ fn button_draw(uint64 button) {
     fb_rect_outline(fb, x, y, w, h, txt)
 
     // Center text inside the button
-    uint64 len = str_len(text)
-    uint64 tw = len * 8
-    uint64 tx = x + (w - tw) / 2
-    uint64 ty = y + (h - 16) / 2
+    u64 len = str_len(text)
+    u64 tw = len * 8
+    u64 tx = x + (w - tw) / 2
+    u64 ty = y + (h - 16) / 2
     fb_text(fb, tx, ty, text, txt)
 }
 
-fn button_contains(uint64 button, uint64 mx, uint64 my) -> uint64 {
-    uint64 x = 0
-    uint64 px = button + 8
-    unsafe { *(px as uint64) -> x }
-    uint64 y = 0
-    uint64 py = button + 16
-    unsafe { *(py as uint64) -> y }
-    uint64 w = 0
-    uint64 pw = button + 24
-    unsafe { *(pw as uint64) -> w }
-    uint64 h = 0
-    uint64 ph = button + 32
-    unsafe { *(ph as uint64) -> h }
+fn button_contains(u64 button, u64 mx, u64 my) -> u64 {
+    u64 x = 0
+    u64 px = button + 8
+    x = load64(px)
+    u64 y = 0
+    u64 py = button + 16
+    y = load64(py)
+    u64 w = 0
+    u64 pw = button + 24
+    w = load64(pw)
+    u64 h = 0
+    u64 ph = button + 32
+    h = load64(ph)
 
     if mx >= x && mx < x + w && my >= y && my < y + h {
         return 1
@@ -227,14 +227,14 @@ fn button_contains(uint64 button, uint64 mx, uint64 my) -> uint64 {
     return 0
 }
 
-fn button_set_pressed(uint64 button, uint64 state) {
-    uint64 pp = button + 64
-    unsafe { *(pp as uint64) = state }
+fn button_set_pressed(u64 button, u64 state) {
+    u64 pp = button + 64
+    store64(pp, state)
 }
 
 // ---------------------------------------------------------------------------
 // Progress bar — horizontal fill bar showing 0-100 percent
-// Descriptor layout (7 x uint64 = 56 bytes):
+// Descriptor layout (7 x u64 = 56 bytes):
 //   +0  fb          framebuffer pointer
 //   +8  x           left edge
 //   +16 y           top edge
@@ -246,50 +246,50 @@ fn button_set_pressed(uint64 button, uint64 state) {
 // (8 fields, 64 bytes)
 // ---------------------------------------------------------------------------
 
-fn progress_new(uint64 fb, uint64 x, uint64 y, uint64 w, uint64 h, uint64 fg, uint64 bg) -> uint64 {
-    uint64 p = alloc(64)
-    unsafe { *(p as uint64) = fb }
-    uint64 p1 = p + 8
-    unsafe { *(p1 as uint64) = x }
-    uint64 p2 = p + 16
-    unsafe { *(p2 as uint64) = y }
-    uint64 p3 = p + 24
-    unsafe { *(p3 as uint64) = w }
-    uint64 p4 = p + 32
-    unsafe { *(p4 as uint64) = h }
-    uint64 p5 = p + 40
-    unsafe { *(p5 as uint64) = fg }
-    uint64 p6 = p + 48
-    unsafe { *(p6 as uint64) = bg }
-    uint64 p7 = p + 56
-    unsafe { *(p7 as uint64) = 0 }
+fn progress_new(u64 fb, u64 x, u64 y, u64 w, u64 h, u64 fg, u64 bg) -> u64 {
+    u64 p = alloc(64)
+    store64(p, fb)
+    u64 p1 = p + 8
+    store64(p1, x)
+    u64 p2 = p + 16
+    store64(p2, y)
+    u64 p3 = p + 24
+    store64(p3, w)
+    u64 p4 = p + 32
+    store64(p4, h)
+    u64 p5 = p + 40
+    store64(p5, fg)
+    u64 p6 = p + 48
+    store64(p6, bg)
+    u64 p7 = p + 56
+    store64(p7, 0)
     return p
 }
 
-fn progress_draw(uint64 progress) {
-    uint64 fb = 0
-    unsafe { *(progress as uint64) -> fb }
-    uint64 x = 0
-    uint64 px = progress + 8
-    unsafe { *(px as uint64) -> x }
-    uint64 y = 0
-    uint64 py = progress + 16
-    unsafe { *(py as uint64) -> y }
-    uint64 w = 0
-    uint64 pw = progress + 24
-    unsafe { *(pw as uint64) -> w }
-    uint64 h = 0
-    uint64 ph = progress + 32
-    unsafe { *(ph as uint64) -> h }
-    uint64 fg = 0
-    uint64 pf = progress + 40
-    unsafe { *(pf as uint64) -> fg }
-    uint64 bg = 0
-    uint64 pb = progress + 48
-    unsafe { *(pb as uint64) -> bg }
-    uint64 val = 0
-    uint64 pv = progress + 56
-    unsafe { *(pv as uint64) -> val }
+fn progress_draw(u64 progress) {
+    u64 fb = 0
+    fb = load64(progress)
+    u64 x = 0
+    u64 px = progress + 8
+    x = load64(px)
+    u64 y = 0
+    u64 py = progress + 16
+    y = load64(py)
+    u64 w = 0
+    u64 pw = progress + 24
+    w = load64(pw)
+    u64 h = 0
+    u64 ph = progress + 32
+    h = load64(ph)
+    u64 fg = 0
+    u64 pf = progress + 40
+    fg = load64(pf)
+    u64 bg = 0
+    u64 pb = progress + 48
+    bg = load64(pb)
+    u64 val = 0
+    u64 pv = progress + 56
+    val = load64(pv)
 
     // Clamp value to 0-100
     if val > 100 { val = 100 }
@@ -298,7 +298,7 @@ fn progress_draw(uint64 progress) {
     fb_rect(fb, x, y, w, h, bg)
 
     // Draw filled portion
-    uint64 fill_w = w * val / 100
+    u64 fill_w = w * val / 100
     if fill_w > 0 {
         fb_rect(fb, x, y, fill_w, h, fg)
     }
@@ -307,14 +307,14 @@ fn progress_draw(uint64 progress) {
     fb_rect_outline(fb, x, y, w, h, fg)
 }
 
-fn progress_set(uint64 progress, uint64 value) {
-    uint64 pv = progress + 56
-    unsafe { *(pv as uint64) = value }
+fn progress_set(u64 progress, u64 value) {
+    u64 pv = progress + 56
+    store64(pv, value)
 }
 
 // ---------------------------------------------------------------------------
 // Text input field — editable single-line text buffer
-// Descriptor layout (8 x uint64 = 64 bytes):
+// Descriptor layout (8 x u64 = 64 bytes):
 //   +0  fb          framebuffer pointer
 //   +8  x           left edge
 //   +16 y           top edge
@@ -325,142 +325,142 @@ fn progress_set(uint64 progress, uint64 value) {
 //   +56 len         current number of characters in buffer
 // ---------------------------------------------------------------------------
 
-fn textfield_new(uint64 fb, uint64 x, uint64 y, uint64 w, uint64 text_color, uint64 bg_color) -> uint64 {
-    uint64 p = alloc(64)
-    unsafe { *(p as uint64) = fb }
-    uint64 p1 = p + 8
-    unsafe { *(p1 as uint64) = x }
-    uint64 p2 = p + 16
-    unsafe { *(p2 as uint64) = y }
-    uint64 p3 = p + 24
-    unsafe { *(p3 as uint64) = w }
-    uint64 p4 = p + 32
-    unsafe { *(p4 as uint64) = text_color }
-    uint64 p5 = p + 40
-    unsafe { *(p5 as uint64) = bg_color }
+fn textfield_new(u64 fb, u64 x, u64 y, u64 w, u64 text_color, u64 bg_color) -> u64 {
+    u64 p = alloc(64)
+    store64(p, fb)
+    u64 p1 = p + 8
+    store64(p1, x)
+    u64 p2 = p + 16
+    store64(p2, y)
+    u64 p3 = p + 24
+    store64(p3, w)
+    u64 p4 = p + 32
+    store64(p4, text_color)
+    u64 p5 = p + 40
+    store64(p5, bg_color)
 
     // Allocate 256-byte text buffer, zero-filled
-    uint64 buf = alloc(256)
+    u64 buf = alloc(256)
     memset(buf, 0, 256)
-    uint64 p6 = p + 48
-    unsafe { *(p6 as uint64) = buf }
-    uint64 p7 = p + 56
-    unsafe { *(p7 as uint64) = 0 }
+    u64 p6 = p + 48
+    store64(p6, buf)
+    u64 p7 = p + 56
+    store64(p7, 0)
     return p
 }
 
-fn textfield_draw(uint64 field) {
-    uint64 fb = 0
-    unsafe { *(field as uint64) -> fb }
-    uint64 x = 0
-    uint64 px = field + 8
-    unsafe { *(px as uint64) -> x }
-    uint64 y = 0
-    uint64 py = field + 16
-    unsafe { *(py as uint64) -> y }
-    uint64 w = 0
-    uint64 pw = field + 24
-    unsafe { *(pw as uint64) -> w }
-    uint64 tc = 0
-    uint64 pt = field + 32
-    unsafe { *(pt as uint64) -> tc }
-    uint64 bg = 0
-    uint64 pb = field + 40
-    unsafe { *(pb as uint64) -> bg }
-    uint64 buf = 0
-    uint64 pbu = field + 48
-    unsafe { *(pbu as uint64) -> buf }
-    uint64 len = 0
-    uint64 pl = field + 56
-    unsafe { *(pl as uint64) -> len }
+fn textfield_draw(u64 field) {
+    u64 fb = 0
+    fb = load64(field)
+    u64 x = 0
+    u64 px = field + 8
+    x = load64(px)
+    u64 y = 0
+    u64 py = field + 16
+    y = load64(py)
+    u64 w = 0
+    u64 pw = field + 24
+    w = load64(pw)
+    u64 tc = 0
+    u64 pt = field + 32
+    tc = load64(pt)
+    u64 bg = 0
+    u64 pb = field + 40
+    bg = load64(pb)
+    u64 buf = 0
+    u64 pbu = field + 48
+    buf = load64(pbu)
+    u64 len = 0
+    u64 pl = field + 56
+    len = load64(pl)
 
     // Height is one text line (16 px) plus 4 px padding top/bottom
-    uint64 h = 24
+    u64 h = 24
 
     // Draw background and border
     fb_rect(fb, x, y, w, h, bg)
     fb_rect_outline(fb, x, y, w, h, tc)
 
     // Draw text with 4px left padding, vertically centered
-    uint64 tx = x + 4
-    uint64 ty = y + 4
+    u64 tx = x + 4
+    u64 ty = y + 4
     if len > 0 {
         fb_text(fb, tx, ty, buf, tc)
     }
 
     // Draw cursor (blinking is left to the caller)
-    uint64 cx = tx + len * 8
+    u64 cx = tx + len * 8
     if cx < x + w - 4 {
         fb_vline(fb, cx, ty, 16, tc)
     }
 }
 
-fn textfield_append_char(uint64 field, uint64 ch) {
-    uint64 len = 0
-    uint64 pl = field + 56
-    unsafe { *(pl as uint64) -> len }
+fn textfield_append_char(u64 field, u64 ch) {
+    u64 len = 0
+    u64 pl = field + 56
+    len = load64(pl)
 
     // Cap at 254 characters (need null terminator at 255)
     if len >= 254 { return }
 
-    uint64 buf = 0
-    uint64 pbu = field + 48
-    unsafe { *(pbu as uint64) -> buf }
+    u64 buf = 0
+    u64 pbu = field + 48
+    buf = load64(pbu)
 
     // Write character at current length position
-    uint64 cp = buf + len
-    uint8 cv = ch
-    unsafe { *(cp as uint8) = cv }
+    u64 cp = buf + len
+    u8 cv = ch
+    store8(cp, cv)
 
     // Null-terminate
     len = len + 1
-    uint64 np = buf + len
-    uint8 z = 0
-    unsafe { *(np as uint8) = z }
+    u64 np = buf + len
+    u8 z = 0
+    store8(np, z)
 
     // Update length
-    unsafe { *(pl as uint64) = len }
+    store64(pl, len)
 }
 
-fn textfield_backspace(uint64 field) {
-    uint64 len = 0
-    uint64 pl = field + 56
-    unsafe { *(pl as uint64) -> len }
+fn textfield_backspace(u64 field) {
+    u64 len = 0
+    u64 pl = field + 56
+    len = load64(pl)
 
     if len == 0 { return }
 
-    uint64 buf = 0
-    uint64 pbu = field + 48
-    unsafe { *(pbu as uint64) -> buf }
+    u64 buf = 0
+    u64 pbu = field + 48
+    buf = load64(pbu)
 
     len = len - 1
-    uint64 cp = buf + len
-    uint8 z = 0
-    unsafe { *(cp as uint8) = z }
+    u64 cp = buf + len
+    u8 z = 0
+    store8(cp, z)
 
-    unsafe { *(pl as uint64) = len }
+    store64(pl, len)
 }
 
-fn textfield_clear(uint64 field) {
-    uint64 buf = 0
-    uint64 pbu = field + 48
-    unsafe { *(pbu as uint64) -> buf }
-    uint8 z = 0
-    unsafe { *(buf as uint8) = z }
-    uint64 pl = field + 56
-    unsafe { *(pl as uint64) = 0 }
+fn textfield_clear(u64 field) {
+    u64 buf = 0
+    u64 pbu = field + 48
+    buf = load64(pbu)
+    u8 z = 0
+    store8(buf, z)
+    u64 pl = field + 56
+    store64(pl, 0)
 }
 
-fn textfield_get_text(uint64 field) -> uint64 {
-    uint64 buf = 0
-    uint64 pbu = field + 48
-    unsafe { *(pbu as uint64) -> buf }
+fn textfield_get_text(u64 field) -> u64 {
+    u64 buf = 0
+    u64 pbu = field + 48
+    buf = load64(pbu)
     return buf
 }
 
-fn textfield_get_len(uint64 field) -> uint64 {
-    uint64 len = 0
-    uint64 pl = field + 56
-    unsafe { *(pl as uint64) -> len }
+fn textfield_get_len(u64 field) -> u64 {
+    u64 len = 0
+    u64 pl = field + 56
+    len = load64(pl)
     return len
 }

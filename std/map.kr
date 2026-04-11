@@ -1,148 +1,148 @@
-// KernRift Standard Library — Hash Map (string keys → uint64 values)
+// KernRift Standard Library — Hash Map (string keys → u64 values)
 //
 // Simple open-addressing hash map with linear probing.
 // Usage:
-//   uint64 m = map_new()
+//   u64 m = map_new()
 //   map_set(m, "key", 42)
-//   uint64 val = map_get(m, "key")     // 42
-//   uint64 found = map_has(m, "key")   // 1
+//   u64 val = map_get(m, "key")     // 42
+//   u64 found = map_has(m, "key")   // 1
 
-static uint64 MAP_CAP = 64
+static u64 MAP_CAP = 64
 
 // Hash a string (FNV-1a)
-fn str_hash(uint64 s) -> uint64 {
-    uint64 h = 0xCBF29CE484222325
-    uint64 p = s
-    uint64 ch = 0
-    unsafe { *(p as uint8) -> ch }
+fn str_hash(u64 s) -> u64 {
+    u64 h = 0xCBF29CE484222325
+    u64 p = s
+    u64 ch = 0
+    ch = load8(p)
     while ch != 0 {
         h = h ^ ch
         h = h * 0x100000001B3
         p = p + 1
-        unsafe { *(p as uint8) -> ch }
+        ch = load8(p)
     }
     return h
 }
 
 // Map layout: [cap(8), len(8), keys_ptr(8), vals_ptr(8)] = 32 bytes
-// keys = array of uint64 string pointers (0 = empty slot)
-// vals = array of uint64 values
+// keys = array of u64 string pointers (0 = empty slot)
+// vals = array of u64 values
 
-fn map_new() -> uint64 {
-    uint64 m = alloc(32)
-    uint64 cap = MAP_CAP
-    unsafe { *(m as uint64) = cap }
-    uint64 mlen = m + 8
-    uint64 zero = 0
-    unsafe { *(mlen as uint64) = zero }
-    uint64 keys = alloc(cap * 8)
+fn map_new() -> u64 {
+    u64 m = alloc(32)
+    u64 cap = MAP_CAP
+    store64(m, cap)
+    u64 mlen = m + 8
+    u64 zero = 0
+    store64(mlen, zero)
+    u64 keys = alloc(cap * 8)
     memset(keys, 0, cap * 8)
-    uint64 mk = m + 16
-    unsafe { *(mk as uint64) = keys }
-    uint64 vals = alloc(cap * 8)
+    u64 mk = m + 16
+    store64(mk, keys)
+    u64 vals = alloc(cap * 8)
     memset(vals, 0, cap * 8)
-    uint64 mv = m + 24
-    unsafe { *(mv as uint64) = vals }
+    u64 mv = m + 24
+    store64(mv, vals)
     return m
 }
 
-fn map_cap(uint64 m) -> uint64 {
-    uint64 cap = 0
-    unsafe { *(m as uint64) -> cap }
+fn map_cap(u64 m) -> u64 {
+    u64 cap = 0
+    cap = load64(m)
     return cap
 }
 
-fn map_len(uint64 m) -> uint64 {
-    uint64 mlen = m + 8
-    uint64 len = 0
-    unsafe { *(mlen as uint64) -> len }
+fn map_len(u64 m) -> u64 {
+    u64 mlen = m + 8
+    u64 len = 0
+    len = load64(mlen)
     return len
 }
 
-fn map_keys(uint64 m) -> uint64 {
-    uint64 mk = m + 16
-    uint64 keys = 0
-    unsafe { *(mk as uint64) -> keys }
+fn map_keys(u64 m) -> u64 {
+    u64 mk = m + 16
+    u64 keys = 0
+    keys = load64(mk)
     return keys
 }
 
-fn map_vals(uint64 m) -> uint64 {
-    uint64 mv = m + 24
-    uint64 vals = 0
-    unsafe { *(mv as uint64) -> vals }
+fn map_vals(u64 m) -> u64 {
+    u64 mv = m + 24
+    u64 vals = 0
+    vals = load64(mv)
     return vals
 }
 
-fn map_set(uint64 m, uint64 key, uint64 val) {
-    uint64 cap = map_cap(m)
-    uint64 keys = map_keys(m)
-    uint64 vals = map_vals(m)
-    uint64 h = str_hash(key) & (cap - 1)
-    uint64 i = h
-    uint64 kp = keys + i * 8
-    uint64 existing = 0
-    unsafe { *(kp as uint64) -> existing }
+fn map_set(u64 m, u64 key, u64 val) {
+    u64 cap = map_cap(m)
+    u64 keys = map_keys(m)
+    u64 vals = map_vals(m)
+    u64 h = str_hash(key) & (cap - 1)
+    u64 i = h
+    u64 kp = keys + i * 8
+    u64 existing = 0
+    existing = load64(kp)
     while existing != 0 {
         if str_eq(existing, key) != 0 {
             // Update existing
-            uint64 vp = vals + i * 8
-            unsafe { *(vp as uint64) = val }
+            u64 vp = vals + i * 8
+            store64(vp, val)
             return
         }
         i = (i + 1) & (cap - 1)
         kp = keys + i * 8
-        unsafe { *(kp as uint64) -> existing }
+        existing = load64(kp)
     }
     // Insert new
-    unsafe { *(kp as uint64) = key }
-    uint64 vp = vals + i * 8
-    unsafe { *(vp as uint64) = val }
-    uint64 mlen = m + 8
-    uint64 len = map_len(m) + 1
-    unsafe { *(mlen as uint64) = len }
+    store64(kp, key)
+    u64 vp = vals + i * 8
+    store64(vp, val)
+    u64 mlen = m + 8
+    u64 len = map_len(m) + 1
+    store64(mlen, len)
 }
 
-fn map_get(uint64 m, uint64 key) -> uint64 {
-    uint64 cap = map_cap(m)
-    uint64 keys = map_keys(m)
-    uint64 vals = map_vals(m)
-    uint64 h = str_hash(key) & (cap - 1)
-    uint64 i = h
-    uint64 kp = keys + i * 8
-    uint64 existing = 0
-    unsafe { *(kp as uint64) -> existing }
+fn map_get(u64 m, u64 key) -> u64 {
+    u64 cap = map_cap(m)
+    u64 keys = map_keys(m)
+    u64 vals = map_vals(m)
+    u64 h = str_hash(key) & (cap - 1)
+    u64 i = h
+    u64 kp = keys + i * 8
+    u64 existing = 0
+    existing = load64(kp)
     while existing != 0 {
         if str_eq(existing, key) != 0 {
-            uint64 vp = vals + i * 8
-            uint64 val = 0
-            unsafe { *(vp as uint64) -> val }
+            u64 vp = vals + i * 8
+            u64 val = 0
+            val = load64(vp)
             return val
         }
         i = (i + 1) & (cap - 1)
         kp = keys + i * 8
-        unsafe { *(kp as uint64) -> existing }
+        existing = load64(kp)
     }
     return 0
 }
 
-fn map_has(uint64 m, uint64 key) -> uint64 {
-    uint64 cap = map_cap(m)
-    uint64 keys = map_keys(m)
-    uint64 h = str_hash(key) & (cap - 1)
-    uint64 i = h
-    uint64 kp = keys + i * 8
-    uint64 existing = 0
-    unsafe { *(kp as uint64) -> existing }
+fn map_has(u64 m, u64 key) -> u64 {
+    u64 cap = map_cap(m)
+    u64 keys = map_keys(m)
+    u64 h = str_hash(key) & (cap - 1)
+    u64 i = h
+    u64 kp = keys + i * 8
+    u64 existing = 0
+    existing = load64(kp)
     while existing != 0 {
         if str_eq(existing, key) != 0 { return 1 }
         i = (i + 1) & (cap - 1)
         kp = keys + i * 8
-        unsafe { *(kp as uint64) -> existing }
+        existing = load64(kp)
     }
     return 0
 }
 
-fn map_free(uint64 m) {
+fn map_free(u64 m) {
     dealloc(map_keys(m))
     dealloc(map_vals(m))
     dealloc(m)

@@ -1,18 +1,18 @@
 // KernRift standard library — 8x16 bitmap font renderer
 // Covers ASCII 32-126 (95 printable characters), 16 bytes per glyph
 
-static uint64 font_data_ptr = 0
+static u64 font_data_ptr = 0
 
-fn font_init() -> uint64 {
+fn font_init() -> u64 {
     if font_data_ptr != 0 { return font_data_ptr }
-    uint64 data = alloc(1536)
+    u64 data = alloc(1536)
     font_data_ptr = data
     memset(data, 0, 1536)
 
     // Space (32) — all zeros, already cleared
 
     // ! (33)
-    uint64 p = data + 16
+    u64 p = data + 16
     font_set_glyph(p, 0x00, 0x18, 0x18, 0x18, 0x18, 0x18, 0x00, 0x18, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00)
 
     // " (34)
@@ -272,69 +272,69 @@ fn font_init() -> uint64 {
     return data
 }
 
-fn font_set_glyph(uint64 p, uint64 b0, uint64 b1, uint64 b2, uint64 b3, uint64 b4, uint64 b5, uint64 b6, uint64 b7, uint64 b8, uint64 b9, uint64 b10, uint64 b11, uint64 b12, uint64 b13, uint64 b14, uint64 b15) {
-    uint8 v0 = b0
-    unsafe { *(p as uint8) = v0 }
-    uint64 p1 = p + 1
-    uint8 v1 = b1
-    unsafe { *(p1 as uint8) = v1 }
-    uint64 p2 = p + 2
-    uint8 v2 = b2
-    unsafe { *(p2 as uint8) = v2 }
-    uint64 p3 = p + 3
-    uint8 v3 = b3
-    unsafe { *(p3 as uint8) = v3 }
-    uint64 p4 = p + 4
-    uint8 v4 = b4
-    unsafe { *(p4 as uint8) = v4 }
-    uint64 p5 = p + 5
-    uint8 v5 = b5
-    unsafe { *(p5 as uint8) = v5 }
-    uint64 p6 = p + 6
-    uint8 v6 = b6
-    unsafe { *(p6 as uint8) = v6 }
-    uint64 p7 = p + 7
-    uint8 v7 = b7
-    unsafe { *(p7 as uint8) = v7 }
-    uint64 p8 = p + 8
-    uint8 v8 = b8
-    unsafe { *(p8 as uint8) = v8 }
-    uint64 p9 = p + 9
-    uint8 v9 = b9
-    unsafe { *(p9 as uint8) = v9 }
-    uint64 p10 = p + 10
-    uint8 va = b10
-    unsafe { *(p10 as uint8) = va }
-    uint64 p11 = p + 11
-    uint8 vb = b11
-    unsafe { *(p11 as uint8) = vb }
-    uint64 p12 = p + 12
-    uint8 vc = b12
-    unsafe { *(p12 as uint8) = vc }
-    uint64 p13 = p + 13
-    uint8 vd = b13
-    unsafe { *(p13 as uint8) = vd }
-    uint64 p14 = p + 14
-    uint8 ve = b14
-    unsafe { *(p14 as uint8) = ve }
-    uint64 p15 = p + 15
-    uint8 vf = b15
-    unsafe { *(p15 as uint8) = vf }
+fn font_set_glyph(u64 p, u64 b0, u64 b1, u64 b2, u64 b3, u64 b4, u64 b5, u64 b6, u64 b7, u64 b8, u64 b9, u64 b10, u64 b11, u64 b12, u64 b13, u64 b14, u64 b15) {
+    u8 v0 = b0
+    store8(p, v0)
+    u64 p1 = p + 1
+    u8 v1 = b1
+    store8(p1, v1)
+    u64 p2 = p + 2
+    u8 v2 = b2
+    store8(p2, v2)
+    u64 p3 = p + 3
+    u8 v3 = b3
+    store8(p3, v3)
+    u64 p4 = p + 4
+    u8 v4 = b4
+    store8(p4, v4)
+    u64 p5 = p + 5
+    u8 v5 = b5
+    store8(p5, v5)
+    u64 p6 = p + 6
+    u8 v6 = b6
+    store8(p6, v6)
+    u64 p7 = p + 7
+    u8 v7 = b7
+    store8(p7, v7)
+    u64 p8 = p + 8
+    u8 v8 = b8
+    store8(p8, v8)
+    u64 p9 = p + 9
+    u8 v9 = b9
+    store8(p9, v9)
+    u64 p10 = p + 10
+    u8 va = b10
+    store8(p10, va)
+    u64 p11 = p + 11
+    u8 vb = b11
+    store8(p11, vb)
+    u64 p12 = p + 12
+    u8 vc = b12
+    store8(p12, vc)
+    u64 p13 = p + 13
+    u8 vd = b13
+    store8(p13, vd)
+    u64 p14 = p + 14
+    u8 ve = b14
+    store8(p14, ve)
+    u64 p15 = p + 15
+    u8 vf = b15
+    store8(p15, vf)
 }
 
-fn fb_char(uint64 fb, uint64 x, uint64 y, uint64 ch, uint64 color) {
+fn fb_char(u64 fb, u64 x, u64 y, u64 ch, u64 color) {
     if ch < 32 || ch > 126 { return }
-    uint64 font = font_init()
-    uint64 glyph = font + (ch - 32) * 16
-    uint64 row = 0
+    u64 font = font_init()
+    u64 glyph = font + (ch - 32) * 16
+    u64 row = 0
     while row < 16 {
-        uint64 rp = glyph + row
-        uint64 bits = 0
-        unsafe { *(rp as uint8) -> bits }
+        u64 rp = glyph + row
+        u64 bits = 0
+        bits = load8(rp)
         if bits != 0 {
-            uint64 col = 0
+            u64 col = 0
             while col < 8 {
-                uint64 mask = 0x80 >> col
+                u64 mask = 0x80 >> col
                 if (bits & mask) != 0 {
                     fb_pixel(fb, x + col, y + row, color)
                 }
@@ -345,13 +345,13 @@ fn fb_char(uint64 fb, uint64 x, uint64 y, uint64 ch, uint64 color) {
     }
 }
 
-fn fb_text(uint64 fb, uint64 x, uint64 y, uint64 str, uint64 color) {
-    uint64 cx = x
-    uint64 cy = y
-    uint64 i = 0
-    uint64 ch = 0
-    uint64 sp = str + i
-    unsafe { *(sp as uint8) -> ch }
+fn fb_text(u64 fb, u64 x, u64 y, u64 str, u64 color) {
+    u64 cx = x
+    u64 cy = y
+    u64 i = 0
+    u64 ch = 0
+    u64 sp = str + i
+    ch = load8(sp)
     while ch != 0 {
         if ch == 10 {
             cy = cy + 16
@@ -362,6 +362,6 @@ fn fb_text(uint64 fb, uint64 x, uint64 y, uint64 str, uint64 color) {
         }
         i = i + 1
         sp = str + i
-        unsafe { *(sp as uint8) -> ch }
+        ch = load8(sp)
     }
 }

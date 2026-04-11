@@ -1,44 +1,44 @@
 // KernRift Standard Library — String Operations
 //
-// Strings are null-terminated byte sequences (uint64 = pointer to first byte).
+// Strings are null-terminated byte sequences (u64 = pointer to first byte).
 // All functions that return strings allocate new memory via alloc().
 
 // Concatenate two strings: str_cat("hello", " world") → "hello world"
-fn str_cat(uint64 a, uint64 b) -> uint64 {
-    uint64 la = str_len(a)
-    uint64 lb = str_len(b)
-    uint64 total = la + lb + 1
-    uint64 result = alloc(total)
+fn str_cat(u64 a, u64 b) -> u64 {
+    u64 la = str_len(a)
+    u64 lb = str_len(b)
+    u64 total = la + lb + 1
+    u64 result = alloc(total)
     memcpy(result, a, la)
-    uint64 dp = result + la
+    u64 dp = result + la
     memcpy(dp, b, lb)
-    uint64 tp = result + la + lb
-    uint8 z = 0
-    unsafe { *(tp as uint8) = z }
+    u64 tp = result + la + lb
+    u8 z = 0
+    store8(tp, z)
     return result
 }
 
 // Copy a string: returns new allocated copy
-fn str_copy(uint64 s) -> uint64 {
-    uint64 len = str_len(s)
-    uint64 result = alloc(len + 1)
+fn str_copy(u64 s) -> u64 {
+    u64 len = str_len(s)
+    u64 result = alloc(len + 1)
     memcpy(result, s, len + 1)
     return result
 }
 
 // Check if string starts with prefix
-fn str_starts(uint64 s, uint64 prefix) -> uint64 {
-    uint64 plen = str_len(prefix)
-    uint64 slen = str_len(s)
+fn str_starts(u64 s, u64 prefix) -> u64 {
+    u64 plen = str_len(prefix)
+    u64 slen = str_len(s)
     if plen > slen { return 0 }
-    uint64 i = 0
+    u64 i = 0
     while i < plen {
-        uint64 sp = s + i
-        uint64 pp = prefix + i
-        uint64 sc = 0
-        uint64 pc = 0
-        unsafe { *(sp as uint8) -> sc }
-        unsafe { *(pp as uint8) -> pc }
+        u64 sp = s + i
+        u64 pp = prefix + i
+        u64 sc = 0
+        u64 pc = 0
+        sc = load8(sp)
+        pc = load8(pp)
         if sc != pc { return 0 }
         i = i + 1
     }
@@ -46,19 +46,19 @@ fn str_starts(uint64 s, uint64 prefix) -> uint64 {
 }
 
 // Check if string ends with suffix
-fn str_ends(uint64 s, uint64 suffix) -> uint64 {
-    uint64 slen = str_len(s)
-    uint64 xlen = str_len(suffix)
+fn str_ends(u64 s, u64 suffix) -> u64 {
+    u64 slen = str_len(s)
+    u64 xlen = str_len(suffix)
     if xlen > slen { return 0 }
-    uint64 offset = slen - xlen
-    uint64 i = 0
+    u64 offset = slen - xlen
+    u64 i = 0
     while i < xlen {
-        uint64 sp = s + offset + i
-        uint64 xp = suffix + i
-        uint64 sc = 0
-        uint64 xc = 0
-        unsafe { *(sp as uint8) -> sc }
-        unsafe { *(xp as uint8) -> xc }
+        u64 sp = s + offset + i
+        u64 xp = suffix + i
+        u64 sc = 0
+        u64 xc = 0
+        sc = load8(sp)
+        xc = load8(xp)
         if sc != xc { return 0 }
         i = i + 1
     }
@@ -66,37 +66,37 @@ fn str_ends(uint64 s, uint64 suffix) -> uint64 {
 }
 
 // Find first occurrence of byte in string, returns index or 0xFFFFFFFFFFFFFFFF
-fn str_find_byte(uint64 s, uint64 byte_val) -> uint64 {
-    uint64 i = 0
-    uint64 p = s
-    uint64 ch = 0
-    unsafe { *(p as uint8) -> ch }
+fn str_find_byte(u64 s, u64 byte_val) -> u64 {
+    u64 i = 0
+    u64 p = s
+    u64 ch = 0
+    ch = load8(p)
     while ch != 0 {
         if ch == byte_val { return i }
         i = i + 1
         p = s + i
-        unsafe { *(p as uint8) -> ch }
+        ch = load8(p)
     }
     return 0xFFFFFFFFFFFFFFFF
 }
 
 // Check if string contains a substring
-fn str_contains(uint64 haystack, uint64 needle) -> uint64 {
-    uint64 hlen = str_len(haystack)
-    uint64 nlen = str_len(needle)
+fn str_contains(u64 haystack, u64 needle) -> u64 {
+    u64 hlen = str_len(haystack)
+    u64 nlen = str_len(needle)
     if nlen == 0 { return 1 }
     if nlen > hlen { return 0 }
-    uint64 i = 0
+    u64 i = 0
     while i <= hlen - nlen {
-        uint64 j = 0
-        uint64 found = 1
+        u64 j = 0
+        u64 found = 1
         while j < nlen {
-            uint64 hp = haystack + i + j
-            uint64 np = needle + j
-            uint64 hc = 0
-            uint64 nc = 0
-            unsafe { *(hp as uint8) -> hc }
-            unsafe { *(np as uint8) -> nc }
+            u64 hp = haystack + i + j
+            u64 np = needle + j
+            u64 hc = 0
+            u64 nc = 0
+            hc = load8(hp)
+            nc = load8(np)
             if hc != nc { found = 0; j = nlen }
             j = j + 1
         }
@@ -107,115 +107,115 @@ fn str_contains(uint64 haystack, uint64 needle) -> uint64 {
 }
 
 // Get substring: str_sub("hello world", 6, 5) → "world"
-fn str_sub(uint64 s, uint64 start, uint64 len) -> uint64 {
-    uint64 result = alloc(len + 1)
-    uint64 sp = s + start
+fn str_sub(u64 s, u64 start, u64 len) -> u64 {
+    u64 result = alloc(len + 1)
+    u64 sp = s + start
     memcpy(result, sp, len)
-    uint64 tp = result + len
-    uint8 z = 0
-    unsafe { *(tp as uint8) = z }
+    u64 tp = result + len
+    u8 z = 0
+    store8(tp, z)
     return result
 }
 
 // Get character at index (returns byte value)
-fn str_at(uint64 s, uint64 idx) -> uint64 {
-    uint64 p = s + idx
-    uint64 ch = 0
-    unsafe { *(p as uint8) -> ch }
+fn str_at(u64 s, u64 idx) -> u64 {
+    u64 p = s + idx
+    u64 ch = 0
+    ch = load8(p)
     return ch
 }
 
 // Convert string to integer: str_to_int("42") → 42
-fn str_to_int(uint64 s) -> uint64 {
-    uint64 result = 0
-    uint64 i = 0
-    uint64 neg = 0
-    uint64 p = s
-    uint64 ch = 0
-    unsafe { *(p as uint8) -> ch }
+fn str_to_int(u64 s) -> u64 {
+    u64 result = 0
+    u64 i = 0
+    u64 neg = 0
+    u64 p = s
+    u64 ch = 0
+    ch = load8(p)
     if ch == 45 { neg = 1; i = 1 }
     p = s + i
-    unsafe { *(p as uint8) -> ch }
+    ch = load8(p)
     while ch >= 48 && ch <= 57 {
         result = result * 10 + ch - 48
         i = i + 1
         p = s + i
-        unsafe { *(p as uint8) -> ch }
+        ch = load8(p)
     }
     if neg != 0 { return 0 - result }
     return result
 }
 
 // Convert integer to string: int_to_str(42) → "42"
-fn int_to_str(uint64 val) -> uint64 {
+fn int_to_str(u64 val) -> u64 {
     if val == 0 {
-        uint64 r = alloc(2)
-        uint8 z0 = 48
-        unsafe { *(r as uint8) = z0 }
-        uint64 r1 = r + 1
-        uint8 zz = 0
-        unsafe { *(r1 as uint8) = zz }
+        u64 r = alloc(2)
+        u8 z0 = 48
+        store8(r, z0)
+        u64 r1 = r + 1
+        u8 zz = 0
+        store8(r1, zz)
         return r
     }
-    uint8[20] buf
-    uint64 len = 0
-    uint64 tmp = val
+    u8[20] buf
+    u64 len = 0
+    u64 tmp = val
     while tmp > 0 {
-        uint64 digit = tmp - tmp / 10 * 10
-        uint8 db = digit + 48
+        u64 digit = tmp - tmp / 10 * 10
+        u8 db = digit + 48
         buf[len] = db
         len = len + 1
         tmp = tmp / 10
     }
-    uint64 result = alloc(len + 1)
-    uint64 i = 0
+    u64 result = alloc(len + 1)
+    u64 i = 0
     while i < len {
-        uint64 si = len - 1 - i
-        uint64 dp = result + i
-        uint64 bv = buf[si]
-        uint8 bb = bv
-        unsafe { *(dp as uint8) = bb }
+        u64 si = len - 1 - i
+        u64 dp = result + i
+        u64 bv = buf[si]
+        u8 bb = bv
+        store8(dp, bb)
         i = i + 1
     }
-    uint64 tp = result + len
-    uint8 z = 0
-    unsafe { *(tp as uint8) = z }
+    u64 tp = result + len
+    u8 z = 0
+    store8(tp, z)
     return result
 }
 
 // Repeat a string: str_repeat("ab", 3) → "ababab"
-fn str_repeat(uint64 s, uint64 count) -> uint64 {
-    uint64 slen = str_len(s)
-    uint64 total = slen * count
-    uint64 result = alloc(total + 1)
-    uint64 i = 0
+fn str_repeat(u64 s, u64 count) -> u64 {
+    u64 slen = str_len(s)
+    u64 total = slen * count
+    u64 result = alloc(total + 1)
+    u64 i = 0
     while i < count {
-        uint64 dp = result + i * slen
+        u64 dp = result + i * slen
         memcpy(dp, s, slen)
         i = i + 1
     }
-    uint64 tp = result + total
-    uint8 z = 0
-    unsafe { *(tp as uint8) = z }
+    u64 tp = result + total
+    u8 z = 0
+    store8(tp, z)
     return result
 }
 
 // Trim leading and trailing whitespace
-fn str_trim(uint64 s) -> uint64 {
-    uint64 len = str_len(s)
-    uint64 start = 0
-    uint64 ch = 0
-    uint64 p = s + start
-    unsafe { *(p as uint8) -> ch }
+fn str_trim(u64 s) -> u64 {
+    u64 len = str_len(s)
+    u64 start = 0
+    u64 ch = 0
+    u64 p = s + start
+    ch = load8(p)
     while start < len && (ch == 32 || ch == 9 || ch == 10 || ch == 13) {
         start = start + 1
         p = s + start
-        if start < len { unsafe { *(p as uint8) -> ch } }
+        if start < len { ch = load8(p) }
     }
-    uint64 end = len
+    u64 end = len
     while end > start {
         p = s + end - 1
-        unsafe { *(p as uint8) -> ch }
+        ch = load8(p)
         if ch != 32 && ch != 9 && ch != 10 && ch != 13 { break }
         end = end - 1
     }

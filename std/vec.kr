@@ -1,105 +1,105 @@
-// KernRift Standard Library — Dynamic Array (Vec of uint64)
+// KernRift Standard Library — Dynamic Array (Vec of u64)
 //
 // A Vec is 3 uint64s stored contiguously: [data_ptr, length, capacity]
 // Usage:
-//   uint64 v = vec_new()
+//   u64 v = vec_new()
 //   vec_push(v, 42)
-//   uint64 val = vec_get(v, 0)    // 42
-//   uint64 len = vec_len(v)       // 1
+//   u64 val = vec_get(v, 0)    // 42
+//   u64 len = vec_len(v)       // 1
 //   vec_free(v)
 
-fn vec_new() -> uint64 {
-    uint64 v = alloc(24)
-    uint64 data = alloc(64)
-    unsafe { *(v as uint64) = data }
-    uint64 vlen = v + 8
-    uint64 zero = 0
-    unsafe { *(vlen as uint64) = zero }
-    uint64 vcap = v + 16
-    uint64 cap = 8
-    unsafe { *(vcap as uint64) = cap }
+fn vec_new() -> u64 {
+    u64 v = alloc(24)
+    u64 data = alloc(64)
+    store64(v, data)
+    u64 vlen = v + 8
+    u64 zero = 0
+    store64(vlen, zero)
+    u64 vcap = v + 16
+    u64 cap = 8
+    store64(vcap, cap)
     return v
 }
 
-fn vec_len(uint64 v) -> uint64 {
-    uint64 vlen = v + 8
-    uint64 len = 0
-    unsafe { *(vlen as uint64) -> len }
+fn vec_len(u64 v) -> u64 {
+    u64 vlen = v + 8
+    u64 len = 0
+    len = load64(vlen)
     return len
 }
 
-fn vec_cap(uint64 v) -> uint64 {
-    uint64 vcap = v + 16
-    uint64 cap = 0
-    unsafe { *(vcap as uint64) -> cap }
+fn vec_cap(u64 v) -> u64 {
+    u64 vcap = v + 16
+    u64 cap = 0
+    cap = load64(vcap)
     return cap
 }
 
-fn vec_data(uint64 v) -> uint64 {
-    uint64 data = 0
-    unsafe { *(v as uint64) -> data }
+fn vec_data(u64 v) -> u64 {
+    u64 data = 0
+    data = load64(v)
     return data
 }
 
-fn vec_push(uint64 v, uint64 val) {
-    uint64 len = vec_len(v)
-    uint64 cap = vec_cap(v)
+fn vec_push(u64 v, u64 val) {
+    u64 len = vec_len(v)
+    u64 cap = vec_cap(v)
     if len >= cap {
         // Grow: double capacity
-        uint64 new_cap = cap * 2
-        uint64 old_data = vec_data(v)
-        uint64 new_data = alloc(new_cap * 8)
+        u64 new_cap = cap * 2
+        u64 old_data = vec_data(v)
+        u64 new_data = alloc(new_cap * 8)
         memcpy(new_data, old_data, len * 8)
-        unsafe { *(v as uint64) = new_data }
-        uint64 vcap = v + 16
-        unsafe { *(vcap as uint64) = new_cap }
+        store64(v, new_data)
+        u64 vcap = v + 16
+        store64(vcap, new_cap)
     }
-    uint64 data = vec_data(v)
-    uint64 slot = data + len * 8
-    unsafe { *(slot as uint64) = val }
-    uint64 new_len = len + 1
-    uint64 vlen = v + 8
-    unsafe { *(vlen as uint64) = new_len }
+    u64 data = vec_data(v)
+    u64 slot = data + len * 8
+    store64(slot, val)
+    u64 new_len = len + 1
+    u64 vlen = v + 8
+    store64(vlen, new_len)
 }
 
-fn vec_get(uint64 v, uint64 idx) -> uint64 {
-    uint64 data = vec_data(v)
-    uint64 slot = data + idx * 8
-    uint64 val = 0
-    unsafe { *(slot as uint64) -> val }
+fn vec_get(u64 v, u64 idx) -> u64 {
+    u64 data = vec_data(v)
+    u64 slot = data + idx * 8
+    u64 val = 0
+    val = load64(slot)
     return val
 }
 
-fn vec_set(uint64 v, uint64 idx, uint64 val) {
-    uint64 data = vec_data(v)
-    uint64 slot = data + idx * 8
-    unsafe { *(slot as uint64) = val }
+fn vec_set(u64 v, u64 idx, u64 val) {
+    u64 data = vec_data(v)
+    u64 slot = data + idx * 8
+    store64(slot, val)
 }
 
-fn vec_pop(uint64 v) -> uint64 {
-    uint64 len = vec_len(v)
+fn vec_pop(u64 v) -> u64 {
+    u64 len = vec_len(v)
     if len == 0 { return 0 }
-    uint64 new_len = len - 1
-    uint64 vlen = v + 8
-    unsafe { *(vlen as uint64) = new_len }
+    u64 new_len = len - 1
+    u64 vlen = v + 8
+    store64(vlen, new_len)
     return vec_get(v, new_len)
 }
 
-fn vec_last(uint64 v) -> uint64 {
-    uint64 len = vec_len(v)
+fn vec_last(u64 v) -> u64 {
+    u64 len = vec_len(v)
     if len == 0 { return 0 }
     return vec_get(v, len - 1)
 }
 
-fn vec_clear(uint64 v) {
-    uint64 vlen = v + 8
-    uint64 zero = 0
-    unsafe { *(vlen as uint64) = zero }
+fn vec_clear(u64 v) {
+    u64 vlen = v + 8
+    u64 zero = 0
+    store64(vlen, zero)
 }
 
-fn vec_contains(uint64 v, uint64 val) -> uint64 {
-    uint64 len = vec_len(v)
-    uint64 i = 0
+fn vec_contains(u64 v, u64 val) -> u64 {
+    u64 len = vec_len(v)
+    u64 i = 0
     while i < len {
         if vec_get(v, i) == val { return 1 }
         i = i + 1
@@ -107,21 +107,21 @@ fn vec_contains(uint64 v, uint64 val) -> uint64 {
     return 0
 }
 
-fn vec_remove(uint64 v, uint64 idx) {
-    uint64 len = vec_len(v)
-    uint64 data = vec_data(v)
-    uint64 i = idx
+fn vec_remove(u64 v, u64 idx) {
+    u64 len = vec_len(v)
+    u64 data = vec_data(v)
+    u64 i = idx
     while i < len - 1 {
-        uint64 next = vec_get(v, i + 1)
+        u64 next = vec_get(v, i + 1)
         vec_set(v, i, next)
         i = i + 1
     }
-    uint64 new_len = len - 1
-    uint64 vlen = v + 8
-    unsafe { *(vlen as uint64) = new_len }
+    u64 new_len = len - 1
+    u64 vlen = v + 8
+    store64(vlen, new_len)
 }
 
-fn vec_free(uint64 v) {
+fn vec_free(u64 v) {
     dealloc(vec_data(v))
     dealloc(v)
 }
