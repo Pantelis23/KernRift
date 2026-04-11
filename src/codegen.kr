@@ -6882,11 +6882,15 @@ fn emit_elf_relocatable(uint64 text_len, uint64 data_len, uint64 arch) {
         emit_byte(46); emit_byte(116); emit_byte(101); emit_byte(120); emit_byte(116); emit_byte(0)
     }
 
+    // --- Pad up to rela.text's 8-byte alignment BEFORE the (optional)
+    // relocation content. shdr_off is computed assuming these pad bytes
+    // exist regardless of whether we actually emit relocs, so skipping
+    // them when has_relocs==0 leaves the file short by rela_align_pad.
+    pi = 0
+    while pi < rela_align_pad { emit_byte(0); pi = pi + 1 }
+
     // --- Emit .rela.text section content ---
     if has_relocs != 0 {
-        // Align to 8
-        pi = 0
-        while pi < rela_align_pad { emit_byte(0); pi = pi + 1 }
         uint64 ri = 0
         while ri < rela_count {
             uint64 re = extern_call_sites + ri * 16
