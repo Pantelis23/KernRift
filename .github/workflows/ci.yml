@@ -29,8 +29,31 @@ jobs:
           cat src/lexer.kr src/ast.kr src/parser.kr src/codegen.kr src/codegen_aarch64.kr \
               src/format_macho.kr src/format_pe.kr src/format_archive.kr src/format_android.kr \
               src/bcj.kr src/analysis.kr src/living.kr src/runtime.kr src/formatter.kr src/main.kr > build/krc.kr
-          # Self-compile with downloaded bootstrap
-          ./build/krc-bootstrap --arch=x86_64 build/krc.kr -o build/krc2
+          # The released krc-bootstrap ships the fixup_table=8192 limit
+          # which the current compiler source overruns non-deterministically
+          # ("undefined function 'lexer_parse_lang_directive'", occasional
+          # segfault). The in-tree fix bumps it to 32768, but until we cut
+          # a new release, retry self-compile until one attempt succeeds
+          # or we've burned the budget.
+          attempt=0
+          max=20
+          while [ $attempt -lt $max ]; do
+            attempt=$((attempt+1))
+            if timeout 60 ./build/krc-bootstrap --arch=x86_64 build/krc.kr -o build/krc2 2>&1; then
+              if [ -s build/krc2 ]; then
+                echo "self-compile succeeded on attempt $attempt"
+                break
+              fi
+            fi
+            echo "attempt $attempt failed, retrying..."
+            rm -f build/krc2
+          done
+          [ -s build/krc2 ] || { echo "self-compile failed after $max attempts"; exit 1; }
+          chmod +x build/krc2
+          # Re-bootstrap once with the new krc (which has fixup_table=32768)
+          # so the downstream steps use a deterministic binary.
+          ./build/krc2 --arch=x86_64 build/krc.kr -o build/krc2.stable
+          mv build/krc2.stable build/krc2
           chmod +x build/krc2
 
       - name: Test suite
