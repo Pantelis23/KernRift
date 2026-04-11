@@ -1133,12 +1133,19 @@ run_test "vload_vstore_u64" 'fn main() { u64 buf = alloc(16); vstore64(buf, 42);
 
 echo ""
 echo "--- v2.6 print_str / println_str ---"
-run_test "print_str_roundtrip" 'import "std/string.kr"
-fn main() {
-    u64 s = int_to_str(42)
-    u64 back = str_to_int(s)
-    exit(back)
-}' 42
+# print_str prints the contents of a variable string pointer.
+# If the builtin is broken, it prints the pointer address as a number
+# instead of the string, and the output doesn't contain "Hi".
+run_test_output "print_str_variable" 'fn main() {
+    u64 msg = "Hi"
+    print_str(msg)
+    exit(0)
+}' 'Hi' 0
+run_test_output "println_str_variable" 'fn main() {
+    u64 msg = "Line"
+    println_str(msg)
+    exit(0)
+}' 'Line' 0
 
 echo ""
 echo "--- v2.6 static arrays ---"
