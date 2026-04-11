@@ -1756,19 +1756,19 @@ fn emit_asm_listing(uint64 output_path, uint64 arch, uint64 text_start, uint64 s
     file_close(fd)
 }
 
-// time_ms — monotonic milliseconds. Recognized as a built-in by krc ≥ 2.6.2
+// time_ns — monotonic nanoseconds. Recognized as a built-in by krc ≥ 2.6.2
 // (emits inline clock_gettime on Linux x86_64). This fallback body exists
 // only so that pre-2.6.2 compilers can resolve the symbol during bootstrap;
 // in the new compiler the built-in dispatch matches first and this body is
 // never reached.
-fn time_ms() -> uint64 {
+fn time_ns() -> uint64 {
     return 0
 }
 
 // arch: 0=x86_64, 1=arm64
 // emit: 0=elfexe, 1=machoexe, 2=peexe, 3=obj (ELF relocatable), 5=asm listing
 fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode) {
-    uint64 t_start = time_ms()
+    uint64 t_start = time_ns()
     import_init()
     import_check_file(input_path)
     import_process(input_path)
@@ -2172,8 +2172,8 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
     // No-op on Windows; safe on Linux/macOS/Android.
     set_executable(output_path)
 
-    uint64 t_end = time_ms()
-    uint64 elapsed = t_end - t_start
+    uint64 t_end = time_ns()
+    uint64 elapsed_ns = t_end - t_start
 
     uint8[64] nb
     uint64 tl = fmt_uint(nb, tcount)
@@ -2191,10 +2191,24 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
     uint64 olen = str_len(output_path)
     write(1, output_path, olen)
     if t_start != 0 {
+        // Format as "x.xx ms" — hundredths-of-ms precision from ns.
+        // ms_whole = ns / 1_000_000; hundredths = (ns / 10_000) % 100
+        uint64 ms_whole = elapsed_ns / 1000000
+        uint64 ms_hund  = (elapsed_ns / 10000) % 100
         msg = "  ("
         write(1, msg, 3)
-        uint64 el_len = fmt_uint(nb, elapsed)
-        write(1, nb, el_len)
+        uint64 w_len = fmt_uint(nb, ms_whole)
+        write(1, nb, w_len)
+        msg = "."
+        write(1, msg, 1)
+        // Two-digit hundredths with leading zero
+        uint8[2] hb
+        uint8 d0 = 48 + (ms_hund / 10)
+        uint8 d1 = 48 + (ms_hund % 10)
+        unsafe { *(hb as uint8) = d0 }
+        uint64 hb1 = hb + 1
+        unsafe { *(hb1 as uint8) = d1 }
+        write(1, hb, 2)
         msg = " ms)\n"
         write(1, msg, 5)
     } else {

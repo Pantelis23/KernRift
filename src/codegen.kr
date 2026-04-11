@@ -4298,43 +4298,32 @@ fn gen_expr(uint64 node) {
             return
         }
 
-        // Built-in: time_ms() → monotonic millisecond counter.
+        // Built-in: time_ns() → monotonic nanosecond counter.
         // Linux x86_64: clock_gettime(CLOCK_MONOTONIC, &ts) via syscall 228.
+        //   result = sec * 1_000_000_000 + nsec
         // Other targets: return 0 (no portable timer yet).
-        if is_extern_call == 0 && tok_matches(wct, "time_ms", 7) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "time_ns", 7) != 0 {
             if target_os == 0 {
-                // Reserve a 16-byte timespec on the stack and pass rsp as &ts.
-                // sub rsp, 16
+                // sub rsp, 16              — reserve timespec
                 emit_byte(0x48); emit_byte(0x83); emit_byte(0xEC); emit_byte(16)
-                // mov edi, 1   (CLOCK_MONOTONIC)
+                // mov edi, 1               — CLOCK_MONOTONIC
                 emit_byte(0xBF); emit_byte(1); emit_byte(0); emit_byte(0); emit_byte(0)
-                // mov rsi, rsp (&ts)
+                // mov rsi, rsp            — &ts
                 emit_byte(0x48); emit_byte(0x89); emit_byte(0xE6)
-                // mov eax, 228 (SYS_clock_gettime)
+                // mov eax, 228            — SYS_clock_gettime
                 emit_mov_rax_imm(228)
                 // syscall
                 emit_byte(0x0F); emit_byte(0x05)
-                // mov rax, [rsp]           (sec)
+                // mov rax, [rsp]          — sec
                 emit_byte(0x48); emit_byte(0x8B); emit_byte(0x04); emit_byte(0x24)
-                // imul rax, rax, 1000      (sec * 1000 = ms contribution from seconds)
+                // imul rax, rax, 1_000_000_000
                 emit_byte(0x48); emit_byte(0x69); emit_byte(0xC0)
-                emit_u32_le(1000)
-                // Stash sec*1000 in rbx (preserved across div)
-                emit_byte(0x53)                                           // push rbx
-                emit_byte(0x48); emit_byte(0x89); emit_byte(0xC3)         // mov rbx, rax
-                // rax = nsec = [rsp+16]  (rsp shifted by 8 after push rbx)
-                emit_byte(0x48); emit_byte(0x8B); emit_byte(0x44); emit_byte(0x24); emit_byte(16)
-                // rcx = 1_000_000
-                emit_byte(0x48); emit_byte(0xC7); emit_byte(0xC1)
-                emit_u32_le(1000000)
-                // xor edx, edx             (clear high dividend)
-                emit_byte(0x48); emit_byte(0x31); emit_byte(0xD2)
-                // div rcx                  (rax = nsec / 1_000_000)
-                emit_byte(0x48); emit_byte(0xF7); emit_byte(0xF1)
-                // add rax, rbx             (total_ms = sec*1000 + nsec/1_000_000)
-                emit_byte(0x48); emit_byte(0x01); emit_byte(0xD8)
-                emit_byte(0x5B)                                           // pop rbx
-                // add rsp, 16              (drop timespec)
+                emit_u32_le(1000000000)
+                // mov rcx, [rsp+8]        — nsec
+                emit_byte(0x48); emit_byte(0x8B); emit_byte(0x4C); emit_byte(0x24); emit_byte(8)
+                // add rax, rcx            — total = sec*1e9 + nsec
+                emit_byte(0x48); emit_byte(0x01); emit_byte(0xC8)
+                // add rsp, 16             — drop timespec
                 emit_byte(0x48); emit_byte(0x83); emit_byte(0xC4); emit_byte(16)
             } else {
                 emit_mov_rax_imm(0)

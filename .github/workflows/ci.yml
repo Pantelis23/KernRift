@@ -150,6 +150,12 @@ jobs:
           name: krc-linux-x86_64
           path: build/krc2
 
+      - name: Upload Linux ARM64 krc (for native job)
+        uses: actions/upload-artifact@v4
+        with:
+          name: krc-linux-arm64
+          path: /tmp/krc-arm64
+
       - name: Upload cross-compiled binaries
         uses: actions/upload-artifact@v4
         with:
@@ -162,13 +168,22 @@ jobs:
 
   build-test-linux-arm64:
     name: Build and Test (Linux ARM64, native)
+    needs: build-test
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Download freshly built krc-linux-arm64
+        uses: actions/download-artifact@v4
+        with:
+          name: krc-linux-arm64
+          path: build/
+
       - name: Self-compile + tests (everything to debug-kit)
         continue-on-error: true
+        timeout-minutes: 12
         run: |
           set +e
           mkdir -p debug-kit
@@ -180,10 +195,8 @@ jobs:
           cat /proc/cpuinfo | head -20 || true
           echo
 
-          echo "=== download bootstrap krc-linux-arm64 ==="
-          mkdir -p build
-          curl -sL -o build/krc-bootstrap \
-            https://github.com/Pantelis23/KernRift/releases/latest/download/krc-linux-arm64
+          echo "=== bootstrap krc-linux-arm64 (just cross-compiled by build-test) ==="
+          mv build/krc-arm64 build/krc-bootstrap
           chmod +x build/krc-bootstrap
           ls -la build/krc-bootstrap
           file build/krc-bootstrap
@@ -198,7 +211,7 @@ jobs:
           echo
 
           echo "=== self-compile pass 1 ==="
-          ./build/krc-bootstrap --arch=arm64 build/krc.kr -o build/krc2
+          timeout 120 ./build/krc-bootstrap --arch=arm64 build/krc.kr -o build/krc2
           SC1=$?
           chmod +x build/krc2 2>/dev/null
           ls -la build/krc2 2>/dev/null
@@ -206,14 +219,14 @@ jobs:
           echo
 
           echo "=== self-compile pass 2 (krc2 compiles itself → krc3) ==="
-          ./build/krc2 --arch=arm64 build/krc.kr -o build/krc3
+          timeout 120 ./build/krc2 --arch=arm64 build/krc.kr -o build/krc3
           SC2=$?
           chmod +x build/krc3 2>/dev/null
           echo "pass 2 exit=$SC2"
           echo
 
           echo "=== self-compile pass 3 (krc3 compiles itself → krc4) ==="
-          ./build/krc3 --arch=arm64 build/krc.kr -o build/krc4
+          timeout 120 ./build/krc3 --arch=arm64 build/krc.kr -o build/krc4
           SC3=$?
           chmod +x build/krc4 2>/dev/null
           echo "pass 3 exit=$SC3"

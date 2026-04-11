@@ -2665,10 +2665,10 @@ fn gen_expr_a64(uint64 node) {
             return
         }
 
-        // Built-in: time_ms() — monotonic milliseconds.
-        // Only Linux arm64 has a portable user-space syscall path; other
-        // targets return 0. Linux arm64 clock_gettime is nr 113.
-        if is_extern_call == 0 && tok_matches(wct, "time_ms", 7) != 0 {
+        // Built-in: time_ns() — monotonic nanoseconds.
+        // Not yet implemented on arm64 — return 0 so the main.kr caller
+        // prints no timing suffix. Linux arm64 clock_gettime is nr 113.
+        if is_extern_call == 0 && tok_matches(wct, "time_ns", 7) != 0 {
             emit_a64_mov_imm(0, 0)
             return
         }
