@@ -74,8 +74,8 @@ fn emit_macho_headers_a64(uint64 code_size) -> uint64 {
     emit_u32_le(0x0100000C)       // ARM64
     emit_u32_le(0x00000000)
     emit_u32_le(0x00000002)       // MH_EXECUTE
-    emit_u32_le(5)                // ncmds: PAGEZERO + TEXT(+__text section) + DATA + LINKEDIT + UNIXTHREAD
-    emit_u32_le(656)              // sizeofcmds = 72 + 152 + 72 + 72 + 288
+    emit_u32_le(6)                // ncmds: PAGEZERO + TEXT + DATA + LINKEDIT + BUILD_VERSION + UNIXTHREAD
+    emit_u32_le(680)              // sizeofcmds = 72 + 152 + 72 + 72 + 24 + 288
     emit_u32_le(0x00000001)       // flags: MH_NOUNDEFS
     emit_u32_le(0)
 
@@ -148,8 +148,18 @@ fn emit_macho_headers_a64(uint64 code_size) -> uint64 {
     emit_u32_le(1); emit_u32_le(1)  // maxprot=R, initprot=R
     emit_u32_le(0); emit_u32_le(0)
 
-    // LC_UNIXTHREAD — ARM64 thread state (288 bytes, offset 400)
-    // PC at register 32: offset 400 + 16 + 32*8 = 672
+    // LC_BUILD_VERSION (24 bytes, offset 400) — required by macOS 11+ AMFI
+    // Without this, the kernel refuses to run arm64 binaries even when they
+    // are adhoc-signed, because AMFI has no minimum-OS metadata to trust.
+    emit_u32_le(0x32)             // cmd = LC_BUILD_VERSION
+    emit_u32_le(24)               // cmdsize
+    emit_u32_le(1)                // platform = PLATFORM_MACOS
+    emit_u32_le(0x000B0000)       // minos = 11.0.0 (arm64 baseline)
+    emit_u32_le(0x000B0000)       // sdk   = 11.0.0
+    emit_u32_le(0)                // ntools = 0
+
+    // LC_UNIXTHREAD — ARM64 thread state (288 bytes, offset 424)
+    // PC at register 32: offset 424 + 16 + 32*8 = 696
     emit_u32_le(5)                // cmd = LC_UNIXTHREAD
     emit_u32_le(288)              // cmdsize
     emit_u32_le(6)                // flavor = ARM_THREAD_STATE64
@@ -158,7 +168,7 @@ fn emit_macho_headers_a64(uint64 code_size) -> uint64 {
     uint64 ri = 0
     while ri < 33 {
         if ri == 32 {
-            emit_u64_le(0x100000000 + header_size)  // pc (patched at 672)
+            emit_u64_le(0x100000000 + header_size)  // pc (patched at 696)
         } else {
             emit_u64_le(0)
         }

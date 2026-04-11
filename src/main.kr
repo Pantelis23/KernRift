@@ -1942,10 +1942,11 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
             patch_u32(320, entry_va & 0xFFFFFFFF)
             patch_u32(324, (entry_va >> 32) & 0xFFFFFFFF)
         } else {
-            // ARM64: LC_UNIXTHREAD — absolute VA at offset 672
+            // ARM64: LC_UNIXTHREAD — absolute VA at offset 696
+            // (shifted from 672 after inserting LC_BUILD_VERSION)
             uint64 entry_va_arm = 0x100000000 + main_off_macho
-            patch_u32(672, entry_va_arm & 0xFFFFFFFF)
-            patch_u32(676, (entry_va_arm >> 32) & 0xFFFFFFFF)
+            patch_u32(696, entry_va_arm & 0xFFFFFFFF)
+            patch_u32(700, (entry_va_arm >> 32) & 0xFFFFFFFF)
         }
         // ARM64 Mach-O: patch __text section + separate __DATA segment for W^X
         if arch == 1 {
@@ -2686,11 +2687,12 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     patch_u32(372, (lfoff6 >> 32) & 0xFFFFFFFF)
     patch_u32(376, 0)
     patch_u32(380, 0)
-    // LC_UNIXTHREAD PC at offset 672 (absolute VA)
+    // LC_UNIXTHREAD PC at offset 696 (absolute VA)
+    // (shifted from 672 after inserting LC_BUILD_VERSION for AMFI)
     uint64 main_off6 = find_main_offset()
     uint64 entry_va6 = 0x100000000 + main_off6
-    patch_u32(672, entry_va6 & 0xFFFFFFFF)
-    patch_u32(676, (entry_va6 >> 32) & 0xFFFFFFFF)
+    patch_u32(696, entry_va6 & 0xFFFFFFFF)
+    patch_u32(700, (entry_va6 >> 32) & 0xFFFFFFFF)
 
     uint64 macho_a64_len = codegen_output_len()
     uint64 macho_a64_buf = alloc(macho_a64_len)
