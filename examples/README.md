@@ -31,6 +31,7 @@ kr hello.krbo
 | `mmio_driver.kr` | `device` blocks — named typed MMIO registers with volatile semantics. |
 | `echo.kr` | `scan_str` / `print_str` for stdin / stdout with variable strings. |
 | `extern_libc.kr` | `extern fn` — call libc (`strlen`, `write`) via ELF/Mach-O/COFF relocations. |
+| `linked_list.kr` | Canonical heap-struct pattern — `Node n = alloc(16)`, append, traverse. |
 
 ## Notes
 

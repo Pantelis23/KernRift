@@ -43,6 +43,38 @@ fn fmt_hex(u64 val) -> u64 {
     return result
 }
 
+// Format an unsigned integer as a decimal string: fmt_dec(42) → "42".
+// Returns a heap-allocated null-terminated buffer — pair with print_str
+// or println_str to print it, e.g.
+//   print_str("x = "); println_str(fmt_dec(x))
+fn fmt_dec(u64 val) -> u64 {
+    if val == 0 {
+        u64 r = alloc(2)
+        store8(r, 48)
+        store8(r + 1, 0)
+        return r
+    }
+    u64 buf = alloc(24)
+    u64 len = 0
+    u64 tmp = val
+    while tmp > 0 {
+        store8(buf + len, (tmp % 10) + 48)
+        len = len + 1
+        tmp = tmp / 10
+    }
+    u64 result = alloc(len + 1)
+    u64 i = 0
+    while i < len {
+        u64 b = load8(buf + (len - 1 - i))
+        store8(result + i, b)
+        i = i + 1
+    }
+    store8(result + len, 0)
+    dealloc(buf)
+    return result
+}
+
+
 // Format integer as binary: fmt_bin(10) → "0b1010"
 fn fmt_bin(u64 val) -> u64 {
     if val == 0 {

@@ -59,6 +59,58 @@ krc hello.kr -o hello.krbo
 kr hello.krbo
 ```
 
+## Cheatsheet (one page)
+
+Everything a first-time user usually needs, in one place. Full details
+live in [LANGUAGE.md](LANGUAGE.md).
+
+**Operators** (tightest → loosest):
+`!` `~` `-` (prefix) · `*` `/` `%` · `+` `-` · `<<` `>>` · `<` `<=` `>` `>=`
+(unsigned — use `signed_lt`/`signed_gt`/`signed_le`/`signed_ge` for signed)
+· `==` `!=` · `&` · `^` · `|` · `&&` · `||`
+Compound assigns: `+=` `-=` `*=` `/=` `%=` `&=` `|=` `^=` `<<=` `>>=`.
+
+**Integer only.** No floating-point types, no `float`, no `double`.
+All scalar types are `u8`/`u16`/`u32`/`u64` and their signed siblings
+`i8`/`i16`/`i32`/`i64`. `u64` is the default — use it when in doubt.
+
+**Integer division** is truncating: `7 / 2 == 3`, `(-7) / 2` rounds toward
+zero. Remainder: `7 % 2 == 1`.
+
+**Ranges in `for` are half-open**: `for i in 0..10` iterates `0, 1, …, 9`
+(exactly like Python's `range(10)` or Rust's `0..10`). Write `0..n+1` if
+you want the upper bound included.
+
+**Literals**: decimal `42`, hex `0x2A`, character `'A'` / `'\n'` / `'\t'`
+/ `'\\'` / `'\''` / `'\0'` (evaluate to their byte value; use them
+directly in comparisons: `if c == 'a' { ... }`).
+
+**Printing**:
+
+```kr
+println("hello")      // string literal
+println(42)           // integer (decimal)
+println(x)            // variable (decimal)
+print("no newline")   // same family, no trailing \n
+print(42)             // integer without newline
+
+// Mixing string and integer in one line (no format string yet):
+print("x = ")
+println(x)            // prints "x = 42"
+
+// For a string that lives in a variable (e.g. a heap-allocated
+// buffer or the result of fmt_hex/fmt_dec), use print_str / println_str:
+import "std/fmt.kr"
+u64 s = fmt_dec(x)
+print_str("x = ")
+println_str(s)
+```
+
+**`fn main()` is always required**, even with `--freestanding`. Exit the
+program with `exit(code)`; every example in this guide ends with `exit(0)`.
+
+---
+
 ## Language basics
 
 ```kr
@@ -336,12 +388,16 @@ Every runnable example lives in the top-level [`examples/`](../examples/)
 directory. Start with:
 
 - **`hello.kr`** — smallest possible program
+- **`fib.kr`** — recursive Fibonacci
 - **`fizzbuzz.kr`** — control flow
+- **`count_chars.kr`** — byte-level string iteration
+- **`linked_list.kr`** — heap-allocated structs (canonical data-structures pattern)
 - **`pointers.kr`** — pointer builtins
 - **`slices.kr`** — slice parameters
 - **`struct_arrays.kr`** — fixed arrays of structs
-- **`mmio_driver.kr`** — device blocks
+- **`mmio_driver.kr`** — device blocks (embedded-style MMIO)
 - **`echo.kr`** — stdin / stdout
+- **`extern_libc.kr`** — linking against libc via `extern fn`
 
 ## Editor setup
 

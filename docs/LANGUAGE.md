@@ -271,6 +271,28 @@ greet("world")
 Up to 8 arguments can be passed in registers (6 on Windows x64). Functions
 with more arguments pass the overflow on the stack.
 
+### Type parameters (generics)
+
+A function may declare type parameters with `<T>` or `<T, U>`:
+
+```kr
+fn max_t<T>(T a, T b) -> T {
+    if a > b { return a }
+    return b
+}
+
+fn main() {
+    exit(max_t(3, 42))   // 42
+}
+```
+
+Type parameters are **syntactic only** in the current implementation:
+every scalar is a 64-bit slot, so `T` is effectively `u64` at codegen
+time. There is no monomorphization and no type checking across
+instantiations — `max_t(3, 42)` and `max_t(struct_ptr_a, struct_ptr_b)`
+compile to the same machine code. Use the syntax when it makes the
+caller clearer; don't rely on it for type safety.
+
 ---
 
 ## 7. Structs, methods, and enums
@@ -400,16 +422,26 @@ alone evaluates to the base address. Indexing is unchecked.
 At module level, a static array gets storage in the data section:
 
 ```kr
-static u8[1024] message_buf
+static u8[1024]  message_buf      // 1024 bytes
+static u16[16]   sensor_samples   // 32 bytes
+static u32[10]   pixel_row        // 40 bytes
+static u64[10]   counters         // 80 bytes
 
 fn main() {
     message_buf[0] = 72   // 'H'
     message_buf[1] = 105  // 'i'
     message_buf[2] = 0
+    counters[0] = 1000000
+    counters[9] = 2000000
     print_str(message_buf)
     exit(0)
 }
 ```
+
+All integer element widths (`u8`/`u16`/`u32`/`u64`, `i8`/`i16`/`i32`/`i64`)
+are supported and indexing is scaled automatically — `counters[5]` reads
+8 bytes from offset `5*8`. (In compilers older than 2.6.3, wider element
+types silently miscompiled; upgrade if you see garbage reads.)
 
 Static arrays are zero-initialized by the loader.
 
@@ -1027,17 +1059,35 @@ forever, even as new experimental features enter the language.
 
 `krc --freestanding` produces a binary suitable for bare-metal:
 
-- No `_start` trampoline.
 - No automatic `exit(0)` at the end of `main`.
 - No OS-specific syscall wrappers injected.
+- The ELF entry point (`e_entry`) still points at `main` — you must
+  provide `fn main()`. If you want a different name (e.g. `_start`),
+  keep `fn main()` as the trampoline and have it call into your
+  entry function.
 
 ```sh
 krc --freestanding --arch=arm64 kernel.kr -o kernel.elf
 ```
 
 Use this for kernel entry points, bootloaders, and embedded firmware.
-The programmer is responsible for setting up the stack, calling into
-`main`, and handling any return.
+The programmer is responsible for setting up the stack and handling
+any return from `main`. Mark functions that never return with
+`@noreturn` so the compiler skips the return-path check; annotate
+interrupt handlers with `@naked` to suppress the prologue/epilogue.
+
+Freestanding example:
+
+```kr
+@noreturn
+fn main() {
+    // kernel entry — set up your own state, never returns
+    u64 vga = 0xB8000
+    store16(vga + 0, 0x0F48)  // 'H' bright white
+    store16(vga + 2, 0x0F69)  // 'i'
+    while true { }
+}
+```
 
 ### Stack size warnings
 

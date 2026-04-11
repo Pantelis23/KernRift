@@ -1,0 +1,51 @@
+// linked_list.kr — heap-allocated singly linked list with append and traverse.
+//
+// Demonstrates: the canonical heap-struct pattern `Node n = alloc(16)`,
+// field assignment on pointer-backed struct variables, pointer reassignment
+// in a traversal loop (`cur = cur.next`), and printing an integer with a
+// label using `print` + `println`.
+//
+// Run:
+//   krc --arch=x86_64 linked_list.kr -o linked_list && ./linked_list
+
+struct Node {
+    u64 value
+    u64 next
+}
+
+// Append `value` to the end of the list rooted at `head`.
+// If `head` is 0 (empty list), return the new node as the new head.
+fn append(u64 head, u64 value) -> u64 {
+    Node n = alloc(16)
+    n.value = value
+    n.next  = 0
+    if head == 0 {
+        return n
+    }
+    Node cur = head
+    while cur.next != 0 {
+        cur = cur.next
+    }
+    cur.next = n
+    return head
+}
+
+// Walk the list and print each value on its own line.
+fn print_list(u64 head) {
+    Node cur = head
+    while cur != 0 {
+        println(cur.value)
+        cur = cur.next
+    }
+}
+
+fn main() {
+    u64 head = 0
+    head = append(head, 1)
+    head = append(head, 2)
+    head = append(head, 3)
+    head = append(head, 4)
+    head = append(head, 5)
+    print_list(head)
+    exit(0)
+}
