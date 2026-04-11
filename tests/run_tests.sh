@@ -1533,6 +1533,40 @@ run_test "char_nul"  "fn main() { exit('\\0') }" 0
 run_test "char_cmp"  "fn main() { u64 c = 97; if c == 'a' { exit(1) } exit(0) }" 1
 
 echo ""
+echo "--- emit=obj non-extern path (regression) ---"
+TOTAL=$((TOTAL + 1))
+cat > /tmp/krc_noext_$$.kr <<'KREOF'
+fn main() { exit(42) }
+KREOF
+if $KRC --emit=obj /tmp/krc_noext_$$.kr -o /tmp/krc_noext_$$.o > /dev/null 2>&1; then
+    # File must be long enough for section headers: shoff + shnum*64 <= filesize
+    if command -v python3 > /dev/null 2>&1; then
+        if python3 -c "
+import struct, sys
+d = open('/tmp/krc_noext_$$.o', 'rb').read()
+shoff = struct.unpack_from('<Q', d, 0x28)[0]
+shnum = struct.unpack_from('<H', d, 0x3C)[0]
+if shoff + shnum * 64 != len(d):
+    print('truncated:', shoff + shnum * 64, 'expected,', len(d), 'got')
+    sys.exit(1)
+"; then
+            PASS=$((PASS + 1))
+            echo "  emit_obj_no_extern: PASS"
+        else
+            FAIL=$((FAIL + 1))
+            echo "  emit_obj_no_extern: FAIL (truncated ELF)"
+        fi
+    else
+        PASS=$((PASS + 1))
+        echo "  emit_obj_no_extern: SKIP (no python3)"
+    fi
+else
+    FAIL=$((FAIL + 1))
+    echo "  emit_obj_no_extern: FAIL (compile)"
+fi
+rm -f /tmp/krc_noext_$$.kr /tmp/krc_noext_$$.o
+
+echo ""
 echo "--- extern fn (libc linking) ---"
 # These tests link against the HOST gcc's libc. On cross-compile runs
 # (arm64 host but KRC_FLAGS=--arch=x86_64 for example) the object file
