@@ -140,8 +140,13 @@ jobs:
           name: test-bins
           path: bins
 
-      - name: Run tests
+      - name: Run tests (capture to log)
+        continue-on-error: true
         run: |
+          mkdir -p debug-kit
+          LOG=debug-kit/macos-x64-debug.log
+          exec > >(tee -a "$LOG") 2>&1
+          sw_vers
           PASS=0; FAIL=0
           run_test() {
             local name="$1" bin="$2" expected="$3"
@@ -154,7 +159,7 @@ jobs:
               echo "PASS: $name (exit=$CODE)"
               PASS=$((PASS+1))
             else
-              echo "FAIL: $name (expected=$expected, got=$CODE)"
+              echo "FAIL: $name (expected=$expected, got=$CODE, output=$OUTPUT)"
               FAIL=$((FAIL+1))
             fi
           }
@@ -165,7 +170,23 @@ jobs:
           run_test "static" bins/macos-x64-static 3
           run_test "alloc"  bins/macos-x64-alloc_test 42
           echo "=== macOS x86_64: $PASS passed, $FAIL failed ==="
-          exit $FAIL
+          echo $FAIL > debug-kit/fail-count.txt
+
+      - name: Upload macOS x86_64 debug log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-x64-debug-log
+          path: debug-kit/
+          retention-days: 14
+
+      - name: Report final status
+        run: |
+          FAIL=$(cat debug-kit/fail-count.txt 2>/dev/null || echo 1)
+          if [ "$FAIL" != "0" ]; then
+            echo "macOS x86_64 tests failed — download the 'macos-x64-debug-log' artifact"
+            exit 1
+          fi
 
       - name: Test file I/O on macOS (Rosetta)
         run: |
@@ -217,44 +238,47 @@ jobs:
           name: test-bins
           path: bins
 
-      - name: Diagnose ARM64 binary
+      - name: Run diagnostics and tests (capture everything to log)
         continue-on-error: true
         run: |
           set +e
-          chmod +x bins/macos-arm-exit42
-          xattr -cr bins/ 2>/dev/null || true
-          codesign -f -s - bins/macos-arm-exit42 2>&1; echo "codesign: $?"
-          codesign -vvv bins/macos-arm-exit42 2>&1; echo "verify: $?"
-          # Check if the binary even loads
-          echo "--- dyld info ---"
-          otool -L bins/macos-arm-exit42 2>&1 || echo "(no deps)"
-          echo "--- crash log ---"
-          ./bins/macos-arm-exit42 2>&1; echo "exit: $?"
-          sleep 2
-          # Check Console for our binary's crash
-          log show --predicate 'eventMessage CONTAINS "macos-arm" OR eventMessage CONTAINS "exit42" OR (process == "kernel" AND eventMessage CONTAINS "AMFI")' --last 30s --style compact 2>&1 | tail -20
-          set -e
+          mkdir -p debug-kit
+          LOG=debug-kit/macos-arm64-debug.log
+          exec > >(tee -a "$LOG") 2>&1
 
-      - name: Run tests
-        continue-on-error: true
-        run: |
-          echo "=== macOS diagnostics ==="
+          echo "=== macOS host info ==="
           sw_vers
-          # Build a reference binary with clang
-          echo 'int main() { return 42; }' > /tmp/ref.c
-          clang -o /tmp/ref_arm64 /tmp/ref.c -arch arm64 -Wl,-no_pie 2>&1 || true
-          echo "--- reference binary headers ---"
-          otool -l /tmp/ref_arm64 2>&1 | grep -A3 "cmd LC_\|segname\|maxprot\|initprot" | head -30
-          echo "--- our binary headers ---"
-          chmod +x bins/macos-arm-exit42
-          otool -l bins/macos-arm-exit42 2>&1 | grep -A3 "cmd LC_\|segname\|maxprot\|initprot" | head -40
-          echo "--- remove quarantine + codesign ---"
-          xattr -cr bins/ 2>/dev/null || true
-          codesign -f -s - bins/macos-arm-exit42 2>&1 || echo "codesign FAILED: $?"
-          echo "--- run ---"
-          set +e; bins/macos-arm-exit42; echo "exit: $?"; set -e
-          echo "=== end diagnostics ==="
+          uname -a
+          echo
 
+          echo "=== clang reference binary (same target as ours) ==="
+          echo 'int main() { return 42; }' > /tmp/ref.c
+          clang -o /tmp/ref_arm64 /tmp/ref.c -arch arm64 -Wl,-no_pie
+          echo "ref build exit: $?"
+          otool -l /tmp/ref_arm64 | grep -A3 "cmd LC_\|segname\|maxprot\|initprot" | head -40
+          echo "--- run reference ---"
+          /tmp/ref_arm64; echo "ref exit: $?"
+          echo
+
+          echo "=== our exit42 binary ==="
+          chmod +x bins/macos-arm-exit42
+          xattr -cr bins/ 2>/dev/null || true
+          ls -la bins/macos-arm-exit42
+          file bins/macos-arm-exit42
+          otool -l bins/macos-arm-exit42 | head -120
+          echo "--- codesign ---"
+          codesign -f -s - bins/macos-arm-exit42; echo "codesign: $?"
+          codesign -vvv bins/macos-arm-exit42; echo "verify: $?"
+          echo "--- dependencies ---"
+          otool -L bins/macos-arm-exit42 || echo "(no deps)"
+          echo "--- attempted run ---"
+          bins/macos-arm-exit42; echo "run exit: $?"
+          echo "--- last 30s of console for this binary ---"
+          sleep 2
+          log show --predicate 'eventMessage CONTAINS "macos-arm" OR eventMessage CONTAINS "exit42" OR (process == "kernel" AND eventMessage CONTAINS "AMFI")' --last 60s --style compact 2>&1 | tail -60
+          echo
+
+          echo "=== Running full test suite ==="
           PASS=0; FAIL=0
           run_test() {
             local name="$1" bin="$2" expected="$3"
@@ -269,7 +293,7 @@ jobs:
               echo "PASS: $name (exit=$CODE)"
               PASS=$((PASS+1))
             else
-              echo "FAIL: $name (expected=$expected, got=$CODE)"
+              echo "FAIL: $name (expected=$expected, got=$CODE, output=$OUTPUT)"
               FAIL=$((FAIL+1))
             fi
           }
@@ -281,7 +305,23 @@ jobs:
           run_test "alloc"  bins/macos-arm-alloc_test 42
           run_test "fileio" bins/macos-arm-fileio 8
           echo "=== macOS ARM64: $PASS passed, $FAIL failed ==="
-          exit $FAIL
+          echo $FAIL > debug-kit/fail-count.txt
+
+      - name: Upload macOS ARM64 debug log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64-debug-log
+          path: debug-kit/
+          retention-days: 14
+
+      - name: Report final status
+        run: |
+          FAIL=$(cat debug-kit/fail-count.txt 2>/dev/null || echo 1)
+          if [ "$FAIL" != "0" ]; then
+            echo "macOS ARM64 tests failed — download the 'macos-arm64-debug-log' artifact"
+            exit 1
+          fi
 
   test-windows-x64:
     name: Windows x86_64

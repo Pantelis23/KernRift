@@ -986,14 +986,16 @@ The programmer is responsible for setting up the stack, calling into
 ### Stack size warnings
 
 The compiler prints a warning to stderr when a function's stack frame
-exceeds 4096 bytes:
+exceeds 32768 bytes:
 
 ```
-warning: large stack frame (13696 bytes) in function 'parse_module'
+warning: large stack frame (49000 bytes) in function 'parse_module'
 ```
 
 This catches accidental large local arrays that could overflow a kernel
-stack.
+stack. Big dispatch functions with many mutually exclusive branches
+legitimately allocate slots across branches; the threshold is set high
+enough to let those pass.
 
 ---
 

@@ -87,29 +87,29 @@ fn str_eq_full(uint64 a, uint64 b) -> uint64 {
 }
 
 // Import system state
-static uint64 imp_buf = 0
-static uint64 imp_buf_len = 0
-static uint64 imp_buf_cap = 0
-static uint64 imp_seen = 0
-static uint64 imp_seen_count = 0
+static uint64 import_buf = 0
+static uint64 import_buf_len = 0
+static uint64 import_buf_cap = 0
+static uint64 import_seen = 0
+static uint64 import_seen_count = 0
 static uint64 srcmap_table = 0
 static uint64 srcmap_count = 0
 
-fn imp_init() {
-    imp_buf_cap = 4194304
-    imp_buf = alloc(imp_buf_cap)
-    imp_buf_len = 0
-    imp_seen = alloc(16384)
-    imp_seen_count = 0
+fn import_init() {
+    import_buf_cap = 4194304
+    import_buf = alloc(import_buf_cap)
+    import_buf_len = 0
+    import_seen = alloc(16384)
+    import_seen_count = 0
     srcmap_table = alloc(1024 * 16)
     srcmap_count = 0
 }
 
-fn imp_is_seen(uint64 path) -> uint64 {
+fn import_is_seen(uint64 path) -> uint64 {
     uint64 plen = str_len(path)
     uint64 i = 0
-    while i < imp_seen_count {
-        uint64 entry = imp_seen + i * 256
+    while i < import_seen_count {
+        uint64 entry = import_seen + i * 256
         if str_starts_with(entry, path, plen) != 0 {
             uint64 elen = str_len(entry)
             if elen == plen { return 1 }
@@ -119,9 +119,9 @@ fn imp_is_seen(uint64 path) -> uint64 {
     return 0
 }
 
-fn imp_mark_seen(uint64 path) {
+fn import_mark_seen(uint64 path) {
     uint64 plen = str_len(path)
-    uint64 entry = imp_seen + imp_seen_count * 256
+    uint64 entry = import_seen + import_seen_count * 256
     uint64 i = 0
     while i < plen && i < 255 {
         uint64 sp = path + i
@@ -135,12 +135,12 @@ fn imp_mark_seen(uint64 path) {
     uint64 tp = entry + i
     uint8 z = 0
     unsafe { *(tp as uint8) = z }
-    imp_seen_count = imp_seen_count + 1
+    import_seen_count = import_seen_count + 1
 }
 
-fn imp_append(uint64 src, uint64 len, uint64 file_path) {
+fn import_append(uint64 src, uint64 len, uint64 file_path) {
     uint64 sm_entry = srcmap_table + srcmap_count * 16
-    uint64 sm_off = imp_buf_len
+    uint64 sm_off = import_buf_len
     unsafe { *(sm_entry as uint64) = sm_off }
     uint64 sm_fp = sm_entry + 8
     unsafe { *(sm_fp as uint64) = file_path }
@@ -148,19 +148,19 @@ fn imp_append(uint64 src, uint64 len, uint64 file_path) {
     uint64 i = 0
     while i < len {
         uint64 sp = src + i
-        uint64 dp = imp_buf + imp_buf_len
+        uint64 dp = import_buf + import_buf_len
         uint64 b = 0
         unsafe { *(sp as uint8) -> b }
         uint8 bb = b
         unsafe { *(dp as uint8) = bb }
-        imp_buf_len = imp_buf_len + 1
+        import_buf_len = import_buf_len + 1
         i = i + 1
     }
     // Add newline separator
-    uint64 np = imp_buf + imp_buf_len
+    uint64 np = import_buf + import_buf_len
     uint8 nl = 10
     unsafe { *(np as uint8) = nl }
-    imp_buf_len = imp_buf_len + 1
+    import_buf_len = import_buf_len + 1
 }
 
 @export
@@ -194,7 +194,7 @@ fn srcmap_line(uint64 byte_offset) -> uint64 {
     uint64 line = 1
     uint64 p = file_start
     while p < byte_offset {
-        uint64 cp = imp_buf + p
+        uint64 cp = import_buf + p
         uint64 ch = 0
         unsafe { *(cp as uint8) -> ch }
         if ch == 10 { line = line + 1 }
@@ -219,7 +219,7 @@ fn report_error_at(uint64 tok_idx, uint64 msg) {
     write(2, "\n", 1)
 }
 
-fn imp_dir_of(uint64 path) -> uint64 {
+fn import_dir_of(uint64 path) -> uint64 {
     // Find last '/' in path, return length including the slash
     uint64 len = str_len(path)
     uint64 last_slash = 0
@@ -234,8 +234,8 @@ fn imp_dir_of(uint64 path) -> uint64 {
     return last_slash
 }
 
-fn imp_resolve(uint64 base_path, uint64 name, uint64 name_len) -> uint64 {
-    uint64 dir_len = imp_dir_of(base_path)
+fn import_resolve(uint64 base_path, uint64 name, uint64 name_len) -> uint64 {
+    uint64 dir_len = import_dir_of(base_path)
     uint64 result = alloc(dir_len + name_len + 1)
     uint64 i = 0
     while i < dir_len {
@@ -263,7 +263,7 @@ fn imp_resolve(uint64 base_path, uint64 name, uint64 name_len) -> uint64 {
     return result
 }
 
-fn imp_check_import_line(uint64 buf, uint64 size, uint64 pos) -> uint64 {
+fn import_check_import_line(uint64 buf, uint64 size, uint64 pos) -> uint64 {
     // Check if buf[pos..] starts with: import "filename"
     // Returns 0 if not import, or the position just past the opening quote
     if pos + 8 >= size { return 0 }
@@ -294,8 +294,8 @@ fn imp_check_import_line(uint64 buf, uint64 size, uint64 pos) -> uint64 {
 }
 
 // Stdlib search paths for imports not found relative to source file
-static uint64 imp_search_paths = 0
-static uint64 imp_search_count = 0
+static uint64 import_search_paths = 0
+static uint64 import_search_count = 0
 
 // Stub for bootstrap: overridden by get_module_path built-in in new compiler
 fn get_module_path(uint64 buf, uint64 size) -> uint64 { return 0 }
@@ -303,7 +303,7 @@ fn get_module_path(uint64 buf, uint64 size) -> uint64 { return 0 }
 // Stub for bootstrap: overridden by exec_process built-in in new compiler
 fn exec_process(uint64 path) { exit(1) }
 
-fn imp_read_home() -> uint64 {
+fn import_read_home() -> uint64 {
     // Read HOME from /proc/self/environ (Linux-specific)
     uint64 fd = file_open("/proc/self/environ", 0)
     if fd >= 0xFFFFFFFF { return 0 }
@@ -346,10 +346,10 @@ fn imp_read_home() -> uint64 {
     return 0
 }
 
-fn imp_init_search_paths() {
-    if imp_search_paths != 0 { return }
-    imp_search_paths = alloc(2048)
-    imp_search_count = 0
+fn import_init_search_paths() {
+    if import_search_paths != 0 { return }
+    import_search_paths = alloc(2048)
+    import_search_count = 0
 
     uint64 host_os = get_target_os()
     if host_os == 2 {
@@ -375,7 +375,7 @@ fn imp_init_search_paths() {
             uint8 z = 0
             uint64 tp = up_std + dir_len + 7
             unsafe { *(tp as uint8) = z }
-            imp_add_search_path(up_std)
+            import_add_search_path(up_std)
             // Also try <exe_dir>std\ (alternative layout)
             uint64 dir_std = alloc(dir_len + 5)
             memcpy(dir_std, exe_buf, dir_len)
@@ -383,14 +383,14 @@ fn imp_init_search_paths() {
             memcpy(dir_std + dir_len, suffix2, 4)
             uint64 tp2 = dir_std + dir_len + 4
             unsafe { *(tp2 as uint8) = z }
-            imp_add_search_path(dir_std)
+            import_add_search_path(dir_std)
         }
     } else {
         // Linux/macOS: system paths
-        imp_add_search_path("/usr/local/share/kernrift/")
-        imp_add_search_path("/usr/share/kernrift/")
+        import_add_search_path("/usr/local/share/kernrift/")
+        import_add_search_path("/usr/share/kernrift/")
         // Add user path: $HOME/.local/share/kernrift/
-        uint64 home = imp_read_home()
+        uint64 home = import_read_home()
         if home != 0 {
             uint64 hlen = str_len(home)
             uint64 suffix = "/.local/share/kernrift/"
@@ -401,27 +401,27 @@ fn imp_init_search_paths() {
             uint8 z = 0
             uint64 tp = full + hlen + slen
             unsafe { *(tp as uint8) = z }
-            imp_add_search_path(full)
+            import_add_search_path(full)
         }
     }
 }
 
-fn imp_add_search_path(uint64 path) {
+fn import_add_search_path(uint64 path) {
     uint64 plen = str_len(path)
-    uint64 entry = imp_search_paths + imp_search_count * 256
+    uint64 entry = import_search_paths + import_search_count * 256
     memcpy(entry, path, plen)
     uint64 tp = entry + plen
     uint8 z = 0
     unsafe { *(tp as uint8) = z }
-    imp_search_count = imp_search_count + 1
+    import_search_count = import_search_count + 1
 }
 
-fn imp_resolve_stdlib(uint64 import_path) -> uint64 {
-    imp_init_search_paths()
+fn import_resolve_stdlib(uint64 import_path) -> uint64 {
+    import_init_search_paths()
     uint64 plen = str_len(import_path)
     uint64 i = 0
-    while i < imp_search_count {
-        uint64 base = imp_search_paths + i * 256
+    while i < import_search_count {
+        uint64 base = import_search_paths + i * 256
         uint64 blen = str_len(base)
         uint64 full = alloc(blen + plen + 1)
         memcpy(full, base, blen)
@@ -439,7 +439,7 @@ fn imp_resolve_stdlib(uint64 import_path) -> uint64 {
     return 0
 }
 
-fn imp_check_file(uint64 path) {
+fn import_check_file(uint64 path) {
     uint64 fd = file_open(path, 0)
     if fd >= 0xFFFFFFFF {
         write(2, "error: cannot open '", 20)
@@ -450,14 +450,14 @@ fn imp_check_file(uint64 path) {
     file_close(fd)
 }
 
-fn imp_process(uint64 file_path) {
-    if imp_is_seen(file_path) != 0 { return }
-    imp_mark_seen(file_path)
+fn import_process(uint64 file_path) {
+    if import_is_seen(file_path) != 0 { return }
+    import_mark_seen(file_path)
 
     uint64 fd = file_open(file_path, 0)
     // If not found, try ~/.local/share/kernrift/ as fallback
     if fd >= 0xFFFFFFFF {
-        uint64 fallback = imp_resolve_stdlib(file_path)
+        uint64 fallback = import_resolve_stdlib(file_path)
         if fallback != 0 {
             fd = file_open(fallback, 0)
         }
@@ -491,7 +491,7 @@ fn imp_process(uint64 file_path) {
         if pos >= size { break }
 
         // Check if this line starts with "import"
-        uint64 name_start = imp_check_import_line(tmp, size, pos)
+        uint64 name_start = import_check_import_line(tmp, size, pos)
         if name_start != 0 {
             // Extract filename between quotes
             uint64 ns = name_start
@@ -507,7 +507,7 @@ fn imp_process(uint64 file_path) {
             uint64 name_len = ne - ns
             uint64 name_ptr = tmp + ns
             // Resolve full path relative to source file
-            uint64 full_path = imp_resolve(file_path, name_ptr, name_len)
+            uint64 full_path = import_resolve(file_path, name_ptr, name_len)
             // Check if resolved path exists
             uint64 check_fd = file_open(full_path, 0)
             if check_fd < 0xFFFFFFFF {
@@ -520,11 +520,11 @@ fn imp_process(uint64 file_path) {
                 uint64 ntp = name_copy + name_len
                 uint8 nz = 0
                 unsafe { *(ntp as uint8) = nz }
-                uint64 stdlib_path = imp_resolve_stdlib(name_copy)
+                uint64 stdlib_path = import_resolve_stdlib(name_copy)
                 if stdlib_path != 0 { full_path = stdlib_path }
             }
             // Recurse
-            imp_process(full_path)
+            import_process(full_path)
             // Skip past closing quote and rest of line
             pos = ne + 1
         }
@@ -535,7 +535,7 @@ fn imp_process(uint64 file_path) {
     }
 
     // Append entire file content (including import lines — parser ignores them)
-    imp_append(tmp, size, file_path)
+    import_append(tmp, size, file_path)
 }
 
 fn hex_nibble(uint64 v) -> uint64 {
@@ -1732,11 +1732,11 @@ fn emit_asm_listing(uint64 output_path, uint64 arch, uint64 text_start, uint64 s
 // arch: 0=x86_64, 1=arm64
 // emit: 0=elfexe, 1=machoexe, 2=peexe, 3=obj (ELF relocatable), 5=asm listing
 fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode) {
-    imp_init()
-    imp_check_file(input_path)
-    imp_process(input_path)
-    uint64 source = imp_buf
-    uint64 size = imp_buf_len
+    import_init()
+    import_check_file(input_path)
+    import_process(input_path)
+    uint64 source = import_buf
+    uint64 size = import_buf_len
 
     uint64 max_tok = 131072
     uint64 my_tokens = alloc(max_tok * 16)
@@ -2174,11 +2174,11 @@ fn restore_src_and_tokens(uint64 source, uint64 size, uint64 src_snap, uint64 to
 }
 
 fn compile_fat(uint64 input_path, uint64 output_path) {
-    imp_init()
-    imp_check_file(input_path)
-    imp_process(input_path)
-    uint64 source = imp_buf
-    uint64 size = imp_buf_len
+    import_init()
+    import_check_file(input_path)
+    import_process(input_path)
+    uint64 source = import_buf
+    uint64 size = import_buf_len
 
     uint64 max_tok = 131072
     uint64 my_tokens = alloc(max_tok * 16)
@@ -3275,11 +3275,11 @@ fn main() {
     }
 
     if mode == 1 {
-        imp_init()
-    imp_check_file(input_path)
-        imp_process(input_path)
-        uint64 source = imp_buf
-        uint64 size = imp_buf_len
+        import_init()
+    import_check_file(input_path)
+        import_process(input_path)
+        uint64 source = import_buf
+        uint64 size = import_buf_len
         uint64 max_tok = 131072
         uint64 my_tokens = alloc(max_tok * 16)
         lexer_init(source, size, my_tokens, max_tok)
@@ -3318,11 +3318,11 @@ fn main() {
             run_migration(input_path, lc_dry_run)
             exit(0)
         }
-        imp_init()
-    imp_check_file(input_path)
-        imp_process(input_path)
-        uint64 source = imp_buf
-        uint64 size = imp_buf_len
+        import_init()
+    import_check_file(input_path)
+        import_process(input_path)
+        uint64 source = import_buf
+        uint64 size = import_buf_len
         uint64 max_tok = 131072
         uint64 my_tokens = alloc(max_tok * 16)
         lexer_init(source, size, my_tokens, max_tok)
