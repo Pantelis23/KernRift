@@ -160,6 +160,114 @@ jobs:
             /tmp/cross-win-x64.exe
             /tmp/cross-win-arm.exe
 
+  build-test-linux-arm64:
+    name: Build and Test (Linux ARM64, native)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Self-compile + tests (everything to debug-kit)
+        continue-on-error: true
+        run: |
+          set +e
+          mkdir -p debug-kit
+          LOG=debug-kit/linux-arm64-debug.log
+          exec > >(tee -a "$LOG") 2>&1
+
+          echo "=== host info ==="
+          uname -a
+          cat /proc/cpuinfo | head -20 || true
+          echo
+
+          echo "=== download bootstrap krc-linux-arm64 ==="
+          mkdir -p build
+          curl -sL -o build/krc-bootstrap \
+            https://github.com/Pantelis23/KernRift/releases/latest/download/krc-linux-arm64
+          chmod +x build/krc-bootstrap
+          ls -la build/krc-bootstrap
+          file build/krc-bootstrap
+          ./build/krc-bootstrap --version || echo "bootstrap version check: $?"
+          echo
+
+          echo "=== concatenate source ==="
+          cat src/lexer.kr src/ast.kr src/parser.kr src/codegen.kr src/codegen_aarch64.kr \
+              src/format_macho.kr src/format_pe.kr src/format_archive.kr src/format_android.kr \
+              src/bcj.kr src/analysis.kr src/living.kr src/runtime.kr src/formatter.kr src/main.kr > build/krc.kr
+          wc -l build/krc.kr
+          echo
+
+          echo "=== self-compile pass 1 ==="
+          ./build/krc-bootstrap --arch=arm64 build/krc.kr -o build/krc2
+          SC1=$?
+          chmod +x build/krc2 2>/dev/null
+          ls -la build/krc2 2>/dev/null
+          echo "pass 1 exit=$SC1"
+          echo
+
+          echo "=== self-compile pass 2 (krc2 compiles itself → krc3) ==="
+          ./build/krc2 --arch=arm64 build/krc.kr -o build/krc3
+          SC2=$?
+          chmod +x build/krc3 2>/dev/null
+          echo "pass 2 exit=$SC2"
+          echo
+
+          echo "=== self-compile pass 3 (krc3 compiles itself → krc4) ==="
+          ./build/krc3 --arch=arm64 build/krc.kr -o build/krc4
+          SC3=$?
+          chmod +x build/krc4 2>/dev/null
+          echo "pass 3 exit=$SC3"
+          echo
+
+          echo "=== bootstrap fixed-point check (krc3 ?= krc4) ==="
+          if cmp build/krc3 build/krc4 2>/dev/null; then
+            echo "FIXED POINT OK"
+            BSEXIT=0
+          else
+            echo "FIXED POINT DIVERGED"
+            BSEXIT=1
+          fi
+          echo
+
+          echo "=== test suite ==="
+          echo '#!/bin/bash' > /tmp/krc-test
+          echo 'exec ./build/krc3 --arch=arm64 "$@"' >> /tmp/krc-test
+          chmod +x /tmp/krc-test
+          KRC=/tmp/krc-test bash tests/run_tests.sh
+          TESTEXIT=$?
+          echo
+          echo "=== SUMMARY ==="
+          echo "self-compile pass 1: $SC1"
+          echo "self-compile pass 2: $SC2"
+          echo "self-compile pass 3: $SC3"
+          echo "bootstrap fixed point: $BSEXIT"
+          echo "test suite: $TESTEXIT"
+          TOTAL_FAIL=0
+          [ "$SC1" = "0" ] || TOTAL_FAIL=1
+          [ "$SC2" = "0" ] || TOTAL_FAIL=1
+          [ "$SC3" = "0" ] || TOTAL_FAIL=1
+          [ "$BSEXIT" = "0" ] || TOTAL_FAIL=1
+          [ "$TESTEXIT" = "0" ] || TOTAL_FAIL=1
+          echo $TOTAL_FAIL > debug-kit/fail-count.txt
+          exit 0
+
+      - name: Upload linux-arm64 debug log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-arm64-debug-log
+          path: debug-kit/
+          retention-days: 14
+
+      - name: Report final status
+        run: |
+          FAIL=$(cat debug-kit/fail-count.txt 2>/dev/null || echo 1)
+          if [ "$FAIL" != "0" ]; then
+            echo "Linux ARM64 native tests failed — see the 'linux-arm64-debug-log' artifact"
+            exit 1
+          fi
+          echo "Linux ARM64 native: all passes green"
+
   test-macos:
     name: Test (macOS)
     needs: build-test
