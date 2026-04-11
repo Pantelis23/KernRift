@@ -1865,7 +1865,13 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
         resolve_fnaddr_fixups_a64()
     }
 
-    // Emit static + string data
+    // Emit static + string data. Align to 8 bytes on arm64 so the 64-bit
+    // LDR (imm12 scaled by 8) can encode any slot offset exactly — without
+    // padding, a static at a non-8-aligned offset silently rounds down and
+    // reads trailing code bytes instead of its own value.
+    if arch == 1 {
+        while (codegen_output_len() & 7) != 0 { emit_byte(0) }
+    }
     uint64 data_start = codegen_output_len()
     emit_static_data()
     if arch == 0 {

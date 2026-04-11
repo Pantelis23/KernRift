@@ -2787,7 +2787,10 @@ fn gen_stmt_a64(uint64 node) {
         uint64 wsm = struct_marker
         if was != 0 && wsm == 0 {
             uint64 arr_size = parse_int_token(was)
-            uint64 n_slots = (arr_size + 7) / 8
+            uint32 type_tok_v = ast_data1(node)
+            uint64 elem_size_v = type_tok_elem_size(type_tok_v)
+            uint64 total_bytes = arr_size * elem_size_v
+            uint64 n_slots = (total_bytes + 7) / 8
             uint64 arr_offset = var_count * 8
             uint64 si = 0
             while si < n_slots { var_count = var_count + 1; si = si + 1 }
@@ -2795,6 +2798,7 @@ fn gen_stmt_a64(uint64 node) {
             uint64 arem2 = var_frame_size & 15
             if arem2 != 0 { var_frame_size = var_frame_size + 16 - arem2 }
             uint64 ptr_offset = var_declare(name_tok)
+            arr_elem_register(name_tok, elem_size_v)
             emit_a64_add_imm(0, 31, a64_var_base + arr_offset)
             emit_a64_store_x0(ptr_offset)
             return
