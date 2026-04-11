@@ -3183,7 +3183,7 @@ fn main() {
                 write(1, "  fmt <file.kr>     auto-format source\n", 39)
                 exit(0)
             } else if str_starts_with(arg, "--version", 9) != 0 {
-                uint64 msg = "krc 2.6.1 (KernRift self-hosted compiler)\n"
+                uint64 msg = "krc 2.6.2 (KernRift self-hosted compiler)\n"
                 write(1, msg, 42)
                 exit(0)
             } else if str_starts_with(arg, "--freestanding", 14) != 0 {
