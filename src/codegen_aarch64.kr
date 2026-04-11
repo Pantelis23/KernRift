@@ -2113,6 +2113,48 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Built-in: exec_process(path) → on Windows: CreateProcessA+Wait+Exit; on Linux: execve
+        // Built-in: exec_process_argv(path, argv) — execve with caller-built argv
+        if is_extern_call == 0 && tok_matches(wct, "exec_process_argv", 17) != 0 {
+            uint32 first_arg_ea = ast_child(node)
+            uint64 wfa_ea = first_arg_ea
+            gen_expr_a64(wfa_ea)
+            emit_a64_store_x0(temp_slot_0)
+            uint32 second_arg_ea = ast_next(wfa_ea)
+            uint64 wsa_ea = second_arg_ea
+            gen_expr_a64(wsa_ea)
+            emit_a64_store_x0(temp_slot_1)
+            if target_os == 2 {
+                // Windows arm64: unsupported, just exit
+                emit_a64_mov_imm(0, 1)
+                emit_a64_win_call_iat(0)
+            } else {
+                // execve(path, argv, envp)
+                emit_a64_load_x0(temp_slot_0)       // x0 = path
+                emit_a64_load_x0(temp_slot_1)       // x0 = argv (clobbers path, reload below)
+                emit_a64_mov(1, 0)                  // x1 = argv
+                emit_a64_load_x0(temp_slot_0)       // x0 = path
+                // envp
+                uint64 envp_off_ea = static_lookup_by_name("cli_envp", 8)
+                if envp_off_ea != 0xFFFFFFFF {
+                    // Need to preserve x0 and x1 across static load
+                    emit_a64_store_x0(temp_slot_0)
+                    emit_a64_static_load(envp_off_ea)
+                    emit_a64_mov(2, 0)
+                    emit_a64_load_x0(temp_slot_0)
+                } else {
+                    emit_a64(0xAA1F03E2)            // mov x2, xzr
+                }
+                if target_os == 1 { emit_a64_syscall_nr(59) } else { emit_a64_syscall_nr(221) }
+                emit_a64(0xD4000001)                // svc #0
+                // On failure, save errno
+                uint64 errno_off_ea = static_lookup_by_name("exec_errno", 10)
+                if errno_off_ea != 0xFFFFFFFF {
+                    emit_a64_static_store(errno_off_ea)
+                }
+            }
+            return
+        }
+
         if is_extern_call == 0 && tok_matches(wct, "exec_process", 12) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg

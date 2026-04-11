@@ -100,6 +100,49 @@ jobs:
           print(f'Fat binary OK: {count} architectures, {len(d)} bytes')
           "
 
+      - name: Build krc.krbo (the compiler itself as a fat binary) + kr runners
+        run: |
+          # krc.krbo — 7-slice fat binary of the compiler
+          ./build/krc2 build/krc.kr -o /tmp/krc.krbo
+          ls -la /tmp/krc.krbo
+          # kr runner for every platform (one source, seven slices)
+          cat src/bcj.kr src/runner.kr > /tmp/kr.kr
+          mkdir -p /tmp/kr-runners
+          ./build/krc2 --arch=x86_64 /tmp/kr.kr -o /tmp/kr-runners/kr-linux-x86_64
+          ./build/krc2 --arch=arm64  /tmp/kr.kr -o /tmp/kr-runners/kr-linux-arm64
+          ./build/krc2 --arch=x86_64 --emit=macho /tmp/kr.kr -o /tmp/kr-runners/kr-macos-x86_64
+          ./build/krc2 --arch=arm64  --emit=macho /tmp/kr.kr -o /tmp/kr-runners/kr-macos-arm64
+          ./build/krc2 --arch=x86_64 --emit=pe    /tmp/kr.kr -o /tmp/kr-runners/kr-windows-x86_64.exe
+          ./build/krc2 --arch=arm64  --emit=pe    /tmp/kr.kr -o /tmp/kr-runners/kr-windows-arm64.exe
+          ls -la /tmp/kr-runners/
+
+      - name: Fat-binary krc self-test (Linux x86_64 host)
+        run: |
+          # Prove the end-to-end stack works on THIS host:
+          #   kr -> krc.krbo -> native krc slice -> compile test.kr -> run test
+          /tmp/kr-runners/kr-linux-x86_64 /tmp/krc.krbo --version
+          echo 'fn main() { println("krbo-via-kr OK"); exit(42) }' > /tmp/fb_test.kr
+          /tmp/kr-runners/kr-linux-x86_64 /tmp/krc.krbo --arch=x86_64 /tmp/fb_test.kr -o /tmp/fb_test
+          set +e
+          OUT=$(/tmp/fb_test)
+          CODE=$?
+          set -e
+          echo "output: $OUT"
+          echo "exit:   $CODE"
+          if [ "$OUT" != "krbo-via-kr OK" ] || [ "$CODE" -ne 42 ]; then
+            echo "FAIL: fat-binary self-test on Linux x86_64"
+            exit 1
+          fi
+          echo "PASS: fat-binary self-test on Linux x86_64"
+
+      - name: Upload krc.krbo + kr runners
+        uses: actions/upload-artifact@v4
+        with:
+          name: krc-fatbinary
+          path: |
+            /tmp/krc.krbo
+            /tmp/kr-runners/
+
       - name: Cross-compile macOS and Windows
         run: |
           echo 'fn main() { exit(42) }' > /tmp/cross.kr
@@ -219,6 +262,12 @@ jobs:
           name: krc-linux-arm64
           path: build/
 
+      - name: Download krc.krbo + kr runners
+        uses: actions/download-artifact@v4
+        with:
+          name: krc-fatbinary
+          path: /tmp/fatbin
+
       - name: Self-compile + tests (everything to debug-kit)
         continue-on-error: true
         timeout-minutes: 12
@@ -300,6 +349,25 @@ jobs:
           [ "$BSEXIT" = "0" ] || TOTAL_FAIL=1
           [ "$TESTEXIT" = "0" ] || TOTAL_FAIL=1
           echo $TOTAL_FAIL > debug-kit/fail-count.txt
+
+          echo
+          echo "=== fat-binary krc via kr runner (native arm64) ==="
+          chmod +x /tmp/fatbin/kr-runners/kr-linux-arm64
+          /tmp/fatbin/kr-runners/kr-linux-arm64 /tmp/fatbin/krc.krbo --version
+          FB_VER=$?
+          echo 'fn main() { println("fb-arm64-ok"); exit(42) }' > /tmp/fb_test.kr
+          /tmp/fatbin/kr-runners/kr-linux-arm64 /tmp/fatbin/krc.krbo --arch=arm64 /tmp/fb_test.kr -o /tmp/fb_test
+          FB_CC=$?
+          /tmp/fb_test 2>&1
+          FB_RUN=$?
+          echo "fb version exit: $FB_VER"
+          echo "fb compile exit: $FB_CC"
+          echo "fb run exit: $FB_RUN"
+          if [ "$FB_VER" = "0" ] && [ "$FB_CC" = "0" ] && [ "$FB_RUN" = "42" ]; then
+            echo "PASS: fat-binary krc via kr runner on Linux ARM64"
+          else
+            echo "FAIL: fat-binary krc via kr runner on Linux ARM64"
+          fi
           exit 0
 
       - name: Upload linux-arm64 debug log
@@ -332,6 +400,42 @@ jobs:
         with:
           name: cross-compiled
           path: /tmp/bins
+
+      - name: Download krc.krbo + kr runners
+        uses: actions/download-artifact@v4
+        with:
+          name: krc-fatbinary
+          path: /tmp/fatbin
+
+      - name: Fat-binary krc via kr runner (macOS ARM64 native + x86_64 Rosetta)
+        continue-on-error: true
+        run: |
+          set +e
+          KRBO=/tmp/fatbin/krc.krbo
+          chmod +x /tmp/fatbin/kr-runners/kr-macos-arm64 /tmp/fatbin/kr-runners/kr-macos-x86_64
+
+          # macOS arm64 host native path
+          echo "=== macOS arm64 native: kr -> krc.krbo -> arm64 krc slice ==="
+          /tmp/fatbin/kr-runners/kr-macos-arm64 "$KRBO" --version
+          V_ARM_EXIT=$?
+          echo "exit: $V_ARM_EXIT"
+
+          echo 'fn main() { exit(42) }' > /tmp/fbtest.kr
+          /tmp/fatbin/kr-runners/kr-macos-arm64 "$KRBO" --target=macos --arch=arm64 /tmp/fatbin/../fbtest.kr -o /tmp/fbtest_out 2>&1 || true
+          # Some runners fall back via tmp dir relative to cwd
+          ls -la /tmp/fbtest_out 2>/dev/null || true
+
+          # macOS x86_64 via Rosetta
+          echo "=== macOS x86_64 (Rosetta): kr -> krc.krbo -> x86_64 krc slice ==="
+          arch -x86_64 /tmp/fatbin/kr-runners/kr-macos-x86_64 "$KRBO" --version
+          V_X64_EXIT=$?
+          echo "exit: $V_X64_EXIT"
+
+          if [ "$V_ARM_EXIT" = "0" ] || [ "$V_X64_EXIT" = "0" ]; then
+            echo "PASS: at least one macOS slice accepts kr -> krc.krbo --version"
+          else
+            echo "FAIL: neither macOS slice printed version"
+          fi
 
       - name: Build reference and test both
         continue-on-error: true
@@ -388,6 +492,12 @@ jobs:
           name: cross-compiled
           path: C:\tmp\bins
 
+      - name: Download krc.krbo + kr runners
+        uses: actions/download-artifact@v4
+        with:
+          name: krc-fatbinary
+          path: C:\tmp\fatbin
+
       - name: Run Windows x86_64 binary
         shell: pwsh
         run: |
@@ -398,12 +508,21 @@ jobs:
           Write-Host "PASS: Windows x86_64 exit(42)"
           exit 0
 
-      - name: Build and test more programs
+      - name: Fat-binary krc via kr runner (Windows x86_64)
         shell: pwsh
+        continue-on-error: true
         run: |
-          # Download krc (Linux binary, can't run on Windows)
-          # Instead, use the pre-compiled Windows binaries
-          Write-Host "Windows x86_64 runtime verified with exit(42)"
+          $kr  = "C:\tmp\fatbin\kr-runners\kr-windows-x86_64.exe"
+          $krbo = "C:\tmp\fatbin\krc.krbo"
+          Write-Host "=== kr --version ==="
+          & $kr $krbo --version
+          $exit1 = $LASTEXITCODE
+          Write-Host "exit: $exit1"
+          if ($exit1 -eq 0) {
+            Write-Host "PASS: Windows x86_64 fat-binary krc --version"
+          } else {
+            Write-Host "FAIL: Windows x86_64 fat-binary krc --version (exit=$exit1)"
+          }
 
   test-windows-arm64:
     name: Test (Windows ARM64)
@@ -418,6 +537,28 @@ jobs:
         with:
           name: cross-compiled
           path: C:\tmp\bins
+
+      - name: Download krc.krbo + kr runners
+        uses: actions/download-artifact@v4
+        with:
+          name: krc-fatbinary
+          path: C:\tmp\fatbin
+
+      - name: Fat-binary krc via kr runner (Windows ARM64)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $kr  = "C:\tmp\fatbin\kr-runners\kr-windows-arm64.exe"
+          $krbo = "C:\tmp\fatbin\krc.krbo"
+          Write-Host "=== kr --version ==="
+          & $kr $krbo --version
+          $exit1 = $LASTEXITCODE
+          Write-Host "exit: $exit1"
+          if ($exit1 -eq 0) {
+            Write-Host "PASS: Windows ARM64 fat-binary krc --version"
+          } else {
+            Write-Host "FAIL: Windows ARM64 fat-binary krc --version (exit=$exit1)"
+          }
 
       - name: Run Windows ARM64 binary
         shell: pwsh

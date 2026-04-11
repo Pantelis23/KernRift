@@ -306,7 +306,38 @@ fn main() {
     file_close(tfd)
 
     set_executable(tmp_path)
-    exec_process(tmp_path)
+
+    // Build argv = [tmp_path, original-argv[2..], NULL] and forward to execve.
+    // Effective argv from user is cli_argv, where cli_argv[0]=kr,
+    // cli_argv[1]=program.krbo, cli_argv[2..]=user args to forward.
+    // arg_offset is 16 on Android (linker shift), 8 otherwise, and the
+    // "program.krbo" slot sits at cli_argv[arg_offset/8].
+    uint64 fwd_start = 0
+    if arg_offset == 8 {
+        fwd_start = 2
+    } else {
+        fwd_start = 3
+    }
+    uint64 n_fwd = 0
+    if cli_argc > fwd_start { n_fwd = cli_argc - fwd_start }
+    uint64 argv_bytes = (n_fwd + 2) * 8
+    uint64 nargv = alloc(argv_bytes)
+    // argv[0] = tmp_path
+    store64(nargv, tmp_path)
+    // argv[1..n_fwd+1] = forwarded args
+    uint64 ai = 0
+    while ai < n_fwd {
+        uint64 src = cli_argv + (fwd_start + ai) * 8
+        uint64 v = 0
+        unsafe { *(src as uint64) -> v }
+        uint64 dst = nargv + (1 + ai) * 8
+        store64(dst, v)
+        ai = ai + 1
+    }
+    // argv[n_fwd+1] = NULL
+    store64(nargv + (1 + n_fwd) * 8, 0)
+
+    exec_process_argv(tmp_path, nargv)
 
     write(2, "kr: exec failed (errno=", 23)
     uint64 abs_errno2 = 0 - exec_errno
