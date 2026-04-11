@@ -1942,11 +1942,9 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
             patch_u32(320, entry_va & 0xFFFFFFFF)
             patch_u32(324, (entry_va >> 32) & 0xFFFFFFFF)
         } else {
-            // ARM64: LC_UNIXTHREAD — absolute VA at offset 696
-            // (shifted from 672 after inserting LC_BUILD_VERSION)
-            uint64 entry_va_arm = 0x100000000 + main_off_macho
-            patch_u32(696, entry_va_arm & 0xFFFFFFFF)
-            patch_u32(700, (entry_va_arm >> 32) & 0xFFFFFFFF)
+            // ARM64 LC_MAIN entryoff = file offset of main
+            patch_u32(608, main_off_macho & 0xFFFFFFFF)
+            patch_u32(612, (main_off_macho >> 32) & 0xFFFFFFFF)
         }
         // ARM64 Mach-O: patch __text section + separate __DATA segment for W^X
         if arch == 1 {
@@ -1970,17 +1968,22 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
             patch_u32(300, (total_aligned >> 32) & 0xFFFFFFFF)
             patch_u32(304, m_dal & 0xFFFFFFFF)
             patch_u32(308, (m_dal >> 32) & 0xFFFFFFFF)
-            // __LINKEDIT: vmaddr after __DATA, minimal page
+            // __LINKEDIT: call helper to emit chained fixups + symtab + strtab
             uint64 m_lva = m_dva + m_dal
             uint64 m_lfoff = m_dfoff + m_dal
+            emit_macho_linkedit_a64(m_lfoff, main_off_macho)
+            uint64 m_lraw = codegen_output_len() - m_lfoff
+            uint64 m_lsz = (m_lraw + 16383) & ~16383
+            if m_lsz == 0 { m_lsz = 16384 }
+            while codegen_output_len() < m_lfoff + m_lsz { emit_byte(0) }
             patch_u32(352, m_lva & 0xFFFFFFFF)
             patch_u32(356, (m_lva >> 32) & 0xFFFFFFFF)
-            patch_u32(360, 16384 & 0xFFFFFFFF)
-            patch_u32(364, 0)
+            patch_u32(360, m_lsz & 0xFFFFFFFF)
+            patch_u32(364, (m_lsz >> 32) & 0xFFFFFFFF)
             patch_u32(368, m_lfoff & 0xFFFFFFFF)
             patch_u32(372, (m_lfoff >> 32) & 0xFFFFFFFF)
-            patch_u32(376, 0)
-            patch_u32(380, 0)
+            patch_u32(376, m_lraw & 0xFFFFFFFF)
+            patch_u32(380, (m_lraw >> 32) & 0xFFFFFFFF)
         }
     } else if emit_mode == 2 {
         // PE: patch entry point to main function
@@ -2676,23 +2679,23 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     patch_u32(300, (total_aligned6 >> 32) & 0xFFFFFFFF)
     patch_u32(304, dal6 & 0xFFFFFFFF)
     patch_u32(308, (dal6 >> 32) & 0xFFFFFFFF)
-    // __LINKEDIT: after __DATA
+    // __LINKEDIT: chained fixups + symtab + strtab via helper
     uint64 lva6 = dva6 + dal6
     uint64 lfoff6 = dfoff6 + dal6
+    uint64 main_off6 = find_main_offset()
+    emit_macho_linkedit_a64(lfoff6, main_off6)
+    uint64 lraw6 = codegen_output_len() - lfoff6
+    uint64 lsize6 = (lraw6 + 16383) & ~16383
+    if lsize6 == 0 { lsize6 = 16384 }
+    while codegen_output_len() < lfoff6 + lsize6 { emit_byte(0) }
     patch_u32(352, lva6 & 0xFFFFFFFF)
     patch_u32(356, (lva6 >> 32) & 0xFFFFFFFF)
-    patch_u32(360, 16384 & 0xFFFFFFFF)
-    patch_u32(364, 0)
+    patch_u32(360, lsize6 & 0xFFFFFFFF)
+    patch_u32(364, (lsize6 >> 32) & 0xFFFFFFFF)
     patch_u32(368, lfoff6 & 0xFFFFFFFF)
     patch_u32(372, (lfoff6 >> 32) & 0xFFFFFFFF)
-    patch_u32(376, 0)
-    patch_u32(380, 0)
-    // LC_UNIXTHREAD PC at offset 696 (absolute VA)
-    // (shifted from 672 after inserting LC_BUILD_VERSION for AMFI)
-    uint64 main_off6 = find_main_offset()
-    uint64 entry_va6 = 0x100000000 + main_off6
-    patch_u32(696, entry_va6 & 0xFFFFFFFF)
-    patch_u32(700, (entry_va6 >> 32) & 0xFFFFFFFF)
+    patch_u32(376, lraw6 & 0xFFFFFFFF)
+    patch_u32(380, (lraw6 >> 32) & 0xFFFFFFFF)
 
     uint64 macho_a64_len = codegen_output_len()
     uint64 macho_a64_buf = alloc(macho_a64_len)
