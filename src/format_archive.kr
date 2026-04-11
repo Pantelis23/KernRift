@@ -87,70 +87,274 @@ fn emit_krbo(uint64 arch, uint64 entry_offset, uint64 code_buf, uint64 code_len)
 }
 
 // ---------------------------------------------------------------------------
-// LZ4 block compression (minimal implementation)
+// LZ4 block compression (real — hash-table greedy matcher)
 // ---------------------------------------------------------------------------
-// LZ4 frame format (simplified — no block dependencies, single block):
-//   Frame header: magic(4) + FLG(1) + BD(1) + HC(1) = 7 bytes
-//   Block: size(4) + data(N)
+// LZ4 frame format we emit:
+//   Magic(4) + FLG(1) + BD(1) + HC(1) = 7 bytes
+//   Block: size(4) + data(N)                 (bit 31 set => uncompressed)
 //   End mark: 0x00000000 (4 bytes)
-//   Content checksum: optional
 //
-// For a minimal implementation, we emit uncompressed LZ4 frames
-// (the highest bit of block size = 1 means uncompressed)
+// LZ4 block format (inside the block when bit 31 is clear):
+//   Sequence* where each sequence is:
+//     token(1)               high nibble = literal length code (0..15)
+//                            low nibble  = match length code   (0..15)
+//     extra_lit_len(*)       bytes of 255 then one tail byte, if code==15
+//     literals(lit_len)
+//     offset(2, LE)          distance back to match start (1..65535)
+//     extra_match_len(*)     bytes of 255 then one tail byte, if code==15
+//
+// Parsing rules (reference decoder compatible):
+//   1. The last 5 bytes are always literals.
+//   2. The last match must start at least 12 bytes before end of block.
+//
+// The compressor uses a 4096-slot hash table; hash fn is Knuth's
+// multiplicative (x * 2654435761) >> 20. Matches are extended as far
+// as possible (LZ4 is "lazy" only optionally — we're greedy here).
+
+fn lz4_load_u32_le(uint64 p) -> uint64 {
+    uint32 v = 0
+    unsafe { *(p as uint32) -> v }
+    uint64 wv = v
+    return wv
+}
+
+fn lz4_load_u8(uint64 p) -> uint64 {
+    uint64 v = 0
+    unsafe { *(p as uint8) -> v }
+    return v
+}
+
+fn lz4_store_u8(uint64 p, uint64 val) {
+    uint8 b = val
+    unsafe { *(p as uint8) = b }
+}
+
+fn lz4_hash4(uint64 x) -> uint64 {
+    uint64 h = x * 2654435761
+    return (h >> 20) & 0xFFF
+}
+
+// Compress a single block. Returns the number of bytes written to `dst`.
+// Never expands by more than a handful of bytes (caller sizes dst generously).
+// If the encoded size would exceed input, the caller falls back to storing
+// the block uncompressed in the frame layer.
+@export
+fn lz4_compress_block(uint64 src, uint64 src_len, uint64 dst) -> uint64 {
+    uint64 dst_pos = 0
+
+    // Degenerate: too small to search for matches — emit one literal run.
+    if src_len < 13 {
+        uint64 lit_code = src_len
+        if lit_code >= 15 {
+            lz4_store_u8(dst + dst_pos, 0xF0)
+            dst_pos = dst_pos + 1
+            uint64 rem = lit_code - 15
+            while rem >= 255 {
+                lz4_store_u8(dst + dst_pos, 255)
+                dst_pos = dst_pos + 1
+                rem = rem - 255
+            }
+            lz4_store_u8(dst + dst_pos, rem)
+            dst_pos = dst_pos + 1
+        } else {
+            lz4_store_u8(dst + dst_pos, lit_code << 4)
+            dst_pos = dst_pos + 1
+        }
+        uint64 li = 0
+        while li < src_len {
+            uint64 b = lz4_load_u8(src + li)
+            lz4_store_u8(dst + dst_pos, b)
+            dst_pos = dst_pos + 1
+            li = li + 1
+        }
+        return dst_pos
+    }
+
+    // 4096 u32 slots, sentinel = 0xFFFFFFFF (no position recorded).
+    uint64 hash_size = 4096
+    uint64 hash_table = alloc(hash_size * 4)
+    uint64 hi = 0
+    while hi < hash_size {
+        uint64 hp = hash_table + hi * 4
+        uint32 sent = 0xFFFFFFFF
+        unsafe { *(hp as uint32) = sent }
+        hi = hi + 1
+    }
+
+    uint64 src_pos = 0
+    uint64 lit_start = 0
+    uint64 match_search_limit = src_len - 12
+    uint64 match_extend_limit = src_len - 5
+
+    while src_pos < match_search_limit {
+        uint64 cur4 = lz4_load_u32_le(src + src_pos)
+        uint64 h = lz4_hash4(cur4)
+        uint64 hp = hash_table + h * 4
+        uint32 mpos_raw = 0
+        unsafe { *(hp as uint32) -> mpos_raw }
+        uint64 mpos = mpos_raw
+        uint32 sp32 = src_pos
+        unsafe { *(hp as uint32) = sp32 }
+
+        // No match recorded, or the recorded position is out of range,
+        // or the 4-byte prefix doesn't actually match — advance and retry.
+        uint64 have_match = 1
+        if mpos == 0xFFFFFFFF { have_match = 0 }
+        uint64 offset = 0
+        if have_match != 0 {
+            if src_pos <= mpos { have_match = 0 }
+        }
+        if have_match != 0 {
+            offset = src_pos - mpos
+            if offset > 65535 { have_match = 0 }
+        }
+        if have_match != 0 {
+            uint64 match4 = lz4_load_u32_le(src + mpos)
+            if match4 != cur4 { have_match = 0 }
+        }
+        if have_match == 0 {
+            src_pos = src_pos + 1
+            continue
+        }
+
+        // Extend match forward byte-by-byte, stopping at the 5-byte tail.
+        uint64 match_len = 4
+        while src_pos + match_len < match_extend_limit {
+            uint64 mb = lz4_load_u8(src + mpos + match_len)
+            uint64 sb = lz4_load_u8(src + src_pos + match_len)
+            if mb != sb { break }
+            match_len = match_len + 1
+        }
+
+        // Emit the sequence: token, extra-lit-len, literals, offset, extra-match-len.
+        uint64 lit_len = src_pos - lit_start
+        uint64 lit_code = 15
+        if lit_len < 15 { lit_code = lit_len }
+        uint64 ml_code = 15
+        uint64 ml_raw = match_len - 4
+        if ml_raw < 15 { ml_code = ml_raw }
+
+        lz4_store_u8(dst + dst_pos, (lit_code << 4) | ml_code)
+        dst_pos = dst_pos + 1
+
+        if lit_len >= 15 {
+            uint64 rem = lit_len - 15
+            while rem >= 255 {
+                lz4_store_u8(dst + dst_pos, 255)
+                dst_pos = dst_pos + 1
+                rem = rem - 255
+            }
+            lz4_store_u8(dst + dst_pos, rem)
+            dst_pos = dst_pos + 1
+        }
+
+        uint64 li = 0
+        while li < lit_len {
+            uint64 b = lz4_load_u8(src + lit_start + li)
+            lz4_store_u8(dst + dst_pos, b)
+            dst_pos = dst_pos + 1
+            li = li + 1
+        }
+
+        lz4_store_u8(dst + dst_pos, offset & 0xFF)
+        dst_pos = dst_pos + 1
+        lz4_store_u8(dst + dst_pos, (offset >> 8) & 0xFF)
+        dst_pos = dst_pos + 1
+
+        if ml_raw >= 15 {
+            uint64 rem_m = ml_raw - 15
+            while rem_m >= 255 {
+                lz4_store_u8(dst + dst_pos, 255)
+                dst_pos = dst_pos + 1
+                rem_m = rem_m - 255
+            }
+            lz4_store_u8(dst + dst_pos, rem_m)
+            dst_pos = dst_pos + 1
+        }
+
+        src_pos = src_pos + match_len
+        lit_start = src_pos
+    }
+
+    // Final literal run covers [lit_start .. src_len).
+    uint64 final_lit = src_len - lit_start
+    uint64 lit_code_f = 15
+    if final_lit < 15 { lit_code_f = final_lit }
+    lz4_store_u8(dst + dst_pos, lit_code_f << 4)
+    dst_pos = dst_pos + 1
+    if final_lit >= 15 {
+        uint64 rem_f = final_lit - 15
+        while rem_f >= 255 {
+            lz4_store_u8(dst + dst_pos, 255)
+            dst_pos = dst_pos + 1
+            rem_f = rem_f - 255
+        }
+        lz4_store_u8(dst + dst_pos, rem_f)
+        dst_pos = dst_pos + 1
+    }
+    uint64 fi = 0
+    while fi < final_lit {
+        uint64 b = lz4_load_u8(src + lit_start + fi)
+        lz4_store_u8(dst + dst_pos, b)
+        dst_pos = dst_pos + 1
+        fi = fi + 1
+    }
+
+    dealloc(hash_table)
+    return dst_pos
+}
 
 @export
 fn lz4_compress_frame(uint64 input_buf, uint64 input_len, uint64 output_buf) -> uint64 {
     uint64 out_pos = 0
 
-    // Frame header
-    // Magic number: 0x184D2204 (4 bytes LE)
+    // Frame header: magic + FLG + BD + header checksum
     uint64 p = output_buf + out_pos
     uint32 magic = 0x184D2204
     unsafe { *(p as uint32) = magic }
     out_pos = out_pos + 4
+    lz4_store_u8(output_buf + out_pos, 0x60); out_pos = out_pos + 1
+    lz4_store_u8(output_buf + out_pos, 0x40); out_pos = out_pos + 1
+    lz4_store_u8(output_buf + out_pos, 0x82); out_pos = out_pos + 1
 
-    // FLG byte: version=01, no block independence, no block checksum, no content size, no content checksum, no dict
-    p = output_buf + out_pos
-    uint8 flg = 0x60
-    unsafe { *(p as uint8) = flg }
-    out_pos = out_pos + 1
-
-    // BD byte: max block size = 4 (64KB) → bits 6:4 = 100
-    p = output_buf + out_pos
-    uint8 bd = 0x40
-    unsafe { *(p as uint8) = bd }
-    out_pos = out_pos + 1
-
-    // Header checksum: XXH32([0x60, 0x40], seed=0) >> 8 & 0xFF = 0x82
-    p = output_buf + out_pos
-    uint8 hcb = 0x82
-    unsafe { *(p as uint8) = hcb }
-    out_pos = out_pos + 1
-
-    // Data block: uncompressed (bit 31 set in size)
-    uint64 block_size = input_len | 0x80000000
-    p = output_buf + out_pos
-    uint32 bs32 = block_size
-    unsafe { *(p as uint32) = bs32 }
+    // Reserve 4 bytes for the block size; we patch it after we know
+    // whether the compressed form actually shrank the input.
+    uint64 bs_off = out_pos
     out_pos = out_pos + 4
+    uint64 block_data_start = out_pos
 
-    // Copy input data
-    uint64 i = 0
-    while i < input_len {
-        uint64 src = input_buf + i
-        uint64 dst = output_buf + out_pos
-        uint64 b = 0
-        unsafe { *(src as uint8) -> b }
-        uint8 bb = b
-        unsafe { *(dst as uint8) = bb }
-        out_pos = out_pos + 1
-        i = i + 1
+    // Try to compress. The block header is 4 bytes and the frame has a
+    // 4-byte end mark already budgeted; we don't need safety slack here
+    // because callers size the output buffer with generous headroom.
+    uint64 comp_len = lz4_compress_block(input_buf, input_len, output_buf + out_pos)
+
+    uint64 block_hdr = 0
+    if comp_len < input_len {
+        // Real compression: use the compressed payload as-is.
+        out_pos = block_data_start + comp_len
+        block_hdr = comp_len
+    } else {
+        // Compressed form didn't shrink — fall back to an uncompressed
+        // block so tiny inputs don't pay a compression penalty. Bit 31
+        // set signals uncompressed to any conforming LZ4 decoder.
+        uint64 i = 0
+        while i < input_len {
+            uint64 b = lz4_load_u8(input_buf + i)
+            lz4_store_u8(output_buf + block_data_start + i, b)
+            i = i + 1
+        }
+        out_pos = block_data_start + input_len
+        block_hdr = input_len | 0x80000000
     }
 
-    // End mark (4 zero bytes)
-    p = output_buf + out_pos
+    uint64 bs_p = output_buf + bs_off
+    uint32 bs32 = block_hdr
+    unsafe { *(bs_p as uint32) = bs32 }
+
+    // End mark
+    uint64 ep = output_buf + out_pos
     uint32 zero = 0
-    unsafe { *(p as uint32) = zero }
+    unsafe { *(ep as uint32) = zero }
     out_pos = out_pos + 4
 
     return out_pos

@@ -17,7 +17,99 @@ fn str_len_r(uint64 s) -> uint64 {
     return i
 }
 
+// Decompress a single LZ4 block in-place from [src, src+src_len) into
+// [dst, ...). Returns the number of output bytes. Must byte-wise forward
+// copy matches to handle the LZ4 RLE case where offset < match_len.
+fn lz4_decompress_block_r(uint64 src, uint64 src_len, uint64 dst) -> uint64 {
+    uint64 sp = 0
+    uint64 dp = 0
+    while sp < src_len {
+        uint64 tp = src + sp
+        uint64 token = 0
+        unsafe { *(tp as uint8) -> token }
+        sp = sp + 1
+
+        // Literal length (token high nibble; 15 => extra bytes follow)
+        uint64 lit_len = (token >> 4) & 0x0F
+        if lit_len == 15 {
+            uint64 done_l = 0
+            while done_l == 0 {
+                if sp >= src_len { done_l = 1 }
+                if done_l == 0 {
+                    uint64 ep = src + sp
+                    uint64 eb = 0
+                    unsafe { *(ep as uint8) -> eb }
+                    sp = sp + 1
+                    lit_len = lit_len + eb
+                    if eb != 255 { done_l = 1 }
+                }
+            }
+        }
+
+        // Copy literal bytes
+        uint64 li = 0
+        while li < lit_len {
+            uint64 sp_l = src + sp + li
+            uint64 dp_l = dst + dp + li
+            uint64 b = 0
+            unsafe { *(sp_l as uint8) -> b }
+            uint8 bb = b
+            unsafe { *(dp_l as uint8) = bb }
+            li = li + 1
+        }
+        sp = sp + lit_len
+        dp = dp + lit_len
+
+        // Last sequence has no match — if we've consumed the block, stop.
+        if sp >= src_len { break }
+
+        // Offset (2 bytes LE, 1..65535)
+        uint64 op0 = src + sp
+        uint64 op1 = src + sp + 1
+        uint64 o0 = 0
+        uint64 o1 = 0
+        unsafe { *(op0 as uint8) -> o0 }
+        unsafe { *(op1 as uint8) -> o1 }
+        uint64 offset = o0 | (o1 << 8)
+        sp = sp + 2
+
+        // Match length (token low nibble + 4; 15 => extra bytes follow)
+        uint64 match_code = token & 0x0F
+        uint64 match_len = match_code + 4
+        if match_code == 15 {
+            uint64 done_m = 0
+            while done_m == 0 {
+                if sp >= src_len { done_m = 1 }
+                if done_m == 0 {
+                    uint64 ep = src + sp
+                    uint64 eb = 0
+                    unsafe { *(ep as uint8) -> eb }
+                    sp = sp + 1
+                    match_len = match_len + eb
+                    if eb != 255 { done_m = 1 }
+                }
+            }
+        }
+
+        // Byte-by-byte copy supports the overlap / RLE case where
+        // offset < match_len (e.g. offset=1 copies one byte match_len times).
+        uint64 mi = 0
+        while mi < match_len {
+            uint64 ms = dst + dp - offset + mi
+            uint64 md = dst + dp + mi
+            uint64 mb = 0
+            unsafe { *(ms as uint8) -> mb }
+            uint8 mbb = mb
+            unsafe { *(md as uint8) = mbb }
+            mi = mi + 1
+        }
+        dp = dp + match_len
+    }
+    return dp
+}
+
 fn lz4_decompress_frame_r(uint64 input, uint64 input_len, uint64 output) -> uint64 {
+    // Skip magic(4) + FLG(1) + BD(1) + HC(1) = 7 bytes
     uint64 pos = 7
     uint64 out_pos = 0
     while pos < input_len {
@@ -27,8 +119,10 @@ fn lz4_decompress_frame_r(uint64 input, uint64 input_len, uint64 output) -> uint
         uint64 bs = block_size_raw
         pos = pos + 4
         if bs == 0 { break }
+
+        uint64 data_len = bs & 0x7FFFFFFF
         if (bs & 0x80000000) != 0 {
-            uint64 data_len = bs & 0x7FFFFFFF
+            // Uncompressed block — memcpy as-is
             uint64 i = 0
             while i < data_len {
                 uint64 sp = input + pos + i
@@ -40,10 +134,12 @@ fn lz4_decompress_frame_r(uint64 input, uint64 input_len, uint64 output) -> uint
                 i = i + 1
             }
             out_pos = out_pos + data_len
-            pos = pos + data_len
         } else {
-            pos = pos + bs
+            // Real LZ4 block
+            uint64 written = lz4_decompress_block_r(input + pos, data_len, output + out_pos)
+            out_pos = out_pos + written
         }
+        pos = pos + data_len
     }
     return out_pos
 }

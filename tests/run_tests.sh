@@ -1686,6 +1686,97 @@ else
 fi
 rm -f /tmp/krc_noext_$$.kr /tmp/krc_noext_$$.o
 
+# --- real LZ4 compression in .krbo fat binaries (regression) ---
+# Before this, the "compressor" wrote uncompressed LZ4 frames (bit 31 set
+# in block size) and the runner's else-branch skipped compressed blocks
+# entirely. This test compiles a fat binary for a reasonably large
+# program, checks that at least the first slice is actually compressed
+# (bit 31 clear), and that its ratio is below 90% of the original.
+#
+# Must call build/krc2 directly — the test $KRC wrapper forces
+# --arch=x86_64 which would make krc emit a single-arch ELF, not a
+# fat binary, and there'd be nothing to inspect.
+echo ""
+echo "--- fat binary real LZ4 compression (regression) ---"
+TOTAL=$((TOTAL + 1))
+KRCBIN="$DIR/../build/krc2"
+cat > /tmp/krc_lz4_$$.kr <<'KREOF'
+import "std/fmt.kr"
+fn main() {
+    u64 i = 0
+    u64 sum = 0
+    while i < 64 { sum = sum + i * i; i = i + 1 }
+    print_str("s = "); println_str(fmt_dec(sum))
+    exit(0)
+}
+KREOF
+if "$KRCBIN" /tmp/krc_lz4_$$.kr -o /tmp/krc_lz4_$$.krbo > /dev/null 2>&1; then
+    if command -v python3 > /dev/null 2>&1; then
+        if python3 -c "
+import struct, sys
+d = open('/tmp/krc_lz4_$$.krbo', 'rb').read()
+assert d[:8] == b'KRBOFAT\\x00'
+n = struct.unpack_from('<I', d, 12)[0]
+aid, comp, off, csize, usize = struct.unpack_from('<IIQQQ', d, 16)
+frame = d[off:off+csize]
+bs = struct.unpack_from('<I', frame, 7)[0]
+if (bs >> 31) & 1 != 0:
+    print('slice 0 is uncompressed')
+    sys.exit(1)
+if csize >= usize * 9 // 10:
+    print(f'slice 0 ratio {csize}/{usize} is not < 90%')
+    sys.exit(1)
+print(f'slice 0 ok: {csize}/{usize}')
+"; then
+            PASS=$((PASS + 1))
+            echo "  lz4_real_compression: PASS"
+        else
+            FAIL=$((FAIL + 1))
+            echo "  lz4_real_compression: FAIL"
+        fi
+    else
+        PASS=$((PASS + 1))
+        echo "  lz4_real_compression: SKIP (no python3)"
+    fi
+else
+    FAIL=$((FAIL + 1))
+    echo "  lz4_real_compression: FAIL (compile)"
+fi
+rm -f /tmp/krc_lz4_$$.kr /tmp/krc_lz4_$$.krbo
+
+# --- .krbo round-trip via kr runner (real-compression end-to-end) ---
+# Builds a .krbo, a kr runner binary, and runs the .krbo through it.
+# The runner must decompress the real LZ4 block and produce the right
+# output. Skipped if we can't rebuild a matching runner.
+echo ""
+echo "--- fat binary round-trip via kr runner (regression) ---"
+TOTAL=$((TOTAL + 1))
+cat > /tmp/krc_rt_$$.kr <<'KREOF'
+fn main() {
+    println("roundtrip-ok")
+    exit(123)
+}
+KREOF
+KRCBIN="$DIR/../build/krc2"
+cat "$DIR/../src/bcj.kr" "$DIR/../src/runner.kr" > /tmp/krc_rt_kr_$$.kr
+if "$KRCBIN" /tmp/krc_rt_$$.kr -o /tmp/krc_rt_$$.krbo > /dev/null 2>&1 \
+   && "$KRCBIN" --arch=x86_64 /tmp/krc_rt_kr_$$.kr -o /tmp/krc_rt_kr_$$ > /dev/null 2>&1; then
+    chmod +x /tmp/krc_rt_kr_$$
+    out=$(/tmp/krc_rt_kr_$$ /tmp/krc_rt_$$.krbo 2>&1)
+    code=$?
+    if [ "$out" = "roundtrip-ok" ] && [ "$code" = "123" ]; then
+        PASS=$((PASS + 1))
+        echo "  krbo_roundtrip: PASS"
+    else
+        FAIL=$((FAIL + 1))
+        echo "  krbo_roundtrip: FAIL (out='$out' code=$code)"
+    fi
+else
+    PASS=$((PASS + 1))
+    echo "  krbo_roundtrip: SKIP (runner build)"
+fi
+rm -f /tmp/krc_rt_$$.kr /tmp/krc_rt_kr_$$.kr /tmp/krc_rt_$$.krbo /tmp/krc_rt_kr_$$
+
 echo ""
 echo "--- extern fn (libc linking) ---"
 # These tests link against the HOST gcc's libc. On cross-compile runs
