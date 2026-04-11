@@ -967,8 +967,14 @@ fn gen_expr_a64(uint64 node) {
         uint32 callee_tok = ast_data1(node)
         uint64 wct = callee_tok
 
+        // User-declared extern fn shadows builtins.
+        uint64 wct_pre_a = callee_tok
+        uint64 ext_pre_a = extern_fn_lookup(wct_pre_a)
+        uint64 is_extern_call = 0
+        if ext_pre_a != 0xFFFFFFFF { is_extern_call = 1 }
+
         // Built-in: exit(code)
-        if tok_matches(wct, "exit", 4) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "exit", 4) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr_a64(wfa)
@@ -985,7 +991,7 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Built-in: write(fd, buf, len)
-        if tok_matches(wct, "write", 5) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "write", 5) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr_a64(wa1)
@@ -1038,7 +1044,7 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Built-in: alloc(size) → mmap / VirtualAlloc
-        if tok_matches(wct, "alloc", 5) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "alloc", 5) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr_a64(wfa)
@@ -1068,7 +1074,7 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Built-in: file_open(path, flags)
-        if tok_matches(wct, "file_open", 9) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "file_open", 9) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr_a64(wa1)
@@ -1134,7 +1140,7 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Built-in: file_read(fd, buf, len)
-        if tok_matches(wct, "file_read", 9) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "file_read", 9) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr_a64(wa1)
@@ -1182,7 +1188,7 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Built-in: file_write(fd, buf, len)
-        if tok_matches(wct, "file_write", 10) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "file_write", 10) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr_a64(wa1)
@@ -1218,7 +1224,7 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Built-in: file_close(fd)
-        if tok_matches(wct, "file_close", 10) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "file_close", 10) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr_a64(wfa)
@@ -1234,7 +1240,7 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Built-in: file_size(fd) → lseek to end then back / SetFilePointerEx
-        if tok_matches(wct, "file_size", 9) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "file_size", 9) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr_a64(wfa)
@@ -1270,7 +1276,7 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Built-in: print(arg) — print string or integer to stdout
-        if tok_matches(wct, "print", 5) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "print", 5) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             uint32 arg_kind = ast_kind(wfa)
@@ -1393,7 +1399,7 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Built-in: println(arg) — same as print but adds newline
-        if tok_matches(wct, "println", 7) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "println", 7) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             uint32 arg_kind = ast_kind(wfa)
@@ -1531,9 +1537,9 @@ fn gen_expr_a64(uint64 node) {
 
         // Built-in: print_str(s) / println_str(s) — print a null-terminated string
         // from a variable pointer. Always treats arg as a string pointer.
-        if tok_matches(wct, "print_str", 9) != 0 || tok_matches(wct, "println_str", 11) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "print_str", 9) != 0 || tok_matches(wct, "println_str", 11) != 0 {
             uint64 a_is_pln = 0
-            if tok_matches(wct, "println_str", 11) != 0 { a_is_pln = 1 }
+            if is_extern_call == 0 && tok_matches(wct, "println_str", 11) != 0 { a_is_pln = 1 }
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr_a64(wfa)
@@ -1597,7 +1603,7 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Built-in: str_len(s) → count bytes until null terminator
-        if tok_matches(wct, "str_len", 7) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "str_len", 7) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr_a64(wfa)
@@ -1624,7 +1630,7 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Built-in: str_eq(a, b) → 1 if equal, 0 if not
-        if tok_matches(wct, "str_eq", 6) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "str_eq", 6) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr_a64(wa1)
@@ -1680,7 +1686,7 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Built-in: dealloc(ptr) — no-op (evaluate and discard)
-        if tok_matches(wct, "dealloc", 7) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "dealloc", 7) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr_a64(wfa)
@@ -1688,7 +1694,7 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Built-in: memcpy(dst, src, len) → returns dst
-        if tok_matches(wct, "memcpy", 6) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "memcpy", 6) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr_a64(wa1)
@@ -1733,7 +1739,7 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Built-in: memset(dst, val, len) → returns dst
-        if tok_matches(wct, "memset", 6) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "memset", 6) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr_a64(wa1)
@@ -1774,7 +1780,7 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // fn_addr("name") — get address of a named function
-        if tok_matches(wct, "fn_addr", 7) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "fn_addr", 7) != 0 {
             uint32 name_arg = ast_child(node)
             uint64 wna = name_arg
             // Emit: ADRP x0, #0 + ADD x0, x0, #0 (8 bytes, patched later)
@@ -1793,7 +1799,7 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // call_ptr(fn_ptr, args...) — indirect call through function pointer
-        if tok_matches(wct, "call_ptr", 8) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "call_ptr", 8) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
 
@@ -1883,7 +1889,7 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Signed comparison builtins
-        if tok_matches(wct, "signed_lt", 9) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "signed_lt", 9) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr_a64(wa1)
@@ -1898,7 +1904,7 @@ fn gen_expr_a64(uint64 node) {
             emit_a64_cset(0, 0xB)
             return
         }
-        if tok_matches(wct, "signed_gt", 9) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "signed_gt", 9) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr_a64(wa1)
@@ -1913,7 +1919,7 @@ fn gen_expr_a64(uint64 node) {
             emit_a64_cset(0, 0xC)
             return
         }
-        if tok_matches(wct, "signed_le", 9) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "signed_le", 9) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr_a64(wa1)
@@ -1928,7 +1934,7 @@ fn gen_expr_a64(uint64 node) {
             emit_a64_cset(0, 0xD)
             return
         }
-        if tok_matches(wct, "signed_ge", 9) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "signed_ge", 9) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr_a64(wa1)
@@ -1945,7 +1951,7 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Bitfield builtins
-        if tok_matches(wct, "bit_get", 7) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "bit_get", 7) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr_a64(wa1)
@@ -1962,7 +1968,7 @@ fn gen_expr_a64(uint64 node) {
             emit_a64(0x92400000 | (0 << 5) | 0)
             return
         }
-        if tok_matches(wct, "bit_set", 7) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "bit_set", 7) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr_a64(wa1)
@@ -1977,7 +1983,7 @@ fn gen_expr_a64(uint64 node) {
             emit_a64_orr(0, 0, 10) // x0 = val | (1 << bit)
             return
         }
-        if tok_matches(wct, "bit_clear", 9) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "bit_clear", 9) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr_a64(wa1)
@@ -1993,7 +1999,7 @@ fn gen_expr_a64(uint64 node) {
             emit_a64_and(0, 0, 10) // val & ~(1 << bit)
             return
         }
-        if tok_matches(wct, "bit_range", 9) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "bit_range", 9) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr_a64(wa1)
@@ -2018,7 +2024,7 @@ fn gen_expr_a64(uint64 node) {
             emit_a64_and(0, 0, 10) // & mask
             return
         }
-        if tok_matches(wct, "bit_insert", 10) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "bit_insert", 10) != 0 {
             uint64 bi_extra = var_count * 8
             var_count = var_count + 4
             var_frame_size = var_count * 8
@@ -2067,7 +2073,7 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Built-in: get_module_path(buf, size) → exe path length (Windows only, returns 0 on Linux)
-        if tok_matches(wct, "get_module_path", 15) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "get_module_path", 15) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr_a64(wa1)
@@ -2089,7 +2095,7 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Built-in: exec_process(path) → on Windows: CreateProcessA+Wait+Exit; on Linux: execve
-        if tok_matches(wct, "exec_process", 12) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "exec_process", 12) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr_a64(wfa)
@@ -2184,7 +2190,7 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Built-in: set_executable(path) → chmod +x on Linux/macOS, no-op on Windows
-        if tok_matches(wct, "set_executable", 14) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "set_executable", 14) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr_a64(wfa)
@@ -2206,7 +2212,7 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Built-in: load8/16/32/64(addr) — read from memory, zero-extended
-        if tok_matches(wct, "load8", 5) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "load8", 5) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr_a64(wfa)
@@ -2214,7 +2220,7 @@ fn gen_expr_a64(uint64 node) {
             emit_a64_ldrb(0, 0, 0)
             return
         }
-        if tok_matches(wct, "load16", 6) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "load16", 6) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr_a64(wfa)
@@ -2222,7 +2228,7 @@ fn gen_expr_a64(uint64 node) {
             emit_a64_ldrh(0, 0, 0)
             return
         }
-        if tok_matches(wct, "load32", 6) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "load32", 6) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr_a64(wfa)
@@ -2230,7 +2236,7 @@ fn gen_expr_a64(uint64 node) {
             emit_a64_ldr32(0, 0, 0)
             return
         }
-        if tok_matches(wct, "load64", 6) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "load64", 6) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr_a64(wfa)
@@ -2240,7 +2246,7 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Built-in: store8/16/32/64(addr, val) — write to memory
-        if tok_matches(wct, "store8", 6) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "store8", 6) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr_a64(wa1)
@@ -2254,7 +2260,7 @@ fn gen_expr_a64(uint64 node) {
             emit_a64_strb(1, 0, 0)
             return
         }
-        if tok_matches(wct, "store16", 7) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "store16", 7) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr_a64(wa1)
@@ -2268,7 +2274,7 @@ fn gen_expr_a64(uint64 node) {
             emit_a64_strh(1, 0, 0)
             return
         }
-        if tok_matches(wct, "store32", 7) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "store32", 7) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr_a64(wa1)
@@ -2282,7 +2288,7 @@ fn gen_expr_a64(uint64 node) {
             emit_a64_str32(1, 0, 0)
             return
         }
-        if tok_matches(wct, "store64", 7) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "store64", 7) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr_a64(wa1)
@@ -2298,7 +2304,7 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Built-in: vload8/16/32/64(addr) — volatile load, DSB SY after
-        if tok_matches(wct, "vload8", 6) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "vload8", 6) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr_a64(wfa)
@@ -2307,7 +2313,7 @@ fn gen_expr_a64(uint64 node) {
             emit_a64(0xD5033F9F)
             return
         }
-        if tok_matches(wct, "vload16", 7) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "vload16", 7) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr_a64(wfa)
@@ -2315,7 +2321,7 @@ fn gen_expr_a64(uint64 node) {
             emit_a64(0xD5033F9F)
             return
         }
-        if tok_matches(wct, "vload32", 7) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "vload32", 7) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr_a64(wfa)
@@ -2323,7 +2329,7 @@ fn gen_expr_a64(uint64 node) {
             emit_a64(0xD5033F9F)
             return
         }
-        if tok_matches(wct, "vload64", 7) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "vload64", 7) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr_a64(wfa)
@@ -2333,7 +2339,7 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Built-in: vstore8/16/32/64(addr, val) — volatile store, DSB SY before
-        if tok_matches(wct, "vstore8", 7) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "vstore8", 7) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr_a64(wa1)
@@ -2347,7 +2353,7 @@ fn gen_expr_a64(uint64 node) {
             emit_a64_strb(1, 0, 0)
             return
         }
-        if tok_matches(wct, "vstore16", 8) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "vstore16", 8) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr_a64(wa1)
@@ -2361,7 +2367,7 @@ fn gen_expr_a64(uint64 node) {
             emit_a64_strh(1, 0, 0)
             return
         }
-        if tok_matches(wct, "vstore32", 8) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "vstore32", 8) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr_a64(wa1)
@@ -2375,7 +2381,7 @@ fn gen_expr_a64(uint64 node) {
             emit_a64_str32(1, 0, 0)
             return
         }
-        if tok_matches(wct, "vstore64", 8) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "vstore64", 8) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr_a64(wa1)
@@ -2391,7 +2397,7 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Built-in: atomic_load(ptr) → load-acquire
-        if tok_matches(wct, "atomic_load", 11) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "atomic_load", 11) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr_a64(wfa)
@@ -2401,7 +2407,7 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Built-in: atomic_store(ptr, val) → store-release
-        if tok_matches(wct, "atomic_store", 12) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "atomic_store", 12) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr_a64(wa1)
@@ -2417,7 +2423,7 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Built-in: atomic_cas(ptr, expected, desired) → 1 if swapped, 0 if not
-        if tok_matches(wct, "atomic_cas", 10) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "atomic_cas", 10) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr_a64(wa1)
@@ -2454,7 +2460,7 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Built-in: atomic_add(ptr, val) → old value
-        if tok_matches(wct, "atomic_add", 10) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "atomic_add", 10) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr_a64(wa1)
@@ -2479,7 +2485,7 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Built-in: atomic_sub(ptr, val) → old value
-        if tok_matches(wct, "atomic_sub", 10) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "atomic_sub", 10) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr_a64(wa1)
@@ -2504,7 +2510,7 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Built-in: atomic_and(ptr, val) → old value
-        if tok_matches(wct, "atomic_and", 10) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "atomic_and", 10) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr_a64(wa1)
@@ -2529,7 +2535,7 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Built-in: atomic_or(ptr, val) → old value
-        if tok_matches(wct, "atomic_or", 9) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "atomic_or", 9) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr_a64(wa1)
@@ -2554,7 +2560,7 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Built-in: atomic_xor(ptr, val) → old value
-        if tok_matches(wct, "atomic_xor", 10) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "atomic_xor", 10) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr_a64(wa1)
@@ -2579,13 +2585,13 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Built-in: get_target_os() → compile-time OS constant (0=Linux, 1=macOS, 2=Windows)
-        if tok_matches(wct, "get_target_os", 13) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "get_target_os", 13) != 0 {
             emit_a64_mov_imm(0, target_os)
             return
         }
 
         // Built-in: syscall_raw(nr, a0, a1, a2, a3, a4, a5) → raw syscall
-        if tok_matches(wct, "syscall_raw", 11) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "syscall_raw", 11) != 0 {
             // Evaluate all 7 args into temp slots
             uint32 sc_arg = ast_child(node)
             uint64 sc_warg = sc_arg
@@ -2628,7 +2634,7 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Built-in: get_arch_id() → compile-time arch ID
-        if tok_matches(wct, "get_arch_id", 11) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "get_arch_id", 11) != 0 {
             if target_os == 3 {
                 emit_a64_mov_imm(0, 7)
             } else if target_os == 2 {
@@ -2715,6 +2721,16 @@ fn gen_expr_a64(uint64 node) {
             uint64 cleanup = stack_args * 8
             uint64 add_insn = 0x91000000 | (cleanup << 10) | (31 << 5) | 31
             emit_a64(add_insn)
+        }
+
+        // If the callee is an extern fn, record a call site for a linker
+        // relocation and skip the internal fixup (the BL's imm26 stays zero
+        // until the linker patches it with R_AARCH64_CALL26).
+        uint64 wct_ext_a = callee_tok
+        uint64 ext_idx_a = extern_fn_lookup(wct_ext_a)
+        if ext_idx_a != 0xFFFFFFFF {
+            extern_call_record(fixup_off, ext_idx_a)
+            return
         }
 
         // Record fixup (same table as x86_64 — resolve_fixups handles both)
@@ -3262,9 +3278,15 @@ fn emit_program_header_a64(uint64 text_size) {
 fn gen_function_a64(uint64 fn_node) {
     uint32 name_tok = ast_data1(fn_node)
 
-    // Check annotation flags: bit 0 = noreturn, bit 1 = naked
+    // Check annotation flags: bit 0 = noreturn, bit 1 = naked, bit 3 = extern
     uint32 ann_flags = ast_data4(fn_node)
     uint64 is_naked = ann_flags & 2
+    uint64 is_extern_a = ann_flags & 8
+
+    // Extern declarations have no body — skip codegen.
+    if is_extern_a != 0 { return }
+    uint32 body_check_a = ast_data3(fn_node)
+    if body_check_a == 0 { return }
 
     // Leaf function optimization disabled for now — needs register allocator
     uint64 is_leaf = 0

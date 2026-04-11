@@ -1,0 +1,22 @@
+// extern_libc — call libc from KernRift via `extern fn`.
+//
+// Build and link against libc (Linux x86_64):
+//   krc --emit=obj extern_libc.kr -o extern_libc.o
+//   gcc extern_libc.o -o extern_libc -no-pie
+//   ./extern_libc
+//
+// Other platforms:
+//   macOS:   krc --target=macos --emit=obj extern_libc.kr -o extern_libc.o
+//            clang extern_libc.o -o extern_libc
+//   Windows: krc --target=windows --emit=obj extern_libc.kr -o extern_libc.obj
+//            link extern_libc.obj msvcrt.lib /ENTRY:main /SUBSYSTEM:console
+
+extern fn strlen(u64 s) -> u64
+extern fn write(u64 fd, u64 buf, u64 len) -> u64
+
+fn main() {
+    u64 msg = "hello from KernRift via libc!\n"
+    u64 n = strlen(msg)
+    write(1, msg, n)
+    exit(0)
+}

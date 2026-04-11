@@ -1846,13 +1846,21 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
 
     uint64 text_size = codegen_output_len() - text_start
 
-    // For ELF relocatable (.o), wrap the raw code+data in ELF .o format
+    // For .o relocatable, pick format from target_os:
+    //   0 linux  → ELF
+    //   1 macOS  → Mach-O
+    //   2 win    → COFF (PE object)
+    //   3 android → ELF
+    //   4 freebsd → ELF
     if emit_mode == 3 {
-        // text_start is 0 for .o (no headers emitted)
-        // All content (code + statics + strings) goes in .text to preserve
-        // RIP-relative references. .data section has zero size.
         uint64 total_code = codegen_output_len()
-        emit_elf_relocatable(total_code, 0, arch)
+        if target_os == 1 {
+            emit_macho_relocatable(total_code, 0, arch)
+        } else if target_os == 2 {
+            emit_coff_relocatable(total_code, 0, arch)
+        } else {
+            emit_elf_relocatable(total_code, 0, arch)
+        }
         codegen_write_output(output_path)
 
         uint8[64] nb
@@ -2294,6 +2302,8 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     static_fixup_count = 0
     str_fixup_count = 0
     str_len = 0
+    extern_fn_count = 0
+    extern_call_count = 0
 
     // Re-parse (need fresh AST; restore source+tokens to pristine state first)
     restore_src_and_tokens(source, size, src_snapshot, my_tokens, tok_bytes, tok_snapshot)
@@ -2360,6 +2370,8 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     static_fixup_count = 0
     str_fixup_count = 0
     str_len = 0
+    extern_fn_count = 0
+    extern_call_count = 0
     win_iat_fixup_count = 0
     fnaddr_fixup_count = 0
 
@@ -2434,6 +2446,8 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     static_fixup_count = 0
     str_fixup_count = 0
     str_len = 0
+    extern_fn_count = 0
+    extern_call_count = 0
     a64_win_iat_fixup_count = 0
     fnaddr_fixup_count = 0
 
@@ -2531,6 +2545,8 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     static_fixup_count = 0
     str_fixup_count = 0
     str_len = 0
+    extern_fn_count = 0
+    extern_call_count = 0
     fnaddr_fixup_count = 0
 
     restore_src_and_tokens(source, size, src_snapshot, my_tokens, tok_bytes, tok_snapshot)
@@ -2596,6 +2612,8 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     static_fixup_count = 0
     str_fixup_count = 0
     str_len = 0
+    extern_fn_count = 0
+    extern_call_count = 0
     fnaddr_fixup_count = 0
 
     restore_src_and_tokens(source, size, src_snapshot, my_tokens, tok_bytes, tok_snapshot)
@@ -2695,6 +2713,8 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     static_fixup_count = 0
     str_fixup_count = 0
     str_len = 0
+    extern_fn_count = 0
+    extern_call_count = 0
     fnaddr_fixup_count = 0
 
     restore_src_and_tokens(source, size, src_snapshot, my_tokens, tok_bytes, tok_snapshot)

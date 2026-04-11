@@ -997,7 +997,73 @@ stack.
 
 ---
 
-## 22. Binary formats
+## 22. Extern functions
+
+`extern fn` declares a function that is resolved by the platform linker at
+link time. It has no body — the signature names an external symbol (typically
+from libc or another static library):
+
+```kr
+extern fn strlen(u64 s) -> u64
+extern fn write(u64 fd, u64 buf, u64 len) -> u64
+
+fn main() {
+    u64 msg = "hello from KernRift via libc!\n"
+    write(1, msg, strlen(msg))
+    exit(0)
+}
+```
+
+Compile to a relocatable object and link with the platform toolchain:
+
+```sh
+# Linux
+krc --emit=obj extern_libc.kr -o extern_libc.o
+gcc extern_libc.o -o extern_libc -no-pie
+
+# macOS
+krc --target=macos --emit=obj extern_libc.kr -o extern_libc.o
+clang extern_libc.o -o extern_libc
+
+# Windows
+krc --target=windows --emit=obj extern_libc.kr -o extern_libc.obj
+link extern_libc.obj msvcrt.lib /ENTRY:main /SUBSYSTEM:console
+```
+
+The compiler emits relocations in the native format of each target:
+
+| Target        | Format  | Relocation                |
+|---------------|---------|---------------------------|
+| Linux x86_64  | ELF     | `R_X86_64_PLT32`          |
+| Linux ARM64   | ELF     | `R_AARCH64_CALL26`        |
+| macOS x86_64  | Mach-O  | `X86_64_RELOC_BRANCH`     |
+| macOS ARM64   | Mach-O  | `ARM64_RELOC_BRANCH26`    |
+| Windows x64   | COFF    | `IMAGE_REL_AMD64_REL32`   |
+| Windows ARM64 | COFF    | `IMAGE_REL_ARM64_BRANCH26`|
+
+`extern fn` names shadow built-ins: if you declare `extern fn write(...)`,
+calls to `write` resolve to the libc symbol instead of the `write` syscall
+built-in. This lets you opt into the platform runtime on demand.
+
+Note that programs that call buffered libc functions (like `printf` or
+`puts`) from `main()` should exit via a libc `exit()` rather than the
+built-in `exit()` — the built-in uses a raw syscall that bypasses libc's
+stdio flush on exit. The safest pattern is to declare `extern fn exit`
+and use that:
+
+```kr
+extern fn exit(u64 code)
+extern fn puts(u64 s) -> u64
+
+fn main() {
+    puts("flushed through stdio")
+    exit(0)
+}
+```
+
+---
+
+## 23. Binary formats
 
 | Format | Produced by | Use |
 |---|---|---|

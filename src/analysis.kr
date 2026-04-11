@@ -1002,7 +1002,8 @@ fn block_has_return(uint64 block_node) -> uint64 {
     return 0
 }
 
-// Check that all functions with return types actually return on all paths
+// Check that all functions with return types actually return on all paths.
+// Extern functions (no body) are declarations, not definitions — skip them.
 fn sema_check_returns(uint64 root) {
     uint32 child = ast_child(root)
     uint64 wchild = child
@@ -1010,9 +1011,9 @@ fn sema_check_returns(uint64 root) {
         uint32 ck = ast_kind(wchild)
         if ck == 2 {
             uint32 ret_tok = ast_data2(wchild)
-            if ret_tok != 0 {
-                uint32 body = ast_data3(wchild)
-                uint64 wbody = body
+            uint32 body = ast_data3(wchild)
+            uint64 wbody = body
+            if ret_tok != 0 && wbody != 0 {
                 if block_has_return(wbody) == 0 {
                     uint32 name_tok = ast_data1(wchild)
                     uint64 wname = name_tok

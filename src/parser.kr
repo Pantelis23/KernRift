@@ -1189,6 +1189,50 @@ fn parse_module() -> uint64 {
                 ast_set_data4(fn_node, ann_flags)
             }
             ast_append_child(mod_node, fn_node)
+        } else if kind == 74 {
+            // extern fn name(params) -> rettype;
+            //
+            // Declared but not defined — the function is resolved at link time
+            // by the system linker. Valid only with --emit=obj output (or
+            // equivalent relocatable targets); executable targets can't handle
+            // unresolved symbols without a dynamic linker, which KernRift
+            // doesn't emit yet.
+            //
+            // We build a FnDecl AST node with no body AND a parameter list so
+            // the semantic analyzer (collect_function_signatures) picks it up
+            // for arg count checking. The extern flag is set in data4 bit 3 so
+            // codegen can emit a relocation at each call site.
+            advance_tok()
+            expect(60)  // `fn`
+            uint64 ext_name_tok = expect(1)
+
+            // Register the extern symbol so gen_expr's Call handler can detect it
+            extern_fn_register(ext_name_tok)
+
+            // Build a normal FnDecl node with empty body
+            uint64 ext_fn_node = ast_alloc(AstKind.FnDecl)
+            uint32 extnt = ext_name_tok
+            ast_set_data1(ext_fn_node, extnt)
+            ast_set_tok(ext_fn_node, extnt)
+
+            uint64 ext_params = parse_param_list()
+            uint32 ep32 = ext_params
+            ast_set_child(ext_fn_node, ep32)
+
+            // Optional return type
+            if eat(20) != 0 {
+                uint64 ret_tok = advance_tok()
+                uint32 rt = ret_tok
+                ast_set_data2(ext_fn_node, rt)
+            }
+
+            // data3 = body (0 for extern). data4 bit 3 = extern flag.
+            ast_set_data3(ext_fn_node, 0)
+            uint32 ext_flag = 8
+            ast_set_data4(ext_fn_node, ext_flag)
+
+            ast_append_child(mod_node, ext_fn_node)
+            eat(18)  // optional trailing semicolon
         } else if kind == 70 {
             // const TYPE name = value — treat as static
             advance_tok()

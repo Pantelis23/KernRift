@@ -34,6 +34,20 @@ static uint64 temp_slot_1 = 0
 static uint64 fn_table = 0
 static uint64 fn_count = 0
 
+// Extern function table — functions declared with `extern fn name(params)`
+// that are resolved at link time by the system linker. Each entry is
+// 8 bytes: [name_tok(4), pad(4)]. Max 256 externs.
+static uint64 extern_fn_table = 0
+static uint64 extern_fn_count = 0
+
+// Extern call sites — per-call-site record of where to emit a linker
+// relocation. Each entry is 16 bytes:
+//   [code_off(4), extern_idx(4), pad(8)]
+// code_off is the byte offset of the instruction (ARM64) or of the
+// 4-byte displacement (x86_64) inside the .text section.
+static uint64 extern_call_sites = 0
+static uint64 extern_call_count = 0
+
 // Return fixup table: jmp offsets that need patching to epilogue
 // [patch_offset(4)] × 64
 static uint64 ret_fixups = 0
@@ -168,6 +182,10 @@ fn codegen_init(uint64 capacity, uint64 source, uint64 tokens) {
     slice_len_table = alloc(32 * 8)
     device_table = alloc(64 * 16)
     device_field_table = alloc(256 * 16)
+    extern_fn_table = alloc(256 * 8)
+    extern_fn_count = 0
+    extern_call_sites = alloc(1024 * 16)
+    extern_call_count = 0
     static_count = 0
     static_data_size = 0
     static_fixups = alloc(8192 * 8)
@@ -1002,6 +1020,46 @@ fn fn_lookup(uint64 name_tok) -> uint64 {
         i = i + 1
     }
     return 0xFFFFFFFF
+}
+
+// Register an extern function. Returns its extern index for later use.
+@export
+fn extern_fn_register(uint64 name_tok) -> uint64 {
+    uint64 idx = extern_fn_count
+    uint64 entry = extern_fn_table + extern_fn_count * 8
+    uint32 nt = name_tok
+    unsafe { *(entry as uint32) = nt }
+    extern_fn_count = extern_fn_count + 1
+    return idx
+}
+
+// Return the extern index for a given name_tok, or 0xFFFFFFFF if not extern.
+@export
+fn extern_fn_lookup(uint64 name_tok) -> uint64 {
+    uint64 i = 0
+    while i < extern_fn_count {
+        uint64 entry = extern_fn_table + i * 8
+        uint32 stored_tok = 0
+        unsafe { *(entry as uint32) -> stored_tok }
+        uint64 ws = stored_tok
+        if tok_text_eq(ws, name_tok) != 0 { return i }
+        i = i + 1
+    }
+    return 0xFFFFFFFF
+}
+
+// Record an extern call site for later relocation emission.
+// code_off is the byte offset inside the .text section:
+//   x86_64: the start of the 4-byte disp32 (call site + 1)
+//   ARM64:  the start of the BL instruction
+fn extern_call_record(uint64 code_off, uint64 extern_idx) {
+    uint64 entry = extern_call_sites + extern_call_count * 16
+    uint32 co = code_off
+    unsafe { *(entry as uint32) = co }
+    uint64 e4 = entry + 4
+    uint32 xi = extern_idx
+    unsafe { *(e4 as uint32) = xi }
+    extern_call_count = extern_call_count + 1
 }
 
 // ---------------------------------------------------------------------------
@@ -2021,9 +2079,16 @@ fn gen_expr(uint64 node) {
     if kind == 35 {
         uint32 callee_tok = ast_data1(node)
 
+        // User-declared extern fn shadows builtins by design: if the programmer
+        // wrote `extern fn write(...)`, they want libc's write, not the syscall.
+        uint64 wct_pre = callee_tok
+        uint64 ext_pre = extern_fn_lookup(wct_pre)
+        uint64 is_extern_call = 0
+        if ext_pre != 0xFFFFFFFF { is_extern_call = 1 }
+
         // Check for built-in: exit(code)
         uint64 wct = callee_tok
-        if tok_matches(wct, "exit", 4) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "exit", 4) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr(wfa)
@@ -2042,7 +2107,7 @@ fn gen_expr(uint64 node) {
         }
 
         // Check for built-in: write(fd, buf, len)
-        if tok_matches(wct, "write", 5) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "write", 5) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr(wa1)
@@ -2094,7 +2159,7 @@ fn gen_expr(uint64 node) {
         }
 
         // Check for built-in: alloc(size) → mmap / VirtualAlloc
-        if tok_matches(wct, "alloc", 5) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "alloc", 5) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr(wfa)
@@ -2151,7 +2216,7 @@ fn gen_expr(uint64 node) {
         }
 
         // Check for built-in: file_open(path, flags) → open / CreateFileA
-        if tok_matches(wct, "file_open", 9) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "file_open", 9) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr(wa1)
@@ -2221,7 +2286,7 @@ fn gen_expr(uint64 node) {
         }
 
         // Check for built-in: file_read(fd, buf, len) → read / ReadFile
-        if tok_matches(wct, "file_read", 9) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "file_read", 9) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr(wa1)
@@ -2275,7 +2340,7 @@ fn gen_expr(uint64 node) {
         }
 
         // Check for built-in: file_write(fd, buf, len) → write / WriteFile
-        if tok_matches(wct, "file_write", 10) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "file_write", 10) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr(wa1)
@@ -2319,7 +2384,7 @@ fn gen_expr(uint64 node) {
         }
 
         // Check for built-in: file_close(fd) → close / CloseHandle
-        if tok_matches(wct, "file_close", 10) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "file_close", 10) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr(wfa)
@@ -2341,7 +2406,7 @@ fn gen_expr(uint64 node) {
         // fmt_uint: treat as a user-defined function call (must be defined in source)
 
         // Check for built-in: file_size(fd) → lseek / GetFileSize
-        if tok_matches(wct, "file_size", 9) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "file_size", 9) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr(wfa)
@@ -2396,7 +2461,7 @@ fn gen_expr(uint64 node) {
         }
 
         // Built-in: print(arg) — print string or integer to stdout
-        if tok_matches(wct, "print", 5) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "print", 5) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             uint32 arg_kind = ast_kind(wfa)
@@ -2636,7 +2701,7 @@ fn gen_expr(uint64 node) {
         }
 
         // Built-in: println(arg) — same as print but adds newline
-        if tok_matches(wct, "println", 7) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "println", 7) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             uint32 arg_kind = ast_kind(wfa)
@@ -2877,9 +2942,9 @@ fn gen_expr(uint64 node) {
 
         // Built-in: print_str(s) — print a null-terminated string from a variable pointer.
         // Unlike print(), this always treats the arg as a string pointer (not an integer).
-        if tok_matches(wct, "print_str", 9) != 0 || tok_matches(wct, "println_str", 11) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "print_str", 9) != 0 || tok_matches(wct, "println_str", 11) != 0 {
             uint64 is_println = 0
-            if tok_matches(wct, "println_str", 11) != 0 { is_println = 1 }
+            if is_extern_call == 0 && tok_matches(wct, "println_str", 11) != 0 { is_println = 1 }
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr(wfa)
@@ -2986,7 +3051,7 @@ fn gen_expr(uint64 node) {
         }
 
         // Built-in: str_len(s) → count bytes until null terminator
-        if tok_matches(wct, "str_len", 7) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "str_len", 7) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr(wfa)
@@ -3012,7 +3077,7 @@ fn gen_expr(uint64 node) {
         }
 
         // Built-in: str_eq(a, b) → 1 if equal, 0 if not
-        if tok_matches(wct, "str_eq", 6) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "str_eq", 6) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr(wa1)
@@ -3074,7 +3139,7 @@ fn gen_expr(uint64 node) {
         }
 
         // Built-in: dealloc(ptr) — no-op (evaluate and discard)
-        if tok_matches(wct, "dealloc", 7) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "dealloc", 7) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr(wfa)
@@ -3083,7 +3148,7 @@ fn gen_expr(uint64 node) {
         }
 
         // Built-in: memcpy(dst, src, len) → returns dst
-        if tok_matches(wct, "memcpy", 6) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "memcpy", 6) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr(wa1)
@@ -3134,7 +3199,7 @@ fn gen_expr(uint64 node) {
         }
 
         // Built-in: memset(dst, val, len) → returns dst
-        if tok_matches(wct, "memset", 6) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "memset", 6) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr(wa1)
@@ -3181,7 +3246,7 @@ fn gen_expr(uint64 node) {
         }
 
         // fn_addr("name") — get address of a named function
-        if tok_matches(wct, "fn_addr", 7) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "fn_addr", 7) != 0 {
             uint32 name_arg = ast_child(node)
             uint64 wna = name_arg
             // The argument is a string literal with the function name
@@ -3206,7 +3271,7 @@ fn gen_expr(uint64 node) {
         }
 
         // call_ptr(fn_ptr, args...) — indirect call through function pointer
-        if tok_matches(wct, "call_ptr", 8) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "call_ptr", 8) != 0 {
             rax_invalidate()
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
@@ -3307,7 +3372,7 @@ fn gen_expr(uint64 node) {
         }
 
         // Signed comparison builtins: signed_lt, signed_gt, signed_le, signed_ge
-        if tok_matches(wct, "signed_lt", 9) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "signed_lt", 9) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr(wa1)
@@ -3326,7 +3391,7 @@ fn gen_expr(uint64 node) {
             emit_byte(0x0F); emit_byte(0xB6); emit_byte(0xC0)
             return
         }
-        if tok_matches(wct, "signed_gt", 9) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "signed_gt", 9) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr(wa1)
@@ -3342,7 +3407,7 @@ fn gen_expr(uint64 node) {
             emit_byte(0x0F); emit_byte(0xB6); emit_byte(0xC0)
             return
         }
-        if tok_matches(wct, "signed_le", 9) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "signed_le", 9) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr(wa1)
@@ -3358,7 +3423,7 @@ fn gen_expr(uint64 node) {
             emit_byte(0x0F); emit_byte(0xB6); emit_byte(0xC0)
             return
         }
-        if tok_matches(wct, "signed_ge", 9) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "signed_ge", 9) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr(wa1)
@@ -3377,7 +3442,7 @@ fn gen_expr(uint64 node) {
 
         // Bitfield operation builtins
         // bit_get(val, bit) — (val >> bit) & 1
-        if tok_matches(wct, "bit_get", 7) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "bit_get", 7) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr(wa1)
@@ -3395,7 +3460,7 @@ fn gen_expr(uint64 node) {
             return
         }
         // bit_set(val, bit) — val | (1 << bit)
-        if tok_matches(wct, "bit_set", 7) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "bit_set", 7) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr(wa1)
@@ -3419,7 +3484,7 @@ fn gen_expr(uint64 node) {
             return
         }
         // bit_clear(val, bit) — val & ~(1 << bit)
-        if tok_matches(wct, "bit_clear", 9) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "bit_clear", 9) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr(wa1)
@@ -3441,7 +3506,7 @@ fn gen_expr(uint64 node) {
             return
         }
         // bit_range(val, start, width) — (val >> start) & ((1 << width) - 1)
-        if tok_matches(wct, "bit_range", 9) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "bit_range", 9) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr(wa1)
@@ -3471,7 +3536,7 @@ fn gen_expr(uint64 node) {
             return
         }
         // bit_insert(val, start, width, bits) — (val & ~(mask << start)) | ((bits & mask) << start)
-        if tok_matches(wct, "bit_insert", 10) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "bit_insert", 10) != 0 {
             // Allocate extra temps
             uint64 bi_extra = var_count * 8
             var_count = var_count + 4
@@ -3527,7 +3592,7 @@ fn gen_expr(uint64 node) {
         }
 
         // Built-in: get_module_path(buf, size) → exe path length (Windows only, returns 0 on Linux)
-        if tok_matches(wct, "get_module_path", 15) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "get_module_path", 15) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr(wa1)
@@ -3551,7 +3616,7 @@ fn gen_expr(uint64 node) {
         }
 
         // Built-in: exec_process(path) → CreateProcessA+Wait+Exit on Windows, execve on Linux
-        if tok_matches(wct, "exec_process", 12) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "exec_process", 12) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr(wfa)
@@ -3643,7 +3708,7 @@ fn gen_expr(uint64 node) {
         }
 
         // Built-in: set_executable(path) → chmod +x on Linux/macOS, no-op on Windows
-        if tok_matches(wct, "set_executable", 14) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "set_executable", 14) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr(wfa)
@@ -3659,7 +3724,7 @@ fn gen_expr(uint64 node) {
         }
 
         // Built-in: load8/16/32/64(addr) — read from memory, zero-extended
-        if tok_matches(wct, "load8", 5) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "load8", 5) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr(wfa)
@@ -3667,7 +3732,7 @@ fn gen_expr(uint64 node) {
             emit_byte(0x48); emit_byte(0x0F); emit_byte(0xB6); emit_byte(0x00)
             return
         }
-        if tok_matches(wct, "load16", 6) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "load16", 6) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr(wfa)
@@ -3675,7 +3740,7 @@ fn gen_expr(uint64 node) {
             emit_byte(0x48); emit_byte(0x0F); emit_byte(0xB7); emit_byte(0x00)
             return
         }
-        if tok_matches(wct, "load32", 6) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "load32", 6) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr(wfa)
@@ -3683,7 +3748,7 @@ fn gen_expr(uint64 node) {
             emit_byte(0x8B); emit_byte(0x00)
             return
         }
-        if tok_matches(wct, "load64", 6) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "load64", 6) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr(wfa)
@@ -3693,7 +3758,7 @@ fn gen_expr(uint64 node) {
         }
 
         // Built-in: store8/16/32/64(addr, val) — write to memory
-        if tok_matches(wct, "store8", 6) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "store8", 6) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr(wa1)
@@ -3708,7 +3773,7 @@ fn gen_expr(uint64 node) {
             emit_byte(0x88); emit_byte(0x08)
             return
         }
-        if tok_matches(wct, "store16", 7) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "store16", 7) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr(wa1)
@@ -3722,7 +3787,7 @@ fn gen_expr(uint64 node) {
             emit_byte(0x66); emit_byte(0x89); emit_byte(0x08)
             return
         }
-        if tok_matches(wct, "store32", 7) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "store32", 7) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr(wa1)
@@ -3736,7 +3801,7 @@ fn gen_expr(uint64 node) {
             emit_byte(0x89); emit_byte(0x08)
             return
         }
-        if tok_matches(wct, "store64", 7) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "store64", 7) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr(wa1)
@@ -3752,7 +3817,7 @@ fn gen_expr(uint64 node) {
         }
 
         // Built-in: vload8/16/32/64(addr) — volatile load with mfence
-        if tok_matches(wct, "vload8", 6) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "vload8", 6) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr(wfa)
@@ -3761,7 +3826,7 @@ fn gen_expr(uint64 node) {
             emit_byte(0x0F); emit_byte(0xAE); emit_byte(0xF0)
             return
         }
-        if tok_matches(wct, "vload16", 7) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "vload16", 7) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr(wfa)
@@ -3769,7 +3834,7 @@ fn gen_expr(uint64 node) {
             emit_byte(0x0F); emit_byte(0xAE); emit_byte(0xF0)
             return
         }
-        if tok_matches(wct, "vload32", 7) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "vload32", 7) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr(wfa)
@@ -3777,7 +3842,7 @@ fn gen_expr(uint64 node) {
             emit_byte(0x0F); emit_byte(0xAE); emit_byte(0xF0)
             return
         }
-        if tok_matches(wct, "vload64", 7) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "vload64", 7) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr(wfa)
@@ -3787,7 +3852,7 @@ fn gen_expr(uint64 node) {
         }
 
         // Built-in: vstore8/16/32/64(addr, val) — volatile store with mfence
-        if tok_matches(wct, "vstore8", 7) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "vstore8", 7) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr(wa1)
@@ -3802,7 +3867,7 @@ fn gen_expr(uint64 node) {
             emit_byte(0x88); emit_byte(0x08)
             return
         }
-        if tok_matches(wct, "vstore16", 8) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "vstore16", 8) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr(wa1)
@@ -3816,7 +3881,7 @@ fn gen_expr(uint64 node) {
             emit_byte(0x66); emit_byte(0x89); emit_byte(0x08)
             return
         }
-        if tok_matches(wct, "vstore32", 8) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "vstore32", 8) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr(wa1)
@@ -3830,7 +3895,7 @@ fn gen_expr(uint64 node) {
             emit_byte(0x89); emit_byte(0x08)
             return
         }
-        if tok_matches(wct, "vstore64", 8) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "vstore64", 8) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr(wa1)
@@ -3846,7 +3911,7 @@ fn gen_expr(uint64 node) {
         }
 
         // Built-in: atomic_load(ptr) → load with mfence
-        if tok_matches(wct, "atomic_load", 11) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "atomic_load", 11) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr(wfa)
@@ -3858,7 +3923,7 @@ fn gen_expr(uint64 node) {
         }
 
         // Built-in: atomic_store(ptr, val)
-        if tok_matches(wct, "atomic_store", 12) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "atomic_store", 12) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr(wa1)
@@ -3875,7 +3940,7 @@ fn gen_expr(uint64 node) {
         }
 
         // Built-in: atomic_cas(ptr, expected, desired) → 1 if swapped, 0 if not
-        if tok_matches(wct, "atomic_cas", 10) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "atomic_cas", 10) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr(wa1)
@@ -3907,7 +3972,7 @@ fn gen_expr(uint64 node) {
         }
 
         // Built-in: atomic_add(ptr, val) → old value
-        if tok_matches(wct, "atomic_add", 10) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "atomic_add", 10) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr(wa1)
@@ -3927,7 +3992,7 @@ fn gen_expr(uint64 node) {
         }
 
         // Built-in: atomic_sub(ptr, val) → old value
-        if tok_matches(wct, "atomic_sub", 10) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "atomic_sub", 10) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr(wa1)
@@ -3949,7 +4014,7 @@ fn gen_expr(uint64 node) {
         }
 
         // Built-in: atomic_and(ptr, val) → old value
-        if tok_matches(wct, "atomic_and", 10) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "atomic_and", 10) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr(wa1)
@@ -3977,7 +4042,7 @@ fn gen_expr(uint64 node) {
         }
 
         // Built-in: atomic_or(ptr, val) → old value
-        if tok_matches(wct, "atomic_or", 9) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "atomic_or", 9) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr(wa1)
@@ -4005,7 +4070,7 @@ fn gen_expr(uint64 node) {
         }
 
         // Built-in: atomic_xor(ptr, val) → old value
-        if tok_matches(wct, "atomic_xor", 10) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "atomic_xor", 10) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 wa1 = arg1
             gen_expr(wa1)
@@ -4033,13 +4098,13 @@ fn gen_expr(uint64 node) {
         }
 
         // Built-in: get_target_os() → compile-time OS constant (0=Linux, 1=macOS, 2=Windows)
-        if tok_matches(wct, "get_target_os", 13) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "get_target_os", 13) != 0 {
             emit_mov_rax_imm(target_os)
             return
         }
 
         // Built-in: syscall_raw(nr, a0, a1, a2, a3, a4, a5) → raw syscall
-        if tok_matches(wct, "syscall_raw", 11) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "syscall_raw", 11) != 0 {
             rax_invalidate()
             // Evaluate all 7 args into temp slots
             uint32 sc_arg = ast_child(node)
@@ -4086,7 +4151,7 @@ fn gen_expr(uint64 node) {
         }
 
         // Built-in: get_arch_id() → compile-time arch ID
-        if tok_matches(wct, "get_arch_id", 11) != 0 {
+        if is_extern_call == 0 && tok_matches(wct, "get_arch_id", 11) != 0 {
             if target_os == 2 {
                 emit_mov_rax_imm(3)
             } else if target_os == 1 {
@@ -4218,6 +4283,16 @@ fn gen_expr(uint64 node) {
             emit_byte(0x48); emit_byte(0x83); emit_byte(0xC4)
             uint8 cl8 = cleanup
             emit_byte(cl8) // add rsp, N
+        }
+
+        // If the callee is an extern fn, record a call site for the linker
+        // relocation and skip the internal fixup table — the linker fills the
+        // disp32 at .o emit time with R_X86_64_PLT32.
+        uint64 wct_ext = callee_tok
+        uint64 ext_idx = extern_fn_lookup(wct_ext)
+        if ext_idx != 0xFFFFFFFF {
+            extern_call_record(fixup_off, ext_idx)
+            return
         }
 
         // Record fixup
@@ -5240,10 +5315,17 @@ fn scan_assigns(uint64 node, uint64 target_offset) -> uint64 {
 fn gen_function(uint64 fn_node) {
     uint32 name_tok = ast_data1(fn_node)
 
-    // Check annotation flags: bit 0 = noreturn, bit 1 = naked
+    // Check annotation flags: bit 0 = noreturn, bit 1 = naked, bit 3 = extern
     uint32 ann_flags = ast_data4(fn_node)
     uint64 is_naked = ann_flags & 2
     uint64 is_noreturn = ann_flags & 1
+    uint64 is_extern = ann_flags & 8
+
+    // Extern declarations have no body — skip codegen entirely. The linker
+    // will resolve the symbol in the final binary.
+    if is_extern != 0 { return }
+    uint32 body_check = ast_data3(fn_node)
+    if body_check == 0 { return }
 
     // Overflow arg patch tracking (for functions with >6 params)
     uint64[16] overflow_patches
@@ -6158,8 +6240,12 @@ fn emit_elf_relocatable(uint64 text_len, uint64 data_len, uint64 arch) {
     // idx 13: .symtab\0    (8 bytes)
     // idx 21: .strtab\0    (8 bytes)
     // idx 29: .shstrtab\0  (10 bytes)
-    // Total: 39 bytes
+    // idx 39: .rela.text\0 (11 bytes) — only if extern_call_count > 0
+    // Total: 39 or 50 bytes
+    uint64 has_relocs = 0
+    if extern_call_count > 0 { has_relocs = 1 }
     uint64 shstrtab_size = 39
+    if has_relocs != 0 { shstrtab_size = 50 }
 
     // Build string table (.strtab) for symbol names:
     // idx 0: \0 (null symbol name)
@@ -6172,9 +6258,10 @@ fn emit_elf_relocatable(uint64 text_len, uint64 data_len, uint64 arch) {
     uint8 nul = 0
     unsafe { *(sb0 as uint8) = nul }
 
-    // Symtab: first entry is null (STN_UNDEF), then one per function
+    // Symtab: first entry is null (STN_UNDEF), then one per function,
+    // then one per extern function.
     // Elf64_Sym = 24 bytes each
-    uint64 sym_count = 1 + fn_count  // null + functions
+    uint64 sym_count = 1 + fn_count + extern_fn_count
     uint64 symtab_size = sym_count * 24
 
     // Build strtab: copy each function name from source
@@ -6216,6 +6303,38 @@ fn emit_elf_relocatable(uint64 text_len, uint64 data_len, uint64 arch) {
         fi = fi + 1
     }
 
+    // Append extern function names to strtab and record their offsets
+    uint64 extern_name_offsets = 0
+    if extern_fn_count > 0 {
+        extern_name_offsets = alloc(extern_fn_count * 8)
+        uint64 ei = 0
+        while ei < extern_fn_count {
+            uint64 xe = extern_fn_table + ei * 8
+            uint32 xtok = 0
+            unsafe { *(xe as uint32) -> xtok }
+            uint64 wxt = xtok
+            uint64 xno_ptr = extern_name_offsets + ei * 8
+            unsafe { *(xno_ptr as uint64) = strtab_len }
+            uint64 xnstart = tok_text_start(wxt)
+            uint64 xnlen = tok_text_len(wxt)
+            uint64 xni = 0
+            while xni < xnlen {
+                uint64 xsp = cg_source + xnstart + xni
+                uint64 xdp = strtab_buf + strtab_len
+                uint64 xc = 0
+                unsafe { *(xsp as uint8) -> xc }
+                uint8 xcb = xc
+                unsafe { *(xdp as uint8) = xcb }
+                strtab_len = strtab_len + 1
+                xni = xni + 1
+            }
+            uint64 xntp = strtab_buf + strtab_len
+            unsafe { *(xntp as uint8) = nul }
+            strtab_len = strtab_len + 1
+            ei = ei + 1
+        }
+    }
+
     // Layout:
     // 0x00: ELF header (64 bytes)
     // 0x40: .text section content (text_len bytes)
@@ -6223,7 +6342,11 @@ fn emit_elf_relocatable(uint64 text_len, uint64 data_len, uint64 arch) {
     // then: .symtab (symtab_size bytes)
     // then: .strtab (strtab_len bytes)
     // then: .shstrtab (shstrtab_size bytes)
-    // then: section headers (6 * 64 = 384 bytes)
+    // then: .rela.text (optional, only if externs exist)
+    // then: section headers (6 or 7 * 64 bytes)
+
+    uint64 rela_count = extern_call_count
+    uint64 rela_size = rela_count * 24   // Elf64_Rela = 24 bytes
 
     uint64 elf_hdr_size = 64
     uint64 text_off = elf_hdr_size
@@ -6231,11 +6354,16 @@ fn emit_elf_relocatable(uint64 text_len, uint64 data_len, uint64 arch) {
     uint64 symtab_off = data_off + data_len
     uint64 strtab_off = symtab_off + symtab_size
     uint64 shstrtab_off = strtab_off + strtab_len
+    // Align .rela.text to 8 bytes
+    uint64 rela_off = shstrtab_off + shstrtab_size
+    uint64 rela_align_pad = (8 - (rela_off & 7)) & 7
+    rela_off = rela_off + rela_align_pad
     // Align section headers to 8 bytes
-    uint64 shdr_off = shstrtab_off + shstrtab_size
+    uint64 shdr_off = rela_off + rela_size
     uint64 shdr_align_pad = (8 - (shdr_off & 7)) & 7
     shdr_off = shdr_off + shdr_align_pad
     uint64 num_sections = 6  // null, .text, .data, .symtab, .strtab, .shstrtab
+    if has_relocs != 0 { num_sections = 7 }  // + .rela.text
 
     // --- Emit ELF header (64 bytes) ---
     // e_ident[0..3]: magic
@@ -6367,6 +6495,30 @@ fn emit_elf_relocatable(uint64 text_len, uint64 data_len, uint64 arch) {
         emit_u64_le(0)
     }
 
+    // Third pass: emit extern function symbols (GLOBAL, STT_NOTYPE, SHN_UNDEF).
+    // The linker resolves these when producing the final executable.
+    uint64 extern_sym_base = local_count
+    if main_fn_idx != 0xFFFFFFFF { extern_sym_base = extern_sym_base + 1 }
+    uint64 ei2 = 0
+    while ei2 < extern_fn_count {
+        uint64 xno_ptr2 = extern_name_offsets + ei2 * 8
+        uint64 xname_off = 0
+        unsafe { *(xno_ptr2 as uint64) -> xname_off }
+        // st_name
+        emit_u32_le(xname_off)
+        // st_info = STB_GLOBAL(1) << 4 | STT_NOTYPE(0) = 0x10
+        emit_byte(0x10)
+        // st_other = 0
+        emit_byte(0)
+        // st_shndx = 0 (SHN_UNDEF — linker resolves)
+        emit_u16_le(0)
+        // st_value = 0
+        emit_u64_le(0)
+        // st_size = 0
+        emit_u64_le(0)
+        ei2 = ei2 + 1
+    }
+
     // --- Emit .strtab ---
     ci = 0
     while ci < strtab_len {
@@ -6391,6 +6543,45 @@ fn emit_elf_relocatable(uint64 text_len, uint64 data_len, uint64 arch) {
     emit_byte(46); emit_byte(115); emit_byte(116); emit_byte(114); emit_byte(116); emit_byte(97); emit_byte(98); emit_byte(0)
     // .shstrtab\0
     emit_byte(46); emit_byte(115); emit_byte(104); emit_byte(115); emit_byte(116); emit_byte(114); emit_byte(116); emit_byte(97); emit_byte(98); emit_byte(0)
+    if has_relocs != 0 {
+        // .rela.text\0
+        emit_byte(46); emit_byte(114); emit_byte(101); emit_byte(108); emit_byte(97)
+        emit_byte(46); emit_byte(116); emit_byte(101); emit_byte(120); emit_byte(116); emit_byte(0)
+    }
+
+    // --- Emit .rela.text section content ---
+    if has_relocs != 0 {
+        // Align to 8
+        pi = 0
+        while pi < rela_align_pad { emit_byte(0); pi = pi + 1 }
+        uint64 ri = 0
+        while ri < rela_count {
+            uint64 re = extern_call_sites + ri * 16
+            uint32 rco = 0
+            unsafe { *(re as uint32) -> rco }
+            uint64 re4 = re + 4
+            uint32 xidx = 0
+            unsafe { *(re4 as uint32) -> xidx }
+            uint64 wxi = xidx
+            uint64 sym_idx = extern_sym_base + wxi
+            // r_offset: code offset inside .text
+            emit_u64_le(rco)
+            // r_info: (sym_idx << 32) | type
+            // x86_64: R_X86_64_PLT32 = 4;  ARM64: R_AARCH64_CALL26 = 283
+            uint64 rtype = 4
+            if arch == 1 { rtype = 283 }
+            uint64 r_info = (sym_idx << 32) | rtype
+            emit_u64_le(r_info)
+            // r_addend: x86_64 wants -4, ARM64 wants 0
+            if arch == 1 {
+                emit_u64_le(0)
+            } else {
+                // -4 as 64-bit two's complement
+                emit_u64_le(0xFFFFFFFFFFFFFFFC)
+            }
+            ri = ri + 1
+        }
+    }
 
     // --- Alignment padding before section headers ---
     pi = 0
@@ -6461,6 +6652,652 @@ fn emit_elf_relocatable(uint64 text_len, uint64 data_len, uint64 arch) {
     emit_u32_le(0)          // sh_info
     emit_u64_le(1)          // sh_addralign
     emit_u64_le(0)          // sh_entsize
+
+    // Section 6: .rela.text (only if we have extern call sites)
+    if has_relocs != 0 {
+        emit_u32_le(39)         // sh_name (offset 39 in .shstrtab)
+        emit_u32_le(4)          // sh_type = SHT_RELA
+        emit_u64_le(0x40)       // sh_flags = SHF_INFO_LINK
+        emit_u64_le(0)          // sh_addr = 0
+        emit_u64_le(rela_off)   // sh_offset
+        emit_u64_le(rela_size)  // sh_size
+        emit_u32_le(3)          // sh_link = index of .symtab (section 3)
+        emit_u32_le(1)          // sh_info = index of .text (section 1)
+        emit_u64_le(8)          // sh_addralign
+        emit_u64_le(24)         // sh_entsize = sizeof(Elf64_Rela)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Mach-O relocatable (MH_OBJECT) emission — macOS .o files
+// Layout:
+//   [0]   Mach header (32 bytes)
+//   [32]  LC_SEGMENT_64 + __text section (152 bytes)
+//   [184] LC_SYMTAB (24 bytes)
+//   [208] LC_DYSYMTAB (80 bytes)
+//   [288] __text content (text_len bytes, padded to 8)
+//   [...]  relocation_info entries (8 * nreloc)
+//   [...]  nlist_64 symbol table (16 * nsyms)
+//   [...]  string table (strings for symbols)
+//
+// Mach-O C ABI prepends '_' to symbol names (_main, _write, ...).
+// Relocations: X86_64_RELOC_BRANCH(2) on x86_64, ARM64_RELOC_BRANCH26(2) on arm64.
+@export
+fn emit_macho_relocatable(uint64 text_len, uint64 data_len, uint64 arch) {
+    // Save the generated code blob (text + data are already in out_buf).
+    uint64 blob_len = out_len
+    uint64 blob = alloc(blob_len + 16)
+    uint64 mi = 0
+    while mi < blob_len {
+        uint64 sp = out_buf + mi
+        uint64 dp = blob + mi
+        uint64 bv = 0
+        unsafe { *(sp as uint8) -> bv }
+        uint8 bb = bv
+        unsafe { *(dp as uint8) = bb }
+        mi = mi + 1
+    }
+    out_len = 0
+
+    // Merge text+data into one section (we use the same trick as ELF).
+    uint64 section_size = text_len + data_len
+
+    // Build string table:
+    //   idx 0: \0 (null)
+    //   idx 1: _<fn_name>\0 for each local/main
+    //   idx N: _<extern_name>\0 for each extern
+    uint64 strtab_buf = alloc(8192)
+    uint64 strtab_len = 1
+    uint64 sb0 = strtab_buf
+    uint8 nul = 0
+    unsafe { *(sb0 as uint8) = nul }
+
+    // Track main fn index; track strtab offsets for each symbol
+    uint64 fn_str_offs = alloc(fn_count * 8)
+    uint64 main_fn_idx = 0xFFFFFFFF
+    uint64 mfi = 0
+    while mfi < fn_count {
+        uint64 fentry = fn_table + mfi * 8
+        uint32 stored_tok = 0
+        unsafe { *(fentry as uint32) -> stored_tok }
+        uint64 ws = stored_tok
+        uint64 fop = fn_str_offs + mfi * 8
+        unsafe { *(fop as uint64) = strtab_len }
+        // underscore prefix
+        uint64 dstp = strtab_buf + strtab_len
+        uint8 usb = 95
+        unsafe { *(dstp as uint8) = usb }
+        strtab_len = strtab_len + 1
+        uint64 nstart = tok_text_start(ws)
+        uint64 nlen = tok_text_len(ws)
+        uint64 ni = 0
+        while ni < nlen {
+            uint64 src_p = cg_source + nstart + ni
+            uint64 dst_p = strtab_buf + strtab_len
+            uint64 ch = 0
+            unsafe { *(src_p as uint8) -> ch }
+            uint8 cb = ch
+            unsafe { *(dst_p as uint8) = cb }
+            strtab_len = strtab_len + 1
+            ni = ni + 1
+        }
+        uint64 ntp = strtab_buf + strtab_len
+        unsafe { *(ntp as uint8) = nul }
+        strtab_len = strtab_len + 1
+        if tok_matches(ws, "main", 4) != 0 { main_fn_idx = mfi }
+        mfi = mfi + 1
+    }
+
+    // Extern names
+    uint64 ext_str_offs = 0
+    if extern_fn_count > 0 {
+        ext_str_offs = alloc(extern_fn_count * 8)
+        uint64 mei = 0
+        while mei < extern_fn_count {
+            uint64 xe = extern_fn_table + mei * 8
+            uint32 xtok = 0
+            unsafe { *(xe as uint32) -> xtok }
+            uint64 wxt = xtok
+            uint64 xop = ext_str_offs + mei * 8
+            unsafe { *(xop as uint64) = strtab_len }
+            uint64 mdstp = strtab_buf + strtab_len
+            uint8 musb = 95
+            unsafe { *(mdstp as uint8) = musb }
+            strtab_len = strtab_len + 1
+            uint64 xnstart = tok_text_start(wxt)
+            uint64 xnlen = tok_text_len(wxt)
+            uint64 xni = 0
+            while xni < xnlen {
+                uint64 xsp = cg_source + xnstart + xni
+                uint64 xdp = strtab_buf + strtab_len
+                uint64 xc = 0
+                unsafe { *(xsp as uint8) -> xc }
+                uint8 xcb = xc
+                unsafe { *(xdp as uint8) = xcb }
+                strtab_len = strtab_len + 1
+                xni = xni + 1
+            }
+            uint64 xntp = strtab_buf + strtab_len
+            unsafe { *(xntp as uint8) = nul }
+            strtab_len = strtab_len + 1
+            mei = mei + 1
+        }
+    }
+
+    // Layout offsets
+    uint64 hdr_size = 288  // mach_header + LC_SEGMENT_64 + LC_SYMTAB + LC_DYSYMTAB
+    uint64 text_off = hdr_size
+    uint64 text_end = text_off + section_size
+    // Align to 8
+    uint64 pad_text = (8 - (text_end & 7)) & 7
+    uint64 reloc_off = text_end + pad_text
+    uint64 nreloc = extern_call_count
+    uint64 reloc_end = reloc_off + nreloc * 8
+    uint64 sym_count = 0
+    if main_fn_idx != 0xFFFFFFFF { sym_count = 1 }
+    sym_count = sym_count + extern_fn_count
+    // Add local (non-main) functions as N_SECT (not strictly needed but keeps parity)
+    uint64 local_sym_count = fn_count - sym_count + extern_fn_count
+    // Actually, we emit: locals first (non-main fns), then extdef (main), then undef (externs).
+    uint64 nlocal = 0
+    if main_fn_idx != 0xFFFFFFFF {
+        nlocal = fn_count - 1
+    } else {
+        nlocal = fn_count
+    }
+    uint64 nextdef = 0
+    if main_fn_idx != 0xFFFFFFFF { nextdef = 1 }
+    uint64 nundef = extern_fn_count
+    uint64 total_syms = nlocal + nextdef + nundef
+    uint64 symtab_off = reloc_end
+    uint64 symtab_size = total_syms * 16
+    uint64 stroff = symtab_off + symtab_size
+
+    // --- Mach header (32 bytes) ---
+    emit_u32_le(0xFEEDFACF)          // magic 64
+    if arch == 0 {
+        emit_u32_le(0x01000007)      // CPU_TYPE_X86_64
+        emit_u32_le(3)               // CPU_SUBTYPE_X86_64_ALL
+    } else {
+        emit_u32_le(0x0100000C)      // CPU_TYPE_ARM64
+        emit_u32_le(0)               // CPU_SUBTYPE_ARM64_ALL
+    }
+    emit_u32_le(1)                   // MH_OBJECT
+    emit_u32_le(3)                   // ncmds
+    emit_u32_le(152 + 24 + 80)       // sizeofcmds = 256
+    emit_u32_le(0x2000)              // MH_SUBSECTIONS_VIA_SYMBOLS
+    emit_u32_le(0)                   // reserved
+
+    // --- LC_SEGMENT_64 (72 header + 80 section = 152) ---
+    emit_u32_le(0x19)                // LC_SEGMENT_64
+    emit_u32_le(152)                 // cmdsize
+    // segname: empty (16 bytes of zero)
+    uint64 pi = 0
+    while pi < 16 { emit_byte(0); pi = pi + 1 }
+    emit_u64_le(0)                   // vmaddr
+    emit_u64_le(section_size)        // vmsize
+    emit_u64_le(text_off)            // fileoff
+    emit_u64_le(section_size)        // filesize
+    emit_u32_le(7)                   // maxprot
+    emit_u32_le(7)                   // initprot
+    emit_u32_le(1)                   // nsects
+    emit_u32_le(0)                   // flags
+
+    // Section: __text,__TEXT
+    // sectname "__text"
+    emit_byte(95); emit_byte(95); emit_byte(116); emit_byte(101)
+    emit_byte(120); emit_byte(116); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    // segname "__TEXT"
+    emit_byte(95); emit_byte(95); emit_byte(84); emit_byte(69)
+    emit_byte(88); emit_byte(84); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_u64_le(0)                   // addr
+    emit_u64_le(section_size)        // size
+    emit_u32_le(text_off)            // offset
+    emit_u32_le(4)                   // align = 2^4 = 16
+    emit_u32_le(reloc_off)           // reloff
+    emit_u32_le(nreloc)              // nreloc
+    emit_u32_le(0x80000400)          // S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS
+    emit_u32_le(0); emit_u32_le(0); emit_u32_le(0)  // reserved
+
+    // --- LC_SYMTAB (24 bytes) ---
+    emit_u32_le(2)                   // LC_SYMTAB
+    emit_u32_le(24)                  // cmdsize
+    emit_u32_le(symtab_off)          // symoff
+    emit_u32_le(total_syms)          // nsyms
+    emit_u32_le(stroff)              // stroff
+    emit_u32_le(strtab_len)          // strsize
+
+    // --- LC_DYSYMTAB (80 bytes) ---
+    emit_u32_le(0xB)                 // LC_DYSYMTAB
+    emit_u32_le(80)                  // cmdsize
+    emit_u32_le(0)                   // ilocalsym
+    emit_u32_le(nlocal)              // nlocalsym
+    emit_u32_le(nlocal)              // iextdefsym
+    emit_u32_le(nextdef)             // nextdefsym
+    emit_u32_le(nlocal + nextdef)    // iundefsym
+    emit_u32_le(nundef)              // nundefsym
+    emit_u32_le(0); emit_u32_le(0)   // tocoff, ntoc
+    emit_u32_le(0); emit_u32_le(0)   // modtaboff, nmodtab
+    emit_u32_le(0); emit_u32_le(0)   // extrefsymoff, nextrefsyms
+    emit_u32_le(0); emit_u32_le(0)   // indirectsymoff, nindirectsyms
+    emit_u32_le(0); emit_u32_le(0)   // extreloff, nextrel
+    emit_u32_le(0); emit_u32_le(0)   // locreloff, nlocrel
+
+    // --- Section content ---
+    mi = 0
+    while mi < section_size {
+        uint64 p = blob + mi
+        uint64 bv = 0
+        unsafe { *(p as uint8) -> bv }
+        uint8 bb = bv
+        emit_byte(bb)
+        mi = mi + 1
+    }
+    // Align to 8 before relocations
+    pi = 0
+    while pi < pad_text { emit_byte(0); pi = pi + 1 }
+
+    // --- Relocations ---
+    // Symbol index for externs starts at nlocal + nextdef.
+    uint64 undef_base = nlocal + nextdef
+    uint64 ri = 0
+    while ri < nreloc {
+        uint64 re = extern_call_sites + ri * 16
+        uint32 rco = 0
+        unsafe { *(re as uint32) -> rco }
+        uint64 re4 = re + 4
+        uint32 xidx = 0
+        unsafe { *(re4 as uint32) -> xidx }
+        uint64 wxi = xidx
+        uint64 sym_idx = undef_base + wxi
+        // r_address
+        emit_u32_le(rco)
+        // r_symbolnum(24) | r_pcrel(1) | r_length(2) | r_extern(1) | r_type(4)
+        // Layout (LSB first): symbolnum[0..23], pcrel[24], length[25..26], extern[27], type[28..31]
+        uint64 info = sym_idx
+        info = info | (1 << 24)            // r_pcrel
+        info = info | (2 << 25)            // r_length = 2 (4 bytes)
+        info = info | (1 << 27)            // r_extern
+        // r_type: X86_64_RELOC_BRANCH(2) or ARM64_RELOC_BRANCH26(2)
+        info = info | (2 << 28)
+        emit_u32_le(info)
+        ri = ri + 1
+    }
+
+    // --- nlist_64 symbol table ---
+    // 1) Locals: all non-main functions (N_SECT | external=0)
+    uint64 sfi = 0
+    while sfi < fn_count {
+        if sfi != main_fn_idx {
+            uint64 fop2 = fn_str_offs + sfi * 8
+            uint64 so = 0
+            unsafe { *(fop2 as uint64) -> so }
+            emit_u32_le(so)             // n_strx
+            emit_byte(0x0E)             // n_type = N_SECT
+            emit_byte(1)                // n_sect = 1 (__text)
+            emit_u16_le(0)              // n_desc
+            // n_value = code offset
+            uint64 fentry2 = fn_table + sfi * 8
+            uint64 fe4b = fentry2 + 4
+            uint32 code_off = 0
+            unsafe { *(fe4b as uint32) -> code_off }
+            emit_u64_le(code_off)
+        }
+        sfi = sfi + 1
+    }
+    // 2) Extdef: main
+    if main_fn_idx != 0xFFFFFFFF {
+        uint64 fop3 = fn_str_offs + main_fn_idx * 8
+        uint64 so2 = 0
+        unsafe { *(fop3 as uint64) -> so2 }
+        emit_u32_le(so2)
+        emit_byte(0x0F)             // N_SECT | N_EXT
+        emit_byte(1)
+        emit_u16_le(0)
+        uint64 fentry3 = fn_table + main_fn_idx * 8
+        uint64 fe4c = fentry3 + 4
+        uint32 mc_off = 0
+        unsafe { *(fe4c as uint32) -> mc_off }
+        emit_u64_le(mc_off)
+    }
+    // 3) Undef: externs
+    uint64 ei3 = 0
+    while ei3 < extern_fn_count {
+        uint64 xop3 = ext_str_offs + ei3 * 8
+        uint64 so3 = 0
+        unsafe { *(xop3 as uint64) -> so3 }
+        emit_u32_le(so3)
+        emit_byte(0x01)             // N_UNDF | N_EXT
+        emit_byte(0)                // no section
+        emit_u16_le(0)
+        emit_u64_le(0)
+        ei3 = ei3 + 1
+    }
+
+    // --- String table ---
+    mi = 0
+    while mi < strtab_len {
+        uint64 p = strtab_buf + mi
+        uint64 bv = 0
+        unsafe { *(p as uint8) -> bv }
+        uint8 bb = bv
+        emit_byte(bb)
+        mi = mi + 1
+    }
+}
+
+// ---------------------------------------------------------------------------
+// COFF relocatable (.obj) emission — Windows object files
+// Layout:
+//   [0]  COFF file header (20 bytes)
+//   [20] Section header .text (40 bytes)
+//   [60] Section raw data (text_len bytes)
+//   [...] Relocations (10 bytes each)
+//   [...] Symbol table (18 bytes each)
+//   [...] String table
+//
+// COFF symbols ≤ 8 bytes go in-place; longer names use the string table.
+// Windows x64 doesn't prepend '_' (unlike 32-bit).
+@export
+fn emit_coff_relocatable(uint64 text_len, uint64 data_len, uint64 arch) {
+    uint64 blob_len = out_len
+    uint64 blob = alloc(blob_len + 16)
+    uint64 ci = 0
+    while ci < blob_len {
+        uint64 sp = out_buf + ci
+        uint64 dp = blob + ci
+        uint64 bv = 0
+        unsafe { *(sp as uint8) -> bv }
+        uint8 bb = bv
+        unsafe { *(dp as uint8) = bb }
+        ci = ci + 1
+    }
+    out_len = 0
+
+    uint64 section_size = text_len + data_len
+
+    // Symbol order: non-main fns (STATIC), main (EXTERNAL), externs (EXTERNAL UNDEF)
+    uint64 main_fn_idx = 0xFFFFFFFF
+    uint64 ci_mf = 0
+    while ci_mf < fn_count {
+        uint64 fentry = fn_table + ci_mf * 8
+        uint32 stored_tok = 0
+        unsafe { *(fentry as uint32) -> stored_tok }
+        uint64 ws = stored_tok
+        if tok_matches(ws, "main", 4) != 0 { main_fn_idx = ci_mf }
+        ci_mf = ci_mf + 1
+    }
+
+    uint64 total_syms = fn_count + extern_fn_count
+    uint64 sym_size = total_syms * 18
+
+    // Build string table up front so we know its size.
+    // String table starts with a 4-byte length field (inclusive of itself).
+    uint64 strtab_buf = alloc(8192)
+    uint64 strtab_len = 4  // reserve first 4 bytes for length
+    // Store 4 bytes of zeros initially (we'll fill at the end)
+    uint64 sb0 = strtab_buf
+    uint8 zb = 0
+    unsafe { *(sb0 as uint8) = zb }
+    uint64 sb1 = strtab_buf + 1
+    unsafe { *(sb1 as uint8) = zb }
+    uint64 sb2 = strtab_buf + 2
+    unsafe { *(sb2 as uint8) = zb }
+    uint64 sb3 = strtab_buf + 3
+    unsafe { *(sb3 as uint8) = zb }
+
+    // For each symbol, decide: inline (≤8 bytes) or string-table offset
+    // We record: inline_flag (u8), 8 inline bytes, or strtab offset (u32).
+    uint64 sym_meta = alloc(total_syms * 16)
+    uint64 smi = 0
+    while smi < fn_count {
+        uint64 fentry = fn_table + smi * 8
+        uint32 stored_tok = 0
+        unsafe { *(fentry as uint32) -> stored_tok }
+        uint64 ws = stored_tok
+        uint64 nstart = tok_text_start(ws)
+        uint64 nlen = tok_text_len(ws)
+        uint64 mp = sym_meta + smi * 16
+        if nlen <= 8 {
+            uint8 one = 1
+            unsafe { *(mp as uint8) = one }
+            uint64 ki = 0
+            while ki < 8 {
+                uint64 cp = mp + 1 + ki
+                if ki < nlen {
+                    uint64 srcp = cg_source + nstart + ki
+                    uint64 cv = 0
+                    unsafe { *(srcp as uint8) -> cv }
+                    uint8 cb = cv
+                    unsafe { *(cp as uint8) = cb }
+                } else {
+                    uint8 zz = 0
+                    unsafe { *(cp as uint8) = zz }
+                }
+                ki = ki + 1
+            }
+        } else {
+            uint8 zero = 0
+            unsafe { *(mp as uint8) = zero }
+            // store strtab offset at mp+9 (u32)
+            uint64 op = mp + 9
+            uint32 stoff = strtab_len
+            unsafe { *(op as uint32) = stoff }
+            // append name + null
+            uint64 ci2 = 0
+            while ci2 < nlen {
+                uint64 srcp = cg_source + nstart + ci2
+                uint64 dstp = strtab_buf + strtab_len
+                uint64 cv = 0
+                unsafe { *(srcp as uint8) -> cv }
+                uint8 cb = cv
+                unsafe { *(dstp as uint8) = cb }
+                strtab_len = strtab_len + 1
+                ci2 = ci2 + 1
+            }
+            uint64 ntp = strtab_buf + strtab_len
+            uint8 nul2 = 0
+            unsafe { *(ntp as uint8) = nul2 }
+            strtab_len = strtab_len + 1
+        }
+        smi = smi + 1
+    }
+
+    // Extern symbols
+    uint64 esi = 0
+    while esi < extern_fn_count {
+        uint64 xe = extern_fn_table + esi * 8
+        uint32 xtok = 0
+        unsafe { *(xe as uint32) -> xtok }
+        uint64 wxt = xtok
+        uint64 xnstart = tok_text_start(wxt)
+        uint64 xnlen = tok_text_len(wxt)
+        uint64 emp = sym_meta + (fn_count + esi) * 16
+        if xnlen <= 8 {
+            uint8 one = 1
+            unsafe { *(emp as uint8) = one }
+            uint64 ki = 0
+            while ki < 8 {
+                uint64 cp = emp + 1 + ki
+                if ki < xnlen {
+                    uint64 srcp = cg_source + xnstart + ki
+                    uint64 cv = 0
+                    unsafe { *(srcp as uint8) -> cv }
+                    uint8 cb = cv
+                    unsafe { *(cp as uint8) = cb }
+                } else {
+                    uint8 zz = 0
+                    unsafe { *(cp as uint8) = zz }
+                }
+                ki = ki + 1
+            }
+        } else {
+            uint8 zero = 0
+            unsafe { *(emp as uint8) = zero }
+            uint64 op = emp + 9
+            uint32 stoff = strtab_len
+            unsafe { *(op as uint32) = stoff }
+            uint64 ci3 = 0
+            while ci3 < xnlen {
+                uint64 srcp = cg_source + xnstart + ci3
+                uint64 dstp = strtab_buf + strtab_len
+                uint64 cv = 0
+                unsafe { *(srcp as uint8) -> cv }
+                uint8 cb = cv
+                unsafe { *(dstp as uint8) = cb }
+                strtab_len = strtab_len + 1
+                ci3 = ci3 + 1
+            }
+            uint64 ntp = strtab_buf + strtab_len
+            uint8 nul2 = 0
+            unsafe { *(ntp as uint8) = nul2 }
+            strtab_len = strtab_len + 1
+        }
+        esi = esi + 1
+    }
+
+    // Now write the 4-byte length into strtab_buf[0..4]
+    uint64 sbp0 = strtab_buf
+    uint32 stl = strtab_len
+    unsafe { *(sbp0 as uint32) = stl }
+
+    // Layout
+    uint64 hdr_size = 20
+    uint64 sec_hdr_size = 40
+    uint64 text_off = hdr_size + sec_hdr_size  // 60
+    uint64 nreloc = extern_call_count
+    uint64 reloc_off = text_off + section_size
+    uint64 reloc_size = nreloc * 10
+    uint64 symtab_off = reloc_off + reloc_size
+    uint64 stroff = symtab_off + sym_size  // string table comes right after
+
+    // --- COFF file header (20 bytes) ---
+    if arch == 0 {
+        emit_u16_le(0x8664)          // IMAGE_FILE_MACHINE_AMD64
+    } else {
+        emit_u16_le(0xAA64)          // IMAGE_FILE_MACHINE_ARM64
+    }
+    emit_u16_le(1)                   // NumberOfSections
+    emit_u32_le(0)                   // TimeDateStamp
+    emit_u32_le(symtab_off)          // PointerToSymbolTable
+    emit_u32_le(total_syms)          // NumberOfSymbols
+    emit_u16_le(0)                   // SizeOfOptionalHeader
+    emit_u16_le(0)                   // Characteristics
+
+    // --- Section header: .text (40 bytes) ---
+    // Name = ".text\0\0\0"
+    emit_byte(46); emit_byte(116); emit_byte(101); emit_byte(120)
+    emit_byte(116); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_u32_le(0)                   // VirtualSize
+    emit_u32_le(0)                   // VirtualAddress
+    emit_u32_le(section_size)        // SizeOfRawData
+    emit_u32_le(text_off)            // PointerToRawData
+    emit_u32_le(reloc_off)           // PointerToRelocations
+    emit_u32_le(0)                   // PointerToLineNumbers
+    emit_u16_le(nreloc)              // NumberOfRelocations
+    emit_u16_le(0)                   // NumberOfLineNumbers
+    // Characteristics:
+    // 0x00000020 CNT_CODE | 0x00500000 ALIGN_16BYTES | 0x20000000 EXECUTE | 0x40000000 READ
+    emit_u32_le(0x60500020)
+
+    // --- Section raw data ---
+    ci = 0
+    while ci < section_size {
+        uint64 p = blob + ci
+        uint64 bv = 0
+        unsafe { *(p as uint8) -> bv }
+        uint8 bb = bv
+        emit_byte(bb)
+        ci = ci + 1
+    }
+
+    // --- Relocations ---
+    uint64 undef_base = fn_count
+    uint64 ri = 0
+    while ri < nreloc {
+        uint64 re = extern_call_sites + ri * 16
+        uint32 rco = 0
+        unsafe { *(re as uint32) -> rco }
+        uint64 re4 = re + 4
+        uint32 xidx = 0
+        unsafe { *(re4 as uint32) -> xidx }
+        uint64 wxi = xidx
+        uint64 sym_idx = undef_base + wxi
+        emit_u32_le(rco)             // VirtualAddress
+        emit_u32_le(sym_idx)         // SymbolTableIndex
+        if arch == 0 {
+            emit_u16_le(4)           // IMAGE_REL_AMD64_REL32
+        } else {
+            emit_u16_le(3)           // IMAGE_REL_ARM64_BRANCH26
+        }
+        ri = ri + 1
+    }
+
+    // --- Symbol table ---
+    uint64 wi = 0
+    while wi < total_syms {
+        uint64 mp = sym_meta + wi * 16
+        uint64 inlv = 0
+        unsafe { *(mp as uint8) -> inlv }
+        if inlv != 0 {
+            // Emit 8 inline bytes
+            uint64 bi = 0
+            while bi < 8 {
+                uint64 cp = mp + 1 + bi
+                uint64 cv = 0
+                unsafe { *(cp as uint8) -> cv }
+                uint8 cb = cv
+                emit_byte(cb)
+                bi = bi + 1
+            }
+        } else {
+            emit_u32_le(0)
+            uint64 op = mp + 9
+            uint32 stoff2 = 0
+            unsafe { *(op as uint32) -> stoff2 }
+            emit_u32_le(stoff2)
+        }
+        // Value, SectionNumber, Type, StorageClass, NumAux
+        if wi < fn_count {
+            // Function defined in this unit
+            uint64 fentry = fn_table + wi * 8
+            uint64 fe4 = fentry + 4
+            uint32 code_off = 0
+            unsafe { *(fe4 as uint32) -> code_off }
+            emit_u32_le(code_off)        // Value
+            emit_u16_le(1)               // SectionNumber = 1
+            emit_u16_le(0x20)            // Type = function
+            if wi == main_fn_idx {
+                emit_byte(2)             // EXTERNAL
+            } else {
+                emit_byte(3)             // STATIC (internal)
+            }
+            emit_byte(0)                 // NumAux
+        } else {
+            // Extern (undefined)
+            emit_u32_le(0)               // Value
+            emit_u16_le(0)               // SectionNumber = 0 (undef)
+            emit_u16_le(0x20)            // Type = function
+            emit_byte(2)                 // EXTERNAL
+            emit_byte(0)                 // NumAux
+        }
+        wi = wi + 1
+    }
+
+    // --- String table ---
+    ci = 0
+    while ci < strtab_len {
+        uint64 p = strtab_buf + ci
+        uint64 bv = 0
+        unsafe { *(p as uint8) -> bv }
+        uint8 bb = bv
+        emit_byte(bb)
+        ci = ci + 1
+    }
 }
 
 @export

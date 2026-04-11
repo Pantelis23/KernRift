@@ -1415,6 +1415,66 @@ else
     PASS=$((PASS + 1))
 fi
 
+echo ""
+echo "--- extern fn (libc linking) ---"
+if command -v gcc > /dev/null 2>&1; then
+    TOTAL=$((TOTAL + 1))
+    cat > /tmp/krc_ext_$$.kr <<'KREOF'
+extern fn write(u64 fd, u64 buf, u64 len) -> u64
+
+fn main() {
+    write(1, "extern_ok\n", 10)
+    exit(0)
+}
+KREOF
+    if $KRC --emit=obj /tmp/krc_ext_$$.kr -o /tmp/krc_ext_$$.o > /dev/null 2>&1 \
+       && gcc /tmp/krc_ext_$$.o -o /tmp/krc_ext_linked_$$ -no-pie > /dev/null 2>&1; then
+        got=$(/tmp/krc_ext_linked_$$ 2>/dev/null)
+        if [ "$got" = "extern_ok" ]; then
+            PASS=$((PASS + 1))
+            echo "  extern_libc_write: PASS"
+        else
+            FAIL=$((FAIL + 1))
+            echo "  extern_libc_write: FAIL (got: $got)"
+        fi
+    else
+        FAIL=$((FAIL + 1))
+        echo "  extern_libc_write: FAIL (compile/link failed)"
+    fi
+    rm -f /tmp/krc_ext_$$.kr /tmp/krc_ext_$$.o /tmp/krc_ext_linked_$$
+
+    TOTAL=$((TOTAL + 1))
+    cat > /tmp/krc_ext2_$$.kr <<'KREOF'
+extern fn strlen(u64 s) -> u64
+extern fn write(u64 fd, u64 buf, u64 len) -> u64
+
+fn main() {
+    u64 msg = "two_externs\n"
+    u64 n = strlen(msg)
+    write(1, msg, n)
+    exit(0)
+}
+KREOF
+    if $KRC --emit=obj /tmp/krc_ext2_$$.kr -o /tmp/krc_ext2_$$.o > /dev/null 2>&1 \
+       && gcc /tmp/krc_ext2_$$.o -o /tmp/krc_ext2_linked_$$ -no-pie > /dev/null 2>&1; then
+        got=$(/tmp/krc_ext2_linked_$$ 2>/dev/null)
+        if [ "$got" = "two_externs" ]; then
+            PASS=$((PASS + 1))
+            echo "  extern_libc_strlen_write: PASS"
+        else
+            FAIL=$((FAIL + 1))
+            echo "  extern_libc_strlen_write: FAIL (got: $got)"
+        fi
+    else
+        FAIL=$((FAIL + 1))
+        echo "  extern_libc_strlen_write: FAIL (compile/link failed)"
+    fi
+    rm -f /tmp/krc_ext2_$$.kr /tmp/krc_ext2_$$.o /tmp/krc_ext2_linked_$$
+else
+    echo "  extern_libc_write: SKIP (gcc not available)"
+    echo "  extern_libc_strlen_write: SKIP (gcc not available)"
+fi
+
 # --- Summary ---
 echo ""
 echo "=== Results: $PASS/$TOTAL passed, $FAIL failed ==="
