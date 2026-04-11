@@ -1234,14 +1234,27 @@ fn parse_module() -> uint64 {
             ast_append_child(mod_node, ext_fn_node)
             eat(18)  // optional trailing semicolon
         } else if kind == 70 {
-            // const TYPE name = value — treat as static
+            // const TYPE name = value — treat as a scalar static with a
+            // compile-time integer initializer. Only integer literal, hex
+            // literal, char literal, and boolean keyword initializers are
+            // supported; everything else is skipped (value stays 0).
             advance_tok()
             advance_tok()
             uint64 name_tok = expect(1)
             static_declare(name_tok)
             if eat(34) != 0 {
-                while cur_kind() != 60 && cur_kind() != 71 && cur_kind() != 70 && cur_kind() != 72 && cur_kind() != 73 && cur_kind() != 21 && cur_kind() != 89 && cur_kind() != 0 {
-                    advance_tok()
+                // If the next token is an IntLit/CharLit/true/false, parse it
+                // as an integer and record it as the initial value.
+                uint32 init_kind = cur_kind()
+                if init_kind == 2 || init_kind == 4 || init_kind == 77 || init_kind == 78 {
+                    uint64 init_tok = advance_tok()
+                    uint64 init_val = parse_int_token(init_tok)
+                    static_set_init_last(init_val)
+                } else {
+                    // Skip unsupported initializer (function calls, etc.) — value stays 0.
+                    while cur_kind() != 60 && cur_kind() != 71 && cur_kind() != 70 && cur_kind() != 72 && cur_kind() != 73 && cur_kind() != 21 && cur_kind() != 89 && cur_kind() != 0 {
+                        advance_tok()
+                    }
                 }
             }
         } else if kind == 71 {
@@ -1310,11 +1323,17 @@ fn parse_module() -> uint64 {
                 uint64 name_tok = expect(1)
                 // Register the static variable
                 static_declare(name_tok)
-                // Skip = value if present
+                // Capture literal initializer if present
                 if eat(34) != 0 {
-                    // Skip the init value expression tokens
-                    while cur_kind() != 60 && cur_kind() != 71 && cur_kind() != 72 && cur_kind() != 73 && cur_kind() != 21 && cur_kind() != 89 && cur_kind() != 0 {
-                        advance_tok()
+                    uint32 sinit_kind = cur_kind()
+                    if sinit_kind == 2 || sinit_kind == 4 || sinit_kind == 77 || sinit_kind == 78 {
+                        uint64 sinit_tok = advance_tok()
+                        uint64 sinit_val = parse_int_token(sinit_tok)
+                        static_set_init_last(sinit_val)
+                    } else {
+                        while cur_kind() != 60 && cur_kind() != 71 && cur_kind() != 72 && cur_kind() != 73 && cur_kind() != 21 && cur_kind() != 89 && cur_kind() != 0 {
+                            advance_tok()
+                        }
                     }
                 }
             }

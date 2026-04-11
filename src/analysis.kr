@@ -608,6 +608,7 @@ fn is_builtin(uint64 tok_idx) -> uint64 {
     if sema_tok_matches(tok_idx, "signed_ge", 9) != 0 { return 1 }
     if sema_tok_matches(tok_idx, "get_target_os", 13) != 0 { return 1 }
     if sema_tok_matches(tok_idx, "get_arch_id", 11) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "time_ms", 7) != 0 { return 1 }
     if sema_tok_matches(tok_idx, "exec_process", 12) != 0 { return 1 }
     if sema_tok_matches(tok_idx, "set_executable", 14) != 0 { return 1 }
     if sema_tok_matches(tok_idx, "atomic_load", 11) != 0 { return 1 }
@@ -714,6 +715,7 @@ fn builtin_arg_count(uint64 tok_idx) -> uint64 {
     // 0-arg builtins
     if sema_tok_matches(tok_idx, "get_target_os", 13) != 0 { return 0 }
     if sema_tok_matches(tok_idx, "get_arch_id", 11) != 0 { return 0 }
+    if sema_tok_matches(tok_idx, "time_ms", 7) != 0 { return 0 }
     // Variable-arg builtins — skip checking
     if sema_tok_matches(tok_idx, "call_ptr", 8) != 0 { return 0xFFFFFFFF }
     if sema_tok_matches(tok_idx, "asm", 3) != 0 { return 0xFFFFFFFF }

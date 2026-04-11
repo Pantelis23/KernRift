@@ -479,14 +479,41 @@ fn import_process(uint64 file_path) {
     // Scan for import lines at the beginning
     uint64 pos = 0
     while pos < size {
-        // Skip whitespace/newlines
-        uint64 ch = 0
-        uint64 pp = tmp + pos
-        if pos < size { unsafe { *(pp as uint8) -> ch } }
-        while pos < size && (ch == 32 || ch == 9 || ch == 13 || ch == 10) {
-            pos = pos + 1
-            pp = tmp + pos
+        // Skip whitespace/newlines and // line comments so imports can live
+        // after header comments. Block comments (/* */) are not supported.
+        uint64 skipped = 1
+        while skipped != 0 {
+            skipped = 0
+            uint64 ch = 0
+            uint64 pp = tmp + pos
             if pos < size { unsafe { *(pp as uint8) -> ch } }
+            while pos < size && (ch == 32 || ch == 9 || ch == 13 || ch == 10) {
+                pos = pos + 1
+                pp = tmp + pos
+                if pos < size { unsafe { *(pp as uint8) -> ch } }
+                skipped = 1
+            }
+            // Line comment // — consume until newline
+            if pos + 1 < size {
+                uint64 cp0 = tmp + pos
+                uint64 cp1 = tmp + pos + 1
+                uint64 cc0 = 0
+                uint64 cc1 = 0
+                unsafe { *(cp0 as uint8) -> cc0 }
+                unsafe { *(cp1 as uint8) -> cc1 }
+                if cc0 == 47 && cc1 == 47 {
+                    pos = pos + 2
+                    uint64 lc = 0
+                    uint64 lcp = tmp + pos
+                    if pos < size { unsafe { *(lcp as uint8) -> lc } }
+                    while pos < size && lc != 10 {
+                        pos = pos + 1
+                        lcp = tmp + pos
+                        if pos < size { unsafe { *(lcp as uint8) -> lc } }
+                    }
+                    skipped = 1
+                }
+            }
         }
         if pos >= size { break }
 
@@ -1729,9 +1756,19 @@ fn emit_asm_listing(uint64 output_path, uint64 arch, uint64 text_start, uint64 s
     file_close(fd)
 }
 
+// time_ms — monotonic milliseconds. Recognized as a built-in by krc ≥ 2.6.2
+// (emits inline clock_gettime on Linux x86_64). This fallback body exists
+// only so that pre-2.6.2 compilers can resolve the symbol during bootstrap;
+// in the new compiler the built-in dispatch matches first and this body is
+// never reached.
+fn time_ms() -> uint64 {
+    return 0
+}
+
 // arch: 0=x86_64, 1=arm64
 // emit: 0=elfexe, 1=machoexe, 2=peexe, 3=obj (ELF relocatable), 5=asm listing
 fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode) {
+    uint64 t_start = time_ms()
     import_init()
     import_check_file(input_path)
     import_process(input_path)
@@ -2131,6 +2168,12 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
     }
 
     codegen_write_output(output_path)
+    // Mark the output executable so `./out` works immediately.
+    // No-op on Windows; safe on Linux/macOS/Android.
+    set_executable(output_path)
+
+    uint64 t_end = time_ms()
+    uint64 elapsed = t_end - t_start
 
     uint8[64] nb
     uint64 tl = fmt_uint(nb, tcount)
@@ -2147,8 +2190,17 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
     write(1, msg, 10)
     uint64 olen = str_len(output_path)
     write(1, output_path, olen)
-    msg = "\n"
-    write(1, msg, 1)
+    if t_start != 0 {
+        msg = "  ("
+        write(1, msg, 3)
+        uint64 el_len = fmt_uint(nb, elapsed)
+        write(1, nb, el_len)
+        msg = " ms)\n"
+        write(1, msg, 5)
+    } else {
+        msg = "\n"
+        write(1, msg, 1)
+    }
 }
 
 // Produce KrboFat: compile for both x86_64 and ARM64, LZ4-compress, wrap in fat binary

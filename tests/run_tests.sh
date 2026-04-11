@@ -1451,6 +1451,40 @@ run_test "bubble_sort_u64" 'fn main() {
 }' 4
 
 echo ""
+echo "--- const initializers (regression) ---"
+run_test "const_int"    'const u64 X = 42; fn main() { exit(X) }' 42
+run_test "const_hex"    'const u64 X = 0x2A; fn main() { exit(X) }' 42
+run_test "const_div"    'const u64 D = 10; fn main() { exit(100 / D) }' 10
+run_test "const_mod"    'const u64 M = 7; fn main() { exit(50 % M) }' 1
+run_test "const_mul"    'const u64 C = 21; fn main() { exit(C * 2) }' 42
+run_test "const_char"   "const u64 CH = 'A'; fn main() { exit(CH) }" 65
+run_test "const_true"   'const u64 T = true; fn main() { exit(T + 41) }' 42
+run_test "static_int"   'static u64 X = 99; fn main() { exit(X) }' 99
+
+echo ""
+echo "--- import after comment (regression) ---"
+TOTAL=$((TOTAL + 1))
+cat > /tmp/imp_test_$$.kr <<'KREOF'
+// leading comment should not break imports
+import "std/io.kr"
+fn main() { println("imp_ok"); exit(0) }
+KREOF
+if $KRC $KRC_FLAGS /tmp/imp_test_$$.kr -o /tmp/imp_test_bin_$$ > /dev/null 2>&1; then
+    got=$(/tmp/imp_test_bin_$$ 2>/dev/null)
+    if [ "$got" = "imp_ok" ]; then
+        PASS=$((PASS + 1))
+        echo "  import_after_comment: PASS"
+    else
+        FAIL=$((FAIL + 1))
+        echo "  import_after_comment: FAIL (got: $got)"
+    fi
+else
+    FAIL=$((FAIL + 1))
+    echo "  import_after_comment: FAIL (compile)"
+fi
+rm -f /tmp/imp_test_$$.kr /tmp/imp_test_bin_$$
+
+echo ""
 echo "--- char literals ---"
 run_test "char_a"    "fn main() { exit('A') }" 65
 run_test "char_z"    "fn main() { exit('z') }" 122

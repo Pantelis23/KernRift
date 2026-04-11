@@ -120,6 +120,10 @@ static uint64 a64_win_iat_fixup_count = 0
 // PE IAT RVA (set during PE header emission)
 static uint64 pe_iat_rva = 0
 
+// Per-scalar-static initial values (u64 each) — parallel to static_table.
+// Written by static_set_init_last, read by emit_static_data.
+static uint64 static_init_values = 0
+
 // Local array element size table — records the per-element size of each
 // local `TYPE[N] name` declaration so that index reads/writes can scale the
 // index and use the right load/store width. Without this, u64[N]/u32[N]/
@@ -187,6 +191,7 @@ fn codegen_init(uint64 capacity, uint64 source, uint64 tokens) {
     enum_count = 0
     static_table = alloc(1024 * 8)
     static_array_sizes = alloc(1024 * 4)
+    static_init_values = alloc(1024 * 8)
     slice_len_table = alloc(32 * 8)
     device_table = alloc(64 * 16)
     device_field_table = alloc(256 * 16)
@@ -629,9 +634,22 @@ fn static_declare(uint64 name_tok) -> uint64 {
     uint64 ae = static_array_sizes + static_count * 4
     uint32 zero32 = 0
     unsafe { *(ae as uint32) = zero32 }
+    // Default initial value = 0
+    uint64 iv = static_init_values + static_count * 8
+    unsafe { *(iv as uint64) = 0 }
     static_count = static_count + 1
     static_data_size = static_data_size + 8
     return offset
+}
+
+// Set the initial 8-byte value for the most recently declared scalar static.
+// Called by the parser for `const TYPE name = LITERAL` and `static TYPE name = LITERAL`.
+@export
+fn static_set_init_last(uint64 value) {
+    if static_count == 0 { return }
+    uint64 idx = static_count - 1
+    uint64 iv = static_init_values + idx * 8
+    unsafe { *(iv as uint64) = value }
 }
 
 // Device table helpers: device_register returns the new device index.
@@ -1043,10 +1061,51 @@ fn resolve_string_fixups(uint64 str_data_start) {
 // Emit zero-initialized data for all statics
 @export
 fn emit_static_data() {
-    uint64 i = 0
-    while i < static_data_size {
+    // Walk the static table in declaration order. Scalar slots (array_size==0)
+    // get their recorded init value; array slots stay zero.
+    uint64 emitted = 0
+    uint64 si = 0
+    while si < static_count {
+        // offset of this slot within the static data segment
+        uint64 entry = static_table + si * 8
+        uint64 e4 = entry + 4
+        uint32 slot_off = 0
+        unsafe { *(e4 as uint32) -> slot_off }
+        // Pad with zeros up to this slot's offset
+        while emitted < slot_off {
+            emit_byte(0)
+            emitted = emitted + 1
+        }
+        uint64 asp = static_array_sizes + si * 4
+        uint32 asz = 0
+        unsafe { *(asp as uint32) -> asz }
+        if asz == 0 {
+            // Scalar: 8 bytes of init value
+            uint64 ivp = static_init_values + si * 8
+            uint64 val = 0
+            unsafe { *(ivp as uint64) -> val }
+            uint64 bi = 0
+            while bi < 8 {
+                uint8 b = (val >> (bi * 8)) & 0xFF
+                emit_byte(b)
+                bi = bi + 1
+            }
+            emitted = emitted + 8
+        } else {
+            // Array: emit `asz` zero bytes
+            uint64 ai = 0
+            while ai < asz {
+                emit_byte(0)
+                ai = ai + 1
+            }
+            emitted = emitted + asz
+        }
+        si = si + 1
+    }
+    // Final tail of zeros (alignment/padding)
+    while emitted < static_data_size {
         emit_byte(0)
-        i = i + 1
+        emitted = emitted + 1
     }
 }
 
@@ -4235,6 +4294,50 @@ fn gen_expr(uint64 node) {
                 emit_mov_rax_imm(5)
             } else {
                 emit_mov_rax_imm(1)
+            }
+            return
+        }
+
+        // Built-in: time_ms() → monotonic millisecond counter.
+        // Linux x86_64: clock_gettime(CLOCK_MONOTONIC, &ts) via syscall 228.
+        // Other targets: return 0 (no portable timer yet).
+        if is_extern_call == 0 && tok_matches(wct, "time_ms", 7) != 0 {
+            if target_os == 0 {
+                // Reserve a 16-byte timespec on the stack and pass rsp as &ts.
+                // sub rsp, 16
+                emit_byte(0x48); emit_byte(0x83); emit_byte(0xEC); emit_byte(16)
+                // mov edi, 1   (CLOCK_MONOTONIC)
+                emit_byte(0xBF); emit_byte(1); emit_byte(0); emit_byte(0); emit_byte(0)
+                // mov rsi, rsp (&ts)
+                emit_byte(0x48); emit_byte(0x89); emit_byte(0xE6)
+                // mov eax, 228 (SYS_clock_gettime)
+                emit_mov_rax_imm(228)
+                // syscall
+                emit_byte(0x0F); emit_byte(0x05)
+                // mov rax, [rsp]           (sec)
+                emit_byte(0x48); emit_byte(0x8B); emit_byte(0x04); emit_byte(0x24)
+                // imul rax, rax, 1000      (sec * 1000 = ms contribution from seconds)
+                emit_byte(0x48); emit_byte(0x69); emit_byte(0xC0)
+                emit_u32_le(1000)
+                // Stash sec*1000 in rbx (preserved across div)
+                emit_byte(0x53)                                           // push rbx
+                emit_byte(0x48); emit_byte(0x89); emit_byte(0xC3)         // mov rbx, rax
+                // rax = nsec = [rsp+16]  (rsp shifted by 8 after push rbx)
+                emit_byte(0x48); emit_byte(0x8B); emit_byte(0x44); emit_byte(0x24); emit_byte(16)
+                // rcx = 1_000_000
+                emit_byte(0x48); emit_byte(0xC7); emit_byte(0xC1)
+                emit_u32_le(1000000)
+                // xor edx, edx             (clear high dividend)
+                emit_byte(0x48); emit_byte(0x31); emit_byte(0xD2)
+                // div rcx                  (rax = nsec / 1_000_000)
+                emit_byte(0x48); emit_byte(0xF7); emit_byte(0xF1)
+                // add rax, rbx             (total_ms = sec*1000 + nsec/1_000_000)
+                emit_byte(0x48); emit_byte(0x01); emit_byte(0xD8)
+                emit_byte(0x5B)                                           // pop rbx
+                // add rsp, 16              (drop timespec)
+                emit_byte(0x48); emit_byte(0x83); emit_byte(0xC4); emit_byte(16)
+            } else {
+                emit_mov_rax_imm(0)
             }
             return
         }
