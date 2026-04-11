@@ -2124,8 +2124,46 @@ fn gen_expr_a64(uint64 node) {
             gen_expr_a64(wsa_ea)
             emit_a64_store_x0(temp_slot_1)
             if target_os == 2 {
-                // Windows arm64: unsupported, just exit
-                emit_a64_mov_imm(0, 1)
+                // Windows arm64: ignore the caller-built argv and launch the
+                // process the same way plain exec_process does. x0 must hold
+                // the path when we enter the block below.
+                emit_a64_load_x0(temp_slot_0)
+                emit_a64_store_x0(temp_slot_0)
+                emit_a64(0xD10380FF)                // sub sp, sp, #0xE0
+                emit_a64(0x910180E0)                // add x0, sp, #0x60
+                emit_a64_mov_imm(1, 0)
+                emit_a64_mov_imm(2, 128)
+                emit_a64(0xA8C17C1F)
+                emit_a64(0xA8C17C1F)
+                emit_a64(0xA8C17C1F)
+                emit_a64(0xA8C17C1F)
+                emit_a64(0xA8C17C1F)
+                emit_a64(0xA8C17C1F)
+                emit_a64(0xA8C17C1F)
+                emit_a64(0xA8C17C1F)
+                emit_a64_mov_imm(9, 104)
+                emit_a64(0xB90060E9)                // str w9, [sp, #0x60]
+                emit_a64_load_x0(temp_slot_0)
+                emit_a64_mov_imm(1, 0)
+                emit_a64_mov_imm(2, 0)
+                emit_a64_mov_imm(3, 0)
+                emit_a64_mov_imm(4, 0)
+                emit_a64_mov_imm(5, 0)
+                emit_a64_mov_imm(6, 0)
+                emit_a64_mov_imm(7, 0)
+                emit_a64(0x910180E9)                // add x9, sp, #0x60
+                emit_a64(0xF90003E9)                // str x9, [sp, #0]
+                emit_a64(0x9102E0E9)                // add x9, sp, #0xB8
+                emit_a64(0xF90007E9)                // str x9, [sp, #8]
+                emit_a64_win_call_iat(9)
+                emit_a64(0xF940C4E0)                // ldr x0, [sp, #0xC8]
+                emit_a64_mov_imm(1, 0xFFFFFFFF)
+                emit_a64_win_call_iat(10)
+                emit_a64(0xF940C4E0)
+                emit_a64(0x910000E1)
+                emit_a64_win_call_iat(11)
+                emit_a64(0xB94003E0)
+                emit_a64(0x910380FF)
                 emit_a64_win_call_iat(0)
             } else {
                 // execve(path, argv, envp)

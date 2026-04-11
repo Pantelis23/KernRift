@@ -3765,14 +3765,38 @@ fn gen_expr(uint64 node) {
             gen_expr(wsa_a)
             emit_store_rax_to_stack(temp_slot_1)
             if target_os == 2 {
-                // Windows: use regular exec_process (CreateProcessA without args)
+                // Windows: CreateProcessA ignores the caller-built argv
+                // (no arg forwarding on Windows yet — same behavior as the
+                // plain exec_process builtin). Inline the same sequence.
                 emit_load_rax_from_stack(temp_slot_0)
-                // fall into the Windows exec_process code (below) via a marker
-                // Actually simplest: just do nothing and return — caller will
-                // see this isn't supported. We'll emit the ExitProcess path.
-                // For now, just emit ExitProcess(1).
-                emit_mov_rax_imm(1)
-                emit_mov_rcx_rax()
+                emit_store_rax_to_stack(temp_slot_0)
+                emit_byte(0x48); emit_byte(0x81); emit_byte(0xEC); emit_u32_le(0xD0)
+                emit_byte(0x48); emit_byte(0x8D); emit_byte(0x7C); emit_byte(0x24); emit_byte(0x50)
+                emit_byte(0x31); emit_byte(0xC0)
+                emit_byte(0xB9); emit_u32_le(128)
+                emit_byte(0xF3); emit_byte(0xAA)
+                emit_byte(0xC7); emit_byte(0x44); emit_byte(0x24); emit_byte(0x50); emit_u32_le(104)
+                emit_byte(0x48); emit_byte(0x8B); emit_byte(0x8C); emit_byte(0x24); emit_u32_le(temp_slot_0 + 0xD0)
+                emit_byte(0x48); emit_byte(0x31); emit_byte(0xD2)
+                emit_byte(0x4D); emit_byte(0x31); emit_byte(0xC0)
+                emit_byte(0x4D); emit_byte(0x31); emit_byte(0xC9)
+                emit_byte(0x48); emit_byte(0xC7); emit_byte(0x44); emit_byte(0x24); emit_byte(0x20); emit_u32_le(0)
+                emit_byte(0x48); emit_byte(0xC7); emit_byte(0x44); emit_byte(0x24); emit_byte(0x28); emit_u32_le(0)
+                emit_byte(0x48); emit_byte(0xC7); emit_byte(0x44); emit_byte(0x24); emit_byte(0x30); emit_u32_le(0)
+                emit_byte(0x48); emit_byte(0xC7); emit_byte(0x44); emit_byte(0x24); emit_byte(0x38); emit_u32_le(0)
+                emit_byte(0x48); emit_byte(0x8D); emit_byte(0x44); emit_byte(0x24); emit_byte(0x50)
+                emit_byte(0x48); emit_byte(0x89); emit_byte(0x44); emit_byte(0x24); emit_byte(0x40)
+                emit_byte(0x48); emit_byte(0x8D); emit_byte(0x84); emit_byte(0x24); emit_u32_le(0xB8)
+                emit_byte(0x48); emit_byte(0x89); emit_byte(0x44); emit_byte(0x24); emit_byte(0x48)
+                emit_win_call_iat(9)
+                emit_byte(0x48); emit_byte(0x8B); emit_byte(0x8C); emit_byte(0x24); emit_u32_le(0xB8)
+                emit_byte(0xBA); emit_u32_le(0xFFFFFFFF)
+                emit_win_call_iat(10)
+                emit_byte(0x48); emit_byte(0x8B); emit_byte(0x8C); emit_byte(0x24); emit_u32_le(0xB8)
+                emit_byte(0x48); emit_byte(0x8D); emit_byte(0x54); emit_byte(0x24); emit_byte(0x20)
+                emit_win_call_iat(11)
+                emit_byte(0x8B); emit_byte(0x4C); emit_byte(0x24); emit_byte(0x20)
+                emit_byte(0x48); emit_byte(0x81); emit_byte(0xC4); emit_u32_le(0xD0)
                 emit_win_alloc_stack(0x20)
                 emit_win_call_iat(0)
             } else {
