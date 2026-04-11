@@ -57,6 +57,15 @@ enum AstKind {
     // holding the second expression index (child is still the first).
     TupleDestruct = 44 // data1=type1_tok, data2=name1_tok, data3=type2_tok,
                        // data4=name2_tok, child=rhs_expr
+
+    // Inline-assembly I/O constraint — a single entry in the in/out/clobber
+    // list attached to an AsmBlock. AsmBlock.data3 holds the head of a
+    // `next`-linked list of these.
+    //
+    //   data1 = kind (0 = in, 1 = out, 2 = clobber)
+    //   data2 = register-name token (e.g. "rax", "x0")
+    //   data3 = variable-name token (0 for clobber entries)
+    AsmConstraint = 45
 }
 
 // ---------------------------------------------------------------------------

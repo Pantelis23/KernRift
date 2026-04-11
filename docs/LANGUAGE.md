@@ -752,6 +752,76 @@ registers including `SCTLR_EL1`, `VBAR_EL1`, `TCR_EL1`, `MAIR_EL1`,
 
 For anything not in the built-in table, use the raw hex form.
 
+### I/O constraints
+
+Any `asm(...)` or `asm { ... }` may be followed by `in(...)`, `out(...)`,
+and/or `clobbers(...)` clauses that describe how registers flow between
+the block and KernRift's local variables.
+
+```kr
+import "std/fmt.kr"
+
+fn rdtsc_ns() -> u64 {
+    u64 lo = 0
+    u64 hi = 0
+    asm { "rdtsc" } out(rax -> lo, rdx -> hi)
+    return (hi << 32) | lo
+}
+
+fn main() {
+    println_str(fmt_dec(rdtsc_ns()))
+    exit(0)
+}
+```
+
+A `cpuid` helper with both inputs and outputs:
+
+```kr
+fn cpuid_signature() -> u64 {
+    u64 leaf = 0
+    u64 zero = 0
+    u64 a = 0
+    u64 b = 0
+    u64 c = 0
+    u64 d = 0
+    asm { "cpuid" }
+        in(leaf -> rax, zero -> rcx)
+        out(rax -> a, rbx -> b, rcx -> c, rdx -> d)
+    return (b << 32) | c
+}
+```
+
+**Clause semantics**:
+- `in(<var> -> <reg>, ...)` — before the block runs, KernRift emits a
+  `mov <reg>, <local_slot>` for each pair. Inputs are load-only; the
+  named variable is not updated after the block.
+- `out(<reg> -> <var>, ...)` — after the block runs, KernRift emits a
+  `mov <local_slot>, <reg>` for each pair. Outputs are store-only.
+- `clobbers(<reg>, ...)` — accepted syntactically but currently
+  **advisory**. You still must list every register your block writes
+  under `out(...)` if you need its value, and every register whose
+  prior contents you don't care about should not be relied on after
+  the block. The compiler does not yet save/restore clobbered
+  callee-saved registers.
+
+**Register names**:
+- **x86_64**: `rax` `rcx` `rdx` `rbx` `rsp` `rbp` `rsi` `rdi` `r8` …
+  `r15`. No 32-bit or 8-bit aliases yet — use the 64-bit form even if
+  the instruction operates on a sub-register.
+- **ARM64**: `x0` … `x30`. No `w` (32-bit) aliases.
+
+**Limitations** (V1):
+- Clauses must come immediately after the closing `)` or `}` of the
+  asm form, before any other statement.
+- Clobbers list is parsed but emits no save/restore code — list an
+  output or pick non-conflicting registers.
+- Only integer GPRs are accepted; no SSE/NEON register constraints.
+- No memory-operand constraints (Rust's `in("rax") [ptr]` — not yet).
+- Pinned-parameter inputs (rbx/r12 on x86_64, picked by the compiler
+  for parameter slots 0 and 1) are handled correctly — KernRift
+  emits a reg-reg move instead of a stack reload so pinning stays
+  transparent.
+
 ---
 
 ## 15. Imports

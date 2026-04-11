@@ -467,6 +467,32 @@ fn emit_a64_load_x0(uint64 var_offset) {
     emit_a64_ldr(0, 31, a64_var_base + var_offset)
 }
 
+// Parse an AArch64 register name token into a 5-bit register code (0..30).
+// Accepts x0..x30. Returns 0xFFFF for unknown names (including xzr/sp).
+fn a64_reg_code(uint64 name_tok) -> uint64 {
+    uint64 tlen = tok_text_len(name_tok)
+    if tlen < 2 || tlen > 3 { return 0xFFFF }
+    uint64 ts = tok_text_start(name_tok)
+    uint64 p0 = cg_source + ts
+    uint64 c0 = 0
+    unsafe { *(p0 as uint8) -> c0 }
+    if c0 != 120 { return 0xFFFF }     // 'x'
+    uint64 p1 = cg_source + ts + 1
+    uint64 c1 = 0
+    unsafe { *(p1 as uint8) -> c1 }
+    if c1 < 48 || c1 > 57 { return 0xFFFF }
+    uint64 n = c1 - 48
+    if tlen == 3 {
+        uint64 p2 = cg_source + ts + 2
+        uint64 c2 = 0
+        unsafe { *(p2 as uint8) -> c2 }
+        if c2 < 48 || c2 > 57 { return 0xFFFF }
+        n = n * 10 + (c2 - 48)
+    }
+    if n > 30 { return 0xFFFF }
+    return n
+}
+
 // ARM64 static access: emit MOVZ/MOVK to load address into x10, then LDR/STR
 fn emit_a64_static_load(uint64 data_offset) {
     uint64 fentry = static_fixups + static_fixup_count * 8
@@ -3360,8 +3386,30 @@ fn gen_stmt_a64(uint64 node) {
         }
     }
 
-    // Inline assembly
+    // Inline assembly — see x86_64 gen_stmt for the constraint contract.
     if kind == 43 {
+        uint32 cons_head = ast_data3(node)
+        uint64 wch_a = cons_head
+
+        // Inputs: `ldr xN, [sp, #slot]`
+        uint64 wci = wch_a
+        while wci != 0 {
+            uint32 ck = ast_data1(wci)
+            if ck == 0 {
+                uint32 rtok = ast_data2(wci)
+                uint32 vtok = ast_data3(wci)
+                uint64 wrtok = rtok
+                uint64 wvtok = vtok
+                uint64 rcode = a64_reg_code(wrtok)
+                uint64 voff  = var_lookup(wvtok)
+                if rcode != 0xFFFF && voff != 0xFFFFFFFF {
+                    emit_a64_ldr(rcode, 31, a64_var_base + voff)
+                }
+            }
+            uint32 nxti = ast_next(wci)
+            wci = nxti
+        }
+
         uint32 single_tok = ast_data1(node)
         uint64 ws = single_tok
         if ws != 0 {
@@ -3375,6 +3423,25 @@ fn gen_stmt_a64(uint64 node) {
             asm_emit_a64(wstk)
             uint32 nxt = ast_next(wcs)
             wcs = nxt
+        }
+
+        // Outputs: `str xN, [sp, #slot]`
+        uint64 wco = wch_a
+        while wco != 0 {
+            uint32 ck2 = ast_data1(wco)
+            if ck2 == 1 {
+                uint32 rtok2 = ast_data2(wco)
+                uint32 vtok2 = ast_data3(wco)
+                uint64 wrtok2 = rtok2
+                uint64 wvtok2 = vtok2
+                uint64 rcode2 = a64_reg_code(wrtok2)
+                uint64 voff2  = var_lookup(wvtok2)
+                if rcode2 != 0xFFFF && voff2 != 0xFFFFFFFF {
+                    emit_a64_str(rcode2, 31, a64_var_base + voff2)
+                }
+            }
+            uint32 nxto = ast_next(wco)
+            wco = nxto
         }
         return
     }

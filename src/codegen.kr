@@ -1300,6 +1300,94 @@ fn emit_store_rdx_to_stack(uint64 offset) {
     }
 }
 
+// Parse an x86_64 register name token into a 4-bit register code.
+// Returns 0..15 for recognised names, 0xFFFF for unknown.
+// Recognised: rax..rdi (0..7), r8..r15 (8..15).
+fn x86_reg_code(uint64 name_tok) -> uint64 {
+    if tok_matches(name_tok, "rax", 3) != 0 { return 0 }
+    if tok_matches(name_tok, "rcx", 3) != 0 { return 1 }
+    if tok_matches(name_tok, "rdx", 3) != 0 { return 2 }
+    if tok_matches(name_tok, "rbx", 3) != 0 { return 3 }
+    if tok_matches(name_tok, "rsp", 3) != 0 { return 4 }
+    if tok_matches(name_tok, "rbp", 3) != 0 { return 5 }
+    if tok_matches(name_tok, "rsi", 3) != 0 { return 6 }
+    if tok_matches(name_tok, "rdi", 3) != 0 { return 7 }
+    if tok_matches(name_tok, "r8", 2)  != 0 { return 8 }
+    if tok_matches(name_tok, "r9", 2)  != 0 { return 9 }
+    if tok_matches(name_tok, "r10", 3) != 0 { return 10 }
+    if tok_matches(name_tok, "r11", 3) != 0 { return 11 }
+    if tok_matches(name_tok, "r12", 3) != 0 { return 12 }
+    if tok_matches(name_tok, "r13", 3) != 0 { return 13 }
+    if tok_matches(name_tok, "r14", 3) != 0 { return 14 }
+    if tok_matches(name_tok, "r15", 3) != 0 { return 15 }
+    return 0xFFFF
+}
+
+// Emit `mov dst, src` for any two 64-bit registers (0..15).
+// ModR/M: mod=3, reg=src, rm=dst. REX.W always; REX.R if src>=8; REX.B if dst>=8.
+fn emit_mov_reg_reg(uint64 dst, uint64 src) {
+    uint8 rex = 0x48
+    if src >= 8 { rex = rex | 0x04 }   // REX.R
+    if dst >= 8 { rex = rex | 0x01 }   // REX.B
+    emit_byte(rex)
+    emit_byte(0x89)
+    uint8 mb = 0xC0 | ((src & 7) << 3) | (dst & 7)
+    emit_byte(mb)
+}
+
+// Emit `mov reg, [rsp+offset]` for any 64-bit reg (0..15). Used to load
+// an asm-block input variable into the register named by the constraint.
+// Handles pinned params (rbx/r12) by emitting a reg-reg move instead.
+fn emit_mov_reg_from_stack(uint64 reg, uint64 offset) {
+    if offset == pin_param0_offset && pin_param0_offset != 0xFFFFFFFF {
+        emit_mov_reg_reg(reg, 3)   // mov reg, rbx
+        return
+    }
+    if offset == pin_param1_offset && pin_param1_offset != 0xFFFFFFFF {
+        emit_mov_reg_reg(reg, 12)  // mov reg, r12
+        return
+    }
+    uint8 rex = 0x48
+    if reg >= 8 { rex = 0x4C }
+    emit_byte(rex)
+    emit_byte(0x8B)
+    uint64 reg3 = (reg & 7) << 3
+    if offset < 128 {
+        uint8 mb = 0x44 | reg3
+        emit_byte(mb)
+        emit_byte(0x24)
+        uint8 off8 = offset
+        emit_byte(off8)
+    } else {
+        uint8 mb = 0x84 | reg3
+        emit_byte(mb)
+        emit_byte(0x24)
+        emit_u32_le(offset)
+    }
+}
+
+// Emit `mov [rsp+offset], reg` for any 64-bit reg (0..15). Used to store
+// an asm-block output register into the destination variable slot.
+fn emit_mov_reg_to_stack(uint64 reg, uint64 offset) {
+    uint8 rex = 0x48
+    if reg >= 8 { rex = 0x4C }
+    emit_byte(rex)
+    emit_byte(0x89)
+    uint64 reg3 = (reg & 7) << 3
+    if offset < 128 {
+        uint8 mb = 0x44 | reg3
+        emit_byte(mb)
+        emit_byte(0x24)
+        uint8 off8 = offset
+        emit_byte(off8)
+    } else {
+        uint8 mb = 0x84 | reg3
+        emit_byte(mb)
+        emit_byte(0x24)
+        emit_u32_le(offset)
+    }
+}
+
 // emit: mov rax, [rsp+off] — skipped if rax already holds this value
 fn emit_load_rax_from_stack(uint64 offset) {
     // Pinned param0: use rbx instead of stack
@@ -4703,6 +4791,7 @@ fn asm_emit_x86(uint64 str_tok) {
     if asm_match(sptr, 0, "sti", 3) != 0 && slen == 3 { emit_byte(0xFB); return }
     if asm_match(sptr, 0, "int3", 4) != 0 && slen == 4 { emit_byte(0xCC); return }
     if asm_match(sptr, 0, "cpuid", 5) != 0 && slen == 5 { emit_byte(0x0F); emit_byte(0xA2); return }
+    if asm_match(sptr, 0, "rdtsc", 5) != 0 && slen == 5 { emit_byte(0x0F); emit_byte(0x31); return }
     if asm_match(sptr, 0, "rdmsr", 5) != 0 && slen == 5 { emit_byte(0x0F); emit_byte(0x32); return }
     if asm_match(sptr, 0, "wrmsr", 5) != 0 && slen == 5 { emit_byte(0x0F); emit_byte(0x30); return }
     if asm_match(sptr, 0, "iretq", 5) != 0 && slen == 5 { emit_byte(0x48); emit_byte(0xCF); return }
@@ -5604,7 +5693,34 @@ fn gen_stmt(uint64 node) {
     }
 
     // Inline assembly: asm("instruction") or asm { "instr1"; "instr2"; }
+    // Optional constraint list in data3: in(var -> reg), out(reg -> var),
+    // clobbers(reg). Inputs are loaded before the body, outputs stored
+    // after. Clobbers are currently advisory (V1 — users must list any
+    // input/output register that their block touches explicitly).
     if kind == 43 {
+        uint32 cons_head = ast_data3(node)
+        uint64 wch_x86 = cons_head
+
+        // Pass 1: emit `mov reg, [rsp+slot]` for every `in(var -> reg)`.
+        uint64 wci = wch_x86
+        while wci != 0 {
+            uint32 ck = ast_data1(wci)
+            if ck == 0 {
+                uint32 rtok = ast_data2(wci)
+                uint32 vtok = ast_data3(wci)
+                uint64 wrtok = rtok
+                uint64 wvtok = vtok
+                uint64 rcode = x86_reg_code(wrtok)
+                uint64 voff  = var_lookup(wvtok)
+                if rcode != 0xFFFF && voff != 0xFFFFFFFF {
+                    emit_mov_reg_from_stack(rcode, voff)
+                }
+            }
+            uint32 nxti = ast_next(wci)
+            wci = nxti
+        }
+        rax_cache = 0   // asm block trashes the scalar-load cache
+
         uint32 single_tok = ast_data1(node)
         uint64 ws = single_tok
         if ws != 0 {
@@ -5618,6 +5734,25 @@ fn gen_stmt(uint64 node) {
             asm_emit_x86(wstk)
             uint32 nxt = ast_next(wcs)
             wcs = nxt
+        }
+
+        // Pass 2: emit `mov [rsp+slot], reg` for every `out(reg -> var)`.
+        uint64 wco = wch_x86
+        while wco != 0 {
+            uint32 ck2 = ast_data1(wco)
+            if ck2 == 1 {
+                uint32 rtok2 = ast_data2(wco)
+                uint32 vtok2 = ast_data3(wco)
+                uint64 wrtok2 = rtok2
+                uint64 wvtok2 = vtok2
+                uint64 rcode2 = x86_reg_code(wrtok2)
+                uint64 voff2  = var_lookup(wvtok2)
+                if rcode2 != 0xFFFF && voff2 != 0xFFFFFFFF {
+                    emit_mov_reg_to_stack(rcode2, voff2)
+                }
+            }
+            uint32 nxto = ast_next(wco)
+            wco = nxto
         }
         return
     }

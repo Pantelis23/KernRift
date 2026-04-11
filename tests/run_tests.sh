@@ -1040,6 +1040,29 @@ fn main() { uint64 sum = 0; (uint64 a, uint64 b) = split(5); sum = a + b; exit(s
 run_test "tuple_reuse" 'fn step(uint64 x) -> uint64 { return (x + 1, x + 2) }
 fn main() { (uint64 p, uint64 q) = step(10); (uint64 r, uint64 s) = step(20); exit(p + q + r + s) }' 66
 
+# --- asm { } I/O constraints ---
+# rdtsc: no inputs, two outputs (low/high 32 bits of the TSC into rax/rdx).
+# We can't predict the TSC value, but we CAN assert non-zero — the asm
+# constraint plumbing works iff rdx flows back to `hi`.
+run_test "asm_rdtsc_out" 'fn main() {
+    uint64 lo = 0
+    uint64 hi = 0
+    asm { "rdtsc" } out(rax -> lo, rdx -> hi)
+    if lo == 0 { if hi == 0 { exit(1) } }
+    exit(0)
+}' 0
+
+# shl via asm with one input and one output, testing pinned-param loading.
+run_test "asm_shl_in_out" 'fn shl_by(uint64 v, uint64 n) -> uint64 {
+    uint64 r = 0
+    asm { "0x48 0xD3 0xE0" } in(v -> rax, n -> rcx) out(rax -> r)
+    return r
+}
+fn main() { exit(shl_by(3, 4)) }' 48
+
+# nop with no constraints — ensures backward-compat with existing asm blocks.
+run_test "asm_nop_noconstraints" 'fn main() { asm { "nop" }; exit(5) }' 5
+
 # --- Opt-in: run on a real Android emulator via adb (ANDROID_EMULATOR=1) ---
 # Requires: adb on PATH, one device online, and write access to
 # /data/local/tmp. Cross-compiles a handful of programs as
