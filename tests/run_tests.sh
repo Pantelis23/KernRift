@@ -1349,13 +1349,7 @@ fi
 rm -f /tmp/krc_lc_$$.kr /tmp/krc_lc_out_$$.txt
 
 # Governance: promote + list round-trip
-# TODO: investigate arm64 path-handling bug; skipping on non-x86_64 hosts
 TOTAL=$((TOTAL + 1))
-GOV_HOST_M=$(uname -m)
-if [ "$GOV_HOST_M" != "x86_64" ] && [ "$GOV_HOST_M" != "amd64" ]; then
-    PASS=$((PASS + 1))
-    echo "  governance_promote: SKIP (non-x86_64 host)"
-else
 GOV_DIR=/tmp/krc_gov_$$
 # Use the raw compiler binary (not the wrapper script) so we can cd elsewhere
 if [ -f "$DIR/../build/krc2" ]; then
@@ -1377,7 +1371,6 @@ else
     FAIL=$((FAIL + 1))
 fi
 rm -rf "$GOV_DIR" /tmp/krc_gov_promote_$$.txt
-fi
 
 # Migration: long-form types → short aliases
 TOTAL=$((TOTAL + 1))

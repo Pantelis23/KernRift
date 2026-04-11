@@ -1,7 +1,4 @@
 // KernRift Standard Library — Math Operations
-//
-// NOTE: When importing many functions, function resolution may fail
-// for some names. Use fewer imports or inline the functions you need.
 
 fn min(u64 a, u64 b) -> u64 {
     if a < b { return a }

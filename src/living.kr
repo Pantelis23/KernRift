@@ -1207,9 +1207,18 @@ fn load_proposal_overrides() {
 // Creates .kernrift/ directory on demand (mkdir via syscall).
 fn save_proposal_override(uint64 name, uint64 new_state) {
     // Ensure .kernrift directory exists. Ignore failure (likely exists).
-    uint64 mkdir_nr = 83  // x86_64 Linux
-    if get_arch_id() == 2 { mkdir_nr = 34 }  // ARM64 Linux is 34
-    syscall_raw(mkdir_nr, ".kernrift", 0x1C0, 0, 0, 0, 0)
+    // x86_64 Linux has `mkdir(path, mode)` at nr 83 (2 args).
+    // arm64 Linux has only `mkdirat(dirfd, path, mode)` at nr 34 (3 args),
+    // where dirfd=AT_FDCWD (-100) means "relative to cwd".
+    u64 aid = get_arch_id()
+    if aid == 2 || aid == 7 {
+        // arm64 Linux / Android — use mkdirat
+        u64 at_fdcwd = 0xFFFFFFFFFFFFFF9C
+        syscall_raw(34, at_fdcwd, ".kernrift", 0x1C0, 0, 0, 0)
+    } else {
+        // x86_64 Linux (and freebsd/macos share mkdir nr 83)
+        syscall_raw(83, ".kernrift", 0x1C0, 0, 0, 0, 0)
+    }
 
     // Apply the override in memory first
     prop_set_state_by_name(name, new_state)
