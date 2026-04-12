@@ -348,6 +348,8 @@ fn main() {
     uint64 slice_offset = 0
     uint64 slice_comp_size = 0
     uint64 slice_uncomp_size = 0
+    uint64 slice_pair_off = 0
+    uint64 slice_pair_uncomp_size = 0
     uint64 found = 0
 
     uint64 i = 0
@@ -360,9 +362,13 @@ fn main() {
             uint64 eo8 = entry + 8
             uint64 eo16 = entry + 16
             uint64 eo24 = entry + 24
+            uint64 eo32 = entry + 32
+            uint64 eo40 = entry + 40
             unsafe { *(eo8 as uint64) -> slice_offset }
             unsafe { *(eo16 as uint64) -> slice_comp_size }
             unsafe { *(eo24 as uint64) -> slice_uncomp_size }
+            unsafe { *(eo32 as uint64) -> slice_pair_off }
+            unsafe { *(eo40 as uint64) -> slice_pair_uncomp_size }
             found = 1
         }
         i = i + 1
@@ -375,19 +381,23 @@ fn main() {
         exit(1)
     }
 
-    // Decompress
-    uint64 binary = alloc(slice_uncomp_size + 1)
-    uint64 comp_data = data + slice_offset
-    uint64 decomp_size = lz4_decompress_frame_r(comp_data, slice_comp_size, binary)
+    // Old independent-slice entries leave pair fields zero; normalize.
+    if slice_pair_uncomp_size == 0 {
+        slice_pair_uncomp_size = slice_uncomp_size
+    }
 
-    // BCJ decode: reverse the filter applied before compression
-    // x86_64 archs: 1 (Linux), 3 (Windows), 5 (macOS), 8 (Android)
-    // arm64 archs:  2 (Linux), 4 (Windows), 6 (macOS), 7 (Android)
+    // Decompress the shared pair blob, then select our slice from it.
+    uint64 pair_binary = alloc(slice_pair_uncomp_size + 1)
+    uint64 comp_data = data + slice_offset
+    uint64 decomp_size = lz4_decompress_frame_r(comp_data, slice_comp_size, pair_binary)
+    uint64 binary = pair_binary + slice_pair_off
+
+    // BCJ decode only our slice (not the whole pair blob)
     if host_arch == 1 || host_arch == 3 || host_arch == 5 || host_arch == 8 {
-        filter_x86_64_bcj(binary, decomp_size, 0)
+        filter_x86_64_bcj(binary, slice_uncomp_size, 0)
     }
     if host_arch == 2 || host_arch == 4 || host_arch == 6 || host_arch == 7 {
-        filter_aarch64_bcj(binary, decomp_size, 0)
+        filter_aarch64_bcj(binary, slice_uncomp_size, 0)
     }
 
     // Write to temp and execute
@@ -408,7 +418,7 @@ fn main() {
             atfd = file_open(tmp_path, 1)
         }
         if atfd < 0xFFFFFFFFFFFFF000 {
-            file_write(atfd, binary, decomp_size)
+            file_write(atfd, binary, slice_uncomp_size)
             file_close(atfd)
             set_executable(tmp_path)
             exec_process(tmp_path)
@@ -423,7 +433,7 @@ fn main() {
         write(2, "kr: failed to create temp file\n", 31)
         exit(1)
     }
-    file_write(tfd, binary, decomp_size)
+    file_write(tfd, binary, slice_uncomp_size)
     file_close(tfd)
 
     set_executable(tmp_path)

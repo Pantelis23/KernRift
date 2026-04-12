@@ -2589,6 +2589,65 @@ fn restore_src_and_tokens(uint64 source, uint64 size, uint64 src_snap, uint64 to
     }
 }
 
+fn slot_load_u64(uint64 p) -> uint64 {
+    uint64 v = 0
+    unsafe { *(p as uint64) -> v }
+    return v
+}
+
+fn emit_raw_bytes(uint64 buf, uint64 len) {
+    uint64 i = 0
+    while i < len {
+        uint64 p = buf + i
+        uint64 bv = 0
+        unsafe { *(p as uint8) -> bv }
+        uint8 bb = bv
+        emit_byte(bb)
+        i = i + 1
+    }
+}
+
+fn compress_pair_best(
+    uint64 a_buf, uint64 a_len, uint64 b_buf, uint64 b_len,
+    uint64 out_comp_ptr, uint64 out_comp_len_ptr,
+    uint64 out_a_off_ptr, uint64 out_b_off_ptr,
+    uint64 out_pair_len_ptr
+) {
+    uint64 pair_len = a_len + b_len
+    uint64 cap = lz4_compress_bound(pair_len)
+
+    uint64 pair_ab = alloc(pair_len)
+    memcpy(pair_ab, a_buf, a_len)
+    memcpy(pair_ab + a_len, b_buf, b_len)
+    uint64 comp_ab = alloc(cap)
+    uint64 len_ab = lz4_compress_frame(pair_ab, pair_len, comp_ab)
+
+    uint64 pair_ba = alloc(pair_len)
+    memcpy(pair_ba, b_buf, b_len)
+    memcpy(pair_ba + b_len, a_buf, a_len)
+    uint64 comp_ba = alloc(cap)
+    uint64 len_ba = lz4_compress_frame(pair_ba, pair_len, comp_ba)
+
+    dealloc(pair_ab)
+    dealloc(pair_ba)
+
+    if len_ab <= len_ba {
+        unsafe { *(out_comp_ptr as uint64) = comp_ab }
+        unsafe { *(out_comp_len_ptr as uint64) = len_ab }
+        unsafe { *(out_a_off_ptr as uint64) = 0 }
+        unsafe { *(out_b_off_ptr as uint64) = a_len }
+        dealloc(comp_ba)
+    } else {
+        unsafe { *(out_comp_ptr as uint64) = comp_ba }
+        unsafe { *(out_comp_len_ptr as uint64) = len_ba }
+        unsafe { *(out_a_off_ptr as uint64) = b_len }
+        unsafe { *(out_b_off_ptr as uint64) = 0 }
+        dealloc(comp_ab)
+    }
+
+    unsafe { *(out_pair_len_ptr as uint64) = pair_len }
+}
+
 fn compile_fat(uint64 input_path, uint64 output_path) {
     import_init()
     import_check_file(input_path)
@@ -3325,155 +3384,115 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     filter_aarch64_bcj(macho_a64_buf, macho_a64_len, 1)
     filter_aarch64_bcj(android_buf, android_len, 1)
 
-    // === LZ4 compress all 6 ===
-    uint64 x86_comp = alloc(lz4_compress_bound(x86_len))
-    uint64 x86_comp_len = lz4_compress_frame(x86_buf, x86_len, x86_comp)
+    // === LZ4 compress 4 arch-paired blobs ===
+    // Best layout from experimental benchmarks (FAT_COMPRESSION_EXPERIMENTS.md):
+    //   x86_64: Linux + macOS,     Windows + Android
+    //   arm64:  Linux + Android,   Windows + macOS
+    uint64[1] x64_lm_comp_slot
+    uint64[1] x64_lm_comp_len_slot
+    uint64[1] x64_lm_linux_off_slot
+    uint64[1] x64_lm_mac_off_slot
+    uint64[1] x64_lm_pair_len_slot
+    compress_pair_best(
+        x86_buf, x86_len, macho_x86_buf, macho_x86_len,
+        x64_lm_comp_slot, x64_lm_comp_len_slot,
+        x64_lm_linux_off_slot, x64_lm_mac_off_slot,
+        x64_lm_pair_len_slot
+    )
+    uint64 x64_lm_comp = slot_load_u64(x64_lm_comp_slot)
+    uint64 x64_lm_comp_len = slot_load_u64(x64_lm_comp_len_slot)
+    uint64 x64_lm_linux_off = slot_load_u64(x64_lm_linux_off_slot)
+    uint64 x64_lm_mac_off = slot_load_u64(x64_lm_mac_off_slot)
+    uint64 x64_lm_pair_len = slot_load_u64(x64_lm_pair_len_slot)
 
-    uint64 a64_comp = alloc(lz4_compress_bound(a64_len))
-    uint64 a64_comp_len = lz4_compress_frame(a64_buf, a64_len, a64_comp)
+    uint64[1] x64_wa_comp_slot
+    uint64[1] x64_wa_comp_len_slot
+    uint64[1] x64_wa_win_off_slot
+    uint64[1] x64_wa_android_off_slot
+    uint64[1] x64_wa_pair_len_slot
+    compress_pair_best(
+        pe_x86_buf, pe_x86_len, androidx_buf, androidx_len,
+        x64_wa_comp_slot, x64_wa_comp_len_slot,
+        x64_wa_win_off_slot, x64_wa_android_off_slot,
+        x64_wa_pair_len_slot
+    )
+    uint64 x64_wa_comp = slot_load_u64(x64_wa_comp_slot)
+    uint64 x64_wa_comp_len = slot_load_u64(x64_wa_comp_len_slot)
+    uint64 x64_wa_win_off = slot_load_u64(x64_wa_win_off_slot)
+    uint64 x64_wa_android_off = slot_load_u64(x64_wa_android_off_slot)
+    uint64 x64_wa_pair_len = slot_load_u64(x64_wa_pair_len_slot)
 
-    uint64 pe_x86_comp = alloc(lz4_compress_bound(pe_x86_len))
-    uint64 pe_x86_comp_len = lz4_compress_frame(pe_x86_buf, pe_x86_len, pe_x86_comp)
+    uint64[1] arm_la_comp_slot
+    uint64[1] arm_la_comp_len_slot
+    uint64[1] arm_la_linux_off_slot
+    uint64[1] arm_la_android_off_slot
+    uint64[1] arm_la_pair_len_slot
+    compress_pair_best(
+        a64_buf, a64_len, android_buf, android_len,
+        arm_la_comp_slot, arm_la_comp_len_slot,
+        arm_la_linux_off_slot, arm_la_android_off_slot,
+        arm_la_pair_len_slot
+    )
+    uint64 arm_la_comp = slot_load_u64(arm_la_comp_slot)
+    uint64 arm_la_comp_len = slot_load_u64(arm_la_comp_len_slot)
+    uint64 arm_la_linux_off = slot_load_u64(arm_la_linux_off_slot)
+    uint64 arm_la_android_off = slot_load_u64(arm_la_android_off_slot)
+    uint64 arm_la_pair_len = slot_load_u64(arm_la_pair_len_slot)
 
-    uint64 pe_a64_comp = alloc(lz4_compress_bound(pe_a64_len))
-    uint64 pe_a64_comp_len = lz4_compress_frame(pe_a64_buf, pe_a64_len, pe_a64_comp)
-
-    uint64 macho_x86_comp = alloc(lz4_compress_bound(macho_x86_len))
-    uint64 macho_x86_comp_len = lz4_compress_frame(macho_x86_buf, macho_x86_len, macho_x86_comp)
-
-    uint64 macho_a64_comp = alloc(lz4_compress_bound(macho_a64_len))
-    uint64 macho_a64_comp_len = lz4_compress_frame(macho_a64_buf, macho_a64_len, macho_a64_comp)
-
-    uint64 android_comp = alloc(lz4_compress_bound(android_len))
-    uint64 android_comp_len = lz4_compress_frame(android_buf, android_len, android_comp)
-
-    uint64 androidx_comp = alloc(lz4_compress_bound(androidx_len))
-    uint64 androidx_comp_len = lz4_compress_frame(androidx_buf, androidx_len, androidx_comp)
+    uint64[1] arm_wm_comp_slot
+    uint64[1] arm_wm_comp_len_slot
+    uint64[1] arm_wm_win_off_slot
+    uint64[1] arm_wm_mac_off_slot
+    uint64[1] arm_wm_pair_len_slot
+    compress_pair_best(
+        pe_a64_buf, pe_a64_len, macho_a64_buf, macho_a64_len,
+        arm_wm_comp_slot, arm_wm_comp_len_slot,
+        arm_wm_win_off_slot, arm_wm_mac_off_slot,
+        arm_wm_pair_len_slot
+    )
+    uint64 arm_wm_comp = slot_load_u64(arm_wm_comp_slot)
+    uint64 arm_wm_comp_len = slot_load_u64(arm_wm_comp_len_slot)
+    uint64 arm_wm_win_off = slot_load_u64(arm_wm_win_off_slot)
+    uint64 arm_wm_mac_off = slot_load_u64(arm_wm_mac_off_slot)
+    uint64 arm_wm_pair_len = slot_load_u64(arm_wm_pair_len_slot)
 
     // === Emit KrboFat v2 ===
     out_len = 0
     emit_krbofat_v2_header(8)
-    // 8 entries x 48 bytes = 384
     uint64 data_offset = 16 + 8 * 48
     uint64 pad = (16 - (data_offset & 15)) & 15
     data_offset = data_offset + pad
-    uint64 x86_data_off = data_offset
-    uint64 a64_data_off = x86_data_off + x86_comp_len
-    uint64 pe_x86_data_off = a64_data_off + a64_comp_len
-    uint64 pe_a64_data_off = pe_x86_data_off + pe_x86_comp_len
-    uint64 macho_x86_data_off = pe_a64_data_off + pe_a64_comp_len
-    uint64 macho_a64_data_off = macho_x86_data_off + macho_x86_comp_len
-    uint64 android_data_off = macho_a64_data_off + macho_a64_comp_len
-    uint64 androidx_data_off = android_data_off + android_comp_len
+    uint64 blob1_data_off = data_offset
+    uint64 blob2_data_off = blob1_data_off + x64_lm_comp_len
+    uint64 blob3_data_off = blob2_data_off + x64_wa_comp_len
+    uint64 blob4_data_off = blob3_data_off + arm_la_comp_len
 
-    emit_krbofat_v2_entry_hdr(1, 1, x86_data_off, x86_comp_len, x86_len)
-    emit_krbofat_v2_entry_rt(0, 0)
-    emit_krbofat_v2_entry_hdr(2, 1, a64_data_off, a64_comp_len, a64_len)
-    emit_krbofat_v2_entry_rt(0, 0)
-    emit_krbofat_v2_entry_hdr(3, 1, pe_x86_data_off, pe_x86_comp_len, pe_x86_len)
-    emit_krbofat_v2_entry_rt(0, 0)
-    emit_krbofat_v2_entry_hdr(4, 1, pe_a64_data_off, pe_a64_comp_len, pe_a64_len)
-    emit_krbofat_v2_entry_rt(0, 0)
-    emit_krbofat_v2_entry_hdr(5, 1, macho_x86_data_off, macho_x86_comp_len, macho_x86_len)
-    emit_krbofat_v2_entry_rt(0, 0)
-    emit_krbofat_v2_entry_hdr(6, 1, macho_a64_data_off, macho_a64_comp_len, macho_a64_len)
-    emit_krbofat_v2_entry_rt(0, 0)
-    emit_krbofat_v2_entry_hdr(7, 1, android_data_off, android_comp_len, android_len)
-    emit_krbofat_v2_entry_rt(0, 0)
-    emit_krbofat_v2_entry_hdr(8, 1, androidx_data_off, androidx_comp_len, androidx_len)
-    emit_krbofat_v2_entry_rt(0, 0)
+    // Entry fields: arch_id, compression, blob_offset, blob_comp_size,
+    // slice_uncomp_size, slice_offset_in_pair, pair_uncomp_size.
+    emit_krbofat_v2_entry_hdr(1, 1, blob1_data_off, x64_lm_comp_len, x86_len)
+    emit_krbofat_v2_entry_rt(x64_lm_linux_off, x64_lm_pair_len)
+    emit_krbofat_v2_entry_hdr(2, 1, blob3_data_off, arm_la_comp_len, a64_len)
+    emit_krbofat_v2_entry_rt(arm_la_linux_off, arm_la_pair_len)
+    emit_krbofat_v2_entry_hdr(3, 1, blob2_data_off, x64_wa_comp_len, pe_x86_len)
+    emit_krbofat_v2_entry_rt(x64_wa_win_off, x64_wa_pair_len)
+    emit_krbofat_v2_entry_hdr(4, 1, blob4_data_off, arm_wm_comp_len, pe_a64_len)
+    emit_krbofat_v2_entry_rt(arm_wm_win_off, arm_wm_pair_len)
+    emit_krbofat_v2_entry_hdr(5, 1, blob1_data_off, x64_lm_comp_len, macho_x86_len)
+    emit_krbofat_v2_entry_rt(x64_lm_mac_off, x64_lm_pair_len)
+    emit_krbofat_v2_entry_hdr(6, 1, blob4_data_off, arm_wm_comp_len, macho_a64_len)
+    emit_krbofat_v2_entry_rt(arm_wm_mac_off, arm_wm_pair_len)
+    emit_krbofat_v2_entry_hdr(7, 1, blob3_data_off, arm_la_comp_len, android_len)
+    emit_krbofat_v2_entry_rt(arm_la_android_off, arm_la_pair_len)
+    emit_krbofat_v2_entry_hdr(8, 1, blob2_data_off, x64_wa_comp_len, androidx_len)
+    emit_krbofat_v2_entry_rt(x64_wa_android_off, x64_wa_pair_len)
 
-    // Padding
     uint64 pi = 0
     while pi < pad { emit_byte(0); pi = pi + 1 }
 
-    // Compressed x86_64 ELF blob
-    xi = 0
-    while xi < x86_comp_len {
-        uint64 p = x86_comp + xi
-        uint64 bv = 0
-        unsafe { *(p as uint8) -> bv }
-        uint8 bb = bv
-        emit_byte(bb)
-        xi = xi + 1
-    }
-
-    // Compressed ARM64 ELF blob
-    ai = 0
-    while ai < a64_comp_len {
-        uint64 p = a64_comp + ai
-        uint64 bv = 0
-        unsafe { *(p as uint8) -> bv }
-        uint8 bb = bv
-        emit_byte(bb)
-        ai = ai + 1
-    }
-
-    // Compressed x86_64 PE blob
-    pxi = 0
-    while pxi < pe_x86_comp_len {
-        uint64 p = pe_x86_comp + pxi
-        uint64 bv = 0
-        unsafe { *(p as uint8) -> bv }
-        uint8 bb = bv
-        emit_byte(bb)
-        pxi = pxi + 1
-    }
-
-    // Compressed ARM64 PE blob
-    pai = 0
-    while pai < pe_a64_comp_len {
-        uint64 p = pe_a64_comp + pai
-        uint64 bv = 0
-        unsafe { *(p as uint8) -> bv }
-        uint8 bb = bv
-        emit_byte(bb)
-        pai = pai + 1
-    }
-
-    // Compressed x86_64 Mach-O blob
-    mxi = 0
-    while mxi < macho_x86_comp_len {
-        uint64 p = macho_x86_comp + mxi
-        uint64 bv = 0
-        unsafe { *(p as uint8) -> bv }
-        uint8 bb = bv
-        emit_byte(bb)
-        mxi = mxi + 1
-    }
-
-    // Compressed ARM64 Mach-O blob
-    mai = 0
-    while mai < macho_a64_comp_len {
-        uint64 p = macho_a64_comp + mai
-        uint64 bv = 0
-        unsafe { *(p as uint8) -> bv }
-        uint8 bb = bv
-        emit_byte(bb)
-        mai = mai + 1
-    }
-
-    // Compressed Android ARM64 blob
-    adi = 0
-    while adi < android_comp_len {
-        uint64 p = android_comp + adi
-        uint64 bv = 0
-        unsafe { *(p as uint8) -> bv }
-        uint8 bb = bv
-        emit_byte(bb)
-        adi = adi + 1
-    }
-
-    // Compressed Android x86_64 blob
-    uint64 axci = 0
-    while axci < androidx_comp_len {
-        uint64 p = androidx_comp + axci
-        uint64 bv = 0
-        unsafe { *(p as uint8) -> bv }
-        uint8 bb = bv
-        emit_byte(bb)
-        axci = axci + 1
-    }
+    emit_raw_bytes(x64_lm_comp, x64_lm_comp_len)
+    emit_raw_bytes(x64_wa_comp, x64_wa_comp_len)
+    emit_raw_bytes(arm_la_comp, arm_la_comp_len)
+    emit_raw_bytes(arm_wm_comp, arm_wm_comp_len)
 
     codegen_write_output(output_path)
 

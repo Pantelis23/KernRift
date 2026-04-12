@@ -1717,16 +1717,26 @@ import struct, sys
 d = open('/tmp/krc_lz4_$$.krbo', 'rb').read()
 assert d[:8] == b'KRBOFAT\\x00'
 n = struct.unpack_from('<I', d, 12)[0]
-aid, comp, off, csize, usize = struct.unpack_from('<IIQQQ', d, 16)
-frame = d[off:off+csize]
-bs = struct.unpack_from('<I', frame, 7)[0]
-if (bs >> 31) & 1 != 0:
-    print('slice 0 is uncompressed')
+# With pair blobs, csize covers two slices and cannot be compared to
+# one slice's usize. Instead check: (1) total file < sum-of-uncompressed
+# and (2) at least one block uses real compression (bit 31 clear).
+total_uncomp = 0
+any_compressed = False
+for i in range(n):
+    aid, comp, off, csize, usize = struct.unpack_from('<IIQQQ', d, 16+i*48)
+    total_uncomp += usize
+    frame = d[off:off+csize]
+    if len(frame) >= 11:
+        bs = struct.unpack_from('<I', frame, 7)[0]
+        if (bs >> 31) & 1 == 0:
+            any_compressed = True
+if not any_compressed:
+    print('no compressed blocks found')
     sys.exit(1)
-if csize >= usize * 9 // 10:
-    print(f'slice 0 ratio {csize}/{usize} is not < 90%')
+if len(d) >= total_uncomp * 9 // 10:
+    print(f'file {len(d)} not < 90% of {total_uncomp}')
     sys.exit(1)
-print(f'slice 0 ok: {csize}/{usize}')
+print(f'ok: file={len(d)} total_uncomp={total_uncomp}')
 "; then
             PASS=$((PASS + 1))
             echo "  lz4_real_compression: PASS"
