@@ -90,6 +90,9 @@ fn tok_kind_name(uint64 kind) -> uint64 {
     if kind == 89 { return "'type'" }
     if kind == 90 { return "'asm'" }
     if kind == 91 { return "'volatile'" }
+    if kind == 94 { return "'f16'" }
+    if kind == 95 { return "'f32'" }
+    if kind == 96 { return "'f64'" }
     return "token"
 }
 
@@ -467,6 +470,7 @@ fn parse_expr_prec(uint32 min_prec) -> uint64 {
 
 fn is_type_keyword(uint32 kind) -> uint64 {
     if kind >= 80 && kind <= 87 { return 1 }
+    if kind >= 94 && kind <= 96 { return 1 }
     return 0
 }
 
