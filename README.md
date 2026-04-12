@@ -2,13 +2,16 @@
 
 **KernRift is a bare-metal systems programming language and compiler created by Pantelis Christou.**
 
-A self-hosted systems language compiler for kernel-first development. KernRift compiles itself — no Rust, no C, no external toolchain. It produces native executables for x86_64 and AArch64 on Linux, Windows, macOS, and Android, with BCJ+LZ4-compressed fat binaries as the default output (7 platform slices per `.krbo`). The `kr` runner executes `.krbo` fat binaries on any supported platform. The compiler self-hosts on 5 platforms including phones (verified on Samsung Galaxy Z Fold 5 via Termux).
+A self-hosted systems language compiler for kernel-first development. KernRift compiles itself — no Rust, no C, no external toolchain. It produces native executables for x86_64 and AArch64 on Linux, Windows, macOS, and Android, with BCJ+LZ4-compressed fat binaries as the default output (8 platform slices per `.krbo`). The `kr` runner executes `.krbo` fat binaries on any supported platform. The compiler self-hosts on 5 platforms including phones (verified on Samsung Galaxy Z Fold 5 via Termux).
 
 ## Features
 
 - **Self-hosting** — the compiler compiles itself to a fixed point. No Rust, no C, no external toolchain in the build.
 - **Cross-platform** — Linux, Windows, macOS, Android on x86_64 and ARM64 from a single source tree.
-- **Fat binaries** — default output is a `.krbo` with 7 platform slices (BCJ+LZ4 compressed). The `kr` runner extracts and executes the right slice at startup.
+- **Floating-point** — `f32` and `f64` types with full arithmetic, comparisons, conversions, and a math library (`sin`, `cos`, `exp`, `log`, `pow`, `sqrt`, `fmt_f64`). `f16` for storage. Hardware `sqrt`, software trig/exp/log.
+- **Multi-return** — `return (a, b)` and `(u64 x, u64 y) = call()` for 2-tuple destructuring.
+- **Inline asm I/O** — `asm { "rdtsc" } out(rax -> lo, rdx -> hi)` with in/out/clobbers clauses.
+- **Fat binaries** — default output is a `.krbo` with 8 platform slices (BCJ+LZ4 compressed). The `kr` runner extracts and executes the right slice at startup.
 - **Zero dependencies at runtime** — static executables, no libc, no dynamic linker.
 - **Kernel-first primitives** — `device` blocks for typed MMIO, `load/store/vload/vstore` builtins for clean pointer access, inline assembly with a large instruction table, signed comparisons, bitfield ops, atomic operations, `--freestanding` mode.
 - **Clean pointer syntax** — `store32(addr, val)` and `load64(addr)` instead of the verbose `unsafe { *(addr as uint32) = val }` form.
@@ -26,7 +29,7 @@ A self-hosted systems language compiler for kernel-first development. KernRift c
 # Install (gets krc compiler, kr runner, and stdlib)
 curl -sSf https://raw.githubusercontent.com/Pantelis23/KernRift/main/install.sh | sh
 
-# Compile to fat binary (default: 7 platform slices, BCJ+LZ4-compressed)
+# Compile to fat binary (default: 8 platform slices, BCJ+LZ4-compressed)
 krc hello.kr -o hello.krbo
 
 # Run on any platform
@@ -137,7 +140,24 @@ fn main() {
 }
 ```
 
-Types: `u8/u16/u32/u64`, `i8/i16/i32/i64` (long forms `uint8`..`int64` also work), structs, enums, fixed-size arrays, device blocks. Control: `if/else`, `while`, `for..in`, `break/continue`, `match`, recursion. Functions with method syntax (`fn Struct.method`), slice parameters (`fn foo([u8] data) { u64 n = data.len; ... }`), imports with recursive resolution.
+```kr
+import "std/math_float.kr"
+
+fn main() {
+    f64 x = int_to_f64(2)
+    println_str(fmt_f64(sqrt(x), 6))  // "1.414213"
+
+    (u64 q, u64 r) = divmod(17, 5)
+    println(q)  // 3
+    exit(0)
+}
+
+fn divmod(u64 a, u64 b) -> u64 {
+    return (a / b, a % b)
+}
+```
+
+Types: `u8/u16/u32/u64`, `i8/i16/i32/i64`, `f16/f32/f64` (long forms `uint8`..`int64` also work), structs, enums, fixed-size arrays, device blocks. Control: `if/else`, `while`, `for..in`, `break/continue`, `match`, recursion. Functions with method syntax (`fn Struct.method`), slice parameters (`fn foo([u8] data) { u64 n = data.len; ... }`), imports with recursive resolution.
 
 ## Kernel Features
 
@@ -198,13 +218,14 @@ Compiler intrinsics — no imports needed.
 | Atomic | `atomic_load(ptr)`, `atomic_store(ptr, v)`, `atomic_cas(ptr, exp, des)`, `atomic_add/sub/and/or/xor(ptr, v)` |
 | Bitfield | `bit_get(v, n)`, `bit_set(v, n)`, `bit_clear(v, n)`, `bit_range(v, start, width)`, `bit_insert(v, start, width, bits)` |
 | Signed cmp | `signed_lt(a, b)`, `signed_gt(a, b)`, `signed_le(a, b)`, `signed_ge(a, b)` |
+| Float | `int_to_f64(v)`, `f64_to_int(v)`, `int_to_f32(v)`, `f32_to_int(v)`, `f32_to_f64(v)`, `f64_to_f32(v)`, `sqrt(v)`, `fma_f64(a,b,c)` |
 | Syscall | `syscall_raw(nr, a1, a2, a3, a4, a5, a6)` |
 | Platform | `get_target_os()`, `get_arch_id()`, `exec_process(path)`, `set_executable(path)`, `get_module_path(buf, size)`, `fmt_uint(buf, val)` |
 | Function ptrs | `fn_addr(name)`, `call_ptr(addr, ...)` |
 
 ## Standard Library
 
-16 modules (~2500+ lines) in `std/`:
+17 modules (~2500+ lines) in `std/`:
 
 | Module | Functions |
 |--------|-----------|
@@ -223,6 +244,7 @@ Compiler intrinsics — no imports needed.
 | `std/widget.kr` | UI widgets: panel, label, button, progress bar, text field |
 | `std/time.kr` | `time_now`, `time_sleep_ns`, `time_sleep_ms`, `time_elapsed` |
 | `std/log.kr` | `log_set_level`, `log_debug`, `log_info`, `log_warn`, `log_error`, `log_info_kv`, `log_error_int` |
+| `std/math_float.kr` | `sqrt`, `sin`, `cos`, `tan`, `exp`, `log`, `pow`, `floor`, `ceil`, `abs_f`, `fmt_f64`, `fmt_f32`, `f64_pi`, `f64_e` |
 | `std/net.kr` | `net_socket`, `net_bind`, `net_listen`, `net_accept`, `net_connect`, `net_send`, `net_recv`, `net_close`, `net_htons`, `net_addr_ipv4` |
 
 Import with `import "std/string.kr"` etc. The compiler searches `~/.local/share/kernrift/` automatically.
@@ -240,7 +262,7 @@ See the [`examples/`](examples/) directory for runnable programs covering every 
 
 ## Architecture
 
-~18,000 lines of KernRift across 16 source files + 16 stdlib modules. Self-compiles to a ~480 KB native binary in ~60ms, or a ~2.6 MB universal fat binary (7 slices) in ~280ms (AMD Ryzen 9 7900X). 131 tests, bootstrap fixed point verified on 5 platforms (Linux x86_64, Linux ARM64, Windows x86_64, Windows ARM64, Android ARM64).
+~23,000 lines of KernRift across 16 source files + 17 stdlib modules. Self-compiles to a ~660 KB native binary in ~60ms, or a fat binary with 8 slices (LZ-Rift arch-pair compression) in ~280ms (AMD Ryzen 9 7900X). 225+ tests, bootstrap fixed point verified on 5 platforms (Linux x86_64, Linux ARM64, Windows x86_64, Windows ARM64, Android ARM64).
 
 | File | Purpose |
 |------|---------|
@@ -252,7 +274,7 @@ See the [`examples/`](examples/) directory for runnable programs covering every 
 | `living.kr` | Pattern detection + fitness |
 | `bcj.kr` | BCJ filters (x86_64 + AArch64) for compression |
 | `format_*.kr` | ELF, Mach-O, PE, AR, KRBO, KrboFat |
-| `std/*.kr` | Standard library (16 modules, ~2500+ lines) |
+| `std/*.kr` | Standard library (17 modules, ~2500+ lines) |
 
 ## Bootstrap
 
@@ -272,6 +294,7 @@ The [bootstrap compiler](https://github.com/Pantelis23/KernRift-bootstrap) is on
 | Windows x86_64 | ✅ | ✅ | ✅ | ✅ | ✅ chain verified |
 | Windows ARM64 | ✅ | ✅ | ✅ | ✅ | ✅ krc3==krc4 |
 | Android ARM64 | ✅ | ✅ | ✅ | ✅ | ✅ self-compiled on phone |
+| Android x86_64 | ✅ | ✅ | — | — | — |
 | macOS x86_64 | ✅ | ✅ | ✅ | ✅ | — |
 | macOS ARM64 | ✅ | WIP | — | — | — |
 
