@@ -2581,8 +2581,46 @@ fn gen_expr(uint64 node) {
         if used_direct_cmp != 0 {
             // Direct cmp already emitted — skip expression evaluation
         } else if wrk_cmp == 30 || wrk_cmp == 32 {
-            // Simple RHS: skip stack temp
+            // Simple RHS: skip stack temp (for integers)
             gen_expr(wlhs)
+            uint64 lhs_is_float_s = expr_is_float
+            if lhs_is_float_s != 0 {
+                // Float LHS: store xmm0 to temp, eval RHS, ucomisd
+                uint64 fcmp_temp_s = var_count * 8
+                var_count = var_count + 1
+                var_frame_size = var_count * 8
+                uint64 fcrem_s = var_frame_size & 15
+                if fcrem_s != 0 { var_frame_size = var_frame_size + 16 - fcrem_s }
+                if lhs_is_float_s == 2 {
+                    emit_store_xmm0_f32(fcmp_temp_s)
+                } else {
+                    emit_store_xmm0_f64(fcmp_temp_s)
+                }
+                gen_expr(wrhs)
+                // movsd xmm1, xmm0 (RHS): F2 0F 10 C8
+                emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x10); emit_byte(0xC8)
+                // reload LHS into xmm0
+                if lhs_is_float_s == 2 {
+                    emit_load_xmm0_f32(fcmp_temp_s)
+                } else {
+                    emit_load_xmm0_f64(fcmp_temp_s)
+                }
+                // ucomisd xmm0, xmm1: 66 0F 2E C1  (ucomiss: 0F 2E C1)
+                if lhs_is_float_s == 2 {
+                    emit_byte(0x0F); emit_byte(0x2E); emit_byte(0xC1)
+                } else {
+                    emit_byte(0x66); emit_byte(0x0F); emit_byte(0x2E); emit_byte(0xC1)
+                }
+                uint32 op_tok_fs = ast_data1(node)
+                uint64 wop_fs = op_tok_fs
+                uint64 p_fs = cg_tokens + wop_fs * 16
+                uint32 op_kind_fs = 0
+                unsafe { *(p_fs as uint32) -> op_kind_fs }
+                rax_invalidate()
+                emit_setcc(op_kind_fs)
+                expr_is_float = 0
+                return
+            }
             emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
             rax_cache = 0
             gen_expr(wrhs)
@@ -2590,6 +2628,44 @@ fn gen_expr(uint64 node) {
             rax_cache = 0
         } else if r12_in_use == 0 {
             gen_expr(wlhs)
+            uint64 lhs_is_float_r = expr_is_float
+            if lhs_is_float_r != 0 {
+                // Float LHS: store xmm0 to temp, eval RHS, ucomisd
+                uint64 fcmp_temp_r = var_count * 8
+                var_count = var_count + 1
+                var_frame_size = var_count * 8
+                uint64 fcrem_r = var_frame_size & 15
+                if fcrem_r != 0 { var_frame_size = var_frame_size + 16 - fcrem_r }
+                if lhs_is_float_r == 2 {
+                    emit_store_xmm0_f32(fcmp_temp_r)
+                } else {
+                    emit_store_xmm0_f64(fcmp_temp_r)
+                }
+                gen_expr(wrhs)
+                // movsd xmm1, xmm0 (RHS): F2 0F 10 C8
+                emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x10); emit_byte(0xC8)
+                // reload LHS into xmm0
+                if lhs_is_float_r == 2 {
+                    emit_load_xmm0_f32(fcmp_temp_r)
+                } else {
+                    emit_load_xmm0_f64(fcmp_temp_r)
+                }
+                // ucomisd xmm0, xmm1: 66 0F 2E C1  (ucomiss: 0F 2E C1)
+                if lhs_is_float_r == 2 {
+                    emit_byte(0x0F); emit_byte(0x2E); emit_byte(0xC1)
+                } else {
+                    emit_byte(0x66); emit_byte(0x0F); emit_byte(0x2E); emit_byte(0xC1)
+                }
+                uint32 op_tok_fr = ast_data1(node)
+                uint64 wop_fr = op_tok_fr
+                uint64 p_fr = cg_tokens + wop_fr * 16
+                uint32 op_kind_fr = 0
+                unsafe { *(p_fr as uint32) -> op_kind_fr }
+                rax_invalidate()
+                emit_setcc(op_kind_fr)
+                expr_is_float = 0
+                return
+            }
             r12_in_use = 1
             emit_byte(0x49); emit_byte(0x89); emit_byte(0xC4)
             rax_cache = 0
@@ -2600,11 +2676,44 @@ fn gen_expr(uint64 node) {
             rax_cache = 0
         } else {
             gen_expr(wlhs)
+            uint64 lhs_is_float_k = expr_is_float
             uint64 cmp_temp = var_count * 8
             var_count = var_count + 1
             var_frame_size = var_count * 8
             uint64 crem = var_frame_size & 15
             if crem != 0 { var_frame_size = var_frame_size + 16 - crem }
+            if lhs_is_float_k != 0 {
+                // Float LHS: store xmm0 to temp, eval RHS, ucomisd
+                if lhs_is_float_k == 2 {
+                    emit_store_xmm0_f32(cmp_temp)
+                } else {
+                    emit_store_xmm0_f64(cmp_temp)
+                }
+                gen_expr(wrhs)
+                // movsd xmm1, xmm0 (RHS): F2 0F 10 C8
+                emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x10); emit_byte(0xC8)
+                // reload LHS into xmm0
+                if lhs_is_float_k == 2 {
+                    emit_load_xmm0_f32(cmp_temp)
+                } else {
+                    emit_load_xmm0_f64(cmp_temp)
+                }
+                // ucomisd xmm0, xmm1: 66 0F 2E C1  (ucomiss: 0F 2E C1)
+                if lhs_is_float_k == 2 {
+                    emit_byte(0x0F); emit_byte(0x2E); emit_byte(0xC1)
+                } else {
+                    emit_byte(0x66); emit_byte(0x0F); emit_byte(0x2E); emit_byte(0xC1)
+                }
+                uint32 op_tok_fk = ast_data1(node)
+                uint64 wop_fk = op_tok_fk
+                uint64 p_fk = cg_tokens + wop_fk * 16
+                uint32 op_kind_fk = 0
+                unsafe { *(p_fk as uint32) -> op_kind_fk }
+                rax_invalidate()
+                emit_setcc(op_kind_fk)
+                expr_is_float = 0
+                return
+            }
             emit_store_rax_to_stack(cmp_temp)
             gen_expr(wrhs)
             emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
