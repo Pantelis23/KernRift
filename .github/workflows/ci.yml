@@ -96,13 +96,13 @@ jobs:
           assert d[:8] == b'KRBOFAT\x00', 'not a fat binary'
           import struct
           count = struct.unpack_from('<I', d, 12)[0]
-          assert count == 7, f'expected 7 arches, got {count}'
+          assert count == 8, f'expected 8 arches, got {count}'
           print(f'Fat binary OK: {count} architectures, {len(d)} bytes')
           "
 
       - name: Build krc.krbo (the compiler itself as a fat binary) + kr runners
         run: |
-          # krc.krbo — 7-slice fat binary of the compiler
+          # krc.krbo — 8-slice fat binary of the compiler
           ./build/krc2 build/krc.kr -o /tmp/krc.krbo
           ls -la /tmp/krc.krbo
           # kr runner for every platform (one source, seven slices)
