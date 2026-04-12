@@ -66,6 +66,8 @@ enum AstKind {
     //   data2 = register-name token (e.g. "rax", "x0")
     //   data3 = variable-name token (0 for clobber entries)
     AsmConstraint = 45
+
+    FloatLitNode = 46    // data1=tok_idx
 }
 
 // ---------------------------------------------------------------------------

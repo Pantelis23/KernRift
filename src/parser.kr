@@ -178,6 +178,16 @@ fn parse_primary() -> uint64 {
         return node
     }
 
+    // Float literal
+    if kind == 5 {
+        uint64 tok = advance_tok()
+        uint64 node = ast_alloc(46)
+        uint32 t32 = tok
+        ast_set_data1(node, t32)
+        ast_set_tok(node, t32)
+        return node
+    }
+
     // String literal
     if kind == 3 {
         uint64 tok = advance_tok()

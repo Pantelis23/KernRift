@@ -390,11 +390,52 @@ fn tok_matches(uint64 tok_idx, uint64 str_ptr, uint64 str_len) -> uint64 {
 
 static uint64 var_table_size = 0
 
+static uint64 var_type_table = 0
+static uint64 var_type_count = 0
+
 fn var_reset() {
     var_count = 0
     var_frame_size = 0
     var_table_size = 0
     arr_elem_count = 0
+    var_type_count = 0
+}
+
+fn var_type_init() {
+    if var_type_table == 0 {
+        var_type_table = alloc(4096)
+    }
+}
+
+fn var_type_register(uint64 name_tok, uint64 type_kind) {
+    var_type_init()
+    uint64 entry = var_type_table + var_type_count * 8
+    uint32 nt = name_tok
+    unsafe { *(entry as uint32) = nt }
+    uint64 e4 = entry + 4
+    uint32 tk = type_kind
+    unsafe { *(e4 as uint32) = tk }
+    var_type_count = var_type_count + 1
+}
+
+fn var_type_lookup(uint64 name_tok) -> uint64 {
+    var_type_init()
+    uint64 i = 0
+    while i < var_type_count {
+        uint64 entry = var_type_table + i * 8
+        uint32 nt = 0
+        unsafe { *(entry as uint32) -> nt }
+        uint64 wnt = nt
+        if tok_text_eq(wnt, name_tok) != 0 {
+            uint64 e4 = entry + 4
+            uint32 tk = 0
+            unsafe { *(e4 as uint32) -> tk }
+            uint64 wtk = tk
+            return wtk
+        }
+        i = i + 1
+    }
+    return 0
 }
 
 fn var_declare(uint64 name_tok) -> uint64 {
@@ -1849,6 +1890,43 @@ fn gen_expr(uint64 node) {
         return
     }
 
+    // Float literal
+    if kind == 46 {
+        uint32 lit_tok_f = ast_data1(node)
+        uint64 tstart_f = tok_text_start(lit_tok_f)
+        uint64 tlen_f = tok_text_len(lit_tok_f)
+        // Parse integer part (digits before '.')
+        uint64 int_val = 0
+        uint64 fi = 0
+        while fi < tlen_f {
+            uint64 cp_f = cg_source + tstart_f + fi
+            uint64 ch_f = 0
+            unsafe { *(cp_f as uint8) -> ch_f }
+            if ch_f == 46 { break }
+            if ch_f >= 48 && ch_f <= 57 {
+                int_val = int_val * 10 + (ch_f - 48)
+            }
+            fi = fi + 1
+        }
+        // Emit: mov rax, int_val; cvtsi2sd xmm0, rax
+        emit_mov_rax_imm(int_val)
+        // cvtsi2sd xmm0, rax: F2 48 0F 2A C0
+        emit_byte(0xF2); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x2A); emit_byte(0xC0)
+
+        // Check for 'f' suffix → f32
+        uint64 last_p = cg_source + tstart_f + tlen_f - 1
+        uint64 last_c = 0
+        unsafe { *(last_p as uint8) -> last_c }
+        if last_c == 102 {
+            // cvtsd2ss xmm0, xmm0: F3 0F 5A C0
+            emit_byte(0xF3); emit_byte(0x0F); emit_byte(0x5A); emit_byte(0xC0)
+            expr_is_float = 2
+        } else {
+            expr_is_float = 1
+        }
+        return
+    }
+
     // String literal → store bytes in str_buf, emit LEA rip-relative
     if kind == 31 {
         uint32 tok = ast_data1(node)
@@ -2093,7 +2171,20 @@ fn gen_expr(uint64 node) {
         uint64 wident_tok = tok
         uint64 offset = var_lookup(tok)
         if offset != 0xFFFFFFFF {
+            // Check if this variable is float-typed
+            uint64 vtype = var_type_lookup(tok)
+            if is_float_type(vtype) != 0 {
+                if is_f32_type(vtype) != 0 {
+                    emit_load_xmm0_f32(offset)
+                    expr_is_float = 2
+                } else {
+                    emit_load_xmm0_f64(offset)
+                    expr_is_float = 1
+                }
+                return
+            }
             emit_load_rax_from_stack(offset)
+            expr_is_float = 0
         } else {
             uint64 soff = static_lookup(tok)
             if soff != 0xFFFFFFFF {
@@ -5244,11 +5335,22 @@ fn gen_stmt(uint64 node) {
         }
 
         uint64 offset = var_declare(name_tok)
+        uint32 type_tok_vd = ast_data1(node)
+        uint64 wtype = tok_kind_at_raw(type_tok_vd)
+        var_type_register(name_tok, wtype)
         uint32 init_child = ast_child(node)
         uint64 wic = init_child
         if wic != 0 {
             gen_expr(wic)
-            emit_store_rax_to_stack(offset)
+            if is_float_type(wtype) != 0 {
+                if is_f32_type(wtype) != 0 {
+                    emit_store_xmm0_f32(offset)
+                } else {
+                    emit_store_xmm0_f64(offset)
+                }
+            } else {
+                emit_store_rax_to_stack(offset)
+            }
         }
         return
     }
