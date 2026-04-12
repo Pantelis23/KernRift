@@ -1788,6 +1788,10 @@ fi
 rm -f /tmp/krc_rt_$$.kr /tmp/krc_rt_kr_$$.kr /tmp/krc_rt_$$.krbo /tmp/krc_rt_kr_$$
 
 echo ""
+echo "--- float types ---"
+run_test "f64_parse" 'fn main() { f64 x = 0.0; exit(0) }' 0
+
+echo ""
 echo "--- extern fn (libc linking) ---"
 # These tests link against the HOST gcc's libc. On cross-compile runs
 # (arm64 host but KRC_FLAGS=--arch=x86_64 for example) the object file

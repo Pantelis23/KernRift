@@ -17,6 +17,7 @@ enum TokenKind {
     IntLit = 2
     StrLit = 3
     CharLit = 4
+    FloatLit = 5
 
     // Punctuation
     LParen = 10
@@ -105,6 +106,11 @@ enum TokenKind {
     KwVolatile = 91
     KwDevice = 92
     KwAt = 93
+
+    // Float type keywords
+    KwFloat16 = 94
+    KwFloat32 = 95
+    KwFloat64 = 96
 
     // Error
     Error = 255
@@ -418,6 +424,9 @@ fn classify_keyword(uint64 start, uint64 len) -> uint32 {
     if match_keyword(start, len, "volatile", 8) != 0 { return TokenKind.KwVolatile }
     if match_keyword(start, len, "device", 6) != 0 { return TokenKind.KwDevice }
     if match_keyword(start, len, "at", 2) != 0 { return TokenKind.KwAt }
+    if match_keyword(start, len, "f16", 3) != 0 { return TokenKind.KwFloat16 }
+    if match_keyword(start, len, "f32", 3) != 0 { return TokenKind.KwFloat32 }
+    if match_keyword(start, len, "f64", 3) != 0 { return TokenKind.KwFloat64 }
     return TokenKind.Ident
 }
 
@@ -456,6 +465,21 @@ fn lex_one_token() {
         } else {
             while pos < src_len && is_digit(peek()) != 0 {
                 advance()
+            }
+            // Check for decimal point → float literal
+            if pos < src_len && peek() == 46 {
+                uint64 after_dot = peek_at(1)
+                if after_dot >= 48 && after_dot <= 57 {
+                    advance()
+                    while pos < src_len && is_digit(peek()) != 0 {
+                        advance()
+                    }
+                    if pos < src_len && peek() == 102 {
+                        advance()
+                    }
+                    emit_token(TokenKind.FloatLit, start, pos - start, tok_line)
+                    return
+                }
             }
         }
         emit_token(TokenKind.IntLit, start, pos - start, tok_line)
