@@ -457,6 +457,10 @@ fn resolve_a64_win_iat_fixups(uint64 text_start, uint64 iat_rva) {
 // For freestanding/naked: no saved regs, a64_var_base = 0
 static uint64 a64_var_base = 32
 
+// Float tracking for ARM64 (mirrors x86_64 expr_is_float):
+// 0 = integer, 1 = f64 (in d0), 2 = f32 (in s0)
+static uint64 expr_is_float_a64 = 0
+
 // Store x0 to variable slot on stack
 fn emit_a64_store_x0(uint64 var_offset) {
     emit_a64_str(0, 31, a64_var_base + var_offset)
@@ -465,6 +469,58 @@ fn emit_a64_store_x0(uint64 var_offset) {
 // Load variable from stack into x0
 fn emit_a64_load_x0(uint64 var_offset) {
     emit_a64_ldr(0, 31, a64_var_base + var_offset)
+}
+
+// ---------------------------------------------------------------------------
+// ARM64 FP load/store helpers (d0/s0 and d1/s1)
+// ---------------------------------------------------------------------------
+
+// STR d0, [sp, #(a64_var_base + offset)] — store 64-bit float
+fn emit_a64_store_d0(uint64 var_offset) {
+    uint64 abs_off = a64_var_base + var_offset
+    uint64 imm12 = abs_off / 8
+    uint64 insn = 0xFD000000 | (imm12 << 10) | (31 << 5) | 0
+    emit_a64(insn)
+}
+
+// LDR d0, [sp, #(a64_var_base + offset)] — load 64-bit float
+fn emit_a64_load_d0(uint64 var_offset) {
+    uint64 abs_off = a64_var_base + var_offset
+    uint64 imm12 = abs_off / 8
+    uint64 insn = 0xFD400000 | (imm12 << 10) | (31 << 5) | 0
+    emit_a64(insn)
+}
+
+// STR s0, [sp, #(a64_var_base + offset)] — store 32-bit float
+fn emit_a64_store_s0(uint64 var_offset) {
+    uint64 abs_off = a64_var_base + var_offset
+    uint64 imm12 = abs_off / 4
+    uint64 insn = 0xBD000000 | (imm12 << 10) | (31 << 5) | 0
+    emit_a64(insn)
+}
+
+// LDR s0, [sp, #(a64_var_base + offset)] — load 32-bit float
+fn emit_a64_load_s0(uint64 var_offset) {
+    uint64 abs_off = a64_var_base + var_offset
+    uint64 imm12 = abs_off / 4
+    uint64 insn = 0xBD400000 | (imm12 << 10) | (31 << 5) | 0
+    emit_a64(insn)
+}
+
+// LDR dN, [sp, #(a64_var_base + offset)] — load 64-bit float into dN
+fn emit_a64_load_dN(uint64 reg, uint64 var_offset) {
+    uint64 abs_off = a64_var_base + var_offset
+    uint64 imm12 = abs_off / 8
+    uint64 insn = 0xFD400000 | (imm12 << 10) | (31 << 5) | reg
+    emit_a64(insn)
+}
+
+// STR dN, [sp, #(a64_var_base + offset)] — store 64-bit float from dN
+fn emit_a64_store_dN(uint64 reg, uint64 var_offset) {
+    uint64 abs_off = a64_var_base + var_offset
+    uint64 imm12 = abs_off / 8
+    uint64 insn = 0xFD000000 | (imm12 << 10) | (31 << 5) | reg
+    emit_a64(insn)
 }
 
 // Parse an AArch64 register name token into a 5-bit register code (0..30).
@@ -575,6 +631,42 @@ fn gen_expr_a64(uint64 node) {
         uint32 tok = ast_data1(node)
         uint64 val = parse_int_token(tok)
         emit_a64_mov_imm(0, val)
+        expr_is_float_a64 = 0
+        return
+    }
+
+    // Float literal (kind 46): parse integer part, mov x0, int_val; scvtf d0, x0
+    if kind == 46 {
+        uint32 lit_tok_f = ast_data1(node)
+        uint64 tstart_f = tok_text_start(lit_tok_f)
+        uint64 tlen_f = tok_text_len(lit_tok_f)
+        // Parse integer part (digits before '.')
+        uint64 int_val = 0
+        uint64 fi = 0
+        while fi < tlen_f {
+            uint64 cp_f = cg_source + tstart_f + fi
+            uint64 ch_f = 0
+            unsafe { *(cp_f as uint8) -> ch_f }
+            if ch_f == 46 { break }
+            if ch_f >= 48 && ch_f <= 57 {
+                int_val = int_val * 10 + (ch_f - 48)
+            }
+            fi = fi + 1
+        }
+        // mov x0, int_val; scvtf d0, x0
+        emit_a64_mov_imm(0, int_val)
+        emit_a64(0x9E620000)  // scvtf d0, x0
+
+        // Check for 'f' suffix → f32
+        uint64 last_p = cg_source + tstart_f + tlen_f - 1
+        uint64 last_c = 0
+        unsafe { *(last_p as uint8) -> last_c }
+        if last_c == 102 {
+            emit_a64(0x1E624000)  // fcvt s0, d0
+            expr_is_float_a64 = 2
+        } else {
+            expr_is_float_a64 = 1
+        }
         return
     }
 
@@ -763,7 +855,20 @@ fn gen_expr_a64(uint64 node) {
         uint64 wait_tok = tok
         uint64 offset = var_lookup(tok)
         if offset != 0xFFFFFFFF {
+            // Check if this variable is float-typed
+            uint64 vtype_a = var_type_lookup(tok)
+            if is_float_type(vtype_a) != 0 {
+                if is_f32_type(vtype_a) != 0 {
+                    emit_a64_load_s0(offset)
+                    expr_is_float_a64 = 2
+                } else {
+                    emit_a64_load_d0(offset)
+                    expr_is_float_a64 = 1
+                }
+                return
+            }
             emit_a64_load_x0(offset)
+            expr_is_float_a64 = 0
         } else {
             uint64 soff = static_lookup(tok)
             if soff != 0xFFFFFFFF {
@@ -860,12 +965,57 @@ fn gen_expr_a64(uint64 node) {
         }
 
         gen_expr_a64(wlhs)
+        uint64 lhs_is_float_b = expr_is_float_a64
         // Save lhs to temp slot
         uint64 binop_temp = var_count * 8
         var_count = var_count + 1
         var_frame_size = var_count * 8
         uint64 brem = var_frame_size & 15
         if brem != 0 { var_frame_size = var_frame_size + 16 - brem }
+
+        if lhs_is_float_b != 0 {
+            // Float LHS: store d0/s0 to temp, eval RHS, then float op
+            if lhs_is_float_b == 2 {
+                emit_a64_store_s0(binop_temp)
+            } else {
+                emit_a64_store_d0(binop_temp)
+            }
+            uint32 rhs_idx = ast_data2(node)
+            uint64 wrhs = rhs_idx
+            gen_expr_a64(wrhs)
+            // RHS in d0/s0 → move to d1/s1
+            if lhs_is_float_b == 2 {
+                emit_a64(0x1E204001) // fmov s1, s0
+            } else {
+                emit_a64(0x1E604001) // fmov d1, d0
+            }
+            // Reload LHS into d0/s0
+            if lhs_is_float_b == 2 {
+                emit_a64_load_s0(binop_temp)
+            } else {
+                emit_a64_load_d0(binop_temp)
+            }
+            // d0 = LHS, d1 = RHS (or s0/s1 for f32)
+            uint32 op_tok_fb = ast_data1(node)
+            uint64 wop_fb = op_tok_fb
+            uint64 pfb = cg_tokens + wop_fb * 16
+            uint32 op_kind_fb = 0
+            unsafe { *(pfb as uint32) -> op_kind_fb }
+            if lhs_is_float_b == 2 {
+                if op_kind_fb == 30 { emit_a64(0x1E212800) } // fadd s0, s0, s1
+                if op_kind_fb == 31 { emit_a64(0x1E213800) } // fsub s0, s0, s1
+                if op_kind_fb == 22 { emit_a64(0x1E210800) } // fmul s0, s0, s1
+                if op_kind_fb == 32 { emit_a64(0x1E211800) } // fdiv s0, s0, s1
+            } else {
+                if op_kind_fb == 30 { emit_a64(0x1E612800) } // fadd d0, d0, d1
+                if op_kind_fb == 31 { emit_a64(0x1E613800) } // fsub d0, d0, d1
+                if op_kind_fb == 22 { emit_a64(0x1E610800) } // fmul d0, d0, d1
+                if op_kind_fb == 32 { emit_a64(0x1E611800) } // fdiv d0, d0, d1
+            }
+            expr_is_float_a64 = lhs_is_float_b
+            return
+        }
+
         emit_a64_store_x0(binop_temp)
 
         uint32 rhs_idx = ast_data2(node)
@@ -929,11 +1079,51 @@ fn gen_expr_a64(uint64 node) {
         }
 
         gen_expr_a64(wlhs)
+        uint64 lhs_is_float_c = expr_is_float_a64
         uint64 cmp_temp = var_count * 8
         var_count = var_count + 1
         var_frame_size = var_count * 8
         uint64 crem = var_frame_size & 15
         if crem != 0 { var_frame_size = var_frame_size + 16 - crem }
+
+        if lhs_is_float_c != 0 {
+            // Float compare: store d0/s0 temp, eval RHS, fcmp, cset
+            if lhs_is_float_c == 2 {
+                emit_a64_store_s0(cmp_temp)
+            } else {
+                emit_a64_store_d0(cmp_temp)
+            }
+            uint32 rhs_idx = ast_data2(node)
+            uint64 wrhs = rhs_idx
+            gen_expr_a64(wrhs)
+            // RHS in d0/s0 → move to d1/s1
+            if lhs_is_float_c == 2 {
+                emit_a64(0x1E204001) // fmov s1, s0
+                emit_a64_load_s0(cmp_temp)
+                emit_a64(0x1E212000) // fcmp s0, s1
+            } else {
+                emit_a64(0x1E604001) // fmov d1, d0
+                emit_a64_load_d0(cmp_temp)
+                emit_a64(0x1E612000) // fcmp d0, d1
+            }
+            // fcmp sets NZCV. Use same condition codes as integer unsigned:
+            // For float, after fcmp: EQ→eq, NE→ne, LT→mi(4), LE→ls(9), GT→gt(12), GE→ge(10)
+            // Actually, ARM64 fcmp: LT→MI(4), GT→GT(0xC), LE→LS(9), GE→GE(0xA)
+            uint32 op_tok_fc = ast_data1(node)
+            uint64 wop_fc = op_tok_fc
+            uint64 pfc = cg_tokens + wop_fc * 16
+            uint32 op_kind_fc = 0
+            unsafe { *(pfc as uint32) -> op_kind_fc }
+            if op_kind_fc == 35 { emit_a64_cset(0, 0) }       // == → eq
+            else if op_kind_fc == 36 { emit_a64_cset(0, 1) }   // != → ne
+            else if op_kind_fc == 37 { emit_a64_cset(0, 0xB) } // < → lt (signed, works for float NZCV)
+            else if op_kind_fc == 38 { emit_a64_cset(0, 0xD) } // <= → le
+            else if op_kind_fc == 39 { emit_a64_cset(0, 0xC) } // > → gt
+            else if op_kind_fc == 40 { emit_a64_cset(0, 0xA) } // >= → ge
+            expr_is_float_a64 = 0
+            return
+        }
+
         emit_a64_store_x0(cmp_temp)
 
         uint32 rhs_idx = ast_data2(node)
@@ -2812,6 +3002,94 @@ fn gen_expr_a64(uint64 node) {
             return
         }
 
+        // Built-in: int_to_f64(x) → scvtf d0, x0
+        if is_extern_call == 0 && tok_matches(wct, "int_to_f64", 10) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr_a64(wfa)
+            emit_a64(0x9E620000)  // scvtf d0, x0
+            expr_is_float_a64 = 1
+            return
+        }
+
+        // Built-in: int_to_f32(x) → scvtf s0, x0
+        if is_extern_call == 0 && tok_matches(wct, "int_to_f32", 10) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr_a64(wfa)
+            emit_a64(0x9E220000)  // scvtf s0, x0
+            expr_is_float_a64 = 2
+            return
+        }
+
+        // Built-in: f64_to_int(x) → fcvtzs x0, d0
+        if is_extern_call == 0 && tok_matches(wct, "f64_to_int", 10) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr_a64(wfa)
+            emit_a64(0x9E780000)  // fcvtzs x0, d0
+            expr_is_float_a64 = 0
+            return
+        }
+
+        // Built-in: f32_to_int(x) → fcvtzs x0, s0
+        if is_extern_call == 0 && tok_matches(wct, "f32_to_int", 10) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr_a64(wfa)
+            emit_a64(0x9E380000)  // fcvtzs x0, s0
+            expr_is_float_a64 = 0
+            return
+        }
+
+        // Built-in: f32_to_f64(x) → fcvt d0, s0
+        if is_extern_call == 0 && tok_matches(wct, "f32_to_f64", 10) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr_a64(wfa)
+            emit_a64(0x1E22C000)  // fcvt d0, s0
+            expr_is_float_a64 = 1
+            return
+        }
+
+        // Built-in: f64_to_f32(x) → fcvt s0, d0
+        if is_extern_call == 0 && tok_matches(wct, "f64_to_f32", 10) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr_a64(wfa)
+            emit_a64(0x1E624000)  // fcvt s0, d0
+            expr_is_float_a64 = 2
+            return
+        }
+
+        // Built-in: sqrt_f64(x) → fsqrt d0, d0
+        if is_extern_call == 0 && tok_matches(wct, "sqrt_f64", 8) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr_a64(wfa)
+            emit_a64(0x1E61C000)  // fsqrt d0, d0
+            expr_is_float_a64 = 1
+            return
+        }
+        if is_extern_call == 0 && tok_matches(wct, "sqrt", 4) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr_a64(wfa)
+            emit_a64(0x1E61C000)  // fsqrt d0, d0
+            expr_is_float_a64 = 1
+            return
+        }
+
+        // Built-in: sqrt_f32(x) → fsqrt s0, s0
+        if is_extern_call == 0 && tok_matches(wct, "sqrt_f32", 8) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr_a64(wfa)
+            emit_a64(0x1E21C000)  // fsqrt s0, s0
+            expr_is_float_a64 = 2
+            return
+        }
+
         // User-defined function call
         uint32 arg = ast_child(node)
         uint64 warg = arg
@@ -2834,26 +3112,75 @@ fn gen_expr_a64(uint64 node) {
         uint64 acrem = var_frame_size & 15
         if acrem != 0 { var_frame_size = var_frame_size + 16 - acrem }
 
-        // Evaluate and store all args
+        // Evaluate all args and store to temp slots.
+        // Track which args are float (0=int, 1=f64, 2=f32).
+        uint64[16] arg_float_flags_a
         uint64 weval = warg
         uint64 ai = 0
         while weval != 0 {
             gen_expr_a64(weval)
-            emit_a64_store_x0(arg_slots_base + ai * 8)
+            uint64 aslot = arg_slots_base + ai * 8
+            uint64 aff_addr_a = arg_float_flags_a + ai * 8
+            if expr_is_float_a64 != 0 {
+                // Store float result from d0 to temp slot
+                emit_a64_store_d0(aslot)
+                unsafe { *(aff_addr_a as uint64) = expr_is_float_a64 }
+            } else {
+                emit_a64_store_x0(aslot)
+                uint64 zero_af = 0
+                unsafe { *(aff_addr_a as uint64) = zero_af }
+            }
             ai = ai + 1
             uint32 anxt = ast_next(weval)
             weval = anxt
         }
 
-        // Load args into x0-x7
-        if arg_count >= 8 { emit_a64_load_x0(arg_slots_base + 56); emit_a64_mov(7, 0) }
-        if arg_count >= 7 { emit_a64_load_x0(arg_slots_base + 48); emit_a64_mov(6, 0) }
-        if arg_count >= 6 { emit_a64_load_x0(arg_slots_base + 40); emit_a64_mov(5, 0) }
-        if arg_count >= 5 { emit_a64_load_x0(arg_slots_base + 32); emit_a64_mov(4, 0) }
-        if arg_count >= 4 { emit_a64_load_x0(arg_slots_base + 24); emit_a64_mov(3, 0) }
-        if arg_count >= 3 { emit_a64_load_x0(arg_slots_base + 16); emit_a64_mov(2, 0) }
-        if arg_count >= 2 { emit_a64_load_x0(arg_slots_base + 8); emit_a64_mov(1, 0) }
-        if arg_count >= 1 { emit_a64_load_x0(arg_slots_base) }
+        // Load args into registers from temp slots
+        // AAPCS64: int args → x0-x7 (independent counter)
+        //          float args → d0-d7 (independent counter)
+        uint64 call_float_idx = 0
+        uint64 fi_a = 0
+        while fi_a < arg_count {
+            uint64 ff_addr_a = arg_float_flags_a + fi_a * 8
+            uint64 ff_val_a = 0
+            unsafe { *(ff_addr_a as uint64) -> ff_val_a }
+            if ff_val_a != 0 && call_float_idx < 8 {
+                emit_a64_load_dN(call_float_idx, arg_slots_base + fi_a * 8)
+                call_float_idx = call_float_idx + 1
+            }
+            fi_a = fi_a + 1
+        }
+        // Second pass: load integer args into x0-x7
+        uint64 call_int_idx = 0
+        uint64 ii_a = 0
+        while ii_a < arg_count && call_int_idx < 8 {
+            uint64 fi_addr_a = arg_float_flags_a + ii_a * 8
+            uint64 fi_val_a = 0
+            unsafe { *(fi_addr_a as uint64) -> fi_val_a }
+            if fi_val_a == 0 {
+                emit_a64_load_x0(arg_slots_base + ii_a * 8)
+                if call_int_idx != 0 {
+                    emit_a64_mov(call_int_idx, 0)
+                }
+                call_int_idx = call_int_idx + 1
+            }
+            ii_a = ii_a + 1
+        }
+        // Reload x0 from first int arg slot if it was overwritten
+        if call_int_idx > 1 {
+            // Find the first integer arg and reload it
+            uint64 ri_a = 0
+            while ri_a < arg_count {
+                uint64 ri_addr = arg_float_flags_a + ri_a * 8
+                uint64 ri_val = 0
+                unsafe { *(ri_addr as uint64) -> ri_val }
+                if ri_val == 0 {
+                    emit_a64_load_x0(arg_slots_base + ri_a * 8)
+                    break
+                }
+                ri_a = ri_a + 1
+            }
+        }
 
         // Push overflow args (9+) onto stack (AAPCS64: x0-x7 = first 8 args)
         uint64 stack_args = 0
@@ -2887,6 +3214,11 @@ fn gen_expr_a64(uint64 node) {
             uint64 add_insn = 0x91000000 | (cleanup << 10) | (31 << 5) | 31
             emit_a64(add_insn)
         }
+
+        // Set expr_is_float_a64 based on callee's return type
+        uint64 wct_ret_a = callee_tok
+        uint64 ret_fk_a = fn_ret_float_lookup(wct_ret_a)
+        expr_is_float_a64 = ret_fk_a
 
         // If the callee is an extern fn, record a call site for a linker
         // relocation and skip the internal fixup (the BL's imm26 stays zero
@@ -2973,11 +3305,22 @@ fn gen_stmt_a64(uint64 node) {
             return
         }
         uint64 offset = var_declare(name_tok)
+        uint32 type_tok_vd = ast_data1(node)
+        uint64 wtype_a = tok_kind_at_raw(type_tok_vd)
+        var_type_register(name_tok, wtype_a)
         uint32 init_child = ast_child(node)
         uint64 wic = init_child
         if wic != 0 {
             gen_expr_a64(wic)
-            emit_a64_store_x0(offset)
+            if is_float_type(wtype_a) != 0 {
+                if is_f32_type(wtype_a) != 0 {
+                    emit_a64_store_s0(offset)
+                } else {
+                    emit_a64_store_d0(offset)
+                }
+            } else {
+                emit_a64_store_x0(offset)
+            }
         }
         return
     }
@@ -2990,7 +3333,17 @@ fn gen_stmt_a64(uint64 node) {
         gen_expr_a64(wvc)
         uint64 offset = var_lookup(name_tok)
         if offset != 0xFFFFFFFF {
-            emit_a64_store_x0(offset)
+            // Check if this variable is float-typed
+            uint64 vtype_as = var_type_lookup(name_tok)
+            if is_float_type(vtype_as) != 0 {
+                if is_f32_type(vtype_as) != 0 {
+                    emit_a64_store_s0(offset)
+                } else {
+                    emit_a64_store_d0(offset)
+                }
+            } else {
+                emit_a64_store_x0(offset)
+            }
         } else {
             uint64 soff = static_lookup(name_tok)
             if soff != 0xFFFFFFFF {
@@ -3561,6 +3914,7 @@ fn gen_function_a64(uint64 fn_node) {
     uint64 a64_overflow_patch_count = 0
 
     var_reset()
+    expr_is_float_a64 = 0
     temp_slot_0 = var_count * 8
     var_count = var_count + 1
     temp_slot_1 = var_count * 8
@@ -3570,6 +3924,15 @@ fn gen_function_a64(uint64 fn_node) {
     if rem0 != 0 { var_frame_size = var_frame_size + 16 - rem0 }
 
     fn_register(name_tok, out_len)
+
+    // Register float return type if applicable
+    uint32 ret_type_tok_a = ast_data2(fn_node)
+    uint64 wrt_a = ret_type_tok_a
+    if wrt_a != 0 {
+        uint64 ret_kind_a = tok_kind_at_raw(wrt_a)
+        if ret_kind_a == 96 { fn_ret_float_register(name_tok, 1) }
+        if ret_kind_a == 95 { fn_ret_float_register(name_tok, 2) }
+    }
 
     // For main: platform-specific _start trampoline
     uint64 wnt_a64 = name_tok
@@ -3626,6 +3989,12 @@ fn gen_function_a64(uint64 fn_node) {
         if pk == 3 {
             uint32 param_name = ast_data2(wparam)
             uint64 ptr_off_a = var_declare(param_name)
+            // Register float type for float-typed params
+            uint32 param_type_reg_a = ast_data1(wparam)
+            uint64 pt_kind_a = tok_kind_at_raw(param_type_reg_a)
+            if is_float_type(pt_kind_a) != 0 {
+                var_type_register(param_name, pt_kind_a)
+            }
             // Slice parameter: also reserve a length slot (no name)
             uint32 pflag_a = ast_data4(wparam)
             uint64 wpflag_a = pflag_a
@@ -3669,8 +4038,11 @@ fn gen_function_a64(uint64 fn_node) {
 
     uint64 saved_var_base = a64_var_base
 
-    // Spill params to stack (x0-x7)
+    // Spill params to stack (x0-x7 for int, d0-d7 for float)
+    // AAPCS64: separate int/float register counters
     uint64 pidx = 0
+    uint64 int_pidx_a = 0
+    uint64 float_pidx_a = 0
     uint64 wp2 = first_param
     while wp2 != 0 {
         uint32 pk2 = ast_kind(wp2)
@@ -3679,38 +4051,51 @@ fn gen_function_a64(uint64 fn_node) {
             uint64 poff = var_lookup(pn2)
             uint32 pflag_as = ast_data4(wp2)
             uint64 wpflag_as = pflag_as
+            // Check if this param is a float type
+            uint32 pt_spill_a = ast_data1(wp2)
+            uint64 pt_kind_spill_a = tok_kind_at_raw(pt_spill_a)
+            uint64 param_is_float_a = is_float_type(pt_kind_spill_a)
             if poff != 0xFFFFFFFF {
-                // str xN, [sp, #(a64_var_base + poff)]
-                uint64 reg = pidx
-                if reg <= 7 {
-                    emit_a64_str(reg, 31, a64_var_base + poff)
-                }
-                if reg >= 8 {
-                    // Stack-passed arg: emit ldr x0, [sp, #PLACEHOLDER]
-                    // Offset will be patched when frame_size is known
-                    uint64 patch_loc = out_len
-                    emit_a64(0xF9400000 | (31 << 5) | 0) // ldr x0, [sp, #0] placeholder
-                    // str x0, [sp, #(a64_var_base + poff)]
-                    emit_a64_str(0, 31, a64_var_base + poff)
-                    // Save patch location
-                    uint64 opi = reg - 8
-                    uint64 op_entry = a64_overflow_patches + opi * 8
-                    uint32 pl32 = patch_loc
-                    unsafe { *(op_entry as uint32) = pl32 }
-                    a64_overflow_patch_count = opi + 1
+                if param_is_float_a != 0 {
+                    // Float param: spill dN to stack
+                    if float_pidx_a <= 7 {
+                        emit_a64_store_dN(float_pidx_a, poff)
+                    }
+                    float_pidx_a = float_pidx_a + 1
+                } else {
+                    // Integer param: spill xN to stack
+                    uint64 reg = int_pidx_a
+                    if reg <= 7 {
+                        emit_a64_str(reg, 31, a64_var_base + poff)
+                    }
+                    if reg >= 8 {
+                        // Stack-passed arg: emit ldr x0, [sp, #PLACEHOLDER]
+                        // Offset will be patched when frame_size is known
+                        uint64 patch_loc = out_len
+                        emit_a64(0xF9400000 | (31 << 5) | 0) // ldr x0, [sp, #0] placeholder
+                        // str x0, [sp, #(a64_var_base + poff)]
+                        emit_a64_str(0, 31, a64_var_base + poff)
+                        // Save patch location
+                        uint64 opi = reg - 8
+                        uint64 op_entry = a64_overflow_patches + opi * 8
+                        uint32 pl32 = patch_loc
+                        unsafe { *(op_entry as uint32) = pl32 }
+                        a64_overflow_patch_count = opi + 1
+                    }
+                    int_pidx_a = int_pidx_a + 1
+                    // Slice param: spill length register to the length slot
+                    if wpflag_as == 1 {
+                        uint64 len_off_as = slice_len_lookup(poff)
+                        if len_off_as != 0xFFFFFFFF {
+                            uint64 reg2 = int_pidx_a
+                            if reg2 <= 7 {
+                                emit_a64_str(reg2, 31, a64_var_base + len_off_as)
+                            }
+                        }
+                        int_pidx_a = int_pidx_a + 1
+                    }
                 }
                 pidx = pidx + 1
-                // Slice param: spill length register to the length slot
-                if wpflag_as == 1 {
-                    uint64 len_off_as = slice_len_lookup(poff)
-                    if len_off_as != 0xFFFFFFFF {
-                        uint64 reg2 = pidx
-                        if reg2 <= 7 {
-                            emit_a64_str(reg2, 31, a64_var_base + len_off_as)
-                        }
-                    }
-                    pidx = pidx + 1
-                }
             }
         }
         uint32 pn3 = ast_next(wp2)
