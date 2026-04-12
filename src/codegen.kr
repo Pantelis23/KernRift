@@ -2277,39 +2277,171 @@ fn gen_expr(uint64 node) {
             }
         }
 
+        // --- Float arithmetic path ---
+        // Evaluate LHS, check if float, store to temp, evaluate RHS,
+        // then emit SSE ops if both sides are float.
+        uint64 lhs_is_float = 0
+
         if used_lea != 0 {
             // LEA already computed the result — skip all expression evaluation
         } else if wrk == 30 || wrk == 32 {
             // Simple RHS: skip stack temp
             gen_expr(wlhs)
-            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
-            rax_cache = 0
-            gen_expr(wrhs)
-            emit_byte(0x48); emit_byte(0x87); emit_byte(0xC1)
-            rax_cache = 0
+            lhs_is_float = expr_is_float
+            if lhs_is_float != 0 {
+                // Float LHS: store xmm0 to temp
+                uint64 ft0 = var_count * 8
+                var_count = var_count + 1
+                var_frame_size = var_count * 8
+                uint64 ft0r = var_frame_size & 15
+                if ft0r != 0 { var_frame_size = var_frame_size + 16 - ft0r }
+                if lhs_is_float == 2 {
+                    emit_store_xmm0_f32(ft0)
+                } else {
+                    emit_store_xmm0_f64(ft0)
+                }
+                gen_expr(wrhs)
+                uint64 rhs_is_float = expr_is_float
+                if lhs_is_float != 0 && rhs_is_float != 0 {
+                    // movsd xmm1, xmm0 (save RHS): F2 0F 10 C8
+                    emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x10); emit_byte(0xC8)
+                    // Reload LHS from temp
+                    if lhs_is_float == 2 {
+                        emit_load_xmm0_f32(ft0)
+                    } else {
+                        emit_load_xmm0_f64(ft0)
+                    }
+                    uint32 op_tok_fb = ast_data1(node)
+                    uint64 wop_fb = op_tok_fb
+                    uint64 pfb = cg_tokens + wop_fb * 16
+                    uint32 op_kind_fb = 0
+                    unsafe { *(pfb as uint32) -> op_kind_fb }
+                    if lhs_is_float == 2 {
+                        if op_kind_fb == 30 { emit_byte(0xF3); emit_byte(0x0F); emit_byte(0x58); emit_byte(0xC1) } // addss
+                        if op_kind_fb == 31 { emit_byte(0xF3); emit_byte(0x0F); emit_byte(0x5C); emit_byte(0xC1) } // subss
+                        if op_kind_fb == 22 { emit_byte(0xF3); emit_byte(0x0F); emit_byte(0x59); emit_byte(0xC1) } // mulss
+                        if op_kind_fb == 32 { emit_byte(0xF3); emit_byte(0x0F); emit_byte(0x5E); emit_byte(0xC1) } // divss
+                    } else {
+                        if op_kind_fb == 30 { emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x58); emit_byte(0xC1) } // addsd
+                        if op_kind_fb == 31 { emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x5C); emit_byte(0xC1) } // subsd
+                        if op_kind_fb == 22 { emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x59); emit_byte(0xC1) } // mulsd
+                        if op_kind_fb == 32 { emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x5E); emit_byte(0xC1) } // divsd
+                    }
+                    expr_is_float = lhs_is_float
+                    return
+                }
+            } else {
+                emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
+                rax_cache = 0
+                gen_expr(wrhs)
+                emit_byte(0x48); emit_byte(0x87); emit_byte(0xC1)
+                rax_cache = 0
+            }
         } else if r12_in_use == 0 {
             // Complex RHS: hold lhs in r12 (callee-saved, survives calls)
             gen_expr(wlhs)
-            r12_in_use = 1
-            emit_byte(0x49); emit_byte(0x89); emit_byte(0xC4) // mov r12, rax
-            rax_cache = 0
-            gen_expr(wrhs)
-            r12_in_use = 0
-            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1) // mov rcx, rax
-            emit_byte(0x4C); emit_byte(0x89); emit_byte(0xE0) // mov rax, r12
-            rax_cache = 0
+            lhs_is_float = expr_is_float
+            if lhs_is_float != 0 {
+                // Float LHS: store xmm0 to temp (can't use r12 for float)
+                uint64 ft1 = var_count * 8
+                var_count = var_count + 1
+                var_frame_size = var_count * 8
+                uint64 ft1r = var_frame_size & 15
+                if ft1r != 0 { var_frame_size = var_frame_size + 16 - ft1r }
+                if lhs_is_float == 2 {
+                    emit_store_xmm0_f32(ft1)
+                } else {
+                    emit_store_xmm0_f64(ft1)
+                }
+                gen_expr(wrhs)
+                uint64 rhs_is_float2 = expr_is_float
+                if lhs_is_float != 0 && rhs_is_float2 != 0 {
+                    // movsd xmm1, xmm0 (save RHS): F2 0F 10 C8
+                    emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x10); emit_byte(0xC8)
+                    if lhs_is_float == 2 {
+                        emit_load_xmm0_f32(ft1)
+                    } else {
+                        emit_load_xmm0_f64(ft1)
+                    }
+                    uint32 op_tok_fc = ast_data1(node)
+                    uint64 wop_fc = op_tok_fc
+                    uint64 pfc = cg_tokens + wop_fc * 16
+                    uint32 op_kind_fc = 0
+                    unsafe { *(pfc as uint32) -> op_kind_fc }
+                    if lhs_is_float == 2 {
+                        if op_kind_fc == 30 { emit_byte(0xF3); emit_byte(0x0F); emit_byte(0x58); emit_byte(0xC1) }
+                        if op_kind_fc == 31 { emit_byte(0xF3); emit_byte(0x0F); emit_byte(0x5C); emit_byte(0xC1) }
+                        if op_kind_fc == 22 { emit_byte(0xF3); emit_byte(0x0F); emit_byte(0x59); emit_byte(0xC1) }
+                        if op_kind_fc == 32 { emit_byte(0xF3); emit_byte(0x0F); emit_byte(0x5E); emit_byte(0xC1) }
+                    } else {
+                        if op_kind_fc == 30 { emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x58); emit_byte(0xC1) }
+                        if op_kind_fc == 31 { emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x5C); emit_byte(0xC1) }
+                        if op_kind_fc == 22 { emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x59); emit_byte(0xC1) }
+                        if op_kind_fc == 32 { emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x5E); emit_byte(0xC1) }
+                    }
+                    expr_is_float = lhs_is_float
+                    return
+                }
+            } else {
+                r12_in_use = 1
+                emit_byte(0x49); emit_byte(0x89); emit_byte(0xC4) // mov r12, rax
+                rax_cache = 0
+                gen_expr(wrhs)
+                r12_in_use = 0
+                emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1) // mov rcx, rax
+                emit_byte(0x4C); emit_byte(0x89); emit_byte(0xE0) // mov rax, r12
+                rax_cache = 0
+            }
         } else {
             // r12 in use (nested): fall back to stack
             gen_expr(wlhs)
+            lhs_is_float = expr_is_float
             uint64 binop_temp = var_count * 8
             var_count = var_count + 1
             var_frame_size = var_count * 8
             uint64 brem = var_frame_size & 15
             if brem != 0 { var_frame_size = var_frame_size + 16 - brem }
-            emit_store_rax_to_stack(binop_temp)
-            gen_expr(wrhs)
-            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
-            emit_load_rax_from_stack(binop_temp)
+            if lhs_is_float != 0 {
+                if lhs_is_float == 2 {
+                    emit_store_xmm0_f32(binop_temp)
+                } else {
+                    emit_store_xmm0_f64(binop_temp)
+                }
+                gen_expr(wrhs)
+                uint64 rhs_is_float3 = expr_is_float
+                if lhs_is_float != 0 && rhs_is_float3 != 0 {
+                    // movsd xmm1, xmm0 (save RHS): F2 0F 10 C8
+                    emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x10); emit_byte(0xC8)
+                    if lhs_is_float == 2 {
+                        emit_load_xmm0_f32(binop_temp)
+                    } else {
+                        emit_load_xmm0_f64(binop_temp)
+                    }
+                    uint32 op_tok_fd = ast_data1(node)
+                    uint64 wop_fd = op_tok_fd
+                    uint64 pfd = cg_tokens + wop_fd * 16
+                    uint32 op_kind_fd = 0
+                    unsafe { *(pfd as uint32) -> op_kind_fd }
+                    if lhs_is_float == 2 {
+                        if op_kind_fd == 30 { emit_byte(0xF3); emit_byte(0x0F); emit_byte(0x58); emit_byte(0xC1) }
+                        if op_kind_fd == 31 { emit_byte(0xF3); emit_byte(0x0F); emit_byte(0x5C); emit_byte(0xC1) }
+                        if op_kind_fd == 22 { emit_byte(0xF3); emit_byte(0x0F); emit_byte(0x59); emit_byte(0xC1) }
+                        if op_kind_fd == 32 { emit_byte(0xF3); emit_byte(0x0F); emit_byte(0x5E); emit_byte(0xC1) }
+                    } else {
+                        if op_kind_fd == 30 { emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x58); emit_byte(0xC1) }
+                        if op_kind_fd == 31 { emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x5C); emit_byte(0xC1) }
+                        if op_kind_fd == 22 { emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x59); emit_byte(0xC1) }
+                        if op_kind_fd == 32 { emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x5E); emit_byte(0xC1) }
+                    }
+                    expr_is_float = lhs_is_float
+                    return
+                }
+            } else {
+                emit_store_rax_to_stack(binop_temp)
+                gen_expr(wrhs)
+                emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
+                emit_load_rax_from_stack(binop_temp)
+            }
         }
 
         // Determine operation from token kind (skip if LEA already computed)
@@ -4773,6 +4905,103 @@ fn gen_expr(uint64 node) {
             } else {
                 emit_mov_rax_imm(0)
             }
+            return
+        }
+
+        // Built-in: int_to_f64(x) → cvtsi2sd xmm0, rax
+        if is_extern_call == 0 && tok_matches(wct, "int_to_f64", 10) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr(wfa)
+            // cvtsi2sd xmm0, rax: F2 48 0F 2A C0
+            emit_byte(0xF2); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x2A); emit_byte(0xC0)
+            expr_is_float = 1
+            return
+        }
+
+        // Built-in: int_to_f32(x) → cvtsi2ss xmm0, rax
+        if is_extern_call == 0 && tok_matches(wct, "int_to_f32", 10) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr(wfa)
+            // cvtsi2ss xmm0, rax: F3 48 0F 2A C0
+            emit_byte(0xF3); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x2A); emit_byte(0xC0)
+            expr_is_float = 2
+            return
+        }
+
+        // Built-in: f64_to_int(x) → cvttsd2si rax, xmm0
+        if is_extern_call == 0 && tok_matches(wct, "f64_to_int", 10) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr(wfa)
+            // cvttsd2si rax, xmm0: F2 48 0F 2C C0
+            emit_byte(0xF2); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x2C); emit_byte(0xC0)
+            expr_is_float = 0
+            return
+        }
+
+        // Built-in: f32_to_int(x) → cvttss2si rax, xmm0
+        if is_extern_call == 0 && tok_matches(wct, "f32_to_int", 10) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr(wfa)
+            // cvttss2si rax, xmm0: F3 48 0F 2C C0
+            emit_byte(0xF3); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x2C); emit_byte(0xC0)
+            expr_is_float = 0
+            return
+        }
+
+        // Built-in: f32_to_f64(x) → cvtss2sd xmm0, xmm0
+        if is_extern_call == 0 && tok_matches(wct, "f32_to_f64", 10) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr(wfa)
+            // cvtss2sd xmm0, xmm0: F3 0F 5A C0
+            emit_byte(0xF3); emit_byte(0x0F); emit_byte(0x5A); emit_byte(0xC0)
+            expr_is_float = 1
+            return
+        }
+
+        // Built-in: f64_to_f32(x) → cvtsd2ss xmm0, xmm0
+        if is_extern_call == 0 && tok_matches(wct, "f64_to_f32", 10) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr(wfa)
+            // cvtsd2ss xmm0, xmm0: F2 0F 5A C0
+            emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x5A); emit_byte(0xC0)
+            expr_is_float = 2
+            return
+        }
+
+        // Built-in: sqrt / sqrt_f64(x) → sqrtsd xmm0, xmm0
+        if is_extern_call == 0 && tok_matches(wct, "sqrt_f64", 8) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr(wfa)
+            // sqrtsd xmm0, xmm0: F2 0F 51 C0
+            emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x51); emit_byte(0xC0)
+            expr_is_float = 1
+            return
+        }
+        if is_extern_call == 0 && tok_matches(wct, "sqrt", 4) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr(wfa)
+            // sqrtsd xmm0, xmm0: F2 0F 51 C0
+            emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x51); emit_byte(0xC0)
+            expr_is_float = 1
+            return
+        }
+
+        // Built-in: sqrt_f32(x) → sqrtss xmm0, xmm0
+        if is_extern_call == 0 && tok_matches(wct, "sqrt_f32", 8) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr(wfa)
+            // sqrtss xmm0, xmm0: F3 0F 51 C0
+            emit_byte(0xF3); emit_byte(0x0F); emit_byte(0x51); emit_byte(0xC0)
+            expr_is_float = 2
             return
         }
 
