@@ -65,15 +65,8 @@ fn lz4_decompress_block_r(uint64 src, uint64 src_len, uint64 dst) -> uint64 {
         }
 
         // Copy literal bytes
-        uint64 li = 0
-        while li < lit_len {
-            uint64 sp_l = src + sp + li
-            uint64 dp_l = dst + dp + li
-            uint64 b = 0
-            unsafe { *(sp_l as uint8) -> b }
-            uint8 bb = b
-            unsafe { *(dp_l as uint8) = bb }
-            li = li + 1
+        if lit_len != 0 {
+            memcpy(dst + dp, src + sp, lit_len)
         }
         sp = sp + lit_len
         dp = dp + lit_len
@@ -81,15 +74,18 @@ fn lz4_decompress_block_r(uint64 src, uint64 src_len, uint64 dst) -> uint64 {
         // Last sequence has no match — if we've consumed the block, stop.
         if sp >= src_len { break }
 
-        // Offset (2 bytes LE, 1..65535)
+        // Offset (3 bytes LE, 1..16777215) — LZ-Rift 24-bit window
         uint64 op0 = src + sp
         uint64 op1 = src + sp + 1
+        uint64 op2 = src + sp + 2
         uint64 o0 = 0
         uint64 o1 = 0
+        uint64 o2 = 0
         unsafe { *(op0 as uint8) -> o0 }
         unsafe { *(op1 as uint8) -> o1 }
-        uint64 offset = o0 | (o1 << 8)
-        sp = sp + 2
+        unsafe { *(op2 as uint8) -> o2 }
+        uint64 offset = o0 | (o1 << 8) | (o2 << 16)
+        sp = sp + 3
 
         // Match length (token low nibble + 4; 15 => extra bytes follow)
         uint64 match_code = token & 0x0F
