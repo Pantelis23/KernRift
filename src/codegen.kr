@@ -5946,7 +5946,16 @@ fn gen_stmt(uint64 node) {
         gen_expr(wvc)
         uint64 offset = var_lookup(name_tok)
         if offset != 0xFFFFFFFF {
-            emit_store_rax_to_stack(offset)
+            uint64 vtype_a = var_type_lookup(name_tok)
+            if is_float_type(vtype_a) != 0 {
+                if is_f32_type(vtype_a) != 0 {
+                    emit_store_xmm0_f32(offset)
+                } else {
+                    emit_store_xmm0_f64(offset)
+                }
+            } else {
+                emit_store_rax_to_stack(offset)
+            }
         } else {
             uint64 soff = static_lookup(name_tok)
             if soff != 0xFFFFFFFF {
