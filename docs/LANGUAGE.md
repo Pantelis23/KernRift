@@ -26,14 +26,16 @@ something that doesn't work, it's a bug, not a typo in the docs.
 12. [Volatile and atomic](#12-volatile-and-atomic)
 13. [Device blocks (MMIO)](#13-device-blocks-mmio)
 14. [Inline assembly](#14-inline-assembly)
-15. [Imports](#15-imports)
-16. [Built-in functions](#16-built-in-functions)
-17. [Annotations](#17-annotations)
-18. [Compiler CLI](#18-compiler-cli)
-19. [Living compiler](#19-living-compiler)
-20. [Language profiles (#lang)](#20-language-profiles-lang)
-21. [Freestanding mode](#21-freestanding-mode)
-22. [Binary formats](#22-binary-formats)
+15. [Floating-point types](#15-floating-point-types)
+16. [Imports](#16-imports)
+17. [Built-in functions](#17-built-in-functions)
+18. [Annotations](#18-annotations)
+19. [Compiler CLI](#19-compiler-cli)
+20. [Living compiler](#20-living-compiler)
+21. [Language profiles (#lang)](#21-language-profiles-lang)
+22. [Freestanding mode](#22-freestanding-mode)
+23. [Extern functions](#23-extern-functions)
+24. [Binary formats](#24-binary-formats)
 
 ---
 
@@ -78,8 +80,8 @@ All scalar values are stored as 64-bit words in variable slots. The specific
 width matters for pointer load/store and for struct field layout. The short
 aliases (`u8`, `u64`, `i32`, ...) are exact synonyms for the long form.
 
-There is no `bool` keyword, and no `float` types. Use `0` / `1` for booleans
-and integer math everywhere.
+There is no `bool` keyword. Use `0` / `1` for booleans. Floating-point
+types (`f16`, `f32`, `f64`) are covered in §15.
 
 ### Literals
 
@@ -824,7 +826,109 @@ fn cpuid_signature() -> u64 {
 
 ---
 
-## 15. Imports
+## 15. Floating-point types
+
+KernRift supports IEEE 754 floating-point types: `f32` (single, 32-bit),
+`f64` (double, 64-bit), and `f16` (half, 16-bit, storage-only — no
+arithmetic, use `f16_to_f32` / `f32_to_f16` for conversion).
+
+### Literals
+
+```kr
+f64 x = 3.14          // f64 (default)
+f64 y = 0.001
+f32 w = 3.14f         // f32 (suffix)
+```
+
+### Arithmetic
+
+```kr
+f64 a = int_to_f64(6)
+f64 b = int_to_f64(7)
+f64 c = a * b         // 42.0
+f64 d = a + b - c / a
+```
+
+Operators `+`, `-`, `*`, `/` work on matching float types. Mixing
+float and integer in one expression is a compile error — use the
+explicit conversion builtins.
+
+### Comparisons
+
+```kr
+if a < b { ... }
+if a == b { ... }
+```
+
+All comparison operators (`<`, `>`, `<=`, `>=`, `==`, `!=`) work.
+NaN follows IEEE 754: `NaN == NaN` is false. Test for NaN with
+`x != x` (true only for NaN).
+
+### Conversions (explicit, no implicit coercion)
+
+| Builtin | Description |
+|---|---|
+| `int_to_f64(u64) -> f64` | Integer to double |
+| `int_to_f32(u64) -> f32` | Integer to single |
+| `f64_to_int(f64) -> u64` | Double to integer (truncates toward zero) |
+| `f32_to_int(f32) -> u64` | Single to integer |
+| `f32_to_f64(f32) -> f64` | Widen single to double |
+| `f64_to_f32(f64) -> f32` | Narrow double to single |
+| `f32_to_f16(f32) -> f16` | Single to half (storage) |
+| `f16_to_f32(f16) -> f32` | Half to single |
+
+### Math library (`std/math_float.kr`)
+
+```kr
+import "std/math_float.kr"
+
+f64 r = sqrt(int_to_f64(49))   // 7.0 (hardware)
+f64 s = sin(f64_pi())           // ~0.0
+f64 e = exp(int_to_f64(1))     // ~2.718
+println_str(fmt_f64(e, 6))     // "2.718281"
+```
+
+| Function | Description |
+|---|---|
+| `sqrt(f64) -> f64` | Square root (hardware) |
+| `abs_f(f64) -> f64` | Absolute value |
+| `neg_f(f64) -> f64` | Negation |
+| `sin(f64) -> f64` | Sine |
+| `cos(f64) -> f64` | Cosine |
+| `tan(f64) -> f64` | Tangent |
+| `exp(f64) -> f64` | Exponential (e^x) |
+| `log(f64) -> f64` | Natural logarithm |
+| `pow(f64, f64) -> f64` | Power (x^y) |
+| `floor(f64) -> f64` | Floor |
+| `ceil(f64) -> f64` | Ceiling |
+| `fmt_f64(f64, u64) -> u64` | Format as decimal string |
+| `fmt_f32(f32, u64) -> u64` | Format f32 as decimal string |
+
+### Function ABI
+
+Float arguments use the float register file independently from
+integer arguments:
+
+- **x86_64 SysV**: `xmm0`–`xmm7` for float args, return in `xmm0`
+- **ARM64 AAPCS**: `d0`–`d7` for float args, return in `d0`
+
+```kr
+fn lerp(f64 a, f64 b, f64 t) -> f64 {
+    return a + (b - a) * t
+}
+```
+
+### Precision
+
+| Type | Reliable decimal digits | Range |
+|---|---|---|
+| `f16` | ~3 | ±65504 |
+| `f32` | ~7 | ±3.4 × 10³⁸ |
+| `f64` | ~15 | ±1.8 × 10³⁰⁸ |
+
+---
+
+## 16. Imports
 
 Bring functions and declarations from another file into the current
 compilation unit:
@@ -846,7 +950,7 @@ once regardless of how many files import it.
 
 ---
 
-## 16. Built-in functions
+## 17. Built-in functions
 
 All of these are compiler intrinsics — no runtime library, no imports
 needed.
@@ -942,7 +1046,7 @@ signed_le(a, b)    signed_ge(a, b)
 
 ---
 
-## 17. Annotations
+## 18. Annotations
 
 Annotations appear immediately before a function or struct declaration.
 
@@ -1003,7 +1107,7 @@ Parses and records a linker section name. Used with `--emit=obj` output.
 
 ---
 
-## 18. Compiler CLI
+## 19. Compiler CLI
 
 ```sh
 krc <file.kr>                        # compile to <stem>.krbo (fat binary)
@@ -1019,7 +1123,7 @@ krc <file.kr> --arch=x86_64 --emit=android -o out  # Android x86_64 PIE ELF
 krc --freestanding <file.kr> -o out  # no main trampoline, no auto-exit
 krc check <file.kr>                  # run semantic checks only
 krc fmt   <file.kr>                  # auto-format the file in place
-krc lc <file.kr>                     # living compiler report (section 19)
+krc lc <file.kr>                     # living compiler report (section 20)
 krc lc --fix <file.kr>               # apply auto-fixes in place
 krc lc --fix --dry-run <file.kr>     # preview auto-fixes without writing
 krc lc --ci <file.kr>                # CI gate: exit non-zero if patterns fire
@@ -1045,7 +1149,7 @@ from a `.krbo` fat binary and executes it.
 
 ---
 
-## 19. Living compiler
+## 20. Living compiler
 
 `krc lc` analyses KernRift source and produces a two-layer report. The
 living compiler separates concerns into a **stable semantic core**
@@ -1131,7 +1235,7 @@ blueprint and the pipeline design.
 
 ---
 
-## 20. Language profiles (`#lang`)
+## 21. Language profiles (`#lang`)
 
 A source file may pin its required language profile on the first line:
 
@@ -1173,7 +1277,7 @@ forever, even as new experimental features enter the language.
 
 ---
 
-## 21. Freestanding mode
+## 22. Freestanding mode
 
 `krc --freestanding` produces a binary suitable for bare-metal:
 
@@ -1223,7 +1327,7 @@ enough to let those pass.
 
 ---
 
-## 22. Extern functions
+## 23. Extern functions
 
 `extern fn` declares a function that is resolved by the platform linker at
 link time. It has no body — the signature names an external symbol (typically
@@ -1289,7 +1393,7 @@ fn main() {
 
 ---
 
-## 23. Binary formats
+## 24. Binary formats
 
 | Format | Produced by | Use |
 |---|---|---|
