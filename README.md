@@ -49,15 +49,17 @@ krc check module.kr
 krc lc program.kr
 ```
 
-### Self-compilation times
+### Self-compilation times (v2.6.3, ~23K lines / 123K tokens)
 
-| Platform | CPU | Time |
-|----------|-----|------|
-| Linux x86_64 | AMD Ryzen 9 7900X | 55ms |
-| Linux ARM64 | ARM Cortex-A72 (Pi 400) | 635ms |
-| Windows 11 x86_64 | Intel Core Ultra 9 275HX | 66ms |
-| Windows 11 ARM64 | GitHub Actions runner | bootstrap verified |
-| Android ARM64 | Snapdragon 8 Gen 2 (Z Fold 5) | self-compile verified |
+| Platform | CPU | Single-arch | Fat (8 slices) |
+|----------|-----|-------------|-----------------|
+| Linux x86_64 | AMD Ryzen 9 7900X | 100ms | 790ms |
+| Linux ARM64 | ARM Cortex-A72 (Pi 400) | *~635ms (v2.5, not yet retested)* | — |
+| Windows 11 x86_64 | Intel Core Ultra 9 275HX | ~2s * | — |
+| Windows 11 ARM64 | GitHub Actions runner | bootstrap verified | — |
+| Android ARM64 | Snapdragon 8 Gen 2 (Z Fold 5) | self-compile verified | — |
+
+\* Windows time includes Bitdefender antivirus file scanning overhead.
 
 ## Install
 
@@ -262,7 +264,7 @@ See the [`examples/`](examples/) directory for runnable programs covering every 
 
 ## Architecture
 
-~23,000 lines of KernRift across 16 source files + 17 stdlib modules. Self-compiles to a ~660 KB native binary in ~60ms, or a fat binary with 8 slices (LZ-Rift arch-pair compression) in ~280ms (AMD Ryzen 9 7900X). 225+ tests, bootstrap fixed point verified on 5 platforms (Linux x86_64, Linux ARM64, Windows x86_64, Windows ARM64, Android ARM64).
+~23,000 lines of KernRift across 16 source files + 17 stdlib modules. Self-compiles to a ~660 KB native binary in ~100ms, or a fat binary with 8 slices (LZ-Rift arch-pair compression) in ~790ms (AMD Ryzen 9 7900X). 225+ tests, bootstrap fixed point verified on 5 platforms (Linux x86_64, Linux ARM64, Windows x86_64, Windows ARM64, Android ARM64).
 
 | File | Purpose |
 |------|---------|
