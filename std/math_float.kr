@@ -1,0 +1,298 @@
+// KernRift Standard Library — Floating-Point Math
+//
+// Software polynomial approximations for trig/exp/log.
+// Hardware-accelerated: sqrt (via compiler builtin).
+// All functions operate on f64 unless suffixed with _f32.
+//
+// NOTE: KernRift V1 has a codegen limitation where f64 local variables
+// cannot be reassigned after declaration. All code here uses fresh
+// variable names and recursive helpers instead.
+
+import "std/fmt.kr"
+import "std/string.kr"
+
+// ── Constants ────────────────────────────────────────────────────────
+// KernRift V1 float literals only keep the integer part, so we build
+// fractional constants from integer ratios.
+
+fn f64_pi() -> f64 {
+    f64 num = int_to_f64(3141592653589793)
+    f64 den = int_to_f64(1000000000000000)
+    return num / den
+}
+
+fn f64_two_pi() -> f64 { return f64_pi() + f64_pi() }
+fn f64_half_pi() -> f64 { return f64_pi() / int_to_f64(2) }
+
+fn f64_ln2() -> f64 {
+    f64 num = int_to_f64(6931471805599453)
+    f64 den = int_to_f64(10000000000000000)
+    return num / den
+}
+
+fn f64_e() -> f64 {
+    f64 num = int_to_f64(2718281828459045)
+    f64 den = int_to_f64(1000000000000000)
+    return num / den
+}
+
+// ── abs / neg ────────────────────────────────────────────────────────
+
+fn abs_f64(f64 x) -> f64 {
+    if x < int_to_f64(0) { return int_to_f64(0) - x }
+    return x
+}
+fn abs_f(f64 x) -> f64 { return abs_f64(x) }
+
+fn neg_f64(f64 x) -> f64 { return int_to_f64(0) - x }
+fn neg_f(f64 x) -> f64 { return neg_f64(x) }
+
+// ── floor / ceil ─────────────────────────────────────────────────────
+
+fn floor_f64(f64 x) -> f64 {
+    u64 i = f64_to_int(x)
+    f64 fi = int_to_f64(i)
+    if x < int_to_f64(0) {
+        if fi > x { return fi - int_to_f64(1) }
+    }
+    return fi
+}
+fn floor(f64 x) -> f64 { return floor_f64(x) }
+
+fn ceil_f64(f64 x) -> f64 {
+    f64 fl = floor_f64(x)
+    if x > fl { return fl + int_to_f64(1) }
+    return fl
+}
+fn ceil(f64 x) -> f64 { return ceil_f64(x) }
+
+// ── fmod ─────────────────────────────────────────────────────────────
+
+fn fmod_f64(f64 x, f64 y) -> f64 {
+    f64 n = floor_f64(x / y)
+    return x - n * y
+}
+
+// ── sin ──────────────────────────────────────────────────────────────
+// Taylor series with range reduction to [-PI, PI].
+// 7 terms: x - x^3/3! + x^5/5! - x^7/7! + x^9/9! - x^11/11! + x^13/13!
+// Successive divisors: 2*3=6, 4*5=20, 6*7=42, 8*9=72, 10*11=110, 12*13=156.
+// All intermediate values use fresh variable names (no f64 reassignment).
+
+fn sin_f64(f64 x) -> f64 {
+    f64 pi = f64_pi()
+    f64 two_pi = f64_two_pi()
+    f64 xr = fmod_f64(x + pi, two_pi) - pi
+
+    f64 x2 = xr * xr
+    // term0 = x, result0 = x
+    f64 t0 = xr
+    f64 r0 = xr
+    // x^3 / 3!
+    f64 t1 = t0 * x2 / int_to_f64(6)
+    f64 r1 = r0 - t1
+    // x^5 / 5!
+    f64 t2 = t1 * x2 / int_to_f64(20)
+    f64 r2 = r1 + t2
+    // x^7 / 7!
+    f64 t3 = t2 * x2 / int_to_f64(42)
+    f64 r3 = r2 - t3
+    // x^9 / 9!
+    f64 t4 = t3 * x2 / int_to_f64(72)
+    f64 r4 = r3 + t4
+    // x^11 / 11!
+    f64 t5 = t4 * x2 / int_to_f64(110)
+    f64 r5 = r4 - t5
+    // x^13 / 13!
+    f64 t6 = t5 * x2 / int_to_f64(156)
+    f64 r6 = r5 + t6
+    return r6
+}
+fn sin(f64 x) -> f64 { return sin_f64(x) }
+
+// ── cos ──────────────────────────────────────────────────────────────
+
+fn cos_f64(f64 x) -> f64 {
+    return sin_f64(x + f64_half_pi())
+}
+fn cos(f64 x) -> f64 { return cos_f64(x) }
+
+// ── tan ──────────────────────────────────────────────────────────────
+
+fn tan_f64(f64 x) -> f64 {
+    return sin_f64(x) / cos_f64(x)
+}
+fn tan(f64 x) -> f64 { return tan_f64(x) }
+
+// ── Recursive helpers ────────────────────────────────────────────────
+
+// Multiply x by 2, n times: double_n(x, n) = x * 2^n
+fn f64_double_n(f64 x, u64 n) -> f64 {
+    if n == 0 { return x }
+    return f64_double_n(x + x, n - 1)
+}
+
+// Multiply x by 10, n times: scale10(x, n) = x * 10^n
+fn f64_scale10(f64 x, u64 n) -> f64 {
+    if n == 0 { return x }
+    return f64_scale10(x * int_to_f64(10), n - 1)
+}
+
+// ── exp ──────────────────────────────────────────────────────────────
+// Taylor series with range reduction: exp(x) = 2^k * exp(r),
+// where r = x - k*ln(2), |r| < ln(2)/2.
+// 10-term Taylor + repeated doubling via recursion.
+
+fn exp_f64(f64 x) -> f64 {
+    f64 ln2 = f64_ln2()
+    f64 k_f = floor_f64(x / ln2)
+    u64 k = f64_to_int(k_f)
+    f64 r = x - k_f * ln2
+
+    // Taylor: 1 + r + r^2/2! + ... + r^10/10!
+    f64 e0 = int_to_f64(1)
+    f64 et0 = int_to_f64(1)
+    f64 et1 = et0 * r / int_to_f64(1)
+    f64 e1 = e0 + et1
+    f64 et2 = et1 * r / int_to_f64(2)
+    f64 e2 = e1 + et2
+    f64 et3 = et2 * r / int_to_f64(3)
+    f64 e3 = e2 + et3
+    f64 et4 = et3 * r / int_to_f64(4)
+    f64 e4 = e3 + et4
+    f64 et5 = et4 * r / int_to_f64(5)
+    f64 e5 = e4 + et5
+    f64 et6 = et5 * r / int_to_f64(6)
+    f64 e6 = e5 + et6
+    f64 et7 = et6 * r / int_to_f64(7)
+    f64 e7 = e6 + et7
+    f64 et8 = et7 * r / int_to_f64(8)
+    f64 e8 = e7 + et8
+    f64 et9 = et8 * r / int_to_f64(9)
+    f64 e9 = e8 + et9
+    f64 et10 = et9 * r / int_to_f64(10)
+    f64 e10 = e9 + et10
+
+    // Multiply by 2^k (positive k only in V1)
+    if k_f > int_to_f64(0) {
+        return f64_double_n(e10, k)
+    }
+    return e10
+}
+fn exp(f64 x) -> f64 { return exp_f64(x) }
+
+// ── log ──────────────────────────────────────────────────────────────
+// Newton's method: y_{n+1} = y_n + 2*(x - exp(y_n)) / (x + exp(y_n))
+// Unrolled: 10 iterations with fresh variables, using recursive helper.
+
+fn log_step(f64 x, f64 y) -> f64 {
+    f64 ey = exp_f64(y)
+    return y + int_to_f64(2) * (x - ey) / (x + ey)
+}
+
+fn log_iter(f64 x, f64 y, u64 n) -> f64 {
+    if n == 0 { return y }
+    f64 y_next = log_step(x, y)
+    return log_iter(x, y_next, n - 1)
+}
+
+fn log_guess(u64 xi) -> f64 {
+    if xi >= 149 { return int_to_f64(5) }
+    if xi >= 55 { return int_to_f64(4) }
+    if xi >= 21 { return int_to_f64(3) }
+    if xi >= 8 { return int_to_f64(2) }
+    if xi >= 3 { return int_to_f64(1) }
+    return int_to_f64(0)
+}
+
+fn log_f64(f64 x) -> f64 {
+    u64 xi = f64_to_int(x)
+    f64 y0 = log_guess(xi)
+    return log_iter(x, y0, 10)
+}
+fn log(f64 x) -> f64 { return log_f64(x) }
+
+// ── pow ──────────────────────────────────────────────────────────────
+
+fn pow_f64(f64 x, f64 y) -> f64 {
+    return exp_f64(y * log_f64(x))
+}
+fn pow_f(f64 x, f64 y) -> f64 { return pow_f64(x, y) }
+
+// ── fmt_f64 / fmt_f32 ───────────────────────────────────────────────
+// Format a float as a decimal string with the given number of decimal places.
+// Returns a heap-allocated null-terminated string.
+
+fn fmt_f64_pos(f64 aval, u64 decimals, u64 negative) -> u64 {
+    u64 int_part = f64_to_int(aval)
+    f64 frac = aval - int_to_f64(int_part)
+
+    // Multiply frac by 10^decimals using recursive helper
+    f64 scale = f64_scale10(int_to_f64(1), decimals)
+    u64 frac_int = f64_to_int(frac * scale)
+
+    // Format integer and fractional parts
+    u64 int_str = fmt_dec(int_part)
+    u64 int_len = str_len(int_str)
+
+    u64 frac_str = fmt_dec(frac_int)
+    u64 frac_len = str_len(frac_str)
+
+    // Total: sign(0-1) + int_len + '.' + decimals + '\0'
+    u64 total = int_len + 1 + decimals + 1
+    if negative != 0 { total = total + 1 }
+    u64 result = alloc(total)
+    u64 pos = 0
+
+    if negative != 0 {
+        store8(result + pos, 45)  // '-'
+        pos = pos + 1
+    }
+
+    // Copy integer part
+    u64 j = 0
+    while j < int_len {
+        u64 b = load8(int_str + j)
+        store8(result + pos, b)
+        pos = pos + 1
+        j = j + 1
+    }
+
+    // Decimal point
+    store8(result + pos, 46)  // '.'
+    pos = pos + 1
+
+    // Leading zeros for fractional part
+    u64 leading_zeros = decimals - frac_len
+    u64 lz = 0
+    while lz < leading_zeros {
+        store8(result + pos, 48)  // '0'
+        pos = pos + 1
+        lz = lz + 1
+    }
+
+    // Copy fractional digits
+    j = 0
+    while j < frac_len {
+        u64 b = load8(frac_str + j)
+        store8(result + pos, b)
+        pos = pos + 1
+        j = j + 1
+    }
+
+    store8(result + pos, 0)  // null terminator
+    return result
+}
+
+fn fmt_f64(f64 val, u64 decimals) -> u64 {
+    if decimals > 15 { decimals = 15 }
+    if val < int_to_f64(0) {
+        return fmt_f64_pos(abs_f64(val), decimals, 1)
+    }
+    return fmt_f64_pos(val, decimals, 0)
+}
+
+fn fmt_f32(f32 val, u64 decimals) -> u64 {
+    if decimals > 7 { decimals = 7 }
+    return fmt_f64(f32_to_f64(val), decimals)
+}
