@@ -1701,12 +1701,11 @@ echo "--- fat binary real LZ4 compression (regression) ---"
 TOTAL=$((TOTAL + 1))
 KRCBIN="$DIR/../build/krc2"
 cat > /tmp/krc_lz4_$$.kr <<'KREOF'
-import "std/fmt.kr"
 fn main() {
     u64 i = 0
     u64 sum = 0
     while i < 64 { sum = sum + i * i; i = i + 1 }
-    print_str("s = "); println_str(fmt_dec(sum))
+    println(sum)
     exit(0)
 }
 KREOF
