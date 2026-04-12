@@ -2720,6 +2720,9 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     str_len = 0
     extern_fn_count = 0
     extern_call_count = 0
+    fnaddr_fixup_count = 0
+    static_count = 0
+    static_data_size = 0
 
     // Re-parse (need fresh AST; restore source+tokens to pristine state first)
     restore_src_and_tokens(source, size, src_snapshot, my_tokens, tok_bytes, tok_snapshot)
@@ -2790,6 +2793,8 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     extern_call_count = 0
     win_iat_fixup_count = 0
     fnaddr_fixup_count = 0
+    static_count = 0
+    static_data_size = 0
 
     restore_src_and_tokens(source, size, src_snapshot, my_tokens, tok_bytes, tok_snapshot)
     ast_init(131072)
@@ -2866,6 +2871,8 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     extern_call_count = 0
     a64_win_iat_fixup_count = 0
     fnaddr_fixup_count = 0
+    static_count = 0
+    static_data_size = 0
 
     restore_src_and_tokens(source, size, src_snapshot, my_tokens, tok_bytes, tok_snapshot)
     ast_init(131072)
@@ -2964,6 +2971,8 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     extern_fn_count = 0
     extern_call_count = 0
     fnaddr_fixup_count = 0
+    static_count = 0
+    static_data_size = 0
 
     restore_src_and_tokens(source, size, src_snapshot, my_tokens, tok_bytes, tok_snapshot)
     ast_init(131072)
@@ -3031,6 +3040,8 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     extern_fn_count = 0
     extern_call_count = 0
     fnaddr_fixup_count = 0
+    static_count = 0
+    static_data_size = 0
 
     restore_src_and_tokens(source, size, src_snapshot, my_tokens, tok_bytes, tok_snapshot)
     ast_init(131072)
@@ -3133,6 +3144,8 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     extern_fn_count = 0
     extern_call_count = 0
     fnaddr_fixup_count = 0
+    static_count = 0
+    static_data_size = 0
 
     restore_src_and_tokens(source, size, src_snapshot, my_tokens, tok_bytes, tok_snapshot)
     ast_init(131072)
@@ -3217,6 +3230,8 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     extern_fn_count = 0
     extern_call_count = 0
     fnaddr_fixup_count = 0
+    static_count = 0
+    static_data_size = 0
 
     restore_src_and_tokens(source, size, src_snapshot, my_tokens, tok_bytes, tok_snapshot)
     ast_init(131072)
@@ -3311,28 +3326,28 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     filter_aarch64_bcj(android_buf, android_len, 1)
 
     // === LZ4 compress all 6 ===
-    uint64 x86_comp = alloc(x86_len + 256)
+    uint64 x86_comp = alloc(lz4_compress_bound(x86_len))
     uint64 x86_comp_len = lz4_compress_frame(x86_buf, x86_len, x86_comp)
 
-    uint64 a64_comp = alloc(a64_len + 256)
+    uint64 a64_comp = alloc(lz4_compress_bound(a64_len))
     uint64 a64_comp_len = lz4_compress_frame(a64_buf, a64_len, a64_comp)
 
-    uint64 pe_x86_comp = alloc(pe_x86_len + 256)
+    uint64 pe_x86_comp = alloc(lz4_compress_bound(pe_x86_len))
     uint64 pe_x86_comp_len = lz4_compress_frame(pe_x86_buf, pe_x86_len, pe_x86_comp)
 
-    uint64 pe_a64_comp = alloc(pe_a64_len + 256)
+    uint64 pe_a64_comp = alloc(lz4_compress_bound(pe_a64_len))
     uint64 pe_a64_comp_len = lz4_compress_frame(pe_a64_buf, pe_a64_len, pe_a64_comp)
 
-    uint64 macho_x86_comp = alloc(macho_x86_len + 256)
+    uint64 macho_x86_comp = alloc(lz4_compress_bound(macho_x86_len))
     uint64 macho_x86_comp_len = lz4_compress_frame(macho_x86_buf, macho_x86_len, macho_x86_comp)
 
-    uint64 macho_a64_comp = alloc(macho_a64_len + 256)
+    uint64 macho_a64_comp = alloc(lz4_compress_bound(macho_a64_len))
     uint64 macho_a64_comp_len = lz4_compress_frame(macho_a64_buf, macho_a64_len, macho_a64_comp)
 
-    uint64 android_comp = alloc(android_len + 256)
+    uint64 android_comp = alloc(lz4_compress_bound(android_len))
     uint64 android_comp_len = lz4_compress_frame(android_buf, android_len, android_comp)
 
-    uint64 androidx_comp = alloc(androidx_len + 256)
+    uint64 androidx_comp = alloc(lz4_compress_bound(androidx_len))
     uint64 androidx_comp_len = lz4_compress_frame(androidx_buf, androidx_len, androidx_comp)
 
     // === Emit KrboFat v2 ===

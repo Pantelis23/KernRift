@@ -134,8 +134,16 @@ fn lz4_hash4(uint64 x) -> uint64 {
     return (h >> 20) & 0xFFF
 }
 
+// Worst-case frame size. In the no-match case the encoder emits a single
+// literal run whose extra-length bytes cost at most input_len/255, plus
+// 17 bytes of fixed frame + token + end-mark overhead.
+@export
+fn lz4_compress_bound(uint64 input_len) -> uint64 {
+    return input_len + 17 + (input_len / 255)
+}
+
 // Compress a single block. Returns the number of bytes written to `dst`.
-// Never expands by more than a handful of bytes (caller sizes dst generously).
+// Callers must size dst with lz4_compress_bound(input_len) bytes or more.
 // If the encoded size would exceed input, the caller falls back to storing
 // the block uncompressed in the frame layer.
 @export
