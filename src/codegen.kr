@@ -5185,6 +5185,55 @@ fn gen_expr(uint64 node) {
             return
         }
 
+        // Built-in: fma_f64(a, b, c) → a*b + c (fallback: mulsd + addsd)
+        if is_extern_call == 0 && tok_matches(wct, "fma_f64", 7) != 0 {
+            // Evaluate c → xmm0, save to temp_slot_1
+            uint32 arg_a = ast_child(node)
+            uint64 wa_a = arg_a
+            uint32 arg_b = ast_next(wa_a)
+            uint64 wa_b = arg_b
+            uint32 arg_c = ast_next(wa_b)
+            uint64 wa_c = arg_c
+
+            gen_expr(wa_c)
+            emit_store_xmm0_f64(temp_slot_1)
+            // Evaluate b → xmm0, save to temp_slot_0
+            gen_expr(wa_b)
+            emit_store_xmm0_f64(temp_slot_0)
+            // Evaluate a → xmm0
+            gen_expr(wa_a)
+            // mulsd xmm0, xmm1: F2 0F 59 C1
+            emit_load_xmm1_f64(temp_slot_0)
+            emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x59); emit_byte(0xC1)
+            // addsd xmm0, xmm1: F2 0F 58 C1
+            emit_load_xmm1_f64(temp_slot_1)
+            emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x58); emit_byte(0xC1)
+            expr_is_float = 1
+            return
+        }
+
+        // Built-in: f32_to_f16(x) → movd eax, xmm0 (stub: returns f32 bits in rax)
+        if is_extern_call == 0 && tok_matches(wct, "f32_to_f16", 10) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr(wfa)
+            // movd eax, xmm0: 66 0F 7E C0
+            emit_byte(0x66); emit_byte(0x0F); emit_byte(0x7E); emit_byte(0xC0)
+            expr_is_float = 0
+            return
+        }
+
+        // Built-in: f16_to_f32(x) → movd xmm0, eax (stub: loads rax bits as f32)
+        if is_extern_call == 0 && tok_matches(wct, "f16_to_f32", 10) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr(wfa)
+            // movd xmm0, eax: 66 0F 6E C0
+            emit_byte(0x66); emit_byte(0x0F); emit_byte(0x6E); emit_byte(0xC0)
+            expr_is_float = 2
+            return
+        }
+
         // User-defined function call
         // Evaluate args directly into registers (avoids push/pop clobbering [rsp-8])
         uint32 arg = ast_child(node)

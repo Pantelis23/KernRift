@@ -3090,6 +3090,54 @@ fn gen_expr_a64(uint64 node) {
             return
         }
 
+        // Built-in: fma_f64(a, b, c) → fmadd d0, d0, d1, d2
+        if is_extern_call == 0 && tok_matches(wct, "fma_f64", 7) != 0 {
+            uint32 arg_a = ast_child(node)
+            uint64 wa_a = arg_a
+            uint32 arg_b = ast_next(wa_a)
+            uint64 wa_b = arg_b
+            uint32 arg_c = ast_next(wa_b)
+            uint64 wa_c = arg_c
+
+            // Evaluate c → d0, save to temp_slot_1
+            gen_expr_a64(wa_c)
+            emit_a64_store_d0(temp_slot_1)
+            // Evaluate b → d0, save to temp_slot_0
+            gen_expr_a64(wa_b)
+            emit_a64_store_d0(temp_slot_0)
+            // Evaluate a → d0
+            gen_expr_a64(wa_a)
+            // Load b into d1, c into d2
+            emit_a64_load_dN(1, temp_slot_0)
+            emit_a64_load_dN(2, temp_slot_1)
+            // fmadd d0, d0, d1, d2: 0x1F410800
+            emit_a64(0x1F410800)
+            expr_is_float_a64 = 1
+            return
+        }
+
+        // Built-in: f32_to_f16(x) → fcvt h0, s0 then fmov w0, s0
+        if is_extern_call == 0 && tok_matches(wct, "f32_to_f16", 10) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr_a64(wfa)
+            emit_a64(0x1E23C000)  // fcvt h0, s0
+            emit_a64(0x1E260000)  // fmov w0, s0
+            expr_is_float_a64 = 0
+            return
+        }
+
+        // Built-in: f16_to_f32(x) → fmov s0, w0 then fcvt s0, h0
+        if is_extern_call == 0 && tok_matches(wct, "f16_to_f32", 10) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            gen_expr_a64(wfa)
+            emit_a64(0x1E270000)  // fmov s0, w0
+            emit_a64(0x1E22C000)  // fcvt s0, h0
+            expr_is_float_a64 = 2
+            return
+        }
+
         // User-defined function call
         uint32 arg = ast_child(node)
         uint64 warg = arg
