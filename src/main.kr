@@ -3695,6 +3695,17 @@ fn main() {
         }
     }
 
+    // Host-native defaults: if the user didn't pass --arch/--emit,
+    // produce the host platform's native format so `krc hello.kr` or
+    // `krc hello.kr -o hello.exe` just works.
+    uint64 host_os = get_target_os()
+    if arch_set == 0 && emit_set == 0 && host_os == 2 {
+        emit_mode = 2; emit_set = 1; target_os = 2
+    }
+    if arch_set == 0 && emit_set == 0 && host_os == 1 {
+        emit_mode = 1; emit_set = 1; target_os = 1
+    }
+
     // Auto-set target_os from emit_mode if not explicitly set
     if emit_mode == 1 && target_os == 0 { target_os = 1 }
     if emit_mode == 2 && target_os == 0 { target_os = 2 }
@@ -3725,6 +3736,19 @@ fn main() {
             uint64 ep1 = ep + 1; unsafe { *(ep1 as uint8) = e1 }
             uint64 ep2 = ep + 2; uint8 z = 0
             unsafe { *(ep2 as uint8) = z }
+            output_path = out
+        } else if emit_mode == 2 {
+            // PE: input.kr → input.exe
+            uint64 out = alloc(base_len + 5)
+            memcpy(out, input_path, base_len)
+            uint64 ep = out + base_len
+            uint8 e0 = 46; uint8 e1 = 101; uint8 e2 = 120; uint8 e3 = 101
+            unsafe { *(ep as uint8) = e0 }
+            uint64 ep1 = ep + 1; unsafe { *(ep1 as uint8) = e1 }
+            uint64 ep2 = ep + 2; unsafe { *(ep2 as uint8) = e2 }
+            uint64 ep3 = ep + 3; unsafe { *(ep3 as uint8) = e3 }
+            uint64 ep4 = ep + 4; uint8 z = 0
+            unsafe { *(ep4 as uint8) = z }
             output_path = out
         } else if arch_set != 0 || emit_set != 0 {
             // Single arch: input.kr → input (no extension, native binary)
@@ -3885,9 +3909,11 @@ fn main() {
         exit(0)
     }
 
-    // Default: produce fat binary unless --arch or --emit specified
-    // On Windows: default to native PE output instead of fat binary
-    // When running under Rust runtime (cli_argc=0), produce single-arch ELF
+    // Default: produce fat binary unless --arch or --emit specified.
+    // On Windows / macOS: default to the host's native format so that
+    // `krc hello.kr` just works without flags. The user can still
+    // explicitly request a fat binary with `krc hello.kr -o hello.krbo`
+    // via --emit=... if they want cross-platform output.
     if arch_set == 0 && emit_set == 0 && cli_argc > 0 {
         compile_fat(input_path, output_path)
     } else {
