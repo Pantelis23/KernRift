@@ -1799,6 +1799,12 @@ run_test "f64_sqrt" 'fn main() { f64 x = int_to_f64(49); exit(f64_to_int(sqrt(x)
 run_test "f64_cmp_lt" 'fn main() { f64 a = int_to_f64(3); f64 b = int_to_f64(5); if a < b { exit(1) } exit(0) }' 1
 run_test "f64_cmp_gt" 'fn main() { f64 a = int_to_f64(10); f64 b = int_to_f64(5); if a > b { exit(1) } exit(0) }' 1
 run_test "f64_cmp_eq" 'fn main() { f64 a = int_to_f64(7); f64 b = int_to_f64(7); if a == b { exit(1) } exit(0) }' 1
+run_test "f64_fn_call" 'fn double_it(f64 x) -> f64 { return x + x }
+fn main() { f64 r = double_it(int_to_f64(21)); exit(f64_to_int(r)) }' 42
+run_test "f64_fn_2args" 'fn add_f(f64 a, f64 b) -> f64 { return a + b }
+fn main() { f64 r = add_f(int_to_f64(20), int_to_f64(22)); exit(f64_to_int(r)) }' 42
+run_test "f64_fn_mixed" 'fn scale(u64 n, f64 x) -> f64 { f64 fn64 = int_to_f64(n); return fn64 * x }
+fn main() { f64 r = scale(3, int_to_f64(14)); exit(f64_to_int(r)) }' 42
 
 echo ""
 echo "--- extern fn (libc linking) ---"

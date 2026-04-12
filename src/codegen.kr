@@ -171,6 +171,11 @@ static uint64 device_field_count = 0
 static uint64 r12_in_use = 0
 static uint64 r12_save_slot = 0
 
+// Function return-type float table: maps fn name_tok → float kind (1=f64, 2=f32)
+// [name_tok(4), float_kind(4)] × 512
+static uint64 fn_ret_float_table = 0
+static uint64 fn_ret_float_count = 0
+
 @export
 fn codegen_init(uint64 capacity, uint64 source, uint64 tokens) {
     out_buf = alloc(capacity)
@@ -229,6 +234,8 @@ fn codegen_init(uint64 capacity, uint64 source, uint64 tokens) {
     fnaddr_fixup_count = 0
     pin_param0_offset = 0xFFFFFFFF
     pin_param1_offset = 0xFFFFFFFF
+    fn_ret_float_table = alloc(512 * 8)
+    fn_ret_float_count = 0
 }
 
 // ---------------------------------------------------------------------------
@@ -1438,6 +1445,69 @@ fn emit_store_xmm1_f64(uint64 offset) {
     }
 }
 
+// movsd xmmN, [rsp+offset] — load f64 into xmmN (N=0..7)
+fn emit_load_xmmN_f64(uint64 reg, uint64 offset) {
+    emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x10)
+    uint8 reg3 = reg << 3
+    if offset < 128 {
+        uint8 mb = 0x44 | reg3
+        emit_byte(mb); emit_byte(0x24)
+        uint8 off8 = offset
+        emit_byte(off8)
+    } else {
+        uint8 mb = 0x84 | reg3
+        emit_byte(mb); emit_byte(0x24)
+        emit_u32_le(offset)
+    }
+}
+
+// movsd [rsp+offset], xmmN — store f64 from xmmN (N=0..7)
+fn emit_store_xmmN_f64(uint64 reg, uint64 offset) {
+    emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x11)
+    uint8 reg3 = reg << 3
+    if offset < 128 {
+        uint8 mb = 0x44 | reg3
+        emit_byte(mb); emit_byte(0x24)
+        uint8 off8 = offset
+        emit_byte(off8)
+    } else {
+        uint8 mb = 0x84 | reg3
+        emit_byte(mb); emit_byte(0x24)
+        emit_u32_le(offset)
+    }
+}
+
+// Register a function's float return type
+fn fn_ret_float_register(uint64 name_tok, uint64 float_kind) {
+    uint64 entry = fn_ret_float_table + fn_ret_float_count * 8
+    uint32 nt = name_tok
+    unsafe { *(entry as uint32) = nt }
+    uint64 e4 = entry + 4
+    uint32 fk = float_kind
+    unsafe { *(e4 as uint32) = fk }
+    fn_ret_float_count = fn_ret_float_count + 1
+}
+
+// Look up a function's float return type: 0=int, 1=f64, 2=f32
+fn fn_ret_float_lookup(uint64 name_tok) -> uint64 {
+    uint64 i = 0
+    while i < fn_ret_float_count {
+        uint64 entry = fn_ret_float_table + i * 8
+        uint32 nt = 0
+        unsafe { *(entry as uint32) -> nt }
+        uint64 wnt = nt
+        if tok_text_eq(wnt, name_tok) != 0 {
+            uint64 e4 = entry + 4
+            uint32 fk = 0
+            unsafe { *(e4 as uint32) -> fk }
+            uint64 wfk = fk
+            return wfk
+        }
+        i = i + 1
+    }
+    return 0
+}
+
 // Helper: is this type token a float type?
 fn is_float_type(uint64 type_kind) -> uint64 {
     if type_kind == 95 { return 1 }
@@ -1887,6 +1957,7 @@ fn gen_expr(uint64 node) {
         uint32 tok = ast_data1(node)
         uint64 val = parse_int_token(tok)
         emit_mov_rax_imm(val)
+        expr_is_float = 0
         return
     }
 
@@ -5139,23 +5210,35 @@ fn gen_expr(uint64 node) {
         uint64 acrem = var_frame_size & 15
         if acrem != 0 { var_frame_size = var_frame_size + 16 - acrem }
 
-        // Evaluate all args and store to temp slots
+        // Evaluate all args and store to temp slots.
+        // Track which args are float (0=int, 1=f64, 2=f32) in a local array.
+        uint64[16] arg_float_flags
         uint64 weval = warg
         uint64 ai = 0
         while weval != 0 {
             gen_expr(weval)
             uint64 aslot = arg_slots_base + ai * 8
-            emit_store_rax_to_stack(aslot)
+            uint64 aff_addr = arg_float_flags + ai * 8
+            if expr_is_float != 0 {
+                // Store float result from xmm0 to temp slot
+                emit_store_xmm0_f64(aslot)
+                unsafe { *(aff_addr as uint64) = expr_is_float }
+            } else {
+                emit_store_rax_to_stack(aslot)
+                uint64 zero = 0
+                unsafe { *(aff_addr as uint64) = zero }
+            }
             ai = ai + 1
             uint32 anxt = ast_next(weval)
             weval = anxt
         }
 
         // Load args into registers from temp slots
-        // SysV: rdi, rsi, rdx, rcx, r8, r9
-        // Windows: rcx, rdx, r8, r9, stack, stack
+        // SysV: int args → rdi, rsi, rdx, rcx, r8, r9 (independent counter)
+        //       float args → xmm0, xmm1, xmm2, ... (independent counter)
+        // Windows: positional rcx, rdx, r8, r9 (no change for now)
         if target_os == 2 {
-            // Windows x64 calling convention
+            // Windows x64 calling convention (unchanged — positional)
             if arg_count >= 4 {
                 emit_load_rax_from_stack(arg_slots_base + 24)
                 // mov r9, rax
@@ -5165,35 +5248,57 @@ fn gen_expr(uint64 node) {
                 emit_load_rax_from_stack(arg_slots_base + 16)
                 emit_mov_r8_rax()
             }
-        } else {
-            // SysV calling convention (Linux/macOS)
-            if arg_count >= 6 {
-                emit_load_rax_from_stack(arg_slots_base + 40)
-                // mov r9, rax (49 89 C1)
-                emit_byte(0x49); emit_byte(0x89); emit_byte(0xC1)
-            }
-            if arg_count >= 5 {
-                emit_load_rax_from_stack(arg_slots_base + 32)
-                // mov r8, rax (49 89 C0)
-                emit_byte(0x49); emit_byte(0x89); emit_byte(0xC0)
-            }
-            if arg_count >= 4 {
-                emit_load_rax_from_stack(arg_slots_base + 24)
-                // mov rcx, rax
-                emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
-            }
-            if arg_count >= 3 {
-                emit_load_rax_from_stack(arg_slots_base + 16)
+            if arg_count >= 2 {
+                emit_load_rax_from_stack(arg_slots_base + 8)
                 emit_mov_rdx_rax()
             }
-        }
-        if arg_count >= 2 {
-            emit_load_rax_from_stack(arg_slots_base + 8)
-            if target_os == 2 { emit_mov_rdx_rax() } else { emit_mov_rsi_rax() }
-        }
-        if arg_count >= 1 {
-            emit_load_rax_from_stack(arg_slots_base)
-            if target_os == 2 { emit_mov_rcx_rax() } else { emit_mov_rdi_rax() }
+            if arg_count >= 1 {
+                emit_load_rax_from_stack(arg_slots_base)
+                emit_mov_rcx_rax()
+            }
+        } else {
+            // SysV calling convention: separate int/float register allocation
+            // First pass: load float args into xmm registers
+            uint64 call_float_idx = 0
+            uint64 fi = 0
+            while fi < arg_count {
+                uint64 ff_addr = arg_float_flags + fi * 8
+                uint64 ff_val = 0
+                unsafe { *(ff_addr as uint64) -> ff_val }
+                if ff_val != 0 && call_float_idx < 8 {
+                    emit_load_xmmN_f64(call_float_idx, arg_slots_base + fi * 8)
+                    call_float_idx = call_float_idx + 1
+                }
+                fi = fi + 1
+            }
+            // Second pass: load integer args into rdi, rsi, rdx, rcx, r8, r9
+            uint64 call_int_idx = 0
+            uint64 ii = 0
+            while ii < arg_count && call_int_idx < 6 {
+                uint64 fi_addr = arg_float_flags + ii * 8
+                uint64 fi_val = 0
+                unsafe { *(fi_addr as uint64) -> fi_val }
+                if fi_val == 0 {
+                    emit_load_rax_from_stack(arg_slots_base + ii * 8)
+                    if call_int_idx == 0 { emit_mov_rdi_rax() }
+                    if call_int_idx == 1 { emit_mov_rsi_rax() }
+                    if call_int_idx == 2 { emit_mov_rdx_rax() }
+                    if call_int_idx == 3 {
+                        // mov rcx, rax
+                        emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
+                    }
+                    if call_int_idx == 4 {
+                        // mov r8, rax (49 89 C0)
+                        emit_byte(0x49); emit_byte(0x89); emit_byte(0xC0)
+                    }
+                    if call_int_idx == 5 {
+                        // mov r9, rax (49 89 C1)
+                        emit_byte(0x49); emit_byte(0x89); emit_byte(0xC1)
+                    }
+                    call_int_idx = call_int_idx + 1
+                }
+                ii = ii + 1
+            }
         }
 
         // Push overflow args (7+) onto stack AFTER register loads (SysV x86_64)
@@ -5237,6 +5342,11 @@ fn gen_expr(uint64 node) {
             emit_byte(cl8) // add rsp, N
         }
 
+        // Set expr_is_float based on callee's return type
+        uint64 wct_ret = callee_tok
+        uint64 ret_fk = fn_ret_float_lookup(wct_ret)
+        expr_is_float = ret_fk
+
         // If the callee is an extern fn, record a call site for the linker
         // relocation and skip the internal fixup table — the linker fills the
         // disp32 at .o emit time with R_X86_64_PLT32.
@@ -5255,6 +5365,9 @@ fn gen_expr(uint64 node) {
         uint32 ct = callee_tok
         unsafe { *(fe4 as uint32) = ct }
         fixup_count = fixup_count + 1
+
+        // Invalidate rax cache after call (callee may have changed rax)
+        rax_invalidate()
 
         return
     }
@@ -6423,6 +6536,7 @@ fn gen_function(uint64 fn_node) {
 
     // Reset variable table for this function
     var_reset()
+    expr_is_float = 0
 
     // Reserve temp slots + r12 save slot
     temp_slot_0 = var_count * 8
@@ -6438,6 +6552,15 @@ fn gen_function(uint64 fn_node) {
 
     // Register function at current offset
     fn_register(name_tok, out_len)
+
+    // Register float return type if applicable
+    uint32 ret_type_tok = ast_data2(fn_node)
+    uint64 wrt = ret_type_tok
+    if wrt != 0 {
+        uint64 ret_kind = tok_kind_at_raw(wrt)
+        if ret_kind == 96 { fn_ret_float_register(name_tok, 1) }
+        if ret_kind == 95 { fn_ret_float_register(name_tok, 2) }
+    }
 
     // For main function: emit _start trampoline that stores argc/argv to statics
     // Skip in freestanding mode
@@ -6502,6 +6625,12 @@ fn gen_function(uint64 fn_node) {
         if pk == 3 {
             uint32 param_name = ast_data2(wparam)
             uint64 ptr_off_x = var_declare(param_name)
+            // Register float type for float-typed params
+            uint32 param_type_reg = ast_data1(wparam)
+            uint64 pt_kind = tok_kind_at_raw(param_type_reg)
+            if is_float_type(pt_kind) != 0 {
+                var_type_register(param_name, pt_kind)
+            }
             // Slice parameter: also reserve a length slot (no name)
             uint32 pflag = ast_data4(wparam)
             uint64 wpflag = pflag
@@ -6532,9 +6661,10 @@ fn gen_function(uint64 fn_node) {
     pin_param0_tok = 0
     pin_param1_tok = 0
 
-    // Collect first two param offsets
+    // Collect first two param offsets; also check if first param is float
     uint64 p0_off = 0xFFFFFFFF
     uint64 p1_off = 0xFFFFFFFF
+    uint64 p0_is_float = 0
     uint64 pidx_scan = 0
     uint64 wp_scan = first_param
     while wp_scan != 0 {
@@ -6542,7 +6672,12 @@ fn gen_function(uint64 fn_node) {
         if pks == 3 {
             uint32 pns = ast_data2(wp_scan)
             uint64 poffs = var_lookup(pns)
-            if pidx_scan == 0 { p0_off = poffs }
+            if pidx_scan == 0 {
+                p0_off = poffs
+                uint32 pt_pin = ast_data1(wp_scan)
+                uint64 ptk_pin = tok_kind_at_raw(pt_pin)
+                if is_float_type(ptk_pin) != 0 { p0_is_float = 1 }
+            }
             if pidx_scan == 1 { p1_off = poffs }
             pidx_scan = pidx_scan + 1
         }
@@ -6555,7 +6690,8 @@ fn gen_function(uint64 fn_node) {
     uint64 wbs = body_scan
 
     // Check if params are read-only AND function is not naked/Windows/overflow
-    if is_naked == 0 && pidx_scan <= 6 && target_os != 2 {
+    // Do not pin float params (pinning uses integer callee-saved registers)
+    if is_naked == 0 && pidx_scan <= 6 && target_os != 2 && p0_is_float == 0 {
         if p0_off != 0xFFFFFFFF && wbs != 0 {
             if scan_assigns(wbs, p0_off) == 0 {
                 pin_param0_offset = p0_off
@@ -6588,9 +6724,12 @@ fn gen_function(uint64 fn_node) {
     }
 
     // Spill params to stack
-    // SysV:    param 0=rdi, 1=rsi, 2=rdx, 3=rcx, 4=r8, 5=r9
-    // Windows: param 0=rcx, 1=rdx, 2=r8,  3=r9
+    // SysV:    int regs: rdi, rsi, rdx, rcx, r8, r9 (independent counter)
+    //          float regs: xmm0, xmm1, xmm2, ... xmm7 (independent counter)
+    // Windows: param 0=rcx, 1=rdx, 2=r8,  3=r9 (positional)
     uint64 pidx = 0
+    uint64 int_pidx = 0
+    uint64 float_pidx = 0
     uint64 wp2 = first_param
     while wp2 != 0 {
         uint32 pk2 = ast_kind(wp2)
@@ -6600,10 +6739,19 @@ fn gen_function(uint64 fn_node) {
             // Track slice flag for this param
             uint32 pflag_s = ast_data4(wp2)
             uint64 wpflag_s = pflag_s
+            // Check if this param is a float type
+            uint32 pt_spill = ast_data1(wp2)
+            uint64 pt_kind_spill = tok_kind_at_raw(pt_spill)
+            uint64 param_is_float = is_float_type(pt_kind_spill)
             if poff != 0xFFFFFFFF {
                 uint8 po8 = poff
-                if target_os == 2 {
-                    // Windows calling convention
+                if param_is_float != 0 && target_os != 2 {
+                    // SysV float param: spill xmmN to stack
+                    // movsd [rsp+offset], xmmN
+                    emit_store_xmmN_f64(float_pidx, poff)
+                    float_pidx = float_pidx + 1
+                } else if target_os == 2 {
+                    // Windows calling convention (positional, no change)
                     if pidx == 0 {
                         // mov [rsp+off], rcx
                         emit_byte(0x48); emit_byte(0x89); emit_byte(0x4C)
@@ -6624,9 +6772,10 @@ fn gen_function(uint64 fn_node) {
                         emit_byte(0x4C); emit_byte(0x89); emit_byte(0x4C)
                         emit_byte(0x24); emit_byte(po8)
                     }
+                    int_pidx = int_pidx + 1
                 } else {
-                    // SysV calling convention
-                    if pidx == 0 {
+                    // SysV integer param: use int_pidx for register selection
+                    if int_pidx == 0 {
                         if pin_param0_offset != 0xFFFFFFFF {
                             // mov rbx, rdi (48 89 FB)
                             emit_byte(0x48); emit_byte(0x89); emit_byte(0xFB)
@@ -6636,32 +6785,32 @@ fn gen_function(uint64 fn_node) {
                             emit_byte(0x24); emit_byte(po8)
                         }
                     }
-                    if pidx == 1 {
+                    if int_pidx == 1 {
                         // mov [rsp+off], rsi
                         emit_byte(0x48); emit_byte(0x89); emit_byte(0x74)
                         emit_byte(0x24); emit_byte(po8)
                     }
-                    if pidx == 2 {
+                    if int_pidx == 2 {
                         // mov [rsp+off], rdx
                         emit_byte(0x48); emit_byte(0x89); emit_byte(0x54)
                         emit_byte(0x24); emit_byte(po8)
                     }
-                    if pidx == 3 {
+                    if int_pidx == 3 {
                         // mov [rsp+off], rcx
                         emit_byte(0x48); emit_byte(0x89); emit_byte(0x4C)
                         emit_byte(0x24); emit_byte(po8)
                     }
-                    if pidx == 4 {
+                    if int_pidx == 4 {
                         // mov [rsp+off], r8
                         emit_byte(0x4C); emit_byte(0x89); emit_byte(0x44)
                         emit_byte(0x24); emit_byte(po8)
                     }
-                    if pidx == 5 {
+                    if int_pidx == 5 {
                         // mov [rsp+off], r9
                         emit_byte(0x4C); emit_byte(0x89); emit_byte(0x4C)
                         emit_byte(0x24); emit_byte(po8)
                     }
-                    if pidx >= 6 {
+                    if int_pidx >= 6 {
                         // Stack-passed arg: emit mov rax, [rsp+PLACEHOLDER]
                         // Offset will be patched when frame_size is known
                         emit_byte(0x48); emit_byte(0x8B); emit_byte(0x84)
@@ -6669,8 +6818,7 @@ fn gen_function(uint64 fn_node) {
                         uint64 patch_loc = out_len
                         emit_u32_le(0) // placeholder — patched later
                         // Save patch location for this overflow arg
-                        // Store: [overflow_patches + (pidx-6)*16] = {patch_loc, pidx-6}
-                        uint64 opi = pidx - 6
+                        uint64 opi = int_pidx - 6
                         uint64 op_entry = overflow_patches + opi * 8
                         uint32 pl32 = patch_loc
                         unsafe { *(op_entry as uint32) = pl32 }
@@ -6679,9 +6827,11 @@ fn gen_function(uint64 fn_node) {
                         emit_byte(0x48); emit_byte(0x89); emit_byte(0x44)
                         emit_byte(0x24); emit_byte(po8)
                     }
+                    int_pidx = int_pidx + 1
                 }
                 pidx = pidx + 1
                 // Slice param: also spill the length register to the len slot
+                // (slices always use integer registers for both ptr and len)
                 if wpflag_s == 1 {
                     uint64 len_off = slice_len_lookup(poff)
                     if len_off != 0xFFFFFFFF {
@@ -6700,28 +6850,29 @@ fn gen_function(uint64 fn_node) {
                                 emit_byte(0x24); emit_byte(lo8)
                             }
                         } else {
-                            if pidx == 1 {
+                            if int_pidx == 1 {
                                 emit_byte(0x48); emit_byte(0x89); emit_byte(0x74)
                                 emit_byte(0x24); emit_byte(lo8)
                             }
-                            if pidx == 2 {
+                            if int_pidx == 2 {
                                 emit_byte(0x48); emit_byte(0x89); emit_byte(0x54)
                                 emit_byte(0x24); emit_byte(lo8)
                             }
-                            if pidx == 3 {
+                            if int_pidx == 3 {
                                 emit_byte(0x48); emit_byte(0x89); emit_byte(0x4C)
                                 emit_byte(0x24); emit_byte(lo8)
                             }
-                            if pidx == 4 {
+                            if int_pidx == 4 {
                                 emit_byte(0x4C); emit_byte(0x89); emit_byte(0x44)
                                 emit_byte(0x24); emit_byte(lo8)
                             }
-                            if pidx == 5 {
+                            if int_pidx == 5 {
                                 emit_byte(0x4C); emit_byte(0x89); emit_byte(0x4C)
                                 emit_byte(0x24); emit_byte(lo8)
                             }
                         }
                     }
+                    int_pidx = int_pidx + 1
                     pidx = pidx + 1
                 }
             }
