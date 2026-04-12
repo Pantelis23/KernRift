@@ -4530,28 +4530,37 @@ fn gen_expr(uint64 node) {
         //   result = sec * 1_000_000_000 + nsec
         // Other targets: return 0 (no portable timer yet).
         if is_extern_call == 0 && tok_matches(wct, "time_ns", 7) != 0 {
-            if target_os == 0 {
-                // sub rsp, 16              — reserve timespec
-                emit_byte(0x48); emit_byte(0x83); emit_byte(0xEC); emit_byte(16)
-                // mov edi, 1               — CLOCK_MONOTONIC
-                emit_byte(0xBF); emit_byte(1); emit_byte(0); emit_byte(0); emit_byte(0)
-                // mov rsi, rsp            — &ts
-                emit_byte(0x48); emit_byte(0x89); emit_byte(0xE6)
-                // mov eax, 228            — SYS_clock_gettime
-                emit_mov_rax_imm(228)
-                // syscall
-                emit_byte(0x0F); emit_byte(0x05)
-                // mov rax, [rsp]          — sec
-                emit_byte(0x48); emit_byte(0x8B); emit_byte(0x04); emit_byte(0x24)
-                // imul rax, rax, 1_000_000_000
-                emit_byte(0x48); emit_byte(0x69); emit_byte(0xC0)
+            if target_os == 0 || target_os == 3 {
+                // Linux / Android x86_64: clock_gettime(1, &ts) via syscall 228
+                emit_byte(0x48); emit_byte(0x83); emit_byte(0xEC); emit_byte(16) // sub rsp, 16
+                emit_byte(0xBF); emit_byte(1); emit_byte(0); emit_byte(0); emit_byte(0) // mov edi, 1
+                emit_byte(0x48); emit_byte(0x89); emit_byte(0xE6) // mov rsi, rsp
+                emit_mov_rax_imm(228)                              // mov eax, 228
+                emit_byte(0x0F); emit_byte(0x05)                   // syscall
+                emit_byte(0x48); emit_byte(0x8B); emit_byte(0x04); emit_byte(0x24) // mov rax, [rsp]
+                emit_byte(0x48); emit_byte(0x69); emit_byte(0xC0)  // imul rax, rax, 1e9
                 emit_u32_le(1000000000)
-                // mov rcx, [rsp+8]        — nsec
-                emit_byte(0x48); emit_byte(0x8B); emit_byte(0x4C); emit_byte(0x24); emit_byte(8)
-                // add rax, rcx            — total = sec*1e9 + nsec
-                emit_byte(0x48); emit_byte(0x01); emit_byte(0xC8)
-                // add rsp, 16             — drop timespec
-                emit_byte(0x48); emit_byte(0x83); emit_byte(0xC4); emit_byte(16)
+                emit_byte(0x48); emit_byte(0x8B); emit_byte(0x4C); emit_byte(0x24); emit_byte(8) // mov rcx, [rsp+8]
+                emit_byte(0x48); emit_byte(0x01); emit_byte(0xC8)  // add rax, rcx
+                emit_byte(0x48); emit_byte(0x83); emit_byte(0xC4); emit_byte(16) // add rsp, 16
+            } else if target_os == 1 {
+                // macOS x86_64: gettimeofday(rdi=&tv, rsi=0) via syscall 0x2000074
+                // timeval: tv_sec(8) + tv_usec(4 on macOS x86_64 = int32)
+                emit_byte(0x48); emit_byte(0x83); emit_byte(0xEC); emit_byte(16) // sub rsp, 16
+                emit_byte(0x48); emit_byte(0x89); emit_byte(0xE7)  // mov rdi, rsp (&tv)
+                emit_byte(0x31); emit_byte(0xF6)                   // xor esi, esi (NULL tz)
+                emit_mov_rax_imm(0x2000074)                        // mov eax, gettimeofday
+                emit_byte(0x0F); emit_byte(0x05)                   // syscall
+                emit_byte(0x48); emit_byte(0x8B); emit_byte(0x04); emit_byte(0x24) // mov rax, [rsp] (sec)
+                emit_byte(0x48); emit_byte(0x69); emit_byte(0xC0)  // imul rax, rax, 1e9
+                emit_u32_le(1000000000)
+                // macOS timeval.tv_usec is i32: load as 32-bit, zero-extend
+                emit_byte(0x8B); emit_byte(0x4C); emit_byte(0x24); emit_byte(8) // mov ecx, [rsp+8]
+                // imul rcx, rcx, 1000 (usec→nsec)
+                emit_byte(0x48); emit_byte(0x69); emit_byte(0xC9)
+                emit_u32_le(1000)
+                emit_byte(0x48); emit_byte(0x01); emit_byte(0xC8)  // add rax, rcx
+                emit_byte(0x48); emit_byte(0x83); emit_byte(0xC4); emit_byte(16) // add rsp, 16
             } else {
                 emit_mov_rax_imm(0)
             }
@@ -4826,7 +4835,13 @@ fn asm_emit_x86(uint64 str_tok) {
     if asm_match(sptr, 0, "invlpg [rax]", 12) != 0 { emit_byte(0x0F); emit_byte(0x01); emit_byte(0x38); return }
     if asm_match(sptr, 0, "ltr ax", 6) != 0 { emit_byte(0x0F); emit_byte(0x00); emit_byte(0xD8); return }
     if asm_match(sptr, 0, "swapgs", 6) != 0 && slen == 6 { emit_byte(0x0F); emit_byte(0x01); emit_byte(0xF8); return }
-    // Unrecognized — skip silently (no error to allow forward compat)
+    // Unrecognized mnemonic — hard error. Use raw hex ("0x48 0xD3 0xE0")
+    // for instructions not in the built-in table.
+    write(2, "error: unrecognized asm instruction '", 36)
+    write(2, sptr, slen)
+    write(2, "'\n", 2)
+    write(2, "  hint: use raw hex bytes instead, e.g. asm(\"0x48 0xD3 0xE0\")\n", 63)
+    exit(1)
 }
 
 // Emit ARM64 assembly from a string literal token
@@ -4990,7 +5005,12 @@ fn asm_emit_a64(uint64 str_tok) {
         emit_a64(0xD5300000 | sreg | rt)
         return
     }
-    // Unrecognized — skip silently
+    // Unrecognized mnemonic — hard error.
+    write(2, "error: unrecognized asm instruction '", 36)
+    write(2, sptr, slen)
+    write(2, "'\n", 2)
+    write(2, "  hint: use raw hex word instead, e.g. asm(\"0xD503201F\")\n", 56)
+    exit(1)
 }
 
 // Generate code for a statement

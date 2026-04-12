@@ -2771,11 +2771,44 @@ fn gen_expr_a64(uint64 node) {
             return
         }
 
-        // Built-in: time_ns() — monotonic nanoseconds.
-        // Not yet implemented on arm64 — return 0 so the main.kr caller
-        // prints no timing suffix. Linux arm64 clock_gettime is nr 113.
+        // Built-in: time_ns() → monotonic nanosecond counter.
+        // Linux/Android arm64: clock_gettime(CLOCK_MONOTONIC=1, &ts)
+        // via syscall 113. macOS arm64: gettimeofday via x16=116.
+        // Windows arm64: not yet — returns 0.
         if is_extern_call == 0 && tok_matches(wct, "time_ns", 7) != 0 {
-            emit_a64_mov_imm(0, 0)
+            if target_os == 0 || target_os == 3 {
+                // Linux / Android: SYS_clock_gettime = 113
+                emit_a64(0xD10043FF)                  // sub sp, sp, #16
+                emit_a64_mov_imm(0, 1)                // x0 = CLOCK_MONOTONIC
+                emit_a64(0x910003E1)                   // add x1, sp, #0 (&ts)
+                emit_a64_mov_imm(8, 113)               // x8 = SYS_clock_gettime
+                emit_a64(0xD4000001)                   // svc #0
+                emit_a64_ldr(9, 31, 0)                 // x9 = ts.tv_sec
+                emit_a64_ldr(10, 31, 8)                // x10 = ts.tv_nsec
+                emit_a64(0x910043FF)                   // add sp, sp, #16
+                emit_a64_mov_imm(0, 1000000000)        // x0 = 1e9
+                emit_a64(0x9B007D20)                   // mul x0, x9, x0
+                emit_a64(0x8B0A0000)                   // add x0, x0, x10
+            } else if target_os == 1 {
+                // macOS arm64: gettimeofday(x0=&tv, x1=NULL), nr in x16
+                // timeval: tv_sec(8) + tv_usec(8) on 64-bit
+                emit_a64(0xD10043FF)                   // sub sp, sp, #16
+                emit_a64(0x910003E0)                   // add x0, sp, #0 (&tv)
+                emit_a64_mov_imm(1, 0)                 // x1 = NULL (tz)
+                emit_a64_mov_imm(16, 116)              // x16 = gettimeofday
+                emit_a64(0xD4001001)                   // svc #0x80
+                emit_a64_ldr(9, 31, 0)                 // x9 = tv_sec
+                emit_a64_ldr(10, 31, 8)                // x10 = tv_usec
+                emit_a64(0x910043FF)                   // add sp, sp, #16
+                emit_a64_mov_imm(0, 1000000000)        // x0 = 1e9
+                emit_a64(0x9B007D20)                   // mul x0, x9, x0
+                // x10 *= 1000 to convert usec→nsec: movz x11, #1000; mul x10, x10, x11
+                emit_a64_mov_imm(11, 1000)             // x11 = 1000
+                emit_a64(0x9B0B7D4A)                   // mul x10, x10, x11
+                emit_a64(0x8B0A0000)                   // add x0, x0, x10
+            } else {
+                emit_a64_mov_imm(0, 0)
+            }
             return
         }
 
