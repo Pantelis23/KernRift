@@ -1041,9 +1041,9 @@ run_test "tuple_reuse" 'fn step(uint64 x) -> uint64 { return (x + 1, x + 2) }
 fn main() { (uint64 p, uint64 q) = step(10); (uint64 r, uint64 s) = step(20); exit(p + q + r + s) }' 66
 
 # --- asm { } I/O constraints ---
+# x86_64-only asm constraint tests (rdtsc, shl are x86 instructions)
+if [ "$ARCH" = "x86_64" ] || [ "$ARCH" = "amd64" ]; then
 # rdtsc: no inputs, two outputs (low/high 32 bits of the TSC into rax/rdx).
-# We can't predict the TSC value, but we CAN assert non-zero — the asm
-# constraint plumbing works iff rdx flows back to `hi`.
 run_test "asm_rdtsc_out" 'fn main() {
     uint64 lo = 0
     uint64 hi = 0
@@ -1059,6 +1059,7 @@ run_test "asm_shl_in_out" 'fn shl_by(uint64 v, uint64 n) -> uint64 {
     return r
 }
 fn main() { exit(shl_by(3, 4)) }' 48
+fi
 
 # nop with no constraints — ensures backward-compat with existing asm blocks.
 run_test "asm_nop_noconstraints" 'fn main() { asm { "nop" }; exit(5) }' 5
@@ -1769,7 +1770,7 @@ KREOF
 KRCBIN="$DIR/../build/krc2"
 cat "$DIR/../src/bcj.kr" "$DIR/../src/runner.kr" > /tmp/krc_rt_kr_$$.kr
 if "$KRCBIN" /tmp/krc_rt_$$.kr -o /tmp/krc_rt_$$.krbo > /dev/null 2>&1 \
-   && "$KRCBIN" --arch=x86_64 /tmp/krc_rt_kr_$$.kr -o /tmp/krc_rt_kr_$$ > /dev/null 2>&1; then
+   && "$KRCBIN" --arch=$ARCH /tmp/krc_rt_kr_$$.kr -o /tmp/krc_rt_kr_$$ > /dev/null 2>&1; then
     chmod +x /tmp/krc_rt_kr_$$
     out=$(/tmp/krc_rt_kr_$$ /tmp/krc_rt_$$.krbo 2>&1)
     code=$?
