@@ -635,27 +635,63 @@ fn gen_expr_a64(uint64 node) {
         return
     }
 
-    // Float literal (kind 46): parse integer part, mov x0, int_val; scvtf d0, x0
+    // Float literal (kind 46): parse int + frac parts, compute full value
     if kind == 46 {
         uint32 lit_tok_f = ast_data1(node)
         uint64 tstart_f = tok_text_start(lit_tok_f)
         uint64 tlen_f = tok_text_len(lit_tok_f)
-        // Parse integer part (digits before '.')
         uint64 int_val = 0
+        uint64 frac_val = 0
+        uint64 frac_divisor = 1
+        uint64 past_dot = 0
         uint64 fi = 0
         while fi < tlen_f {
             uint64 cp_f = cg_source + tstart_f + fi
             uint64 ch_f = 0
             unsafe { *(cp_f as uint8) -> ch_f }
-            if ch_f == 46 { break }
+            if ch_f == 46 { past_dot = 1; fi = fi + 1; continue }
+            if ch_f == 102 { fi = fi + 1; continue }
             if ch_f >= 48 && ch_f <= 57 {
-                int_val = int_val * 10 + (ch_f - 48)
+                if past_dot == 0 {
+                    int_val = int_val * 10 + (ch_f - 48)
+                } else {
+                    frac_val = frac_val * 10 + (ch_f - 48)
+                    frac_divisor = frac_divisor * 10
+                }
             }
             fi = fi + 1
         }
-        // mov x0, int_val; scvtf d0, x0
-        emit_a64_mov_imm(0, int_val)
-        emit_a64(0x9E620000)  // scvtf d0, x0
+
+        if frac_val == 0 {
+            emit_a64_mov_imm(0, int_val)
+            emit_a64(0x9E620000)  // scvtf d0, x0
+        } else {
+            // d0 = int_to_f64(int_val), save to temp
+            emit_a64_mov_imm(0, int_val)
+            emit_a64(0x9E620000)  // scvtf d0, x0
+            emit_a64_store_d0(temp_slot_0)
+
+            // d0 = int_to_f64(frac_val)
+            emit_a64_mov_imm(0, frac_val)
+            emit_a64(0x9E620000)  // scvtf d0, x0
+
+            // d1 = int_to_f64(frac_divisor)
+            emit_a64_store_d0(temp_slot_1)
+            emit_a64_mov_imm(0, frac_divisor)
+            emit_a64(0x9E620000)  // scvtf d0, x0
+            // fmov d1, d0
+            emit_a64(0x1E604001)
+            emit_a64_load_d0(temp_slot_1)
+
+            // d0 = frac_val / frac_divisor
+            // fdiv d0, d0, d1: 0x1E611800
+            emit_a64(0x1E611800)
+
+            // d0 += int_part from temp
+            emit_a64_load_dN(1, temp_slot_0)
+            // fadd d0, d0, d1: 0x1E612800
+            emit_a64(0x1E612800)
+        }
 
         // Check for 'f' suffix → f32
         uint64 last_p = cg_source + tstart_f + tlen_f - 1

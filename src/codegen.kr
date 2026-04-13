@@ -1966,23 +1966,63 @@ fn gen_expr(uint64 node) {
         uint32 lit_tok_f = ast_data1(node)
         uint64 tstart_f = tok_text_start(lit_tok_f)
         uint64 tlen_f = tok_text_len(lit_tok_f)
-        // Parse integer part (digits before '.')
+
+        // Parse integer part (digits before '.') and fractional part (after '.')
         uint64 int_val = 0
+        uint64 frac_val = 0
+        uint64 frac_divisor = 1
+        uint64 past_dot = 0
         uint64 fi = 0
         while fi < tlen_f {
             uint64 cp_f = cg_source + tstart_f + fi
             uint64 ch_f = 0
             unsafe { *(cp_f as uint8) -> ch_f }
-            if ch_f == 46 { break }
+            if ch_f == 46 { past_dot = 1; fi = fi + 1; continue }
+            if ch_f == 102 { fi = fi + 1; continue }
             if ch_f >= 48 && ch_f <= 57 {
-                int_val = int_val * 10 + (ch_f - 48)
+                if past_dot == 0 {
+                    int_val = int_val * 10 + (ch_f - 48)
+                } else {
+                    frac_val = frac_val * 10 + (ch_f - 48)
+                    frac_divisor = frac_divisor * 10
+                }
             }
             fi = fi + 1
         }
-        // Emit: mov rax, int_val; cvtsi2sd xmm0, rax
-        emit_mov_rax_imm(int_val)
-        // cvtsi2sd xmm0, rax: F2 48 0F 2A C0
-        emit_byte(0xF2); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x2A); emit_byte(0xC0)
+
+        if frac_val == 0 {
+            // No fractional part (e.g., 3.0) — just convert integer
+            emit_mov_rax_imm(int_val)
+            // cvtsi2sd xmm0, rax: F2 48 0F 2A C0
+            emit_byte(0xF2); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x2A); emit_byte(0xC0)
+        } else {
+            // Full float: int_part + frac_part / 10^digits
+            // Step 1: xmm0 = int_to_f64(int_val), save to temp_slot_0
+            emit_mov_rax_imm(int_val)
+            emit_byte(0xF2); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x2A); emit_byte(0xC0)
+            emit_store_xmm0_f64(temp_slot_0)
+
+            // Step 2: xmm0 = int_to_f64(frac_val)
+            emit_mov_rax_imm(frac_val)
+            emit_byte(0xF2); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x2A); emit_byte(0xC0)
+
+            // Step 3: xmm1 = int_to_f64(frac_divisor)
+            emit_store_xmm0_f64(temp_slot_1)
+            emit_mov_rax_imm(frac_divisor)
+            emit_byte(0xF2); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x2A); emit_byte(0xC0)
+            // movsd xmm1, xmm0: F2 0F 10 C8
+            emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x10); emit_byte(0xC8)
+            emit_load_xmm0_f64(temp_slot_1)
+
+            // Step 4: xmm0 = frac_val / frac_divisor
+            // divsd xmm0, xmm1: F2 0F 5E C1
+            emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x5E); emit_byte(0xC1)
+
+            // Step 5: xmm0 += int_part (from temp_slot_0)
+            emit_load_xmm1_f64(temp_slot_0)
+            // addsd xmm0, xmm1: F2 0F 58 C1
+            emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x58); emit_byte(0xC1)
+        }
 
         // Check for 'f' suffix → f32
         uint64 last_p = cg_source + tstart_f + tlen_f - 1
