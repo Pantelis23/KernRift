@@ -2770,6 +2770,12 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     type_alias_count = 0
     arr_elem_count = 0
     fn_ret_float_count = 0
+    slice_len_count = 0
+    device_count = 0
+    device_field_count = 0
+    var_type_count = 0
+    win_iat_fixup_count = 0
+    a64_win_iat_fixup_count = 0
 
     // Re-parse (need fresh AST; restore source+tokens to pristine state first)
     restore_src_and_tokens(source, size, src_snapshot, my_tokens, tok_bytes, tok_snapshot)
