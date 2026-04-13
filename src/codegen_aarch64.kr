@@ -1314,18 +1314,33 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Built-in: alloc(size) → mmap / VirtualAlloc
+        // Returns pointer+8 to caller; first 8 bytes hold the original size.
         if is_extern_call == 0 && tok_matches(wct, "alloc", 5) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr_a64(wfa)
+            // Save original requested size
+            emit_a64_store_x0(temp_slot_0)
+            // add x0, x0, #8 — allocate 8 extra bytes for size header
+            emit_a64_add_imm(0, 0, 8)
             if target_os == 2 {
-                // Windows ARM64: VirtualAlloc(NULL, size, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE)
-                // x0 = size
+                // Windows ARM64: VirtualAlloc(NULL, size+8, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE)
                 emit_a64_mov(1, 0)
                 emit_a64_mov_imm(0, 0)
                 emit_a64_mov_imm(2, 0x3000)
                 emit_a64_mov_imm(3, 4)
                 emit_a64_win_call_iat(6)
+                // x0 = raw pointer from VirtualAlloc
+                // Store size header at [x0], return x0+8
+                emit_a64_store_x0(temp_slot_1)
+                emit_a64_load_x0(temp_slot_0)
+                // mov x9, x0 (save original size in x9)
+                emit_a64(0xAA0003E9)
+                emit_a64_load_x0(temp_slot_1)
+                // str x9, [x0, #0] (store size at start of allocation)
+                emit_a64_str(9, 0, 0)
+                // add x0, x0, #8 (return ptr+8 to caller)
+                emit_a64_add_imm(0, 0, 8)
             } else {
                 emit_a64_mov(1, 0)
                 emit_a64_mov_imm(0, 0)
@@ -1339,6 +1354,17 @@ fn gen_expr_a64(uint64 node) {
                 emit_a64_mov_imm(5, 0)
                 if target_os == 1 { emit_a64_syscall_nr(197) } else { emit_a64_syscall_nr(222) }
                 emit_a64_svc()
+                // x0 = raw mmap pointer
+                // Store size header at [x0], return x0+8
+                emit_a64_store_x0(temp_slot_1)
+                emit_a64_load_x0(temp_slot_0)
+                // mov x9, x0 (save original size in x9)
+                emit_a64(0xAA0003E9)
+                emit_a64_load_x0(temp_slot_1)
+                // str x9, [x0, #0] (store size at start of allocation)
+                emit_a64_str(9, 0, 0)
+                // add x0, x0, #8 (return ptr+8 to caller)
+                emit_a64_add_imm(0, 0, 8)
             }
             return
         }
@@ -1955,11 +1981,26 @@ fn gen_expr_a64(uint64 node) {
             return
         }
 
-        // Built-in: dealloc(ptr) — no-op (evaluate and discard)
+        // Built-in: dealloc(ptr) — munmap / VirtualFree
         if is_extern_call == 0 && tok_matches(wct, "dealloc", 7) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr_a64(wfa)
+            // x0 = user pointer (ptr+8 from alloc)
+            // Real base = x0 - 8, size = [x0], total = size + 8
+            if target_os == 2 {
+                // Windows ARM64 dealloc: VirtualFree not yet in IAT (TODO)
+            } else {
+                // sub x0, x0, #8 → base address
+                emit_a64(0xD1002000)
+                // ldr x1, [x0, #0] → load original size
+                emit_a64_ldr(1, 0, 0)
+                // add x1, x1, #8 → total size
+                emit_a64_add_imm(1, 1, 8)
+                // munmap syscall
+                if target_os == 1 { emit_a64_syscall_nr(73) } else { emit_a64_syscall_nr(215) }
+                emit_a64_svc()
+            }
             return
         }
 

@@ -3009,13 +3009,18 @@ fn gen_expr(uint64 node) {
         }
 
         // Check for built-in: alloc(size) → mmap / VirtualAlloc
+        // Returns pointer+8 to caller; first 8 bytes hold the original size.
         if is_extern_call == 0 && tok_matches(wct, "alloc", 5) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr(wfa)
+            // Save original requested size
+            emit_store_rax_to_stack(temp_slot_0)
+            // add rax, 8 — allocate 8 extra bytes for size header
+            emit_byte(0x48); emit_byte(0x83); emit_byte(0xC0); emit_byte(8)
             if target_os == 2 {
                 // Windows: VirtualAlloc(NULL, size, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE)
-                // rax = size
+                // rax = size+8
                 emit_mov_rdx_rax()
                 // rcx = NULL (lpAddress)
                 emit_mov_rax_imm(0)
@@ -3028,8 +3033,19 @@ fn gen_expr(uint64 node) {
                 emit_win_alloc_stack(0x20)
                 emit_win_call_iat(6)
                 emit_win_free_stack(0x20)
+                // rax = raw pointer from VirtualAlloc
+                // Store size header at [rax], return rax+8
+                emit_store_rax_to_stack(temp_slot_1)
+                emit_load_rax_from_stack(temp_slot_0)
+                // mov rcx, rax (save original size in rcx)
+                emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
+                emit_load_rax_from_stack(temp_slot_1)
+                // mov [rax], rcx (store size at start of allocation)
+                emit_byte(0x48); emit_byte(0x89); emit_byte(0x08)
+                // add rax, 8 (return ptr+8 to caller)
+                emit_byte(0x48); emit_byte(0x83); emit_byte(0xC0); emit_byte(8)
             } else {
-                // rax = size -> rsi (length)
+                // rax = size+8 -> rsi (length)
                 emit_mov_rsi_rax()
                 // rdi = 0 (addr = NULL)
                 emit_byte(0x48)
@@ -3061,7 +3077,19 @@ fn gen_expr(uint64 node) {
                 if target_os == 1 { emit_mov_rax_imm(0x20000C5) } else { emit_mov_rax_imm(9) }
                 emit_byte(0x0F)
                 emit_byte(0x05)
+                // rax = raw mmap pointer
+                // Store size header at [rax], return rax+8
+                emit_store_rax_to_stack(temp_slot_1)
+                emit_load_rax_from_stack(temp_slot_0)
+                // mov rcx, rax (save original size in rcx)
+                emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
+                emit_load_rax_from_stack(temp_slot_1)
+                // mov [rax], rcx (store size at start of allocation)
+                emit_byte(0x48); emit_byte(0x89); emit_byte(0x08)
+                // add rax, 8 (return ptr+8 to caller)
+                emit_byte(0x48); emit_byte(0x83); emit_byte(0xC0); emit_byte(8)
             }
+            rax_cache = 0
             return
         }
 
@@ -3988,12 +4016,37 @@ fn gen_expr(uint64 node) {
             return
         }
 
-        // Built-in: dealloc(ptr) — no-op (evaluate and discard)
+        // Built-in: dealloc(ptr) — munmap / VirtualFree
         if is_extern_call == 0 && tok_matches(wct, "dealloc", 7) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr(wfa)
-            // Discard result (no-op)
+            // rax = user pointer (ptr+8 from alloc)
+            // Real base = rax - 8, size = [rax-8], total = size + 8
+            if target_os == 2 {
+                // Windows dealloc: VirtualFree not yet in IAT (TODO)
+            } else {
+                // Linux/macOS: munmap(base, total_size)
+                // sub rax, 8 → base address
+                emit_byte(0x48); emit_byte(0x83); emit_byte(0xE8); emit_byte(8)
+                // mov rdi, rax (base)
+                emit_mov_rdi_rax()
+                // Load size from [rdi]: mov rax, [rdi]
+                emit_byte(0x48); emit_byte(0x8B); emit_byte(0x07)
+                // add rax, 8 → total length = size + 8
+                emit_byte(0x48); emit_byte(0x83); emit_byte(0xC0); emit_byte(8)
+                // mov rsi, rax (length)
+                emit_mov_rsi_rax()
+                // munmap syscall
+                if target_os == 1 {
+                    emit_mov_rax_imm(0x2000049)
+                } else {
+                    emit_mov_rax_imm(11)
+                }
+                // syscall
+                emit_byte(0x0F); emit_byte(0x05)
+            }
+            rax_cache = 0
             return
         }
 
