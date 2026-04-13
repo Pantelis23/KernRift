@@ -2029,8 +2029,8 @@ fn gen_expr(uint64 node) {
         uint64 last_c = 0
         unsafe { *(last_p as uint8) -> last_c }
         if last_c == 102 {
-            // cvtsd2ss xmm0, xmm0: F3 0F 5A C0
-            emit_byte(0xF3); emit_byte(0x0F); emit_byte(0x5A); emit_byte(0xC0)
+            // cvtsd2ss xmm0, xmm0: F2 0F 5A C0 (narrow f64 → f32)
+            emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x5A); emit_byte(0xC0)
             expr_is_float = 2
         } else {
             expr_is_float = 1
@@ -5252,22 +5252,71 @@ fn gen_expr(uint64 node) {
             return
         }
 
-        // Built-in: f32_to_f16(x) → movd eax, xmm0 (stub: returns f32 bits in rax)
+        // Built-in: f32_to_f16(f32) → u64 holding f16 bits
+        // IEEE 754: f32 = sign(1) exp(8,bias=127) mant(23)
+        //           f16 = sign(1) exp(5,bias=15)  mant(10)
         if is_extern_call == 0 && tok_matches(wct, "f32_to_f16", 10) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr(wfa)
             // movd eax, xmm0: 66 0F 7E C0
             emit_byte(0x66); emit_byte(0x0F); emit_byte(0x7E); emit_byte(0xC0)
+            // mov ecx, eax — save f32 bits
+            emit_byte(0x89); emit_byte(0xC1)
+            // sign: shr eax, 16; and eax, 0x8000
+            emit_byte(0xC1); emit_byte(0xE8); emit_byte(16)
+            emit_byte(0x25); emit_u32_le(0x8000)
+            // mov edx, eax — save sign in edx
+            emit_byte(0x89); emit_byte(0xC2)
+            // exp: mov eax, ecx; shr eax, 23; and eax, 0xFF; sub eax, 112
+            emit_byte(0x89); emit_byte(0xC8)
+            emit_byte(0xC1); emit_byte(0xE8); emit_byte(23)
+            emit_byte(0x25); emit_u32_le(0xFF)
+            emit_byte(0x2D); emit_u32_le(112)
+            // clamp exp to 0..31: and eax, 0x1F
+            emit_byte(0x25); emit_u32_le(0x1F)
+            // shl eax, 10; or edx, eax
+            emit_byte(0xC1); emit_byte(0xE0); emit_byte(10)
+            emit_byte(0x09); emit_byte(0xC2)
+            // mantissa: mov eax, ecx; shr eax, 13; and eax, 0x3FF
+            emit_byte(0x89); emit_byte(0xC8)
+            emit_byte(0xC1); emit_byte(0xE8); emit_byte(13)
+            emit_byte(0x25); emit_u32_le(0x3FF)
+            // or eax, edx — final f16 bits in eax
+            emit_byte(0x09); emit_byte(0xD0)
             expr_is_float = 0
             return
         }
 
-        // Built-in: f16_to_f32(x) → movd xmm0, eax (stub: loads rax bits as f32)
+        // Built-in: f16_to_f32(u64 holding f16 bits) → f32 in xmm0
+        // Reverse: expand 5-bit exp (bias 15) → 8-bit (bias 127), 10-bit mant → 23-bit
         if is_extern_call == 0 && tok_matches(wct, "f16_to_f32", 10) != 0 {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr(wfa)
+            // rax = f16 bits (u16 value)
+            // sign: (rax >> 15) & 1 → bit 31 of f32
+            // mov ecx, eax — save f16 bits
+            emit_byte(0x89); emit_byte(0xC1)
+            // sign: shl eax, 16; and eax, 0x80000000
+            emit_byte(0xC1); emit_byte(0xE0); emit_byte(16)
+            emit_byte(0x25); emit_u32_le(0x80000000)
+            // mov edx, eax — save sign
+            emit_byte(0x89); emit_byte(0xC2)
+            // exp: mov eax, ecx; shr eax, 10; and eax, 0x1F; add eax, 112
+            emit_byte(0x89); emit_byte(0xC8)
+            emit_byte(0xC1); emit_byte(0xE8); emit_byte(10)
+            emit_byte(0x25); emit_u32_le(0x1F)
+            emit_byte(0x05); emit_u32_le(112)
+            // shl eax, 23; or edx, eax
+            emit_byte(0xC1); emit_byte(0xE0); emit_byte(23)
+            emit_byte(0x09); emit_byte(0xC2)
+            // mantissa: mov eax, ecx; and eax, 0x3FF; shl eax, 13
+            emit_byte(0x89); emit_byte(0xC8)
+            emit_byte(0x25); emit_u32_le(0x3FF)
+            emit_byte(0xC1); emit_byte(0xE0); emit_byte(13)
+            // or eax, edx — f32 bits
+            emit_byte(0x09); emit_byte(0xD0)
             // movd xmm0, eax: 66 0F 6E C0
             emit_byte(0x66); emit_byte(0x0F); emit_byte(0x6E); emit_byte(0xC0)
             expr_is_float = 2
