@@ -178,6 +178,9 @@ run_test "fn_4args" 'fn sum4(uint64 a, uint64 b, uint64 c, uint64 d) -> uint64 {
 }
 fn main() { exit(sum4(10, 20, 3, 9)) }' 42
 
+run_test "fn_5args" 'fn sum5(uint64 a, uint64 b, uint64 c, uint64 d, uint64 e) -> uint64 { return a + b + c + d + e }
+fn main() { exit(sum5(1, 2, 3, 4, 5)) }' 15
+
 run_test "fn_6args" 'fn sum6(uint64 a, uint64 b, uint64 c, uint64 d, uint64 e, uint64 f) -> uint64 {
     return a + b + c + d + e + f
 }

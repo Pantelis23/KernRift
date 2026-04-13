@@ -5532,25 +5532,88 @@ fn gen_expr(uint64 node) {
         // Load args into registers from temp slots
         // SysV: int args → rdi, rsi, rdx, rcx, r8, r9 (independent counter)
         //       float args → xmm0, xmm1, xmm2, ... (independent counter)
-        // Windows: positional rcx, rdx, r8, r9 (no change for now)
+        // Windows: positional rcx, rdx, r8, r9 + shadow space + overflow
+        uint64 win_stack = 0
         if target_os == 2 {
-            // Windows x64 calling convention (unchanged — positional)
+            // Windows x64: shadow space (32 bytes min) + overflow args
+            uint64 reg_args = arg_count
+            if reg_args > 4 { reg_args = 4 }
+            uint64 overflow_count = 0
+            if arg_count > 4 { overflow_count = arg_count - 4 }
+            win_stack = 32 + overflow_count * 8
+            // Align to 16
+            uint64 win_rem = win_stack & 15
+            if win_rem != 0 { win_stack = win_stack + 16 - win_rem }
+
+            // sub rsp, win_stack
+            if win_stack < 128 {
+                emit_byte(0x48); emit_byte(0x83); emit_byte(0xEC)
+                uint8 ws8 = win_stack; emit_byte(ws8)
+            } else {
+                emit_byte(0x48); emit_byte(0x81); emit_byte(0xEC)
+                emit_u32_le(win_stack)
+            }
+
+            // Store overflow args (5+) at [rsp + 32 + (i-4)*8]
+            uint64 oi = 4
+            while oi < arg_count {
+                // Load from temp slot (shifted by win_stack)
+                emit_load_rax_from_stack(arg_slots_base + oi * 8 + win_stack)
+                // Store to [rsp + 32 + (oi-4)*8]
+                uint64 soff = 32 + (oi - 4) * 8
+                if soff < 128 {
+                    // mov [rsp + soff], rax (48 89 44 24 imm8)
+                    emit_byte(0x48); emit_byte(0x89); emit_byte(0x44)
+                    emit_byte(0x24); uint8 so8 = soff; emit_byte(so8)
+                } else {
+                    // mov [rsp + soff], rax (48 89 84 24 imm32)
+                    emit_byte(0x48); emit_byte(0x89); emit_byte(0x84)
+                    emit_byte(0x24); emit_u32_le(soff)
+                }
+                oi = oi + 1
+            }
+
+            // Load register args (0-3) into rcx/rdx/r8/r9 (positional)
             if arg_count >= 4 {
-                emit_load_rax_from_stack(arg_slots_base + 24)
-                // mov r9, rax
-                emit_byte(0x49); emit_byte(0x89); emit_byte(0xC1)
+                uint64 ff3 = 0
+                unsafe { *(arg_float_flags + 3 * 8 as uint64) -> ff3 }
+                if ff3 != 0 {
+                    emit_load_xmmN_f64(3, arg_slots_base + 24 + win_stack)
+                } else {
+                    emit_load_rax_from_stack(arg_slots_base + 24 + win_stack)
+                    // mov r9, rax
+                    emit_byte(0x49); emit_byte(0x89); emit_byte(0xC1)
+                }
             }
             if arg_count >= 3 {
-                emit_load_rax_from_stack(arg_slots_base + 16)
-                emit_mov_r8_rax()
+                uint64 ff2 = 0
+                unsafe { *(arg_float_flags + 2 * 8 as uint64) -> ff2 }
+                if ff2 != 0 {
+                    emit_load_xmmN_f64(2, arg_slots_base + 16 + win_stack)
+                } else {
+                    emit_load_rax_from_stack(arg_slots_base + 16 + win_stack)
+                    emit_mov_r8_rax()
+                }
             }
             if arg_count >= 2 {
-                emit_load_rax_from_stack(arg_slots_base + 8)
-                emit_mov_rdx_rax()
+                uint64 ff1 = 0
+                unsafe { *(arg_float_flags + 1 * 8 as uint64) -> ff1 }
+                if ff1 != 0 {
+                    emit_load_xmmN_f64(1, arg_slots_base + 8 + win_stack)
+                } else {
+                    emit_load_rax_from_stack(arg_slots_base + 8 + win_stack)
+                    emit_mov_rdx_rax()
+                }
             }
             if arg_count >= 1 {
-                emit_load_rax_from_stack(arg_slots_base)
-                emit_mov_rcx_rax()
+                uint64 ff0 = 0
+                unsafe { *(arg_float_flags as uint64) -> ff0 }
+                if ff0 != 0 {
+                    emit_load_xmmN_f64(0, arg_slots_base + win_stack)
+                } else {
+                    emit_load_rax_from_stack(arg_slots_base + win_stack)
+                    emit_mov_rcx_rax()
+                }
             }
         } else {
             // SysV calling convention: separate int/float register allocation
@@ -5630,12 +5693,24 @@ fn gen_expr(uint64 node) {
         uint64 fixup_off = out_len
         emit_u32_le(0)
 
-        // Clean up overflow args from stack
+        // Clean up overflow args from stack (SysV)
         if stack_args > 0 {
             uint64 cleanup = stack_args * 8
             emit_byte(0x48); emit_byte(0x83); emit_byte(0xC4)
             uint8 cl8 = cleanup
             emit_byte(cl8) // add rsp, N
+        }
+
+        // Clean up Windows shadow space + overflow
+        if win_stack > 0 {
+            // add rsp, win_stack
+            if win_stack < 128 {
+                emit_byte(0x48); emit_byte(0x83); emit_byte(0xC4)
+                uint8 wc8 = win_stack; emit_byte(wc8)
+            } else {
+                emit_byte(0x48); emit_byte(0x81); emit_byte(0xC4)
+                emit_u32_le(win_stack)
+            }
         }
 
         // Set expr_is_float based on callee's return type
