@@ -2764,6 +2764,12 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     fnaddr_fixup_count = 0
     static_count = 0
     static_data_size = 0
+    struct_count = 0
+    struct_var_count = 0
+    enum_count = 0
+    type_alias_count = 0
+    arr_elem_count = 0
+    fn_ret_float_count = 0
 
     // Re-parse (need fresh AST; restore source+tokens to pristine state first)
     restore_src_and_tokens(source, size, src_snapshot, my_tokens, tok_bytes, tok_snapshot)
@@ -3711,19 +3717,7 @@ fn main() {
         }
     }
 
-    // WORKAROUND: Windows/macOS default to native format instead of fat
-    // binary. Single-target compilation (--emit=pe) works after the ABI fix
-    // (memcpy r10/r11, shadow space, overflow args), but compile_fat() still
-    // crashes on Windows — likely a remaining ABI issue in the multi-target
-    // compilation loop. Self-compile and single-target PE work fine.
-    // TODO: Debug compile_fat crash on Windows and remove this workaround.
-    uint64 host_os = get_target_os()
-    if arch_set == 0 && emit_set == 0 && host_os == 2 {
-        emit_mode = 2; emit_set = 1; target_os = 2
-    }
-    if arch_set == 0 && emit_set == 0 && host_os == 1 {
-        emit_mode = 1; emit_set = 1; target_os = 1
-    }
+
 
     // Auto-set target_os from emit_mode if not explicitly set
     if emit_mode == 1 && target_os == 0 { target_os = 1 }
