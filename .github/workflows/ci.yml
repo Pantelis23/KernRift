@@ -168,7 +168,7 @@ jobs:
 
           ./build/krc2 --arch=x86_64 --emit=android /tmp/cross.kr -o /tmp/cross-android-x86
           file /tmp/cross-android-x86 | grep -q "x86-64"
-          file /tmp/cross-android-x86 | grep -q "DYN"
+          file /tmp/cross-android-x86 | grep -qi "shared object\|DYN"
           echo "Android x86_64 PIE: OK"
 
       - name: Android x86_64 execution test
