@@ -1040,6 +1040,13 @@ fn main() { uint64 sum = 0; (uint64 a, uint64 b) = split(5); sum = a + b; exit(s
 run_test "tuple_reuse" 'fn step(uint64 x) -> uint64 { return (x + 1, x + 2) }
 fn main() { (uint64 p, uint64 q) = step(10); (uint64 r, uint64 s) = step(20); exit(p + q + r + s) }' 66
 
+# --- 3-tuple return and destructure ---
+run_test "tuple3_basic" 'fn triple() -> u64 { return (10, 20, 30) }
+fn main() { (u64 a, u64 b, u64 c) = triple(); exit(a + b + c) }' 60
+
+run_test "tuple3_values" 'fn split3(u64 x) -> u64 { return (x, x + 1, x + 2) }
+fn main() { (u64 a, u64 b, u64 c) = split3(5); exit(c) }' 7
+
 # --- asm { } I/O constraints ---
 # x86_64-only asm constraint tests (rdtsc, shl are x86 instructions)
 if [ "$ARCH" = "x86_64" ] || [ "$ARCH" = "amd64" ]; then

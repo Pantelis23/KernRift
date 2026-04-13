@@ -502,6 +502,42 @@ fn parse_stmt() -> uint64 {
         uint32 k5 = tok_kind_at(p_tok_pos + 5)
         uint32 k6 = tok_kind_at(p_tok_pos + 6)
         uint32 k7 = tok_kind_at(p_tok_pos + 7)
+        uint32 k8 = tok_kind_at(p_tok_pos + 8)
+        uint32 k9 = tok_kind_at(p_tok_pos + 9)
+        uint32 k10 = tok_kind_at(p_tok_pos + 10)
+        // 3-tuple destructure: `(T1 a, T2 b, T3 c) = rhs_expr`
+        // Pattern: ( TYPE IDENT , TYPE IDENT , TYPE IDENT ) =
+        if is_type_keyword(k1) != 0 && k2 == 1 && k3 == 16
+           && is_type_keyword(k4) != 0 && k5 == 1 && k6 == 16
+           && is_type_keyword(k7) != 0 && k8 == 1 && k9 == 11 && k10 == 34 {
+            advance_tok()                   // (
+            uint64 type1_tok = advance_tok()
+            uint64 name1_tok = advance_tok()
+            advance_tok()                   // ,
+            uint64 type2_tok = advance_tok()
+            uint64 name2_tok = advance_tok()
+            advance_tok()                   // ,
+            uint64 type3_tok = advance_tok()
+            uint64 name3_tok = advance_tok()
+            advance_tok()                   // )
+            advance_tok()                   // =
+            uint64 rhs = parse_expr()
+            uint64 node = ast_alloc(47)     // TupleDestruct3
+            uint32 tt1 = type1_tok
+            uint32 nt1 = name1_tok
+            uint32 tt2 = type2_tok
+            uint32 nt2 = name2_tok
+            ast_set_data1(node, tt1)
+            ast_set_data2(node, nt1)
+            ast_set_data3(node, tt2)
+            ast_set_data4(node, nt2)
+            uint32 nt3 = name3_tok
+            ast_set_tok(node, nt3)
+            uint32 rc = rhs
+            ast_set_child(node, rc)
+            return node
+        }
+        // 2-tuple destructure: `(T1 a, T2 b) = rhs_expr`
         if is_type_keyword(k1) != 0 && k2 == 1 && k3 == 16
            && is_type_keyword(k4) != 0 && k5 == 1 && k6 == 11 && k7 == 34 {
             advance_tok()                   // (
@@ -586,6 +622,18 @@ fn parse_stmt() -> uint64 {
                 if cur_kind() == 16 {
                     advance_tok()  // consume ,
                     uint64 second = parse_expr()
+                    if cur_kind() == 16 {
+                        advance_tok()  // consume second ,
+                        uint64 third = parse_expr()
+                        expect(11)     // )
+                        uint32 e32 = first
+                        ast_set_child(node, e32)
+                        uint32 e32b = second
+                        ast_set_data3(node, e32b)
+                        uint32 e32c = third
+                        ast_set_data4(node, e32c)
+                        return node
+                    }
                     expect(11)     // )
                     uint32 e32 = first
                     ast_set_child(node, e32)

@@ -869,7 +869,7 @@ fn sema_check_stmt(uint64 node) {
         return
     }
 
-    // Return: child=first_expr, data3=second_expr (for 2-tuple returns)
+    // Return: child=first_expr, data3=second_expr, data4=third_expr (for 2/3-tuple returns)
     if kind == 12 {
         uint32 expr = ast_child(node)
         uint64 wexpr = expr
@@ -877,6 +877,9 @@ fn sema_check_stmt(uint64 node) {
         uint32 second = ast_data3(node)
         uint64 wsecond = second
         if wsecond != 0 { sema_check_expr(wsecond) }
+        uint32 third = ast_data4(node)
+        uint64 wthird = third
+        if wthird != 0 { sema_check_expr(wthird) }
         return
     }
 
@@ -886,6 +889,14 @@ fn sema_check_stmt(uint64 node) {
         uint32 rhs = ast_child(node)
         uint64 wrhs = rhs
         if wrhs != 0 { sema_check_expr(wrhs) }
+        return
+    }
+
+    // TupleDestruct3: (T1 a, T2 b, T3 c) = rhs_expr — same as 2-tuple
+    if kind == 47 {
+        uint32 rhs3 = ast_child(node)
+        uint64 wrhs3 = rhs3
+        if wrhs3 != 0 { sema_check_expr(wrhs3) }
         return
     }
 

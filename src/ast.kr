@@ -68,6 +68,11 @@ enum AstKind {
     AsmConstraint = 45
 
     FloatLitNode = 46    // data1=tok_idx
+
+    // 3-tuple destructuring assignment: `(T1 a, T2 b, T3 c) = rhs_expr`
+    // data1=type1_tok, data2=name1_tok, data3=type2_tok, data4=name2_tok
+    // tok_idx=name3_tok, child=rhs_expr
+    TupleDestruct3 = 47
 }
 
 // ---------------------------------------------------------------------------

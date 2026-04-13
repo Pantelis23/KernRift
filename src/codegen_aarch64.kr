@@ -3484,7 +3484,22 @@ fn gen_stmt_a64(uint64 node) {
         uint64 wec = expr_child
         uint32 second_idx_r = ast_data3(node)
         uint64 wsi_r = second_idx_r
-        if wsi_r != 0 {
+        uint32 third_idx_r = ast_data4(node)
+        uint64 wti_r = third_idx_r
+        if wti_r != 0 && wsi_r != 0 {
+            // 3-tuple return: first → x0, second → x1, third → x2
+            gen_expr_a64(wec)
+            emit_a64_str(0, 31, a64_var_base + temp_slot_0)
+            gen_expr_a64(wsi_r)
+            emit_a64_str(0, 31, a64_var_base + temp_slot_1)
+            gen_expr_a64(wti_r)
+            emit_a64(0xAA0003E2)          // mov x2, x0  (ORR x2, xzr, x0)
+            // Reload second → x1
+            emit_a64_ldr(0, 31, a64_var_base + temp_slot_1)
+            emit_a64(0xAA0003E1)          // mov x1, x0  (ORR x1, xzr, x0)
+            // Reload first → x0
+            emit_a64_ldr(0, 31, a64_var_base + temp_slot_0)
+        } else if wsi_r != 0 {
             // 2-tuple return: evaluate first into x0, stash in temp_slot_0,
             // evaluate second into x0, move to x1, reload first into x0.
             // On AAPCS64 x1 is a caller-saved arg/return reg so it flows
@@ -3521,6 +3536,28 @@ fn gen_stmt_a64(uint64 node) {
             // Store x1 (second) first so the x0 caching isn't needed;
             // then store x0 (first) into slot 1.
             emit_a64_str(1, 31, a64_var_base + off2)
+            emit_a64_store_x0(off1)
+        }
+        return
+    }
+
+    // TupleDestruct3: (T1 a, T2 b, T3 c) = rhs_expr
+    if kind == 47 {
+        uint32 name1_tok = ast_data2(node)
+        uint32 name2_tok = ast_data4(node)
+        uint32 name3_tok = ast_tok(node)
+        uint64 off1 = var_declare(name1_tok)
+        uint64 off2 = var_declare(name2_tok)
+        uint64 off3 = var_declare(name3_tok)
+        uint32 rhs = ast_child(node)
+        uint64 wrhs = rhs
+        if wrhs != 0 {
+            gen_expr_a64(wrhs)
+            // Store x2 (third) → slot3
+            emit_a64_str(2, 31, a64_var_base + off3)
+            // Store x1 (second) → slot2
+            emit_a64_str(1, 31, a64_var_base + off2)
+            // Store x0 (first) → slot1
             emit_a64_store_x0(off1)
         }
         return

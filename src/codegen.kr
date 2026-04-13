@@ -6162,7 +6162,24 @@ fn gen_stmt(uint64 node) {
         uint64 wec = expr_child
         uint32 second_idx = ast_data3(node)
         uint64 wsi = second_idx
-        if wsi != 0 {
+        uint32 third_idx = ast_data4(node)
+        uint64 wti = third_idx
+        if wti != 0 && wsi != 0 {
+            // 3-tuple return: first → rax, second → rdx, third → r8
+            gen_expr(wec)
+            emit_store_rax_to_stack(temp_slot_0)
+            gen_expr(wsi)
+            emit_store_rax_to_stack(temp_slot_1)
+            gen_expr(wti)
+            // mov r8, rax: 49 89 C0
+            emit_byte(0x49); emit_byte(0x89); emit_byte(0xC0)
+            // Reload second → rdx
+            emit_load_rax_from_stack(temp_slot_1)
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC2)  // mov rdx, rax
+            // Reload first → rax
+            rax_cache = 0
+            emit_load_rax_from_stack(temp_slot_0)
+        } else if wsi != 0 {
             // 2-tuple return: evaluate first into rax, stash in temp_slot_0
             // (using push/pop would shift rsp and break every cached
             // [rsp+N] offset), evaluate second into rax, move to rdx,
@@ -6202,6 +6219,26 @@ fn gen_stmt(uint64 node) {
         uint64 wrhs = rhs
         if wrhs != 0 {
             gen_expr(wrhs)
+            emit_store_rdx_to_stack(off2)
+            emit_store_rax_to_stack(off1)
+        }
+        return
+    }
+
+    // TupleDestruct3: (T1 a, T2 b, T3 c) = rhs_expr
+    if kind == 47 {
+        uint32 name1_tok = ast_data2(node)
+        uint32 name2_tok = ast_data4(node)
+        uint32 name3_tok = ast_tok(node)
+        uint64 off1 = var_declare(name1_tok)
+        uint64 off2 = var_declare(name2_tok)
+        uint64 off3 = var_declare(name3_tok)
+        uint32 rhs = ast_child(node)
+        uint64 wrhs = rhs
+        if wrhs != 0 {
+            gen_expr(wrhs)
+            // Store r8 → slot3
+            emit_mov_reg_to_stack(8, off3)
             emit_store_rdx_to_stack(off2)
             emit_store_rax_to_stack(off1)
         }
@@ -7549,12 +7586,21 @@ fn dce_scan_node(uint64 node) {
         uint64 wpv = ps_val
         if wpv != 0 { dce_scan_node(wpv) }
     }
-    // Return: data3=second_expr (2-tuple returns) — child is first expr
-    // and is already covered by the generic recurse above.
+    // Return: data3=second_expr, data4=third_expr (2/3-tuple returns) —
+    // child is first expr and is already covered by the generic recurse above.
     if kind == 12 {
         uint32 ret_second = ast_data3(node)
         uint64 wrs = ret_second
         if wrs != 0 { dce_scan_node(wrs) }
+        uint32 ret_third = ast_data4(node)
+        uint64 wrt = ret_third
+        if wrt != 0 { dce_scan_node(wrt) }
+    }
+    // TupleDestruct3: child=rhs_expr — same as TupleDestruct (kind==44)
+    if kind == 47 {
+        uint32 td3_rhs = ast_child(node)
+        uint64 wtd3 = td3_rhs
+        if wtd3 != 0 { dce_scan_node(wtd3) }
     }
 }
 
