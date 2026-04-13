@@ -4099,37 +4099,75 @@ fn gen_expr(uint64 node) {
             gen_expr(wa3)
             // rax = len, save to rcx
             emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
-            // Load dst → rdi
-            emit_load_rax_from_stack(temp_slot_0)
-            emit_mov_rdi_rax()
-            // Load src → rsi
-            emit_load_rax_from_stack(temp_slot_1)
-            emit_mov_rsi_rax()
-            // loop: test rcx, rcx
-            uint64 mc_loop = out_len
-            emit_byte(0x48); emit_byte(0x85); emit_byte(0xC9)
-            // jz done (near jump, 4-byte displacement)
-            emit_byte(0x0F); emit_byte(0x84)
-            uint64 mc_jz = out_len
-            emit_u32_le(0)
-            // movzx eax, byte [rsi]
-            emit_byte(0x0F); emit_byte(0xB6); emit_byte(0x06)
-            // mov [rdi], al
-            emit_byte(0x88); emit_byte(0x07)
-            // inc rsi
-            emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC6)
-            // inc rdi
-            emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC7)
-            // dec rcx
-            emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC9)
-            // jmp loop (near backward)
-            emit_byte(0xE9)
-            uint64 mc_back = mc_loop - out_len - 4
-            emit_u32_le(mc_back)
-            // done:
-            uint64 mc_done = out_len
-            uint64 mc_done_disp = mc_done - mc_jz - 4
-            patch_u32(mc_jz, mc_done_disp)
+            if target_os == 2 {
+                // Windows: use r10 (dst) and r11 (src) — rdi/rsi are callee-saved
+                // Load dst → r10
+                emit_load_rax_from_stack(temp_slot_0)
+                // mov r10, rax  (49 89 C2)
+                emit_byte(0x49); emit_byte(0x89); emit_byte(0xC2)
+                // Load src → r11
+                emit_load_rax_from_stack(temp_slot_1)
+                // mov r11, rax  (49 89 C3)
+                emit_byte(0x49); emit_byte(0x89); emit_byte(0xC3)
+                // loop: test rcx, rcx
+                uint64 mc_loop = out_len
+                emit_byte(0x48); emit_byte(0x85); emit_byte(0xC9)
+                // jz done (near jump, 4-byte displacement)
+                emit_byte(0x0F); emit_byte(0x84)
+                uint64 mc_jz = out_len
+                emit_u32_le(0)
+                // movzx eax, byte [r11]  (41 0F B6 03)
+                emit_byte(0x41); emit_byte(0x0F); emit_byte(0xB6); emit_byte(0x03)
+                // mov [r10], al  (41 88 02)
+                emit_byte(0x41); emit_byte(0x88); emit_byte(0x02)
+                // inc r11  (49 FF C3)
+                emit_byte(0x49); emit_byte(0xFF); emit_byte(0xC3)
+                // inc r10  (49 FF C2)
+                emit_byte(0x49); emit_byte(0xFF); emit_byte(0xC2)
+                // dec rcx
+                emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC9)
+                // jmp loop (near backward)
+                emit_byte(0xE9)
+                uint64 mc_back = mc_loop - out_len - 4
+                emit_u32_le(mc_back)
+                // done:
+                uint64 mc_done = out_len
+                uint64 mc_done_disp = mc_done - mc_jz - 4
+                patch_u32(mc_jz, mc_done_disp)
+            } else {
+                // Linux/macOS: use rdi (dst) and rsi (src)
+                // Load dst → rdi
+                emit_load_rax_from_stack(temp_slot_0)
+                emit_mov_rdi_rax()
+                // Load src → rsi
+                emit_load_rax_from_stack(temp_slot_1)
+                emit_mov_rsi_rax()
+                // loop: test rcx, rcx
+                uint64 mc_loop = out_len
+                emit_byte(0x48); emit_byte(0x85); emit_byte(0xC9)
+                // jz done (near jump, 4-byte displacement)
+                emit_byte(0x0F); emit_byte(0x84)
+                uint64 mc_jz = out_len
+                emit_u32_le(0)
+                // movzx eax, byte [rsi]
+                emit_byte(0x0F); emit_byte(0xB6); emit_byte(0x06)
+                // mov [rdi], al
+                emit_byte(0x88); emit_byte(0x07)
+                // inc rsi
+                emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC6)
+                // inc rdi
+                emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC7)
+                // dec rcx
+                emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC9)
+                // jmp loop (near backward)
+                emit_byte(0xE9)
+                uint64 mc_back = mc_loop - out_len - 4
+                emit_u32_le(mc_back)
+                // done:
+                uint64 mc_done = out_len
+                uint64 mc_done_disp = mc_done - mc_jz - 4
+                patch_u32(mc_jz, mc_done_disp)
+            }
             // Return dst
             emit_load_rax_from_stack(temp_slot_0)
             return
@@ -4150,33 +4188,66 @@ fn gen_expr(uint64 node) {
             gen_expr(wa3)
             // rax = len, save to rcx
             emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
-            // Load dst → rdi
-            emit_load_rax_from_stack(temp_slot_0)
-            emit_mov_rdi_rax()
-            // Load val → rdx (just need dl)
-            emit_load_rax_from_stack(temp_slot_1)
-            emit_mov_rdx_rax()
-            // loop: test rcx, rcx
-            uint64 ms_loop = out_len
-            emit_byte(0x48); emit_byte(0x85); emit_byte(0xC9)
-            // jz done (near jump, 4-byte displacement)
-            emit_byte(0x0F); emit_byte(0x84)
-            uint64 ms_jz = out_len
-            emit_u32_le(0)
-            // mov [rdi], dl
-            emit_byte(0x88); emit_byte(0x17)
-            // inc rdi
-            emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC7)
-            // dec rcx
-            emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC9)
-            // jmp loop (near backward)
-            emit_byte(0xE9)
-            uint64 ms_back = ms_loop - out_len - 4
-            emit_u32_le(ms_back)
-            // done:
-            uint64 ms_done = out_len
-            uint64 ms_done_disp = ms_done - ms_jz - 4
-            patch_u32(ms_jz, ms_done_disp)
+            if target_os == 2 {
+                // Windows: use r10 (dst) — rdi is callee-saved
+                // Load dst → r10
+                emit_load_rax_from_stack(temp_slot_0)
+                // mov r10, rax  (49 89 C2)
+                emit_byte(0x49); emit_byte(0x89); emit_byte(0xC2)
+                // Load val → rdx (just need dl)
+                emit_load_rax_from_stack(temp_slot_1)
+                emit_mov_rdx_rax()
+                // loop: test rcx, rcx
+                uint64 ms_loop = out_len
+                emit_byte(0x48); emit_byte(0x85); emit_byte(0xC9)
+                // jz done (near jump, 4-byte displacement)
+                emit_byte(0x0F); emit_byte(0x84)
+                uint64 ms_jz = out_len
+                emit_u32_le(0)
+                // mov [r10], dl  (41 88 12)
+                emit_byte(0x41); emit_byte(0x88); emit_byte(0x12)
+                // inc r10  (49 FF C2)
+                emit_byte(0x49); emit_byte(0xFF); emit_byte(0xC2)
+                // dec rcx
+                emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC9)
+                // jmp loop (near backward)
+                emit_byte(0xE9)
+                uint64 ms_back = ms_loop - out_len - 4
+                emit_u32_le(ms_back)
+                // done:
+                uint64 ms_done = out_len
+                uint64 ms_done_disp = ms_done - ms_jz - 4
+                patch_u32(ms_jz, ms_done_disp)
+            } else {
+                // Linux/macOS: use rdi (dst)
+                // Load dst → rdi
+                emit_load_rax_from_stack(temp_slot_0)
+                emit_mov_rdi_rax()
+                // Load val → rdx (just need dl)
+                emit_load_rax_from_stack(temp_slot_1)
+                emit_mov_rdx_rax()
+                // loop: test rcx, rcx
+                uint64 ms_loop = out_len
+                emit_byte(0x48); emit_byte(0x85); emit_byte(0xC9)
+                // jz done (near jump, 4-byte displacement)
+                emit_byte(0x0F); emit_byte(0x84)
+                uint64 ms_jz = out_len
+                emit_u32_le(0)
+                // mov [rdi], dl
+                emit_byte(0x88); emit_byte(0x17)
+                // inc rdi
+                emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC7)
+                // dec rcx
+                emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC9)
+                // jmp loop (near backward)
+                emit_byte(0xE9)
+                uint64 ms_back = ms_loop - out_len - 4
+                emit_u32_le(ms_back)
+                // done:
+                uint64 ms_done = out_len
+                uint64 ms_done_disp = ms_done - ms_jz - 4
+                patch_u32(ms_jz, ms_done_disp)
+            }
             // Return dst
             emit_load_rax_from_stack(temp_slot_0)
             return
