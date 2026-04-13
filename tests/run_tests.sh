@@ -1878,6 +1878,40 @@ fn main() {
 }' 96
 
 echo ""
+echo "--- allocators (pool) ---"
+run_test "pool_basic" 'import "std/alloc.kr"
+fn main() {
+    u64 p = pool_new(64, 8)
+    u64 o1 = pool_alloc(p)
+    store64(o1, 99)
+    u64 v = load64(o1)
+    pool_free(p, o1)
+    pool_destroy(p)
+    exit(v)
+}' 99
+
+run_test "pool_reuse" 'import "std/alloc.kr"
+fn main() {
+    u64 p = pool_new(16, 4)
+    u64 a = pool_alloc(p)
+    u64 b = pool_alloc(p)
+    pool_free(p, a)
+    u64 c = pool_alloc(p)
+    if a == c { exit(1) } exit(0)
+}' 1
+
+run_test "pool_stats" 'import "std/alloc.kr"
+fn main() {
+    u64 p = pool_new(32, 10)
+    pool_alloc(p)
+    pool_alloc(p)
+    pool_alloc(p)
+    (u64 total, u64 used) = pool_stats(p)
+    pool_destroy(p)
+    exit(used)
+}' 3
+
+echo ""
 echo "--- extern fn (libc linking) ---"
 # These tests link against the HOST gcc's libc. On cross-compile runs
 # (arm64 host but KRC_FLAGS=--arch=x86_64 for example) the object file

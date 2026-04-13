@@ -68,3 +68,122 @@ fn arena_stats(u64 arena) -> u64 {
     u64 live = load64(arena + 8)
     return (total, live)
 }
+
+// Pool: fixed-size slot allocator with free list, double-free detection, poison
+
+fn pool_new(u64 obj_size, u64 count) -> u64 {
+    // Round obj_size to 8-byte alignment, minimum 16 (need 8 for next-ptr + 8 for canary)
+    u64 aligned = (obj_size + 7) & 0xFFFFFFFFFFFFFFF8
+    if aligned < 16 { aligned = 16 }
+    u64 data_size = aligned * count
+    u64 total = 56 + data_size + 4096
+    u64 base = alloc(total)
+    // Header
+    store64(base, aligned)            // obj_size
+    store64(base + 8, count)          // capacity
+    store64(base + 24, 0)             // used_count
+    store64(base + 32, 0)             // alloc_count
+    store64(base + 40, 0)             // free_count
+    store64(base + 48, 1)             // guard
+
+    // Guard page
+    u64 guard_addr = base + 56 + data_size
+    syscall_raw(10, guard_addr, 4096, 0, 0, 0, 0)
+
+    // Initialize free list: chain all slots
+    u64 slot_base = base + 56
+    u64 i = 0
+    while i < count {
+        u64 slot = slot_base + i * aligned
+        if i + 1 < count {
+            u64 next_slot = slot_base + (i + 1) * aligned
+            store64(slot, next_slot)        // next pointer
+        } else {
+            store64(slot, 0)                // last slot: next = NULL
+        }
+        store64(slot + 8, 0)               // canary = 0 (clean)
+        i = i + 1
+    }
+    store64(base + 16, slot_base)     // free_head = first slot
+
+    return base
+}
+
+fn pool_alloc(u64 pool) -> u64 {
+    u64 head = load64(pool + 16)
+    if head == 0 {
+        write(2, "pool: out of slots\n", 19)
+        exit(1)
+    }
+    // Pop from free list
+    u64 next = load64(head)
+    store64(pool + 16, next)           // free_head = next
+
+    // Clear poison/canary (zero the slot)
+    u64 obj_size = load64(pool)
+    u64 j = 0
+    while j < obj_size {
+        store8(head + j, 0)
+        j = j + 1
+    }
+
+    // Update stats
+    u64 used = load64(pool + 24)
+    store64(pool + 24, used + 1)
+    u64 ac = load64(pool + 32)
+    store64(pool + 32, ac + 1)
+
+    return head
+}
+
+fn pool_free(u64 pool, u64 ptr) {
+    // Double-free detection: check canary at [ptr+8]
+    u64 canary = load64(ptr + 8)
+    if canary == 0xDEADBEEFDEADBEEF {
+        write(2, "pool: double-free detected\n", 27)
+        exit(1)
+    }
+
+    // Poison the slot (except first 8 bytes used for free-list next pointer)
+    u64 obj_size = load64(pool)
+    u64 j = 8
+    while j < obj_size {
+        store8(ptr + j, 0xEF)   // Fill with 0xEF pattern (part of 0xDEADBEEF)
+        j = j + 1
+    }
+    // Write poison canary at [ptr+8]
+    store64(ptr + 8, 0xDEADBEEFDEADBEEF)
+
+    // Push to free list head
+    u64 old_head = load64(pool + 16)
+    store64(ptr, old_head)
+    store64(pool + 16, ptr)
+
+    // Update stats
+    u64 used = load64(pool + 24)
+    store64(pool + 24, used - 1)
+    u64 fc = load64(pool + 40)
+    store64(pool + 40, fc + 1)
+}
+
+fn pool_destroy(u64 pool) {
+    u64 used = load64(pool + 24)
+    if used > 0 {
+        u64 obj_size = load64(pool)
+        u64 leaked = used * obj_size
+        write(2, "pool: ", 6)
+        u64 s1 = fmt_dec(used)
+        write(2, s1, str_len(s1))
+        write(2, " slots leaked (", 15)
+        u64 s2 = fmt_dec(leaked)
+        write(2, s2, str_len(s2))
+        write(2, " bytes)\n", 8)
+    }
+    dealloc(pool)
+}
+
+fn pool_stats(u64 pool) -> u64 {
+    u64 total = load64(pool + 8)    // capacity
+    u64 used = load64(pool + 24)    // used_count
+    return (total, used)
+}
