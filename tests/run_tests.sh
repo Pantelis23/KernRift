@@ -1912,6 +1912,47 @@ fn main() {
 }' 3
 
 echo ""
+echo "--- allocators (heap) ---"
+run_test "heap_basic" 'import "std/alloc.kr"
+fn main() {
+    u64 h = heap_new(4096)
+    u64 p = heap_alloc(h, 64)
+    store64(p, 77)
+    u64 v = load64(p)
+    heap_free(h, p)
+    heap_destroy(h)
+    exit(v)
+}' 77
+
+run_test "heap_multi" 'import "std/alloc.kr"
+fn main() {
+    u64 h = heap_new(4096)
+    u64 a = heap_alloc(h, 32)
+    u64 b = heap_alloc(h, 64)
+    u64 c = heap_alloc(h, 16)
+    store64(a, 10)
+    store64(b, 20)
+    store64(c, 30)
+    heap_free(h, b)
+    heap_free(h, a)
+    heap_free(h, c)
+    heap_destroy(h)
+    exit(0)
+}' 0
+
+run_test "heap_stats" 'import "std/alloc.kr"
+fn main() {
+    u64 h = heap_new(4096)
+    u64 a = heap_alloc(h, 32)
+    u64 b = heap_alloc(h, 64)
+    heap_free(h, a)
+    (u64 total, u64 freed, u64 live) = heap_stats(h)
+    heap_free(h, b)
+    heap_destroy(h)
+    exit(total)
+}' 96
+
+echo ""
 echo "--- extern fn (libc linking) ---"
 # These tests link against the HOST gcc's libc. On cross-compile runs
 # (arm64 host but KRC_FLAGS=--arch=x86_64 for example) the object file
