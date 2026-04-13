@@ -2567,26 +2567,8 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
 // Restore source and token buffers from snapshot before a re-parse in compile_fat.
 // The for-loop parser (and others) destructively mutate both; this rolls them back.
 fn restore_src_and_tokens(uint64 source, uint64 size, uint64 src_snap, uint64 tokens, uint64 tok_bytes, uint64 tok_snap) {
-    uint64 i = 0
-    while i < size {
-        uint64 sp = src_snap + i
-        uint64 dp = source + i
-        uint64 b = 0
-        unsafe { *(sp as uint8) -> b }
-        uint8 bb = b
-        unsafe { *(dp as uint8) = bb }
-        i = i + 1
-    }
-    uint64 j = 0
-    while j < tok_bytes {
-        uint64 sp2 = tok_snap + j
-        uint64 dp2 = tokens + j
-        uint64 b2 = 0
-        unsafe { *(sp2 as uint8) -> b2 }
-        uint8 bb2 = b2
-        unsafe { *(dp2 as uint8) = bb2 }
-        j = j + 1
-    }
+    memcpy(source, src_snap, size)
+    memcpy(tokens, tok_snap, tok_bytes)
 }
 
 fn slot_load_u64(uint64 p) -> uint64 {
@@ -3729,9 +3711,12 @@ fn main() {
         }
     }
 
-    // Host-native defaults: if the user didn't pass --arch/--emit,
-    // produce the host platform's native format so `krc hello.kr` or
-    // `krc hello.kr -o hello.exe` just works.
+    // WORKAROUND: Windows/macOS default to native format instead of fat
+    // binary. compile_fat() crashes on Windows due to a known codegen bug
+    // in the Windows x64 calling convention (memcpy builtin clobbers
+    // callee-saved rdi/rsi, and 6-parameter functions mishandle args 5-6
+    // on the stack). This will be fixed in the ABI overhaul (F2).
+    // Linux defaults to fat binary as intended.
     uint64 host_os = get_target_os()
     if arch_set == 0 && emit_set == 0 && host_os == 2 {
         emit_mode = 2; emit_set = 1; target_os = 2
