@@ -2024,6 +2024,18 @@ else
     echo "  extern_libc_strlen_write: SKIP (gcc not available)"
 fi
 
+# --- sizeof ---
+run_test "sizeof_u8" 'fn main() { exit(sizeof(uint8)) }' 1
+run_test "sizeof_u64" 'fn main() { exit(sizeof(uint64)) }' 8
+run_test "sizeof_f32" 'fn main() { exit(sizeof(f32)) }' 4
+run_test "sizeof_f64" 'fn main() { exit(sizeof(f64)) }' 8
+run_test "sizeof_struct" 'struct P { uint64 x; uint64 y }
+fn main() { exit(sizeof(P)) }' 16
+run_test "sizeof_struct_mixed" 'struct S { uint8 a; uint64 b }
+fn main() { exit(sizeof(S)) }' 9
+run_test "sizeof_alloc" 'struct P { uint64 x; uint64 y }
+fn main() { uint64 p = alloc(sizeof(P)); dealloc(p); exit(0) }' 0
+
 # --- Summary ---
 echo ""
 echo "=== Results: $PASS/$TOTAL passed, $FAIL failed ==="

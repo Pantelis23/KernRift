@@ -626,6 +626,15 @@ fn gen_expr_a64(uint64 node) {
         return
     }
 
+    // sizeof literal → mov x0, compile-time size
+    if kind == 49 {
+        uint32 sz_lo = ast_data1(node)
+        uint64 val = sz_lo
+        emit_a64_mov_imm(0, val)
+        expr_is_float_a64 = 0
+        return
+    }
+
     // Integer literal
     if kind == 30 {
         uint32 tok = ast_data1(node)

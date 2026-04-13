@@ -73,6 +73,8 @@ enum AstKind {
     // data1=type1_tok, data2=name1_tok, data3=type2_tok, data4=name2_tok
     // tok_idx=name3_tok, child=rhs_expr
     TupleDestruct3 = 47
+    StructLit = 48       // (reserved for struct literals)
+    SizeofLit = 49       // data1=resolved_size (low 32 bits)
 }
 
 // ---------------------------------------------------------------------------

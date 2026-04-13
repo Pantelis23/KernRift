@@ -168,6 +168,35 @@ fn parse_primary() -> uint64 {
         return node
     }
 
+    // sizeof(Type) or sizeof(StructName) → compile-time integer
+    if kind == 97 {
+        uint64 sz_tok = advance_tok()
+        expect(10)
+        uint64 arg_tok = advance_tok()
+        uint32 arg_kind = tok_kind_at(arg_tok)
+        expect(11)
+        uint64 size = 8
+        if arg_kind == 80 || arg_kind == 84 { size = 1 }
+        else if arg_kind == 81 || arg_kind == 85 { size = 2 }
+        else if arg_kind == 82 || arg_kind == 86 { size = 4 }
+        else if arg_kind == 83 || arg_kind == 87 { size = 8 }
+        else if arg_kind == 94 { size = 2 }
+        else if arg_kind == 95 { size = 4 }
+        else if arg_kind == 96 { size = 8 }
+        else {
+            uint64 si = struct_lookup(arg_tok)
+            if si != 0xFFFFFFFF {
+                size = struct_total_size(si)
+            }
+        }
+        uint64 node = ast_alloc(49)
+        uint32 sz32 = size
+        ast_set_data1(node, sz32)
+        uint32 st32 = sz_tok
+        ast_set_tok(node, st32)
+        return node
+    }
+
     // Integer literal
     if kind == 2 {
         uint64 tok = advance_tok()

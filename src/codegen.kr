@@ -1986,6 +1986,15 @@ fn gen_expr(uint64 node) {
         return
     }
 
+    // sizeof literal → mov rax, compile-time size
+    if kind == 49 {
+        uint32 sz_lo = ast_data1(node)
+        uint64 val = sz_lo
+        emit_mov_rax_imm(val)
+        expr_is_float = 0
+        return
+    }
+
     // Integer literal → mov rax, value
     if kind == 30 {
         uint32 tok = ast_data1(node)
