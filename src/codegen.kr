@@ -7189,6 +7189,23 @@ fn gen_function(uint64 fn_node) {
                         emit_byte(0x4C); emit_byte(0x89); emit_byte(0x4C)
                         emit_byte(0x24); emit_byte(po8)
                     }
+                    if pidx >= 4 {
+                        // Stack-passed arg (Windows overflow): emit mov rax, [rsp+PLACEHOLDER]
+                        // Offset will be patched when frame_size is known
+                        emit_byte(0x48); emit_byte(0x8B); emit_byte(0x84)
+                        emit_byte(0x24)
+                        uint64 patch_loc = out_len
+                        emit_u32_le(0) // placeholder — patched later
+                        // Save patch location for this overflow arg
+                        uint64 opi = pidx - 4
+                        uint64 op_entry = overflow_patches + opi * 8
+                        uint32 pl32 = patch_loc
+                        unsafe { *(op_entry as uint32) = pl32 }
+                        overflow_patch_count = opi + 1
+                        // mov [rsp+off], rax
+                        emit_byte(0x48); emit_byte(0x89); emit_byte(0x44)
+                        emit_byte(0x24); emit_byte(po8)
+                    }
                     int_pidx = int_pidx + 1
                 } else {
                     // SysV integer param: use int_pidx for register selection
@@ -7401,6 +7418,9 @@ fn gen_function(uint64 fn_node) {
             unsafe { *(op_e as uint32) -> ploc }
             uint64 wploc = ploc
             uint64 soff = var_frame_size + 16 + oi * 8
+            if target_os == 2 {
+                soff = var_frame_size + 16 + 32 + oi * 8
+            }
             patch_u32(wploc, soff)
             oi = oi + 1
         }
