@@ -3712,11 +3712,11 @@ fn main() {
     }
 
     // WORKAROUND: Windows/macOS default to native format instead of fat
-    // binary. compile_fat() crashes on Windows due to a known codegen bug
-    // in the Windows x64 calling convention (memcpy builtin clobbers
-    // callee-saved rdi/rsi, and 6-parameter functions mishandle args 5-6
-    // on the stack). This will be fixed in the ABI overhaul (F2).
-    // Linux defaults to fat binary as intended.
+    // binary. Single-target compilation (--emit=pe) works after the ABI fix
+    // (memcpy r10/r11, shadow space, overflow args), but compile_fat() still
+    // crashes on Windows — likely a remaining ABI issue in the multi-target
+    // compilation loop. Self-compile and single-target PE work fine.
+    // TODO: Debug compile_fat crash on Windows and remove this workaround.
     uint64 host_os = get_target_os()
     if arch_set == 0 && emit_set == 0 && host_os == 2 {
         emit_mode = 2; emit_set = 1; target_os = 2
