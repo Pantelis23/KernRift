@@ -1781,6 +1781,40 @@ fn emit_win_store_iat(uint64 slot) {
     win_fixup_add(patch_off, slot)
 }
 
+// ABI helper: which register holds integer arg N?
+// Returns register code: 0=rax, 1=rcx, 2=rdx, 3=rbx, 6=rsi, 7=rdi, 8=r8, 9=r9
+// Returns 0xFFFF if the arg goes on the stack.
+fn abi_arg_register(uint64 idx, uint64 os) -> uint64 {
+    if os == 2 {
+        if idx == 0 { return 1 }
+        if idx == 1 { return 2 }
+        if idx == 2 { return 8 }
+        if idx == 3 { return 9 }
+        return 0xFFFF
+    }
+    if idx == 0 { return 7 }
+    if idx == 1 { return 6 }
+    if idx == 2 { return 2 }
+    if idx == 3 { return 1 }
+    if idx == 4 { return 8 }
+    if idx == 5 { return 9 }
+    return 0xFFFF
+}
+
+fn abi_reg_count(uint64 os) -> uint64 {
+    if os == 2 { return 4 }
+    return 6
+}
+
+// Stack offset for overflow arg idx, from callee's rsp after prologue.
+// frame_adjust = var_frame_size + 8 (push rbx)
+fn abi_overflow_offset(uint64 idx, uint64 os, uint64 frame_adjust) -> uint64 {
+    if os == 2 {
+        return frame_adjust + 8 + 32 + (idx - 4) * 8
+    }
+    return frame_adjust + 8 + (idx - 6) * 8
+}
+
 // Helper: add a null-terminated string to str_buf, return its offset
 fn resolver_add_str(uint64 s) -> uint64 {
     uint64 soff = str_len
