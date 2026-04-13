@@ -2036,6 +2036,25 @@ fn main() { exit(sizeof(S)) }' 9
 run_test "sizeof_alloc" 'struct P { uint64 x; uint64 y }
 fn main() { uint64 p = alloc(sizeof(P)); dealloc(p); exit(0) }' 0
 
+# --- Struct literals ---
+run_test "struct_literal_pos" 'struct P { uint64 x; uint64 y }
+fn main() {
+    P p = P { 10, 20 }
+    exit(p.x + p.y)
+}' 30
+
+run_test "struct_literal_named" 'struct P { uint64 x; uint64 y }
+fn main() {
+    P p = P { y: 20, x: 10 }
+    exit(p.x + p.y)
+}' 30
+
+run_test "struct_literal_u8" 'struct S { uint8 a; uint8 b }
+fn main() {
+    S s = S { 3, 4 }
+    exit(s.a + s.b)
+}' 7
+
 # --- Summary ---
 echo ""
 echo "=== Results: $PASS/$TOTAL passed, $FAIL failed ==="

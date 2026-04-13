@@ -31,6 +31,8 @@ static uint64 temp_slot_1 = 0
 
 // Float tracking: 0 = result in rax (integer), 1 = result in xmm0 (f64), 2 = result in xmm0 (f32)
 static uint64 expr_is_float = 0
+// Struct literal tracking: 0xFFFFFFFF = not a struct, otherwise struct index
+static uint64 expr_is_struct = 0xFFFFFFFF
 
 // Function table: maps function name → code offset in output
 // [name_tok_idx(4), code_offset(4)] × 256
@@ -2062,6 +2064,7 @@ fn emit_compare(uint64 op_tok_kind) {
 fn gen_expr(uint64 node) {
     // Invalidate rax cache — gen_expr will put a new value in rax
     rax_invalidate()
+    expr_is_struct = 0xFFFFFFFF
     uint32 kind = ast_kind(node)
 
     // Unary operator: !, -, ~
@@ -2096,6 +2099,99 @@ fn gen_expr(uint64 node) {
         uint32 sz_lo = ast_data1(node)
         uint64 val = sz_lo
         emit_mov_rax_imm(val)
+        expr_is_float = 0
+        return
+    }
+
+    // StructLit — struct literal expression
+    if kind == 48 {
+        uint32 sname_tok = ast_data1(node)
+        uint64 wsn = sname_tok
+        uint64 si = struct_lookup(wsn)
+        uint64 ssize = struct_total_size(si)
+        // Allocate temp stack area for struct
+        uint64 slit_base = var_count * 8
+        uint64 slots_needed = (ssize + 7) / 8
+        var_count = var_count + slots_needed
+        var_frame_size = var_count * 8
+        uint64 srem = var_frame_size & 15
+        if srem != 0 { var_frame_size = var_frame_size + 16 - srem }
+
+        // Walk field expressions and store each
+        uint32 is_named = ast_data2(node)
+        uint64 wnamed = is_named
+        uint32 fchild = ast_child(node)
+        uint64 wfchild = fchild
+        uint64 fidx = 0
+        while wfchild != 0 {
+            gen_expr(wfchild)
+            // rax = field value
+            // Determine field offset and size
+            uint64 foff = 0
+            uint64 fsize = 8
+            if wnamed != 0 {
+                // Named: field name stored in tok_idx of the child expression
+                uint32 fname = ast_tok(wfchild)
+                uint64 wfn = fname
+                foff = struct_field_offset(si, wfn)
+                fsize = struct_field_size(si, wfn)
+            } else {
+                // Positional: use field index to get offset/size from struct table
+                uint64 fbase = struct_table + si * 272 + 16 + fidx * 16
+                uint64 foff_addr = fbase + 4
+                uint32 fo32 = 0
+                unsafe { *(foff_addr as uint32) -> fo32 }
+                foff = fo32
+                uint64 fs_addr = fbase + 8
+                uint32 fs32 = 0
+                unsafe { *(fs_addr as uint32) -> fs32 }
+                fsize = fs32
+            }
+            // Store rax to [rsp + slit_base + foff] with appropriate width
+            uint64 dest = slit_base + foff
+            if fsize == 8 {
+                emit_store_rax_to_stack(dest)
+            } else if fsize == 4 {
+                // mov [rsp+dest], eax
+                if dest < 128 {
+                    emit_byte(0x89); emit_byte(0x44); emit_byte(0x24)
+                    uint8 d8 = dest; emit_byte(d8)
+                } else {
+                    emit_byte(0x89); emit_byte(0x84); emit_byte(0x24)
+                    emit_u32_le(dest)
+                }
+            } else if fsize == 2 {
+                // mov [rsp+dest], ax
+                if dest < 128 {
+                    emit_byte(0x66); emit_byte(0x89); emit_byte(0x44)
+                    emit_byte(0x24); uint8 d8 = dest; emit_byte(d8)
+                } else {
+                    emit_byte(0x66); emit_byte(0x89); emit_byte(0x84)
+                    emit_byte(0x24); emit_u32_le(dest)
+                }
+            } else {
+                // mov [rsp+dest], al
+                if dest < 128 {
+                    emit_byte(0x88); emit_byte(0x44); emit_byte(0x24)
+                    uint8 d8 = dest; emit_byte(d8)
+                } else {
+                    emit_byte(0x88); emit_byte(0x84); emit_byte(0x24)
+                    emit_u32_le(dest)
+                }
+            }
+            fidx = fidx + 1
+            uint32 fnxt = ast_next(wfchild)
+            wfchild = fnxt
+        }
+        // Result: lea rax, [rsp + slit_base]
+        if slit_base < 128 {
+            emit_byte(0x48); emit_byte(0x8D); emit_byte(0x44)
+            emit_byte(0x24); uint8 sb8 = slit_base; emit_byte(sb8)
+        } else {
+            emit_byte(0x48); emit_byte(0x8D); emit_byte(0x84)
+            emit_byte(0x24); emit_u32_le(slit_base)
+        }
+        expr_is_struct = si
         expr_is_float = 0
         return
     }
