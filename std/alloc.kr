@@ -1,0 +1,70 @@
+// KernRift Standard Library — Allocators
+// Arena: bump allocator backed by mmap slab with optional guard page
+
+import "std/fmt.kr"
+
+fn arena_new(u64 capacity) -> u64 {
+    // Allocate slab: 40 (header) + capacity + 4096 (guard page)
+    u64 total = capacity + 40 + 4096
+    u64 base = alloc(total)
+    // base points to user region of alloc (after alloc's own 8-byte header)
+    // Store arena header
+    store64(base, capacity)       // [0]  capacity
+    store64(base + 8, 0)          // [8]  used = 0
+    store64(base + 16, 0)         // [16] alloc_count = 0
+    store64(base + 24, 0)         // [24] alloc_total = 0
+    store64(base + 32, 1)         // [32] guard = 1
+
+    // Set up guard page: mprotect the last 4096 bytes as PROT_NONE
+    // Only on Linux x86_64 for V1 (syscall_raw)
+    u64 guard_addr = base + 40 + capacity
+    // mprotect(addr, len, prot): Linux syscall 10
+    // prot = 0 (PROT_NONE)
+    syscall_raw(10, guard_addr, 4096, 0, 0, 0, 0)
+
+    return base
+}
+
+fn arena_alloc(u64 arena, u64 size) -> u64 {
+    // 8-byte align size
+    u64 aligned = (size + 7) & ~7
+    u64 capacity = load64(arena)
+    u64 used = load64(arena + 8)
+    if used + aligned > capacity {
+        write(2, "arena: out of memory\n", 21)
+        exit(1)
+    }
+    u64 ptr = arena + 40 + used
+    store64(arena + 8, used + aligned)       // update used
+    u64 count = load64(arena + 16)
+    store64(arena + 16, count + 1)           // update alloc_count
+    u64 total = load64(arena + 24)
+    store64(arena + 24, total + size)        // update alloc_total (original size)
+    return ptr
+}
+
+fn arena_reset(u64 arena) {
+    store64(arena + 8, 0)   // used = 0
+    // Don't reset alloc_count/alloc_total — they're cumulative stats
+}
+
+fn arena_destroy(u64 arena) {
+    u64 used = load64(arena + 8)
+    if used > 0 {
+        u64 count = load64(arena + 16)
+        write(2, "arena: ", 7)
+        u64 s1 = fmt_dec(used)
+        write(2, s1, str_len(s1))
+        write(2, " bytes still live at destroy (", 30)
+        u64 s2 = fmt_dec(count)
+        write(2, s2, str_len(s2))
+        write(2, " allocations)\n", 14)
+    }
+    dealloc(arena)
+}
+
+fn arena_stats(u64 arena) -> u64 {
+    u64 total = load64(arena + 24)
+    u64 live = load64(arena + 8)
+    return (total, live)
+}

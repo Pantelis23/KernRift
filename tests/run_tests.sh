@@ -1846,6 +1846,38 @@ run_test "alloc_header" 'fn main() { u64 p = alloc(64); store64(p, 42); u64 v = 
 run_test "dealloc_basic" 'fn main() { u64 p = alloc(64); store64(p, 99); dealloc(p); exit(0) }' 0
 
 echo ""
+echo "--- allocators (arena) ---"
+run_test "arena_basic" 'import "std/alloc.kr"
+fn main() {
+    u64 a = arena_new(4096)
+    u64 p1 = arena_alloc(a, 64)
+    store64(p1, 42)
+    u64 v = load64(p1)
+    arena_destroy(a)
+    exit(v)
+}' 42
+
+run_test "arena_reset" 'import "std/alloc.kr"
+fn main() {
+    u64 a = arena_new(4096)
+    u64 p1 = arena_alloc(a, 100)
+    arena_reset(a)
+    u64 p2 = arena_alloc(a, 100)
+    if p1 == p2 { exit(1) } exit(0)
+}' 1
+
+run_test "arena_stats" 'import "std/alloc.kr"
+fn main() {
+    u64 a = arena_new(4096)
+    arena_alloc(a, 32)
+    arena_alloc(a, 64)
+    (u64 total, u64 live) = arena_stats(a)
+    arena_reset(a)
+    arena_destroy(a)
+    exit(total)
+}' 96
+
+echo ""
 echo "--- extern fn (libc linking) ---"
 # These tests link against the HOST gcc's libc. On cross-compile runs
 # (arm64 host but KRC_FLAGS=--arch=x86_64 for example) the object file
