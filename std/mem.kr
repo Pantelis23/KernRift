@@ -30,26 +30,3 @@ fn memzero(u64 ptr, u64 len) {
     memset(ptr, 0, len)
 }
 
-// Simple bump allocator for arena-style allocation
-static u64 arena_buf = 0
-static u64 arena_pos = 0
-static u64 arena_cap = 0
-
-fn arena_init(u64 size) {
-    arena_buf = alloc(size)
-    arena_pos = 0
-    arena_cap = size
-}
-
-fn arena_alloc(u64 size) -> u64 {
-    // Align to 8 bytes
-    u64 aligned = (size + 7) & ~7
-    if arena_pos + aligned > arena_cap { return 0 }
-    u64 result = arena_buf + arena_pos
-    arena_pos = arena_pos + aligned
-    return result
-}
-
-fn arena_reset() {
-    arena_pos = 0
-}
