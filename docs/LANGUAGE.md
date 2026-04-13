@@ -27,15 +27,16 @@ something that doesn't work, it's a bug, not a typo in the docs.
 13. [Device blocks (MMIO)](#13-device-blocks-mmio)
 14. [Inline assembly](#14-inline-assembly)
 15. [Floating-point types](#15-floating-point-types)
-16. [Imports](#16-imports)
-17. [Built-in functions](#17-built-in-functions)
-18. [Annotations](#18-annotations)
-19. [Compiler CLI](#19-compiler-cli)
-20. [Living compiler](#20-living-compiler)
-21. [Language profiles (#lang)](#21-language-profiles-lang)
-22. [Freestanding mode](#22-freestanding-mode)
-23. [Extern functions](#23-extern-functions)
-24. [Binary formats](#24-binary-formats)
+16. [Allocators and memory management](#16-allocators-and-memory-management)
+17. [Imports](#17-imports)
+18. [Built-in functions](#18-built-in-functions)
+19. [Annotations](#19-annotations)
+20. [Compiler CLI](#20-compiler-cli)
+21. [Living compiler](#21-living-compiler)
+22. [Language profiles (#lang)](#22-language-profiles-lang)
+23. [Freestanding mode](#23-freestanding-mode)
+24. [Extern functions](#24-extern-functions)
+25. [Binary formats](#25-binary-formats)
 
 ---
 
@@ -928,7 +929,102 @@ fn lerp(f64 a, f64 b, f64 t) -> f64 {
 
 ---
 
-## 16. Imports
+## 16. Allocators and memory management
+
+```kr
+import "std/alloc.kr"
+```
+
+KernRift ships three allocators in the standard library. All are backed
+by `mmap`/`VirtualAlloc` with no libc dependency.
+
+### Low-level: `alloc` / `dealloc`
+
+`alloc(size)` maps a new region and stores an 8-byte size header before
+the returned pointer. `dealloc(ptr)` reads that header and calls
+`munmap` (Linux/macOS) or `VirtualFree` (Windows) to release the pages.
+Previous releases left `dealloc` as a no-op; it now frees for real.
+
+### Arena allocator
+
+Bump-pointer allocator. Fast, no per-object free. Good for
+request-scoped or phase-scoped work where you free everything at once.
+
+```kr
+u64 a = arena_new(65536)          // 64 KiB slab
+u64 p1 = arena_alloc(a, 128)     // bump 128 bytes
+u64 p2 = arena_alloc(a, 256)     // bump 256 bytes
+arena_reset(a)                    // rewind to start (no munmap)
+(u64 total, u64 live) = arena_stats(a)
+arena_destroy(a)                  // munmap; warns if bytes still live
+```
+
+### Pool allocator
+
+Fixed-size slot allocator with an embedded free list. Constant-time
+alloc and free. Ideal for many same-sized objects (nodes, handles).
+
+```kr
+u64 pool = pool_new(64, 1024)     // 1024 slots of 64 bytes each
+u64 obj = pool_alloc(pool)
+pool_free(pool, obj)
+(u64 capacity, u64 used) = pool_stats(pool)
+pool_destroy(pool)                // warns if slots still in use
+```
+
+### Heap allocator
+
+General-purpose variable-size allocator. First-fit with forward
+coalescing on free. Use when allocation sizes vary.
+
+```kr
+u64 h = heap_new(1048576)         // 1 MiB slab
+u64 buf = heap_alloc(h, 4096)
+heap_free(h, buf)
+(u64 total, u64 freed, u64 live) = heap_stats(h)
+heap_destroy(h)                   // warns if blocks still allocated
+```
+
+### API summary
+
+| Function | Returns | Description |
+|---|---|---|
+| `arena_new(capacity)` | arena handle | Create arena with `capacity` bytes |
+| `arena_alloc(arena, size)` | pointer | Bump-allocate `size` bytes (8-byte aligned) |
+| `arena_reset(arena)` | — | Rewind used offset to 0 |
+| `arena_destroy(arena)` | — | Release slab; leak warning if bytes live |
+| `arena_stats(arena)` | `(total, live)` | Cumulative allocated bytes, currently live bytes |
+| `pool_new(obj_size, count)` | pool handle | Create pool of `count` fixed-size slots |
+| `pool_alloc(pool)` | pointer | Pop a slot from the free list |
+| `pool_free(pool, ptr)` | — | Return slot; poisons + sets canary |
+| `pool_destroy(pool)` | — | Release slab; leak warning if slots in use |
+| `pool_stats(pool)` | `(capacity, used)` | Total slots, currently used slots |
+| `heap_new(capacity)` | heap handle | Create heap with `capacity` bytes |
+| `heap_alloc(heap, size)` | pointer | First-fit allocate (8-byte aligned) |
+| `heap_free(heap, ptr)` | — | Free + forward coalesce; poisons + canary |
+| `heap_destroy(heap)` | — | Release slab; leak warning if blocks allocated |
+| `heap_stats(heap)` | `(total, freed, live)` | Bytes allocated, bytes freed, bytes live |
+
+### Safety features
+
+All three allocators share the same hardening:
+
+- **Guard pages** — A `PROT_NONE` page is mapped at the end of every
+  slab. Buffer overruns hit an immediate `SIGSEGV` instead of silently
+  corrupting adjacent memory.
+- **Double-free detection** — Pool and heap write a `0xDEADBEEFDEADBEEF`
+  canary into freed slots/blocks. A second free of the same pointer
+  prints a diagnostic and calls `exit(1)`.
+- **Use-after-free poison** — Freed memory is filled with `0xEF` bytes
+  (pool) or the canary pattern (heap). Reads of freed data return
+  obviously wrong values instead of stale data.
+- **Leak warnings** — `arena_destroy`, `pool_destroy`, and
+  `heap_destroy` walk their metadata and print to stderr if any
+  allocations were not freed (or not reset, for arenas).
+
+---
+
+## 17. Imports
 
 Bring functions and declarations from another file into the current
 compilation unit:
@@ -950,7 +1046,7 @@ once regardless of how many files import it.
 
 ---
 
-## 17. Built-in functions
+## 18. Built-in functions
 
 All of these are compiler intrinsics — no runtime library, no imports
 needed.
@@ -1046,7 +1142,7 @@ signed_le(a, b)    signed_ge(a, b)
 
 ---
 
-## 18. Annotations
+## 19. Annotations
 
 Annotations appear immediately before a function or struct declaration.
 
@@ -1107,7 +1203,7 @@ Parses and records a linker section name. Used with `--emit=obj` output.
 
 ---
 
-## 19. Compiler CLI
+## 20. Compiler CLI
 
 ```sh
 krc <file.kr>                        # compile to <stem>.krbo (fat binary)
@@ -1123,7 +1219,7 @@ krc <file.kr> --arch=x86_64 --emit=android -o out  # Android x86_64 PIE ELF
 krc --freestanding <file.kr> -o out  # no main trampoline, no auto-exit
 krc check <file.kr>                  # run semantic checks only
 krc fmt   <file.kr>                  # auto-format the file in place
-krc lc <file.kr>                     # living compiler report (section 20)
+krc lc <file.kr>                     # living compiler report (section 21)
 krc lc --fix <file.kr>               # apply auto-fixes in place
 krc lc --fix --dry-run <file.kr>     # preview auto-fixes without writing
 krc lc --ci <file.kr>                # CI gate: exit non-zero if patterns fire
@@ -1149,7 +1245,7 @@ from a `.krbo` fat binary and executes it.
 
 ---
 
-## 20. Living compiler
+## 21. Living compiler
 
 `krc lc` analyses KernRift source and produces a two-layer report. The
 living compiler separates concerns into a **stable semantic core**
@@ -1235,7 +1331,7 @@ blueprint and the pipeline design.
 
 ---
 
-## 21. Language profiles (`#lang`)
+## 22. Language profiles (`#lang`)
 
 A source file may pin its required language profile on the first line:
 
@@ -1277,7 +1373,7 @@ forever, even as new experimental features enter the language.
 
 ---
 
-## 22. Freestanding mode
+## 23. Freestanding mode
 
 `krc --freestanding` produces a binary suitable for bare-metal:
 
@@ -1327,7 +1423,7 @@ enough to let those pass.
 
 ---
 
-## 23. Extern functions
+## 24. Extern functions
 
 `extern fn` declares a function that is resolved by the platform linker at
 link time. It has no body — the signature names an external symbol (typically
@@ -1393,7 +1489,7 @@ fn main() {
 
 ---
 
-## 24. Binary formats
+## 25. Binary formats
 
 | Format | Produced by | Use |
 |---|---|---|
