@@ -507,16 +507,16 @@ fn struct_register(uint64 name_tok) -> uint64 {
 }
 
 @export
-fn struct_add_field(uint64 struct_idx, uint64 field_tok, uint64 field_size) {
+fn struct_add_field(uint64 struct_idx, uint64 field_tok, uint64 field_size, uint64 field_type_kind) {
     uint64 base = struct_table + struct_idx * 272
     uint64 fc_addr = base + 4
     uint32 fc = 0
     unsafe { *(fc_addr as uint32) -> fc }
     uint64 wfc = fc
-    // Compute field offset = current total_size
+    // Compute field offset = current total_size (uint16 at offset 8)
     uint64 ts_addr = base + 8
-    uint32 ts = 0
-    unsafe { *(ts_addr as uint32) -> ts }
+    uint16 ts = 0
+    unsafe { *(ts_addr as uint16) -> ts }
     uint64 wts = ts
     // Write field entry at header(16) + field_idx * 16
     uint64 fentry = base + 16 + wfc * 16
@@ -528,11 +528,15 @@ fn struct_add_field(uint64 struct_idx, uint64 field_tok, uint64 field_size) {
     uint64 fs_addr = fentry + 8
     uint32 fs = field_size
     unsafe { *(fs_addr as uint32) = fs }
+    // Store field type kind at fentry + 12
+    uint64 ftk_addr = fentry + 12
+    uint32 ftk32 = field_type_kind
+    unsafe { *(ftk_addr as uint32) = ftk32 }
     // Update field_count and total_size
     uint32 new_fc = wfc + 1
     unsafe { *(fc_addr as uint32) = new_fc }
-    uint32 new_ts = wts + field_size
-    unsafe { *(ts_addr as uint32) = new_ts }
+    uint16 new_ts = wts + field_size
+    unsafe { *(ts_addr as uint16) = new_ts }
 }
 
 fn struct_lookup(uint64 name_tok) -> uint64 {
@@ -552,8 +556,8 @@ fn struct_lookup(uint64 name_tok) -> uint64 {
 
 fn struct_total_size(uint64 struct_idx) -> uint64 {
     uint64 base = struct_table + struct_idx * 272 + 8
-    uint32 ts = 0
-    unsafe { *(base as uint32) -> ts }
+    uint16 ts = 0
+    unsafe { *(base as uint16) -> ts }
     return ts
 }
 
@@ -601,6 +605,107 @@ fn struct_field_size(uint64 struct_idx, uint64 field_tok) -> uint64 {
         fi = fi + 1
     }
     return 0
+}
+
+fn struct_field_type_kind(uint64 struct_idx, uint64 field_idx) -> uint64 {
+    uint64 base = struct_table + struct_idx * 272
+    uint64 fentry = base + 16 + field_idx * 16 + 12
+    uint32 val = 0
+    unsafe { *(fentry as uint32) -> val }
+    return val
+}
+
+@export
+fn struct_classify_abi(uint64 struct_idx) {
+    uint64 base = struct_table + struct_idx * 272
+    uint64 size = struct_total_size(struct_idx)
+
+    if size > 16 {
+        // MEMORY class
+        uint64 c0_addr = base + 12
+        uint16 mem = 3
+        unsafe { *(c0_addr as uint16) = mem }
+        uint64 c1_addr = base + 14
+        unsafe { *(c1_addr as uint16) = mem }
+        return
+    }
+
+    uint64 class0 = 0
+    uint64 class1 = 0
+    uint64 fc_addr = base + 4
+    uint32 fc = 0
+    unsafe { *(fc_addr as uint32) -> fc }
+    uint64 wfc = fc
+    uint64 fi = 0
+    while fi < wfc {
+        uint64 fentry = base + 16 + fi * 16
+        uint64 fo_addr = fentry + 4
+        uint32 fo = 0
+        unsafe { *(fo_addr as uint32) -> fo }
+        uint64 field_off = fo
+        uint64 eightbyte = field_off / 8
+        uint64 ftk = struct_field_type_kind(struct_idx, fi)
+        uint64 is_float = 0
+        if ftk == 94 || ftk == 95 || ftk == 96 { is_float = 1 }
+        if eightbyte == 0 {
+            if is_float != 0 && class0 == 0 { class0 = 2 }
+            if is_float == 0 { class0 = 1 }
+        }
+        if eightbyte == 1 {
+            if is_float != 0 && class1 == 0 { class1 = 2 }
+            if is_float == 0 { class1 = 1 }
+        }
+        fi = fi + 1
+    }
+    uint64 c0_addr = base + 12
+    uint16 c0_16 = class0
+    unsafe { *(c0_addr as uint16) = c0_16 }
+    uint64 c1_addr = base + 14
+    uint16 c1_16 = class1
+    unsafe { *(c1_addr as uint16) = c1_16 }
+
+    // ARM64 HFA detection
+    uint64 flags = 0
+    if wfc >= 1 && wfc <= 4 {
+        uint64 first_ftk = struct_field_type_kind(struct_idx, 0)
+        uint64 all_same_float = 0
+        if first_ftk == 95 || first_ftk == 96 { all_same_float = 1 }
+        uint64 ci = 1
+        while ci < wfc {
+            uint64 ci_ftk = struct_field_type_kind(struct_idx, ci)
+            if ci_ftk != first_ftk { all_same_float = 0 }
+            ci = ci + 1
+        }
+        if all_same_float != 0 {
+            uint64 hfa_type = 0
+            if first_ftk == 96 { hfa_type = 1 }
+            flags = 1 | ((wfc - 1) << 1) | (hfa_type << 3)
+        }
+    }
+    uint64 flags_addr = base + 10
+    uint16 fl16 = flags
+    unsafe { *(flags_addr as uint16) = fl16 }
+}
+
+fn struct_abi_class0(uint64 struct_idx) -> uint64 {
+    uint64 base = struct_table + struct_idx * 272 + 12
+    uint16 val = 0
+    unsafe { *(base as uint16) -> val }
+    return val
+}
+
+fn struct_abi_class1(uint64 struct_idx) -> uint64 {
+    uint64 base = struct_table + struct_idx * 272 + 14
+    uint16 val = 0
+    unsafe { *(base as uint16) -> val }
+    return val
+}
+
+fn struct_abi_flags(uint64 struct_idx) -> uint64 {
+    uint64 base = struct_table + struct_idx * 272 + 10
+    uint16 val = 0
+    unsafe { *(base as uint16) -> val }
+    return val
 }
 
 // Track which variables are struct-typed

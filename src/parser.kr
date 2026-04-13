@@ -1594,11 +1594,12 @@ fn parse_module() -> uint64 {
                 if wftk == 85 { fsize = 2 }
                 if wftk == 86 { fsize = 4 }
                 if wftk == 87 { fsize = 8 }
-                struct_add_field(sidx, field_name_tok, fsize)
+                struct_add_field(sidx, field_name_tok, fsize, wftk)
                 eat(18)
                 eat(16)
             }
             expect(13)
+            struct_classify_abi(sidx)
         } else if kind == 73 {
             // enum NAME { FIELD = VALUE, ... }
             advance_tok()
