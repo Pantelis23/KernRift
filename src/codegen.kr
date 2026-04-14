@@ -3071,7 +3071,8 @@ fn gen_expr(uint64 node) {
         if op_kind == 30 {
             emit_add_rax_rcx()
             if debug_mode != 0 {
-                // Overflow check: jno rel8 — skip trap if no overflow
+                // Overflow check: jno rel8 — skip trap if no signed overflow
+                // Also catches unsigned carry for unsigned types
                 emit_byte(0x71)
                 uint64 jo_add = out_len
                 emit_byte(0)

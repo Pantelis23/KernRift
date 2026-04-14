@@ -2396,7 +2396,7 @@ rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_test_$$
 
 # Overflow test
 TOTAL=$((TOTAL + 1))
-printf 'fn main() { uint64 a = 9223372036854775807; uint64 b = a + a; exit(0) }\n' > "$REPO_ROOT/test_tmp_$$.kr"
+printf 'fn main() { uint64 a = 9223372036854775807; uint64 b = a + a; exit(b) }\n' > "$REPO_ROOT/test_tmp_$$.kr"
 if $KRC $KRC_FLAGS --debug "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_test_$$ > /dev/null 2>&1; then
     chmod +x /tmp/krc_test_$$
     /tmp/krc_test_$$ > /dev/null 2>&1

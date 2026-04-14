@@ -1267,7 +1267,7 @@ fn gen_expr_a64(uint64 node) {
 
         if op_kind == 30 || op_kind == 45 {
             if debug_mode != 0 {
-                // Overflow check: adds x0, x0, x9 (sets flags) + b.vc skip
+                // Overflow check: adds x0, x0, x9 (sets flags) + b.vc skip (no signed overflow)
                 uint64 insn_adds = 0xAB000000 | (9 << 16) | (0 << 5) | 0
                 emit_a64(insn_adds)
                 uint64 bvc_add = out_len
@@ -1283,11 +1283,11 @@ fn gen_expr_a64(uint64 node) {
         }
         else if op_kind == 31 || op_kind == 46 {
             if debug_mode != 0 {
-                // Overflow check: subs x0, x0, x9 (sets flags) + b.vc skip
+                // Overflow check: subs x0, x0, x9 (sets flags) + b.vc skip (no signed overflow)
                 uint64 insn_subs = 0xEB000000 | (9 << 16) | (0 << 5) | 0
                 emit_a64(insn_subs)
                 uint64 bvc_sub = out_len
-                emit_a64(0x54000007)  // b.vc +0 (placeholder)
+                emit_a64(0x54000007)  // b.vc +0 (placeholder, cond=7=VC)
                 emit_a64_mov_imm(0, 1)
                 if target_os == 2 { emit_a64_win_call_iat(0) }
                 else { if target_os == 1 { emit_a64_syscall_nr(1) } else { emit_a64_syscall_nr(93) }; emit_a64_svc() }
