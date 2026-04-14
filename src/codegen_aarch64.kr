@@ -1265,12 +1265,82 @@ fn gen_expr_a64(uint64 node) {
         uint32 op_kind = 0
         unsafe { *(p as uint32) -> op_kind }
 
-        if op_kind == 30 || op_kind == 45 { emit_a64_add(0, 0, 9) }
-        else if op_kind == 31 || op_kind == 46 { emit_a64_sub(0, 0, 9) }
-        else if op_kind == 22 || op_kind == 47 { emit_a64_mul(0, 0, 9) }
-        else if op_kind == 32 { emit_a64_udiv(0, 0, 9) }
+        if op_kind == 30 || op_kind == 45 {
+            if debug_mode != 0 {
+                // Overflow check: adds x0, x0, x9 (sets flags) + b.vc skip
+                uint64 insn_adds = 0xAB000000 | (9 << 16) | (0 << 5) | 0
+                emit_a64(insn_adds)
+                uint64 bvc_add = out_len
+                emit_a64(0x54000007)  // b.vc +0 (placeholder, cond=7=VC)
+                emit_a64_mov_imm(0, 1)
+                if target_os == 2 { emit_a64_win_call_iat(0) }
+                else { if target_os == 1 { emit_a64_syscall_nr(1) } else { emit_a64_syscall_nr(93) }; emit_a64_svc() }
+                uint64 bvc_add_off = (out_len - bvc_add) / 4
+                patch_u32(bvc_add, 0x54000007 | ((bvc_add_off & 0x7FFFF) << 5))
+            } else {
+                emit_a64_add(0, 0, 9)
+            }
+        }
+        else if op_kind == 31 || op_kind == 46 {
+            if debug_mode != 0 {
+                // Overflow check: subs x0, x0, x9 (sets flags) + b.vc skip
+                uint64 insn_subs = 0xEB000000 | (9 << 16) | (0 << 5) | 0
+                emit_a64(insn_subs)
+                uint64 bvc_sub = out_len
+                emit_a64(0x54000007)  // b.vc +0 (placeholder)
+                emit_a64_mov_imm(0, 1)
+                if target_os == 2 { emit_a64_win_call_iat(0) }
+                else { if target_os == 1 { emit_a64_syscall_nr(1) } else { emit_a64_syscall_nr(93) }; emit_a64_svc() }
+                uint64 bvc_sub_off = (out_len - bvc_sub) / 4
+                patch_u32(bvc_sub, 0x54000007 | ((bvc_sub_off & 0x7FFFF) << 5))
+            } else {
+                emit_a64_sub(0, 0, 9)
+            }
+        }
+        else if op_kind == 22 || op_kind == 47 {
+            if debug_mode != 0 {
+                // Overflow check: umulh x10, x0, x9 then mul x0, x0, x9
+                // UMULH X10, X0, X9: 0x9BC00000 | (Rm<<16) | (Ra=0x1F<<10) | (Rn<<5) | Rd
+                uint64 insn_umulh = 0x9BC07C00 | (9 << 16) | (0 << 5) | 10
+                emit_a64(insn_umulh)
+                emit_a64_mul(0, 0, 9)
+                // CBZ X10, skip — if high bits zero, no overflow
+                uint64 cbz_mul = out_len
+                emit_a64(0xB4000000 | 10)  // cbz x10, +0 (placeholder)
+                emit_a64_mov_imm(0, 1)
+                if target_os == 2 { emit_a64_win_call_iat(0) }
+                else { if target_os == 1 { emit_a64_syscall_nr(1) } else { emit_a64_syscall_nr(93) }; emit_a64_svc() }
+                uint64 cbz_mul_off = (out_len - cbz_mul) / 4
+                patch_u32(cbz_mul, 0xB4000000 | ((cbz_mul_off & 0x7FFFF) << 5) | 10)
+            } else {
+                emit_a64_mul(0, 0, 9)
+            }
+        }
+        else if op_kind == 32 {
+            if debug_mode != 0 {
+                // Division by zero check: cbnz x9, skip; exit(1)
+                uint64 cbnz_div = out_len
+                emit_a64(0xB5000000 | 9)  // cbnz x9, +0 (placeholder)
+                emit_a64_mov_imm(0, 1)
+                if target_os == 2 { emit_a64_win_call_iat(0) }
+                else { if target_os == 1 { emit_a64_syscall_nr(1) } else { emit_a64_syscall_nr(93) }; emit_a64_svc() }
+                uint64 cbnz_div_off = (out_len - cbnz_div) / 4
+                patch_u32(cbnz_div, 0xB5000000 | ((cbnz_div_off & 0x7FFFF) << 5) | 9)
+            }
+            emit_a64_udiv(0, 0, 9)
+        }
         else if op_kind == 33 {
             // modulo: x0 = x0 - (x0/x9)*x9
+            if debug_mode != 0 {
+                // Division by zero check: cbnz x9, skip; exit(1)
+                uint64 cbnz_mod = out_len
+                emit_a64(0xB5000000 | 9)  // cbnz x9, +0 (placeholder)
+                emit_a64_mov_imm(0, 1)
+                if target_os == 2 { emit_a64_win_call_iat(0) }
+                else { if target_os == 1 { emit_a64_syscall_nr(1) } else { emit_a64_syscall_nr(93) }; emit_a64_svc() }
+                uint64 cbnz_mod_off = (out_len - cbnz_mod) / 4
+                patch_u32(cbnz_mod, 0xB5000000 | ((cbnz_mod_off & 0x7FFFF) << 5) | 9)
+            }
             emit_a64_udiv(10, 0, 9)
             emit_a64_msub(0, 10, 9, 0)
         }
@@ -2898,6 +2968,15 @@ fn gen_expr_a64(uint64 node) {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr_a64(wfa)
+            if debug_mode != 0 {
+                uint64 cbnz_l8 = out_len
+                emit_a64(0xB5000000 | 0)  // cbnz x0, +0 (placeholder)
+                emit_a64_mov_imm(0, 1)
+                if target_os == 2 { emit_a64_win_call_iat(0) }
+                else { if target_os == 1 { emit_a64_syscall_nr(1) } else { emit_a64_syscall_nr(93) }; emit_a64_svc() }
+                uint64 cbnz_l8_off = (out_len - cbnz_l8) / 4
+                patch_u32(cbnz_l8, 0xB5000000 | ((cbnz_l8_off & 0x7FFFF) << 5) | 0)
+            }
             // LDRB W0, [X0]
             emit_a64_ldrb(0, 0, 0)
             return
@@ -2906,6 +2985,15 @@ fn gen_expr_a64(uint64 node) {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr_a64(wfa)
+            if debug_mode != 0 {
+                uint64 cbnz_l16 = out_len
+                emit_a64(0xB5000000 | 0)  // cbnz x0, +0 (placeholder)
+                emit_a64_mov_imm(0, 1)
+                if target_os == 2 { emit_a64_win_call_iat(0) }
+                else { if target_os == 1 { emit_a64_syscall_nr(1) } else { emit_a64_syscall_nr(93) }; emit_a64_svc() }
+                uint64 cbnz_l16_off = (out_len - cbnz_l16) / 4
+                patch_u32(cbnz_l16, 0xB5000000 | ((cbnz_l16_off & 0x7FFFF) << 5) | 0)
+            }
             // LDRH W0, [X0]
             emit_a64_ldrh(0, 0, 0)
             return
@@ -2914,6 +3002,15 @@ fn gen_expr_a64(uint64 node) {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr_a64(wfa)
+            if debug_mode != 0 {
+                uint64 cbnz_l32 = out_len
+                emit_a64(0xB5000000 | 0)  // cbnz x0, +0 (placeholder)
+                emit_a64_mov_imm(0, 1)
+                if target_os == 2 { emit_a64_win_call_iat(0) }
+                else { if target_os == 1 { emit_a64_syscall_nr(1) } else { emit_a64_syscall_nr(93) }; emit_a64_svc() }
+                uint64 cbnz_l32_off = (out_len - cbnz_l32) / 4
+                patch_u32(cbnz_l32, 0xB5000000 | ((cbnz_l32_off & 0x7FFFF) << 5) | 0)
+            }
             // LDR W0, [X0]
             emit_a64_ldr32(0, 0, 0)
             return
@@ -2922,6 +3019,15 @@ fn gen_expr_a64(uint64 node) {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr_a64(wfa)
+            if debug_mode != 0 {
+                uint64 cbnz_l64 = out_len
+                emit_a64(0xB5000000 | 0)  // cbnz x0, +0 (placeholder)
+                emit_a64_mov_imm(0, 1)
+                if target_os == 2 { emit_a64_win_call_iat(0) }
+                else { if target_os == 1 { emit_a64_syscall_nr(1) } else { emit_a64_syscall_nr(93) }; emit_a64_svc() }
+                uint64 cbnz_l64_off = (out_len - cbnz_l64) / 4
+                patch_u32(cbnz_l64, 0xB5000000 | ((cbnz_l64_off & 0x7FFFF) << 5) | 0)
+            }
             // LDR X0, [X0]
             emit_a64_ldr(0, 0, 0)
             return
@@ -2938,6 +3044,16 @@ fn gen_expr_a64(uint64 node) {
             gen_expr_a64(wa2)
             emit_a64_mov(1, 0)
             emit_a64_load_x0(temp_slot_0)
+            if debug_mode != 0 {
+                uint64 cbnz_s8 = out_len
+                emit_a64(0xB5000000 | 0)  // cbnz x0, +0 (placeholder)
+                emit_a64_mov_imm(0, 1)
+                if target_os == 2 { emit_a64_win_call_iat(0) }
+                else { if target_os == 1 { emit_a64_syscall_nr(1) } else { emit_a64_syscall_nr(93) }; emit_a64_svc() }
+                uint64 cbnz_s8_off = (out_len - cbnz_s8) / 4
+                patch_u32(cbnz_s8, 0xB5000000 | ((cbnz_s8_off & 0x7FFFF) << 5) | 0)
+                emit_a64_load_x0(temp_slot_0)
+            }
             // STRB W1, [X0]
             emit_a64_strb(1, 0, 0)
             return
@@ -2952,6 +3068,16 @@ fn gen_expr_a64(uint64 node) {
             gen_expr_a64(wa2)
             emit_a64_mov(1, 0)
             emit_a64_load_x0(temp_slot_0)
+            if debug_mode != 0 {
+                uint64 cbnz_s16 = out_len
+                emit_a64(0xB5000000 | 0)  // cbnz x0, +0 (placeholder)
+                emit_a64_mov_imm(0, 1)
+                if target_os == 2 { emit_a64_win_call_iat(0) }
+                else { if target_os == 1 { emit_a64_syscall_nr(1) } else { emit_a64_syscall_nr(93) }; emit_a64_svc() }
+                uint64 cbnz_s16_off = (out_len - cbnz_s16) / 4
+                patch_u32(cbnz_s16, 0xB5000000 | ((cbnz_s16_off & 0x7FFFF) << 5) | 0)
+                emit_a64_load_x0(temp_slot_0)
+            }
             // STRH W1, [X0]
             emit_a64_strh(1, 0, 0)
             return
@@ -2966,6 +3092,16 @@ fn gen_expr_a64(uint64 node) {
             gen_expr_a64(wa2)
             emit_a64_mov(1, 0)
             emit_a64_load_x0(temp_slot_0)
+            if debug_mode != 0 {
+                uint64 cbnz_s32 = out_len
+                emit_a64(0xB5000000 | 0)  // cbnz x0, +0 (placeholder)
+                emit_a64_mov_imm(0, 1)
+                if target_os == 2 { emit_a64_win_call_iat(0) }
+                else { if target_os == 1 { emit_a64_syscall_nr(1) } else { emit_a64_syscall_nr(93) }; emit_a64_svc() }
+                uint64 cbnz_s32_off = (out_len - cbnz_s32) / 4
+                patch_u32(cbnz_s32, 0xB5000000 | ((cbnz_s32_off & 0x7FFFF) << 5) | 0)
+                emit_a64_load_x0(temp_slot_0)
+            }
             // STR W1, [X0]
             emit_a64_str32(1, 0, 0)
             return
@@ -2980,6 +3116,16 @@ fn gen_expr_a64(uint64 node) {
             gen_expr_a64(wa2)
             emit_a64_mov(1, 0)
             emit_a64_load_x0(temp_slot_0)
+            if debug_mode != 0 {
+                uint64 cbnz_s64 = out_len
+                emit_a64(0xB5000000 | 0)  // cbnz x0, +0 (placeholder)
+                emit_a64_mov_imm(0, 1)
+                if target_os == 2 { emit_a64_win_call_iat(0) }
+                else { if target_os == 1 { emit_a64_syscall_nr(1) } else { emit_a64_syscall_nr(93) }; emit_a64_svc() }
+                uint64 cbnz_s64_off = (out_len - cbnz_s64) / 4
+                patch_u32(cbnz_s64, 0xB5000000 | ((cbnz_s64_off & 0x7FFFF) << 5) | 0)
+                emit_a64_load_x0(temp_slot_0)
+            }
             // STR X1, [X0]
             emit_a64_str(1, 0, 0)
             return
