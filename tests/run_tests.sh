@@ -305,13 +305,8 @@ fn main() {
 
 # --- Method syntax ---
 run_test "method_decl" 'struct Point { uint64 x; uint64 y }
-fn Point.sum(uint64 self) -> uint64 {
-    uint64 sx = 0
-    uint64 sy = 0
-    unsafe { *(self as uint64) -> sx }
-    uint64 yp = self + 8
-    unsafe { *(yp as uint64) -> sy }
-    return sx + sy
+fn Point.sum(Point self) -> uint64 {
+    return self.x + self.y
 }
 fn main() {
     Point p
@@ -2081,25 +2076,25 @@ fn main() {
     exit(p.x)
 }' 10
 
-# --- Struct pass-by-value tests (requires Task 6 callee-side changes) ---
-# run_test "struct_pass_by_value" 'struct P { uint64 x; uint64 y }
-# fn sum(P p) -> uint64 { return p.x + p.y }
-# fn main() {
-#     P a; a.x = 10; a.y = 20
-#     exit(sum(a))
-# }' 30
+# --- Struct pass-by-value tests ---
+run_test "struct_pass_by_value" 'struct P { uint64 x; uint64 y }
+fn sum(P p) -> uint64 { return p.x + p.y }
+fn main() {
+    P a; a.x = 10; a.y = 20
+    exit(sum(a))
+}' 30
 
-# run_test "struct_pass_literal" 'struct P { uint64 x; uint64 y }
-# fn sum(P p) -> uint64 { return p.x + p.y }
-# fn main() { exit(sum(P { 10, 20 })) }' 30
+run_test "struct_pass_literal" 'struct P { uint64 x; uint64 y }
+fn sum(P p) -> uint64 { return p.x + p.y }
+fn main() { exit(sum(P { 10, 20 })) }' 30
 
-# run_test "struct_pass_no_alias" 'struct P { uint64 x; uint64 y }
-# fn modify(P p) -> uint64 { p.x = 99; return p.x }
-# fn main() {
-#     P a; a.x = 10; a.y = 20
-#     uint64 r = modify(a)
-#     exit(a.x)
-# }' 10
+run_test "struct_pass_no_alias" 'struct P { uint64 x; uint64 y }
+fn modify(P p) -> uint64 { p.x = 99; return p.x }
+fn main() {
+    P a; a.x = 10; a.y = 20
+    uint64 r = modify(a)
+    exit(a.x)
+}' 10
 
 # --- Summary ---
 echo ""
