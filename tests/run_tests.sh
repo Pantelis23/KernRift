@@ -1844,6 +1844,10 @@ run_test "f64_fn_2args" 'fn add_f(f64 a, f64 b) -> f64 { return a + b }
 fn main() { f64 r = add_f(int_to_f64(20), int_to_f64(22)); exit(f64_to_int(r)) }' 42
 run_test "f64_fn_mixed" 'fn scale(u64 n, f64 x) -> f64 { f64 fn64 = int_to_f64(n); return fn64 * x }
 fn main() { f64 r = scale(3, int_to_f64(14)); exit(f64_to_int(r)) }' 42
+run_test "f64_pos2_arg" 'fn get_second(u64 a, f64 b) -> f64 { return b }
+fn main() { f64 r = get_second(1, 42.0); exit(f64_to_int(r)) }' 42
+run_test "f64_pos3_arg" 'fn get_third(u64 a, u64 b, f64 c) -> f64 { return c }
+fn main() { f64 r = get_third(1, 2, 33.0); exit(f64_to_int(r)) }' 33
 
 # Float literal parsing
 run_test "f64_literal_zero" 'fn main() { f64 x = 0.0; exit(f64_to_int(x)) }' 0

@@ -6052,6 +6052,10 @@ fn gen_expr(uint64 node) {
                 unsafe { *(arg_float_flags + 3 * 8 as uint64) -> ff3 }
                 if ff3 != 0 {
                     emit_load_xmmN_f64(3, arg_slots_base + 24 + win_stack)
+                    // Windows ABI: also load float bits into r9
+                    emit_load_rax_from_stack(arg_slots_base + 24 + win_stack)
+                    // mov r9, rax (49 89 C1)
+                    emit_byte(0x49); emit_byte(0x89); emit_byte(0xC1)
                 } else {
                     emit_load_rax_from_stack(arg_slots_base + 24 + win_stack)
                     // Check if struct arg: dereference if small struct (<=8 bytes)
@@ -6073,6 +6077,9 @@ fn gen_expr(uint64 node) {
                 unsafe { *(arg_float_flags + 2 * 8 as uint64) -> ff2 }
                 if ff2 != 0 {
                     emit_load_xmmN_f64(2, arg_slots_base + 16 + win_stack)
+                    // Windows ABI: also load float bits into r8
+                    emit_load_rax_from_stack(arg_slots_base + 16 + win_stack)
+                    emit_mov_r8_rax()
                 } else {
                     emit_load_rax_from_stack(arg_slots_base + 16 + win_stack)
                     // Check if struct arg: dereference if small struct (<=8 bytes)
@@ -6093,6 +6100,9 @@ fn gen_expr(uint64 node) {
                 unsafe { *(arg_float_flags + 1 * 8 as uint64) -> ff1 }
                 if ff1 != 0 {
                     emit_load_xmmN_f64(1, arg_slots_base + 8 + win_stack)
+                    // Windows ABI: also load float bits into rdx
+                    emit_load_rax_from_stack(arg_slots_base + 8 + win_stack)
+                    emit_mov_rdx_rax()
                 } else {
                     emit_load_rax_from_stack(arg_slots_base + 8 + win_stack)
                     // Check if struct arg: dereference if small struct (<=8 bytes)
@@ -6113,6 +6123,9 @@ fn gen_expr(uint64 node) {
                 unsafe { *(arg_float_flags as uint64) -> ff0 }
                 if ff0 != 0 {
                     emit_load_xmmN_f64(0, arg_slots_base + win_stack)
+                    // Windows ABI: also load float bits into rcx
+                    emit_load_rax_from_stack(arg_slots_base + win_stack)
+                    emit_mov_rcx_rax()
                 } else {
                     emit_load_rax_from_stack(arg_slots_base + win_stack)
                     // Check if struct arg: dereference if small struct (<=8 bytes)
