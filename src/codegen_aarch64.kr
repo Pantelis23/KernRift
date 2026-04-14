@@ -656,6 +656,13 @@ fn emit_a64_static_store(uint64 data_offset) {
 
 fn gen_expr_a64(uint64 node) {
     expr_is_struct_a64 = 0xFFFFFFFF
+
+    // Record line for debug info
+    uint32 dbg_tok_a = ast_tok(node)
+    if dbg_tok_a == 0 { dbg_tok_a = ast_data1(node) }
+    uint64 wdbg_a = dbg_tok_a
+    if wdbg_a != 0 { line_table_record(wdbg_a) }
+
     uint32 kind = ast_kind(node)
 
     // Unary operator
@@ -3987,6 +3994,12 @@ fn gen_expr_a64(uint64 node) {
 // ---------------------------------------------------------------------------
 
 fn gen_stmt_a64(uint64 node) {
+    uint32 dbg_tok_sa = ast_tok(node)
+    if dbg_tok_sa == 0 { dbg_tok_sa = ast_data1(node) }
+    if dbg_tok_sa == 0 { dbg_tok_sa = ast_data2(node) }
+    uint64 wdbg_sa = dbg_tok_sa
+    if wdbg_sa != 0 { line_table_record(wdbg_sa) }
+
     uint32 kind = ast_kind(node)
 
     // Variable declaration

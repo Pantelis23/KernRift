@@ -2319,6 +2319,13 @@ fn gen_expr(uint64 node) {
     // Invalidate rax cache — gen_expr will put a new value in rax
     rax_invalidate()
     expr_is_struct = 0xFFFFFFFF
+
+    // Record line for debug info
+    uint32 dbg_tok = ast_tok(node)
+    if dbg_tok == 0 { dbg_tok = ast_data1(node) }
+    uint64 wdbg = dbg_tok
+    if wdbg != 0 { line_table_record(wdbg) }
+
     uint32 kind = ast_kind(node)
 
     // Unary operator: !, -, ~
@@ -7318,6 +7325,12 @@ fn asm_emit_a64(uint64 str_tok) {
 // Generate code for a statement
 @export
 fn gen_stmt(uint64 node) {
+    uint32 dbg_tok_s = ast_tok(node)
+    if dbg_tok_s == 0 { dbg_tok_s = ast_data1(node) }
+    if dbg_tok_s == 0 { dbg_tok_s = ast_data2(node) }
+    uint64 wdbg_s = dbg_tok_s
+    if wdbg_s != 0 { line_table_record(wdbg_s) }
+
     uint32 kind = ast_kind(node)
 
     // Variable declaration: TYPE name = expr  OR  TYPE[SIZE] name (array)
