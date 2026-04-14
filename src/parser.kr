@@ -1631,6 +1631,13 @@ fn parse_module() -> uint64 {
                 if wftk == 85 { fsize = 2 }
                 if wftk == 86 { fsize = 4 }
                 if wftk == 87 { fsize = 8 }
+                if wftk == 1 {
+                    uint64 nested_si = struct_lookup(field_type_tok)
+                    if nested_si != 0xFFFFFFFF {
+                        fsize = struct_total_size(nested_si)
+                        wftk = 256 + nested_si
+                    }
+                }
                 struct_add_field(sidx, field_name_tok, fsize, wftk)
                 eat(18)
                 eat(16)

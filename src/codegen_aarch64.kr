@@ -940,6 +940,48 @@ fn gen_expr_a64(uint64 node) {
                 }
             }
         }
+        // Nested struct field read: child is another FieldAccess
+        if wchild != 0 {
+            uint32 cfk2_a = ast_kind(wchild)
+            uint64 wcfk2_a = cfk2_a
+            if wcfk2_a == 36 {
+                gen_expr_a64(wchild)
+                uint64 nsi_a = expr_is_struct_a64
+                if nsi_a != 0xFFFFFFFF {
+                    uint64 nfoff_a = struct_field_offset(nsi_a, field_tok)
+                    uint64 nfsz_a = struct_field_size(nsi_a, field_tok)
+                    if nfoff_a != 0 {
+                        emit_a64_add_imm(0, 0, nfoff_a)
+                    }
+                    uint64 nftk_a = struct_field_type_kind_by_tok(nsi_a, field_tok)
+                    if nftk_a >= 256 {
+                        expr_is_struct_a64 = nftk_a - 256
+                        return
+                    }
+                    expr_is_struct_a64 = 0xFFFFFFFF
+                    if nftk_a == 96 {
+                        emit_a64_load_dN_from_ptr(0, 0, 0)
+                        expr_is_float_a64 = 1
+                        return
+                    }
+                    if nftk_a == 95 {
+                        emit_a64_load_sN_from_ptr(0, 0, 0)
+                        expr_is_float_a64 = 2
+                        return
+                    }
+                    if nfsz_a == 1 {
+                        emit_a64_ldrb(0, 0, 0)
+                    } else if nfsz_a == 2 {
+                        emit_a64_ldrh(0, 0, 0)
+                    } else if nfsz_a == 4 {
+                        emit_a64_ldr32(0, 0, 0)
+                    } else {
+                        emit_a64_ldr(0, 0, 0)
+                    }
+                    return
+                }
+            }
+        }
         // Extract object token from child Ident node
         uint32 obj_tok = 0
         if wchild != 0 {
@@ -1001,8 +1043,12 @@ fn gen_expr_a64(uint64 node) {
             if foff != 0 {
                 emit_a64_add_imm(0, 0, foff)
             }
-            // Check if field is a float type
+            // Check if field is a float type or nested struct
             uint64 fftk_a = struct_field_type_kind_by_tok(si, field_tok)
+            if fftk_a >= 256 {
+                expr_is_struct_a64 = fftk_a - 256
+                return
+            }
             if fftk_a == 96 {
                 // f64 field: ldr d0, [x0, #0]
                 emit_a64_load_dN_from_ptr(0, 0, 0)
@@ -4330,6 +4376,40 @@ fn gen_stmt_a64(uint64 node) {
                         else { emit_a64_str(0, 10, 0) }
                         return
                     }
+                }
+            }
+
+            // Nested struct field write: child is another FieldAccess
+            if wfachild != 0 {
+                uint32 cfk_nwa = ast_kind(wfachild)
+                uint64 wcfk_nwa = cfk_nwa
+                if wcfk_nwa == 36 {
+                    gen_expr_a64(wval)
+                    if expr_is_float_a64 == 1 {
+                        // fmov x0, d0
+                        emit_a64(0x9E660000)
+                    }
+                    if expr_is_float_a64 == 2 {
+                        // fmov w0, s0
+                        emit_a64(0x1E260000)
+                    }
+                    emit_a64_store_x0(temp_slot_0)
+                    gen_expr_a64(wfachild)
+                    uint64 nsi_wa = expr_is_struct_a64
+                    if nsi_wa != 0xFFFFFFFF {
+                        uint64 nfoff_wa = struct_field_offset(nsi_wa, field_tok)
+                        uint64 nfsz_wa = struct_field_size(nsi_wa, field_tok)
+                        if nfoff_wa != 0 {
+                            emit_a64_add_imm(0, 0, nfoff_wa)
+                        }
+                        emit_a64_mov(10, 0)
+                        emit_a64_load_x0(temp_slot_0)
+                        if nfsz_wa == 1 { emit_a64_strb(0, 10, 0) }
+                        else if nfsz_wa == 2 { emit_a64_strh(0, 10, 0) }
+                        else if nfsz_wa == 4 { emit_a64_str32(0, 10, 0) }
+                        else { emit_a64_str(0, 10, 0) }
+                    }
+                    return
                 }
             }
 

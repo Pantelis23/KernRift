@@ -2252,6 +2252,28 @@ fn main() {
     exit(r.a + r.b + r.c)
 }' 6
 
+run_test "nested_struct_basic" 'struct P { uint64 x; uint64 y }
+struct L { P a; P b }
+fn main() {
+    L l
+    l.a.x = 10; l.a.y = 20
+    l.b.x = 30; l.b.y = 40
+    exit(l.a.x + l.b.y)
+}' 50
+
+run_test "nested_struct_sizeof" 'struct P { uint64 x; uint64 y }
+struct L { P a; P b }
+fn main() { exit(sizeof(L)) }' 32
+
+run_test "nested_struct_pass" 'struct P { uint64 x; uint64 y }
+struct L { P a; P b }
+fn sum(L l) -> uint64 { return l.a.x + l.a.y + l.b.x + l.b.y }
+fn main() {
+    L l
+    l.a.x = 1; l.a.y = 2; l.b.x = 3; l.b.y = 4
+    exit(sum(l))
+}' 10
+
 # --- Summary ---
 echo ""
 echo "=== Results: $PASS/$TOTAL passed, $FAIL failed ==="

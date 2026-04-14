@@ -2627,6 +2627,48 @@ fn gen_expr(uint64 node) {
                 }
             }
         }
+        // Nested struct field read: child is another FieldAccess
+        if wchild != 0 {
+            uint32 cfk2 = ast_kind(wchild)
+            uint64 wcfk2 = cfk2
+            if wcfk2 == 36 {
+                // Evaluate inner field chain — produces pointer in rax, sets expr_is_struct
+                gen_expr(wchild)
+                uint64 nsi = expr_is_struct
+                if nsi != 0xFFFFFFFF {
+                    uint64 nfoff = struct_field_offset(nsi, field_tok)
+                    uint64 nfsz = struct_field_size(nsi, field_tok)
+                    if nfoff != 0 {
+                        emit_byte(0x48); emit_byte(0x05)
+                        emit_u32_le(nfoff)
+                    }
+                    uint64 nftk = struct_field_type_kind_by_tok(nsi, field_tok)
+                    if nftk >= 256 {
+                        expr_is_struct = nftk - 256
+                        return
+                    }
+                    expr_is_struct = 0xFFFFFFFF
+                    if nftk == 96 {
+                        emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x10); emit_byte(0x00)
+                        expr_is_float = 1
+                        return
+                    }
+                    if nftk == 95 {
+                        emit_byte(0xF3); emit_byte(0x0F); emit_byte(0x10); emit_byte(0x00)
+                        expr_is_float = 2
+                        return
+                    }
+                    if nfsz == 1 {
+                        emit_byte(0x0F); emit_byte(0xB6); emit_byte(0x00)
+                    } else if nfsz == 4 {
+                        emit_byte(0x8B); emit_byte(0x00)
+                    } else {
+                        emit_byte(0x48); emit_byte(0x8B); emit_byte(0x00)
+                    }
+                    return
+                }
+            }
+        }
         // Extract object token from child Ident node
         uint32 obj_tok = 0
         if wchild != 0 {
@@ -2696,8 +2738,13 @@ fn gen_expr(uint64 node) {
                 emit_byte(0x48); emit_byte(0x05)
                 emit_u32_le(foff)
             }
-            // Check if field is a float type
+            // Check if field is a float type or nested struct
             uint64 fftk = struct_field_type_kind_by_tok(si, field_tok)
+            if fftk >= 256 {
+                // Nested struct field: leave address in rax, set expr_is_struct
+                expr_is_struct = fftk - 256
+                return
+            }
             if fftk == 96 {
                 // f64 field: movsd xmm0, [rax] — F2 0F 10 00
                 emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x10); emit_byte(0x00)
@@ -6987,6 +7034,46 @@ fn gen_stmt(uint64 node) {
                         }
                         return
                     }
+                }
+            }
+
+            // Nested struct field write: child is another FieldAccess
+            if wfachild != 0 {
+                uint32 cfk_nw = ast_kind(wfachild)
+                uint64 wcfk_nw = cfk_nw
+                if wcfk_nw == 36 {
+                    // Evaluate value, save to temp_slot_0
+                    gen_expr(wval)
+                    if expr_is_float == 1 {
+                        emit_byte(0x66); emit_byte(0x48); emit_byte(0x0F)
+                        emit_byte(0x7E); emit_byte(0xC0)
+                    }
+                    if expr_is_float == 2 {
+                        emit_byte(0x66); emit_byte(0x0F)
+                        emit_byte(0x7E); emit_byte(0xC0)
+                    }
+                    emit_store_rax_to_stack(temp_slot_0)
+                    // Evaluate nested field chain → pointer in rax, expr_is_struct set
+                    gen_expr(wfachild)
+                    uint64 nsi_w = expr_is_struct
+                    if nsi_w != 0xFFFFFFFF {
+                        uint64 nfoff_w = struct_field_offset(nsi_w, field_tok)
+                        uint64 nfsz_w = struct_field_size(nsi_w, field_tok)
+                        if nfoff_w != 0 {
+                            emit_byte(0x48); emit_byte(0x05)
+                            emit_u32_le(nfoff_w)
+                        }
+                        emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1) // mov rcx, rax
+                        emit_load_rax_from_stack(temp_slot_0)
+                        if nfsz_w == 1 {
+                            emit_byte(0x88); emit_byte(0x01)
+                        } else if nfsz_w == 4 {
+                            emit_byte(0x89); emit_byte(0x01)
+                        } else {
+                            emit_byte(0x48); emit_byte(0x89); emit_byte(0x01)
+                        }
+                    }
+                    return
                 }
             }
 
