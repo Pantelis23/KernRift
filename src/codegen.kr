@@ -628,6 +628,29 @@ fn struct_field_type_kind(uint64 struct_idx, uint64 field_idx) -> uint64 {
     return val
 }
 
+fn struct_field_type_kind_by_tok(uint64 struct_idx, uint64 field_tok) -> uint64 {
+    uint64 base = struct_table + struct_idx * 272
+    uint64 fc_addr = base + 4
+    uint32 fc = 0
+    unsafe { *(fc_addr as uint32) -> fc }
+    uint64 wfc = fc
+    uint64 fi = 0
+    while fi < wfc {
+        uint64 fentry = base + 16 + fi * 16
+        uint32 ft = 0
+        unsafe { *(fentry as uint32) -> ft }
+        uint64 wft = ft
+        if tok_text_eq(wft, field_tok) != 0 {
+            uint64 ftk_addr = fentry + 12
+            uint32 ftk = 0
+            unsafe { *(ftk_addr as uint32) -> ftk }
+            return ftk
+        }
+        fi = fi + 1
+    }
+    return 0
+}
+
 @export
 fn struct_classify_abi(uint64 struct_idx) {
     uint64 base = struct_table + struct_idx * 272
@@ -2189,6 +2212,17 @@ fn gen_expr(uint64 node) {
                 unsafe { *(fs_addr as uint32) -> fs32 }
                 fsize = fs32
             }
+            // If expr produced a float, move xmm0 bits into rax
+            if expr_is_float == 1 {
+                // movq rax, xmm0: 66 48 0F 7E C0
+                emit_byte(0x66); emit_byte(0x48); emit_byte(0x0F)
+                emit_byte(0x7E); emit_byte(0xC0)
+            }
+            if expr_is_float == 2 {
+                // movd eax, xmm0: 66 0F 7E C0
+                emit_byte(0x66); emit_byte(0x0F)
+                emit_byte(0x7E); emit_byte(0xC0)
+            }
             // Store rax to [rsp + slit_base + foff] with appropriate width
             uint64 dest = slit_base + foff
             if fsize == 8 {
@@ -2545,6 +2579,20 @@ fn gen_expr(uint64 node) {
             if foff != 0 {
                 emit_byte(0x48); emit_byte(0x05)
                 emit_u32_le(foff)
+            }
+            // Check if field is a float type
+            uint64 fftk = struct_field_type_kind_by_tok(si, field_tok)
+            if fftk == 96 {
+                // f64 field: movsd xmm0, [rax] — F2 0F 10 00
+                emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x10); emit_byte(0x00)
+                expr_is_float = 1
+                return
+            }
+            if fftk == 95 {
+                // f32 field: movss xmm0, [rax] — F3 0F 10 00
+                emit_byte(0xF3); emit_byte(0x0F); emit_byte(0x10); emit_byte(0x00)
+                expr_is_float = 2
+                return
             }
             // Load field value based on size
             if fsz == 1 {
@@ -5999,7 +6047,25 @@ fn gen_expr(uint64 node) {
                             }
                             call_int_idx = call_int_idx + 1
                         }
-                        // SSE eightbytes handled in future SSE struct pass
+                        // SSE eightbyte 0: load [ptr+0] into next xmm register
+                        if s_c0 == 2 && call_float_idx < 8 {
+                            emit_load_rax_from_stack(temp_slot_0)
+                            // movsd xmmN, [rax] — F2 0F 10 (N*8)
+                            emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x10)
+                            uint8 s_modrm0 = call_float_idx * 8
+                            emit_byte(s_modrm0)
+                            call_float_idx = call_float_idx + 1
+                        }
+                        // SSE eightbyte 1: load [ptr+8] into next xmm register
+                        uint64 s_ssize = struct_total_size(s_si)
+                        if s_c1 == 2 && s_ssize > 8 && call_float_idx < 8 {
+                            emit_load_rax_from_stack(temp_slot_0)
+                            // movsd xmmN, [rax+8] — F2 0F 10 (0x40 + N*8) 08
+                            emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x10)
+                            uint8 s_modrm1 = 0x40 + call_float_idx * 8
+                            emit_byte(s_modrm1); emit_byte(0x08)
+                            call_float_idx = call_float_idx + 1
+                        }
                         // MEMORY class (>16 bytes) handled in future task
                     } else {
                         // Regular integer arg
@@ -6095,12 +6161,28 @@ fn gen_expr(uint64 node) {
             var_frame_size = var_count * 8
             uint64 rsrem = var_frame_size & 15
             if rsrem != 0 { var_frame_size = var_frame_size + 16 - rsrem }
-            emit_store_rax_to_stack(ret_soff)
+            uint64 rc0 = struct_abi_class0(ret_struct_si)
+            uint64 rc1 = struct_abi_class1(ret_struct_si)
+            // Eightbyte 0: store from rax or xmm0
+            if rc0 == 1 {
+                emit_store_rax_to_stack(ret_soff)
+            }
+            if rc0 == 2 {
+                // movsd [rsp+ret_soff], xmm0
+                emit_store_xmmN_f64(0, ret_soff)
+            }
             if ret_ssize > 8 {
-                // mov rax, rdx
-                emit_byte(0x48); emit_byte(0x89); emit_byte(0xD0)
+                // Eightbyte 1: store from rdx or xmm1
                 uint64 ret_soff2 = ret_soff + 8
-                emit_store_rax_to_stack(ret_soff2)
+                if rc1 == 1 {
+                    // mov rax, rdx
+                    emit_byte(0x48); emit_byte(0x89); emit_byte(0xD0)
+                    emit_store_rax_to_stack(ret_soff2)
+                }
+                if rc1 == 2 {
+                    // movsd [rsp+ret_soff2], xmm1
+                    emit_store_xmmN_f64(1, ret_soff2)
+                }
             }
             // lea rax, [rsp + ret_soff]
             if ret_soff < 128 {
@@ -6731,6 +6813,18 @@ fn gen_stmt(uint64 node) {
             }
             // Evaluate value
             gen_expr(wval)
+            if expr_is_float == 1 {
+                // f64: move xmm0 bits into rax so rax-based store path works
+                // movq rax, xmm0: 66 48 0F 7E C0
+                emit_byte(0x66); emit_byte(0x48); emit_byte(0x0F)
+                emit_byte(0x7E); emit_byte(0xC0)
+            }
+            if expr_is_float == 2 {
+                // f32: move xmm0 bits into eax
+                // movd eax, xmm0: 66 0F 7E C0
+                emit_byte(0x66); emit_byte(0x0F)
+                emit_byte(0x7E); emit_byte(0xC0)
+            }
             emit_store_rax_to_stack(temp_slot_0)
             // Compute address: base + field_offset
             uint64 si = struct_var_lookup(obj_tok)
@@ -6867,24 +6961,43 @@ fn gen_stmt(uint64 node) {
         } else if wec != 0 {
             gen_expr(wec)
         }
-        // If returning a struct, load eightbytes into rax/rdx
+        // If returning a struct, load eightbytes into rax/rdx or xmm0/xmm1
         if expr_is_struct != 0xFFFFFFFF {
             uint64 ret_si = expr_is_struct
             uint64 ret_size = struct_total_size(ret_si)
+            uint64 ret_c0 = struct_abi_class0(ret_si)
+            uint64 ret_c1 = struct_abi_class1(ret_si)
             // rax = pointer to struct data
             emit_store_rax_to_stack(temp_slot_0)
-            // Load eightbyte 0 into rax: mov rax, [rax]
-            emit_byte(0x48); emit_byte(0x8B); emit_byte(0x00)
+            if ret_c0 == 1 {
+                // INTEGER eightbyte 0: load [ptr+0] into rax
+                emit_byte(0x48); emit_byte(0x8B); emit_byte(0x00)
+                if ret_size > 8 {
+                    emit_store_rax_to_stack(temp_slot_1)
+                }
+            }
+            if ret_c0 == 2 {
+                // SSE eightbyte 0: movsd xmm0, [rax] — F2 0F 10 00
+                emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x10); emit_byte(0x00)
+            }
             if ret_size > 8 {
-                // Save eightbyte 0
-                emit_store_rax_to_stack(temp_slot_1)
-                // Load eightbyte 1: mov rax, [saved_ptr+8]
-                emit_load_rax_from_stack(temp_slot_0)
-                emit_byte(0x48); emit_byte(0x8B); emit_byte(0x40); emit_byte(0x08)
-                // mov rdx, rax
-                emit_byte(0x48); emit_byte(0x89); emit_byte(0xC2)
-                // Restore eightbyte 0 to rax
-                emit_load_rax_from_stack(temp_slot_1)
+                if ret_c1 == 1 {
+                    // INTEGER eightbyte 1: load [ptr+8] into rdx
+                    emit_load_rax_from_stack(temp_slot_0)
+                    emit_byte(0x48); emit_byte(0x8B); emit_byte(0x40); emit_byte(0x08)
+                    emit_byte(0x48); emit_byte(0x89); emit_byte(0xC2) // mov rdx, rax
+                    if ret_c0 == 1 {
+                        emit_load_rax_from_stack(temp_slot_1)
+                    }
+                }
+                if ret_c1 == 2 {
+                    // SSE eightbyte 1: movsd xmm1, [rax+8] — F2 0F 10 48 08
+                    emit_load_rax_from_stack(temp_slot_0)
+                    emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x10); emit_byte(0x48); emit_byte(0x08)
+                    if ret_c0 == 1 {
+                        emit_load_rax_from_stack(temp_slot_1)
+                    }
+                }
             }
             expr_is_struct = 0xFFFFFFFF
         }
@@ -7815,6 +7928,19 @@ fn gen_function(uint64 fn_node) {
                             }
                         }
                         int_pidx = int_pidx + 1
+                    }
+
+                    // SSE eightbyte 0: spill from xmmN to [rsp + struct_area]
+                    if sv_c0 == 2 {
+                        emit_store_xmmN_f64(float_pidx, struct_area)
+                        float_pidx = float_pidx + 1
+                    }
+
+                    // SSE eightbyte 1: spill from xmmN to [rsp + struct_area + 8]
+                    if sv_c1 == 2 && sv_ssize > 8 {
+                        uint64 sv_sa2 = struct_area + 8
+                        emit_store_xmmN_f64(float_pidx, sv_sa2)
+                        float_pidx = float_pidx + 1
                     }
 
                     // Store pointer to struct area in the variable's slot

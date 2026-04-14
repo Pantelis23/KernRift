@@ -2120,6 +2120,23 @@ fn make(uint64 v) -> P { return P { v, v + 1 } }
 fn sum(P p) -> uint64 { return p.x + p.y }
 fn main() { exit(sum(make(10))) }' 21
 
+# --- Struct pass-by-value SSE (float eightbytes) tests ---
+run_test "struct_pass_f64" 'struct V { f64 x; f64 y }
+fn sum(V v) -> f64 { return v.x + v.y }
+fn main() {
+    V v; v.x = 3.0; v.y = 4.0
+    f64 r = sum(v)
+    exit(f64_to_int(r))
+}' 7
+
+run_test "struct_pass_mixed" 'struct M { uint64 id; f64 val }
+fn get_val(M m) -> f64 { return m.val }
+fn main() {
+    M m; m.id = 1; m.val = 42.0
+    f64 r = get_val(m)
+    exit(f64_to_int(r))
+}' 42
+
 # --- Summary ---
 echo ""
 echo "=== Results: $PASS/$TOTAL passed, $FAIL failed ==="
