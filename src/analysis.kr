@@ -1355,6 +1355,88 @@ fn sema_check_returns(uint64 root) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Unreachable code detection
+// ---------------------------------------------------------------------------
+// Walk each block's statement list. After a return/break/continue/exit(),
+// any subsequent statement is unreachable. Emit warning (severity 1, msg 5)
+// once per block, then stop scanning that block.
+
+fn sema_ur_block(uint64 block_node) {
+    uint64 terminated = 0
+    uint32 child = ast_child(block_node)
+    uint64 wchild = child
+    while wchild != 0 {
+        if terminated != 0 {
+            // This statement is unreachable
+            uint32 ur_tok = ast_tok(wchild)
+            if ur_tok == 0 { ur_tok = ast_data1(wchild) }
+            if ur_tok == 0 { ur_tok = ast_data2(wchild) }
+            uint64 wur = ur_tok
+            if wur != 0 {
+                diag_emit(wur, 1, 5)
+            }
+            // Only warn once per block
+            break
+        }
+        uint32 sk = ast_kind(wchild)
+        uint64 wsk = sk
+        // Check if this statement terminates the block
+        if wsk == 12 { terminated = 1 }
+        if wsk == 17 { terminated = 1 }
+        if wsk == 18 { terminated = 1 }
+        // Check for exit() call: ExprStmt(16) containing Call(35) to "exit"
+        if wsk == 16 {
+            uint32 expr_child = ast_child(wchild)
+            uint32 expr_kind = ast_kind(expr_child)
+            uint64 wek = expr_kind
+            if wek == 35 {
+                uint32 callee = ast_data1(expr_child)
+                uint64 wcallee = callee
+                if sema_tok_matches(wcallee, "exit", 4) != 0 {
+                    terminated = 1
+                }
+            }
+        }
+        // Recurse into sub-blocks (if/else, while, nested blocks)
+        if wsk == 13 {
+            uint32 then_body = ast_data1(wchild)
+            uint64 wthen = then_body
+            if wthen != 0 { sema_ur_block(wthen) }
+            uint32 else_body = ast_data2(wchild)
+            uint64 welse = else_body
+            if welse != 0 { sema_ur_block(welse) }
+        }
+        if wsk == 14 {
+            uint32 while_body = ast_data1(wchild)
+            uint64 wwbody = while_body
+            if wwbody != 0 { sema_ur_block(wwbody) }
+        }
+        if wsk == 15 {
+            sema_ur_block(wchild)
+        }
+        uint32 nxt = ast_next(wchild)
+        wchild = nxt
+    }
+}
+
+fn sema_check_unreachable(uint64 root) {
+    uint32 child = ast_child(root)
+    uint64 wchild = child
+    while wchild != 0 {
+        uint32 ck = ast_kind(wchild)
+        if ck == 2 {
+            uint32 body = ast_data3(wchild)
+            uint64 wbody = body
+            if wbody != 0 {
+                sema_ur_block(wbody)
+            }
+        }
+        uint32 nxt = ast_next(wchild)
+        wchild = nxt
+    }
+}
+
 // Entry point for semantic validation
 @export
 fn run_semantic_checks(uint64 root, uint64 source, uint64 tok_buf) -> uint64 {
@@ -1363,5 +1445,6 @@ fn run_semantic_checks(uint64 root, uint64 source, uint64 tok_buf) -> uint64 {
     sema_collect_signatures(root)
     sema_check_functions(root)
     sema_check_returns(root)
+    sema_check_unreachable(root)
     return sema_errors + diag_error_count
 }
