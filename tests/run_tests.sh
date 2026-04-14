@@ -2391,6 +2391,46 @@ else
 fi
 rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_test_$$
 
+# Overflow test
+TOTAL=$((TOTAL + 1))
+printf 'fn main() { uint64 a = 9223372036854775807; uint64 b = a + a; exit(0) }\n' > "$REPO_ROOT/test_tmp_$$.kr"
+if $KRC $KRC_FLAGS --debug "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_test_$$ > /dev/null 2>&1; then
+    chmod +x /tmp/krc_test_$$
+    /tmp/krc_test_$$ > /dev/null 2>&1
+    actual=$?
+    if [ "$actual" != "0" ]; then
+        PASS=$((PASS + 1))
+        echo "  debug_overflow: PASS (trapped, exit=$actual)"
+    else
+        echo "FAIL: debug_overflow (should have trapped)"
+        FAIL=$((FAIL + 1))
+    fi
+else
+    echo "FAIL: debug_overflow (compilation failed)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_test_$$
+
+# Null pointer test
+TOTAL=$((TOTAL + 1))
+printf 'fn main() { uint64 p = 0; uint64 v = load64(p); exit(v) }\n' > "$REPO_ROOT/test_tmp_$$.kr"
+if $KRC $KRC_FLAGS --debug "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_test_$$ > /dev/null 2>&1; then
+    chmod +x /tmp/krc_test_$$
+    /tmp/krc_test_$$ > /dev/null 2>&1
+    actual=$?
+    if [ "$actual" != "0" ]; then
+        PASS=$((PASS + 1))
+        echo "  debug_null_ptr: PASS (trapped, exit=$actual)"
+    else
+        echo "FAIL: debug_null_ptr (should have trapped)"
+        FAIL=$((FAIL + 1))
+    fi
+else
+    echo "FAIL: debug_null_ptr (compilation failed)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_test_$$
+
 # --- Summary ---
 echo ""
 echo "=== Results: $PASS/$TOTAL passed, $FAIL failed ==="

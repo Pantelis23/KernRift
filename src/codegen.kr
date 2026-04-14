@@ -3068,9 +3068,82 @@ fn gen_expr(uint64 node) {
         uint32 op_kind = 0
         unsafe { *(p as uint32) -> op_kind }
 
-        if op_kind == 30 { emit_add_rax_rcx() }         // +
-        else if op_kind == 31 { emit_sub_rax_rcx() }    // -
-        else if op_kind == 22 { emit_mul_rax_rcx() }    // *
+        if op_kind == 30 {
+            emit_add_rax_rcx()
+            if debug_mode != 0 {
+                // Overflow check: jno rel8 — skip trap if no overflow
+                emit_byte(0x71)
+                uint64 jo_add = out_len
+                emit_byte(0)
+                emit_mov_rax_imm(1)
+                emit_mov_rdi_rax()
+                if target_os == 2 {
+                    emit_mov_rcx_rax()
+                    emit_win_alloc_stack(0x20)
+                    emit_win_call_iat(0)
+                } else if target_os == 1 {
+                    emit_mov_rax_imm(0x2000001)
+                    emit_byte(0x0F); emit_byte(0x05)
+                } else {
+                    emit_mov_rax_imm(231)
+                    emit_byte(0x0F); emit_byte(0x05)
+                }
+                uint64 jo_add_skip = out_len - jo_add - 1
+                uint8 jo_add_s8 = jo_add_skip
+                uint64 jo_add_pp = out_buf + jo_add
+                unsafe { *(jo_add_pp as uint8) = jo_add_s8 }
+            }
+        }
+        else if op_kind == 31 {
+            emit_sub_rax_rcx()
+            if debug_mode != 0 {
+                emit_byte(0x71)
+                uint64 jo_sub = out_len
+                emit_byte(0)
+                emit_mov_rax_imm(1)
+                emit_mov_rdi_rax()
+                if target_os == 2 {
+                    emit_mov_rcx_rax()
+                    emit_win_alloc_stack(0x20)
+                    emit_win_call_iat(0)
+                } else if target_os == 1 {
+                    emit_mov_rax_imm(0x2000001)
+                    emit_byte(0x0F); emit_byte(0x05)
+                } else {
+                    emit_mov_rax_imm(231)
+                    emit_byte(0x0F); emit_byte(0x05)
+                }
+                uint64 jo_sub_skip = out_len - jo_sub - 1
+                uint8 jo_sub_s8 = jo_sub_skip
+                uint64 jo_sub_pp = out_buf + jo_sub
+                unsafe { *(jo_sub_pp as uint8) = jo_sub_s8 }
+            }
+        }
+        else if op_kind == 22 {
+            emit_mul_rax_rcx()
+            if debug_mode != 0 {
+                emit_byte(0x71)
+                uint64 jo_mul = out_len
+                emit_byte(0)
+                emit_mov_rax_imm(1)
+                emit_mov_rdi_rax()
+                if target_os == 2 {
+                    emit_mov_rcx_rax()
+                    emit_win_alloc_stack(0x20)
+                    emit_win_call_iat(0)
+                } else if target_os == 1 {
+                    emit_mov_rax_imm(0x2000001)
+                    emit_byte(0x0F); emit_byte(0x05)
+                } else {
+                    emit_mov_rax_imm(231)
+                    emit_byte(0x0F); emit_byte(0x05)
+                }
+                uint64 jo_mul_skip = out_len - jo_mul - 1
+                uint8 jo_mul_s8 = jo_mul_skip
+                uint64 jo_mul_pp = out_buf + jo_mul
+                unsafe { *(jo_mul_pp as uint8) = jo_mul_s8 }
+            }
+        }
         else if op_kind == 32 {
             // / division: rax / rcx
             if debug_mode != 0 {
@@ -3177,9 +3250,81 @@ fn gen_expr(uint64 node) {
             emit_byte(0xE8)
         }
         // Compound assignment ops (desugared by parser: x += y → x = x + y)
-        else if op_kind == 45 { emit_add_rax_rcx() }         // +=
-        else if op_kind == 46 { emit_sub_rax_rcx() }         // -=
-        else if op_kind == 47 { emit_mul_rax_rcx() }         // *=
+        else if op_kind == 45 {
+            emit_add_rax_rcx()
+            if debug_mode != 0 {
+                emit_byte(0x71)
+                uint64 jo_ca = out_len
+                emit_byte(0)
+                emit_mov_rax_imm(1)
+                emit_mov_rdi_rax()
+                if target_os == 2 {
+                    emit_mov_rcx_rax()
+                    emit_win_alloc_stack(0x20)
+                    emit_win_call_iat(0)
+                } else if target_os == 1 {
+                    emit_mov_rax_imm(0x2000001)
+                    emit_byte(0x0F); emit_byte(0x05)
+                } else {
+                    emit_mov_rax_imm(231)
+                    emit_byte(0x0F); emit_byte(0x05)
+                }
+                uint64 jo_ca_skip = out_len - jo_ca - 1
+                uint8 jo_ca_s8 = jo_ca_skip
+                uint64 jo_ca_pp = out_buf + jo_ca
+                unsafe { *(jo_ca_pp as uint8) = jo_ca_s8 }
+            }
+        }
+        else if op_kind == 46 {
+            emit_sub_rax_rcx()
+            if debug_mode != 0 {
+                emit_byte(0x71)
+                uint64 jo_cs = out_len
+                emit_byte(0)
+                emit_mov_rax_imm(1)
+                emit_mov_rdi_rax()
+                if target_os == 2 {
+                    emit_mov_rcx_rax()
+                    emit_win_alloc_stack(0x20)
+                    emit_win_call_iat(0)
+                } else if target_os == 1 {
+                    emit_mov_rax_imm(0x2000001)
+                    emit_byte(0x0F); emit_byte(0x05)
+                } else {
+                    emit_mov_rax_imm(231)
+                    emit_byte(0x0F); emit_byte(0x05)
+                }
+                uint64 jo_cs_skip = out_len - jo_cs - 1
+                uint8 jo_cs_s8 = jo_cs_skip
+                uint64 jo_cs_pp = out_buf + jo_cs
+                unsafe { *(jo_cs_pp as uint8) = jo_cs_s8 }
+            }
+        }
+        else if op_kind == 47 {
+            emit_mul_rax_rcx()
+            if debug_mode != 0 {
+                emit_byte(0x71)
+                uint64 jo_cm = out_len
+                emit_byte(0)
+                emit_mov_rax_imm(1)
+                emit_mov_rdi_rax()
+                if target_os == 2 {
+                    emit_mov_rcx_rax()
+                    emit_win_alloc_stack(0x20)
+                    emit_win_call_iat(0)
+                } else if target_os == 1 {
+                    emit_mov_rax_imm(0x2000001)
+                    emit_byte(0x0F); emit_byte(0x05)
+                } else {
+                    emit_mov_rax_imm(231)
+                    emit_byte(0x0F); emit_byte(0x05)
+                }
+                uint64 jo_cm_skip = out_len - jo_cm - 1
+                uint8 jo_cm_s8 = jo_cm_skip
+                uint64 jo_cm_pp = out_buf + jo_cm
+                unsafe { *(jo_cm_pp as uint8) = jo_cm_s8 }
+            }
+        }
         else if op_kind == 50 {
             emit_byte(0x48); emit_byte(0x21); emit_byte(0xC8) // &=
         }
@@ -5474,6 +5619,21 @@ fn gen_expr(uint64 node) {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr(wfa)
+            if debug_mode != 0 {
+                emit_byte(0x48); emit_byte(0x85); emit_byte(0xC0)  // test rax, rax
+                emit_byte(0x75)  // jnz rel8
+                uint64 jnz_l8 = out_len
+                emit_byte(0)
+                emit_mov_rax_imm(1)
+                emit_mov_rdi_rax()
+                if target_os == 2 { emit_mov_rcx_rax(); emit_win_alloc_stack(0x20); emit_win_call_iat(0) }
+                else if target_os == 1 { emit_mov_rax_imm(0x2000001); emit_byte(0x0F); emit_byte(0x05) }
+                else { emit_mov_rax_imm(231); emit_byte(0x0F); emit_byte(0x05) }
+                uint64 l8_skip = out_len - jnz_l8 - 1
+                uint8 l8_s8 = l8_skip
+                uint64 l8_pp = out_buf + jnz_l8
+                unsafe { *(l8_pp as uint8) = l8_s8 }
+            }
             // movzx rax, byte [rax]
             emit_byte(0x48); emit_byte(0x0F); emit_byte(0xB6); emit_byte(0x00)
             return
@@ -5482,6 +5642,21 @@ fn gen_expr(uint64 node) {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr(wfa)
+            if debug_mode != 0 {
+                emit_byte(0x48); emit_byte(0x85); emit_byte(0xC0)
+                emit_byte(0x75)
+                uint64 jnz_l16 = out_len
+                emit_byte(0)
+                emit_mov_rax_imm(1)
+                emit_mov_rdi_rax()
+                if target_os == 2 { emit_mov_rcx_rax(); emit_win_alloc_stack(0x20); emit_win_call_iat(0) }
+                else if target_os == 1 { emit_mov_rax_imm(0x2000001); emit_byte(0x0F); emit_byte(0x05) }
+                else { emit_mov_rax_imm(231); emit_byte(0x0F); emit_byte(0x05) }
+                uint64 l16_skip = out_len - jnz_l16 - 1
+                uint8 l16_s8 = l16_skip
+                uint64 l16_pp = out_buf + jnz_l16
+                unsafe { *(l16_pp as uint8) = l16_s8 }
+            }
             // movzx rax, word [rax]
             emit_byte(0x48); emit_byte(0x0F); emit_byte(0xB7); emit_byte(0x00)
             return
@@ -5490,6 +5665,21 @@ fn gen_expr(uint64 node) {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr(wfa)
+            if debug_mode != 0 {
+                emit_byte(0x48); emit_byte(0x85); emit_byte(0xC0)
+                emit_byte(0x75)
+                uint64 jnz_l32 = out_len
+                emit_byte(0)
+                emit_mov_rax_imm(1)
+                emit_mov_rdi_rax()
+                if target_os == 2 { emit_mov_rcx_rax(); emit_win_alloc_stack(0x20); emit_win_call_iat(0) }
+                else if target_os == 1 { emit_mov_rax_imm(0x2000001); emit_byte(0x0F); emit_byte(0x05) }
+                else { emit_mov_rax_imm(231); emit_byte(0x0F); emit_byte(0x05) }
+                uint64 l32_skip = out_len - jnz_l32 - 1
+                uint8 l32_s8 = l32_skip
+                uint64 l32_pp = out_buf + jnz_l32
+                unsafe { *(l32_pp as uint8) = l32_s8 }
+            }
             // mov eax, [rax]  (implicit zero-extend of upper 32 bits)
             emit_byte(0x8B); emit_byte(0x00)
             return
@@ -5498,6 +5688,21 @@ fn gen_expr(uint64 node) {
             uint32 first_arg = ast_child(node)
             uint64 wfa = first_arg
             gen_expr(wfa)
+            if debug_mode != 0 {
+                emit_byte(0x48); emit_byte(0x85); emit_byte(0xC0)
+                emit_byte(0x75)
+                uint64 jnz_l64 = out_len
+                emit_byte(0)
+                emit_mov_rax_imm(1)
+                emit_mov_rdi_rax()
+                if target_os == 2 { emit_mov_rcx_rax(); emit_win_alloc_stack(0x20); emit_win_call_iat(0) }
+                else if target_os == 1 { emit_mov_rax_imm(0x2000001); emit_byte(0x0F); emit_byte(0x05) }
+                else { emit_mov_rax_imm(231); emit_byte(0x0F); emit_byte(0x05) }
+                uint64 l64_skip = out_len - jnz_l64 - 1
+                uint8 l64_s8 = l64_skip
+                uint64 l64_pp = out_buf + jnz_l64
+                unsafe { *(l64_pp as uint8) = l64_s8 }
+            }
             // mov rax, [rax]
             emit_byte(0x48); emit_byte(0x8B); emit_byte(0x00)
             return
@@ -5515,6 +5720,23 @@ fn gen_expr(uint64 node) {
             // mov rcx, rax
             emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
             emit_load_rax_from_stack(temp_slot_0)
+            if debug_mode != 0 {
+                emit_byte(0x48); emit_byte(0x85); emit_byte(0xC0)
+                emit_byte(0x75)
+                uint64 jnz_s8 = out_len
+                emit_byte(0)
+                emit_mov_rax_imm(1)
+                emit_mov_rdi_rax()
+                if target_os == 2 { emit_mov_rcx_rax(); emit_win_alloc_stack(0x20); emit_win_call_iat(0) }
+                else if target_os == 1 { emit_mov_rax_imm(0x2000001); emit_byte(0x0F); emit_byte(0x05) }
+                else { emit_mov_rax_imm(231); emit_byte(0x0F); emit_byte(0x05) }
+                uint64 s8_skip = out_len - jnz_s8 - 1
+                uint8 s8_s = s8_skip
+                uint64 s8_pp = out_buf + jnz_s8
+                unsafe { *(s8_pp as uint8) = s8_s }
+                // Reload rax (clobbered by null check exit path setup)
+                emit_load_rax_from_stack(temp_slot_0)
+            }
             // mov [rax], cl
             emit_byte(0x88); emit_byte(0x08)
             return
@@ -5529,6 +5751,22 @@ fn gen_expr(uint64 node) {
             gen_expr(wa2)
             emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
             emit_load_rax_from_stack(temp_slot_0)
+            if debug_mode != 0 {
+                emit_byte(0x48); emit_byte(0x85); emit_byte(0xC0)
+                emit_byte(0x75)
+                uint64 jnz_s16 = out_len
+                emit_byte(0)
+                emit_mov_rax_imm(1)
+                emit_mov_rdi_rax()
+                if target_os == 2 { emit_mov_rcx_rax(); emit_win_alloc_stack(0x20); emit_win_call_iat(0) }
+                else if target_os == 1 { emit_mov_rax_imm(0x2000001); emit_byte(0x0F); emit_byte(0x05) }
+                else { emit_mov_rax_imm(231); emit_byte(0x0F); emit_byte(0x05) }
+                uint64 s16_skip = out_len - jnz_s16 - 1
+                uint8 s16_s = s16_skip
+                uint64 s16_pp = out_buf + jnz_s16
+                unsafe { *(s16_pp as uint8) = s16_s }
+                emit_load_rax_from_stack(temp_slot_0)
+            }
             // mov [rax], cx  (0x66 prefix = 16-bit operand)
             emit_byte(0x66); emit_byte(0x89); emit_byte(0x08)
             return
@@ -5543,6 +5781,22 @@ fn gen_expr(uint64 node) {
             gen_expr(wa2)
             emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
             emit_load_rax_from_stack(temp_slot_0)
+            if debug_mode != 0 {
+                emit_byte(0x48); emit_byte(0x85); emit_byte(0xC0)
+                emit_byte(0x75)
+                uint64 jnz_s32 = out_len
+                emit_byte(0)
+                emit_mov_rax_imm(1)
+                emit_mov_rdi_rax()
+                if target_os == 2 { emit_mov_rcx_rax(); emit_win_alloc_stack(0x20); emit_win_call_iat(0) }
+                else if target_os == 1 { emit_mov_rax_imm(0x2000001); emit_byte(0x0F); emit_byte(0x05) }
+                else { emit_mov_rax_imm(231); emit_byte(0x0F); emit_byte(0x05) }
+                uint64 s32_skip = out_len - jnz_s32 - 1
+                uint8 s32_s = s32_skip
+                uint64 s32_pp = out_buf + jnz_s32
+                unsafe { *(s32_pp as uint8) = s32_s }
+                emit_load_rax_from_stack(temp_slot_0)
+            }
             // mov [rax], ecx
             emit_byte(0x89); emit_byte(0x08)
             return
@@ -5557,6 +5811,22 @@ fn gen_expr(uint64 node) {
             gen_expr(wa2)
             emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
             emit_load_rax_from_stack(temp_slot_0)
+            if debug_mode != 0 {
+                emit_byte(0x48); emit_byte(0x85); emit_byte(0xC0)
+                emit_byte(0x75)
+                uint64 jnz_s64 = out_len
+                emit_byte(0)
+                emit_mov_rax_imm(1)
+                emit_mov_rdi_rax()
+                if target_os == 2 { emit_mov_rcx_rax(); emit_win_alloc_stack(0x20); emit_win_call_iat(0) }
+                else if target_os == 1 { emit_mov_rax_imm(0x2000001); emit_byte(0x0F); emit_byte(0x05) }
+                else { emit_mov_rax_imm(231); emit_byte(0x0F); emit_byte(0x05) }
+                uint64 s64_skip = out_len - jnz_s64 - 1
+                uint8 s64_s = s64_skip
+                uint64 s64_pp = out_buf + jnz_s64
+                unsafe { *(s64_pp as uint8) = s64_s }
+                emit_load_rax_from_stack(temp_slot_0)
+            }
             // mov [rax], rcx
             emit_byte(0x48); emit_byte(0x89); emit_byte(0x08)
             return
