@@ -578,6 +578,194 @@ fn diag_report_all() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Scope stack and variable tracking (F5 Task 2)
+// ---------------------------------------------------------------------------
+
+// Scope stack: stores first_var_idx at each scope depth
+static uint64 sema_scope_stack = 0
+static uint64 sema_scope_depth = 0
+
+// Variable tracking: [name_tok(4), type_id(2), flags(2)] × 4096
+// flags: bit 0 = initialized, bit 1 = used, bit 2 = is_param
+static uint64 sema_var_table_v = 0
+static uint64 sema_var_count_v = 0
+
+fn sema_scope_init() {
+    if sema_scope_stack == 0 { sema_scope_stack = alloc(64 * 8) }
+    if sema_var_table_v == 0 { sema_var_table_v = alloc(4096 * 8) }
+    sema_scope_depth = 0
+    sema_var_count_v = 0
+}
+
+fn sema_scope_push() {
+    if sema_scope_depth >= 64 { return }
+    uint64 entry = sema_scope_stack + sema_scope_depth * 8
+    uint32 vc = sema_var_count_v
+    unsafe { *(entry as uint32) = vc }
+    sema_scope_depth = sema_scope_depth + 1
+}
+
+fn sema_scope_pop() {
+    if sema_scope_depth == 0 { return }
+    sema_scope_depth = sema_scope_depth - 1
+    uint64 entry = sema_scope_stack + sema_scope_depth * 8
+    uint32 first_var = 0
+    unsafe { *(entry as uint32) -> first_var }
+    uint64 wfirst = first_var
+    // Check for unused variables in the popped scope
+    uint64 vi = wfirst
+    while vi < sema_var_count_v {
+        uint64 ve = sema_var_table_v + vi * 8
+        uint32 name_tok = 0
+        unsafe { *(ve as uint32) -> name_tok }
+        uint64 wname = name_tok
+        uint64 flags_addr = ve + 6
+        uint16 flags = 0
+        unsafe { *(flags_addr as uint16) -> flags }
+        uint64 wflags = flags
+        uint64 used = wflags & 2
+        // Check if name starts with '_' — suppress unused warning
+        uint64 starts_underscore = 0
+        uint64 nstart = sema_tok_text_start(wname)
+        uint64 nch = 0
+        uint64 np = sema_source + nstart
+        unsafe { *(np as uint8) -> nch }
+        if nch == 95 { starts_underscore = 1 }  // '_' = 95
+        if used == 0 && starts_underscore == 0 {
+            diag_emit(wname, 1, 4)  // warning: unused variable
+        }
+        vi = vi + 1
+    }
+    sema_var_count_v = wfirst
+}
+
+fn sema_var_declare(uint64 name_tok, uint64 type_id, uint64 is_param) {
+    // Check for redeclaration in current scope
+    if sema_scope_depth > 0 {
+        uint64 scope_entry = sema_scope_stack + (sema_scope_depth - 1) * 8
+        uint32 scope_first = 0
+        unsafe { *(scope_entry as uint32) -> scope_first }
+        uint64 wfirst = scope_first
+        uint64 vi = wfirst
+        while vi < sema_var_count_v {
+            uint64 ve = sema_var_table_v + vi * 8
+            uint32 existing = 0
+            unsafe { *(ve as uint32) -> existing }
+            uint64 we = existing
+            if sema_tok_matches_tok(we, name_tok) != 0 {
+                diag_emit(name_tok, 0, 3)  // error: redefinition
+                return
+            }
+            vi = vi + 1
+        }
+    }
+    // Register new variable
+    if sema_var_count_v >= 4096 { return }
+    uint64 entry = sema_var_table_v + sema_var_count_v * 8
+    uint32 nt = name_tok
+    unsafe { *(entry as uint32) = nt }
+    uint64 tid_addr = entry + 4
+    uint16 tid = type_id
+    unsafe { *(tid_addr as uint16) = tid }
+    uint64 flags_addr = entry + 6
+    uint16 fl = 0
+    if is_param != 0 { fl = 5 }  // bits 0+2 = initialized + is_param
+    unsafe { *(flags_addr as uint16) = fl }
+    sema_var_count_v = sema_var_count_v + 1
+}
+
+fn sema_var_lookup_v(uint64 name_tok) -> uint64 {
+    // Walk backwards through all variables (inner scopes first)
+    uint64 vi = sema_var_count_v
+    while vi > 0 {
+        vi = vi - 1
+        uint64 ve = sema_var_table_v + vi * 8
+        uint32 stored = 0
+        unsafe { *(ve as uint32) -> stored }
+        uint64 ws = stored
+        if sema_tok_matches_tok(ws, name_tok) != 0 {
+            return vi
+        }
+    }
+    return 0xFFFFFFFF
+}
+
+fn sema_var_mark_used(uint64 var_idx) {
+    uint64 flags_addr = sema_var_table_v + var_idx * 8 + 6
+    uint16 flags = 0
+    unsafe { *(flags_addr as uint16) -> flags }
+    uint16 new_flags = flags | 2
+    unsafe { *(flags_addr as uint16) = new_flags }
+}
+
+fn sema_var_mark_init(uint64 var_idx) {
+    uint64 flags_addr = sema_var_table_v + var_idx * 8 + 6
+    uint16 flags = 0
+    unsafe { *(flags_addr as uint16) -> flags }
+    uint16 new_flags = flags | 1
+    unsafe { *(flags_addr as uint16) = new_flags }
+}
+
+fn sema_var_is_init(uint64 var_idx) -> uint64 {
+    uint64 flags_addr = sema_var_table_v + var_idx * 8 + 6
+    uint16 flags = 0
+    unsafe { *(flags_addr as uint16) -> flags }
+    uint64 wf = flags
+    return wf & 1
+}
+
+fn sema_var_type_id(uint64 var_idx) -> uint64 {
+    uint64 tid_addr = sema_var_table_v + var_idx * 8 + 4
+    uint16 tid = 0
+    unsafe { *(tid_addr as uint16) -> tid }
+    return tid
+}
+
+fn sema_tok_matches_tok(uint64 tok_a, uint64 tok_b) -> uint64 {
+    uint64 a_start = sema_tok_text_start(tok_a)
+    uint64 a_len = sema_tok_text_len(tok_a)
+    uint64 b_start = sema_tok_text_start(tok_b)
+    uint64 b_len = sema_tok_text_len(tok_b)
+    if a_len != b_len { return 0 }
+    uint64 i = 0
+    while i < a_len {
+        uint64 pa = sema_source + a_start + i
+        uint64 pb = sema_source + b_start + i
+        uint64 ca = 0
+        uint64 cb = 0
+        unsafe { *(pa as uint8) -> ca }
+        unsafe { *(pb as uint8) -> cb }
+        if ca != cb { return 0 }
+        i = i + 1
+    }
+    return 1
+}
+
+fn sema_tok_to_type_id(uint64 tok) -> uint64 {
+    uint64 tk = sema_tok_kind(tok)
+    if tk == 80 || tk == 84 { return 1 }  // u8/uint8
+    if tk == 81 || tk == 85 { return 2 }  // u16/uint16
+    if tk == 82 || tk == 86 { return 3 }  // u32/uint32
+    if tk == 83 || tk == 87 { return 4 }  // u64/uint64
+    if tk == 94 { return 5 }              // f16
+    if tk == 95 { return 6 }              // f32
+    if tk == 96 { return 7 }              // f64
+    // Check if struct name
+    if tk == 1 {
+        uint64 si = struct_lookup(tok)
+        if si != 0xFFFFFFFF { return 64 + si }
+    }
+    return 4  // default u64
+}
+
+fn sema_tok_kind(uint64 tok_idx) -> uint64 {
+    uint64 p = sema_tok_buf + tok_idx * 16
+    uint32 val = 0
+    unsafe { *(p as uint32) -> val }
+    return val
+}
+
 fn sema_tok_matches(uint64 tok_idx, uint64 target, uint64 target_len) -> uint64 {
     uint64 tlen = sema_tok_text_len(tok_idx)
     if tlen != target_len { return 0 }
