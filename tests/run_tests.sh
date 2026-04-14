@@ -2503,6 +2503,29 @@ rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_g_$$ /tmp/krc_nog_$$
 
 fi  # end x86_64 + readelf gate
 
+# --- IR backend test ---
+echo ""
+echo "--- IR backend test ---"
+TOTAL=$((TOTAL + 1))
+REPO_ROOT="$DIR/.."
+printf 'fn main() { exit(42) }\n' > "$REPO_ROOT/test_tmp_$$.kr"
+if $KRC $KRC_FLAGS --ir "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_ir_$$ > /dev/null 2>&1; then
+    chmod +x /tmp/krc_ir_$$
+    /tmp/krc_ir_$$ > /dev/null 2>&1
+    actual=$?
+    if [ "$actual" = "42" ]; then
+        PASS=$((PASS + 1))
+        echo "  ir_exit_42: PASS"
+    else
+        echo "FAIL: ir_exit_42 (expected 42, got $actual)"
+        FAIL=$((FAIL + 1))
+    fi
+else
+    echo "FAIL: ir_exit_42 (compilation failed)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_ir_$$
+
 # --- IR dump test ---
 echo ""
 echo "--- IR dump test ---"

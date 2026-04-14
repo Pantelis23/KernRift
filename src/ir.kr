@@ -1133,3 +1133,595 @@ fn ir_compute_liveness() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Register allocator — greedy coloring
+// ---------------------------------------------------------------------------
+
+static uint64 IR_NUM_REGS = 7
+
+// Map color index -> physical register code
+// Colors 0-6 -> rbx(3), r10(10), r11(11), r12(12), r13(13), r14(14), r15(15)
+static uint64 ir_phys_regs = 0
+
+fn ir_regalloc_init() {
+    if ir_phys_regs == 0 { ir_phys_regs = alloc(7 * 8) }
+    uint64 p0 = ir_phys_regs
+    unsafe { *(p0 as uint64) = 3 }
+    uint64 p1 = ir_phys_regs + 8
+    unsafe { *(p1 as uint64) = 10 }
+    uint64 p2 = ir_phys_regs + 16
+    unsafe { *(p2 as uint64) = 11 }
+    uint64 p3 = ir_phys_regs + 24
+    unsafe { *(p3 as uint64) = 12 }
+    uint64 p4 = ir_phys_regs + 32
+    unsafe { *(p4 as uint64) = 13 }
+    uint64 p5 = ir_phys_regs + 40
+    unsafe { *(p5 as uint64) = 14 }
+    uint64 p6 = ir_phys_regs + 48
+    unsafe { *(p6 as uint64) = 15 }
+}
+
+// Register assignment table: [color(4)] x vreg_count. 0xFFFFFFFF = spilled
+static uint64 ir_reg_assign = 0
+
+fn ir_get_phys_reg(uint64 vreg) -> uint64 {
+    if vreg == 0 { return 0xFFFFFFFF }
+    if vreg >= ir_vreg_next { return 0xFFFFFFFF }
+    uint64 p = ir_reg_assign + vreg * 4
+    uint32 color = 0
+    unsafe { *(p as uint32) -> color }
+    uint64 wcolor = color
+    if wcolor >= IR_NUM_REGS { return 0xFFFFFFFF }
+    uint64 rp = ir_phys_regs + wcolor * 8
+    uint64 phys = 0
+    unsafe { *(rp as uint64) -> phys }
+    return phys
+}
+
+// Greedy coloring: assign each vreg the next available color (round-robin).
+// Works when vreg count <= 7. For more, spill to stack.
+fn ir_graph_color() {
+    ir_reg_assign = alloc(ir_vreg_next * 4)
+    // vreg 0 is unused (sentinel), start from 1
+    uint64 i = 0
+    while i < ir_vreg_next {
+        uint64 p = ir_reg_assign + i * 4
+        uint32 color = 0xFFFFFFFF
+        if i >= 1 {
+            uint64 idx = i - 1
+            if idx < IR_NUM_REGS {
+                color = idx
+            }
+        }
+        unsafe { *(p as uint32) = color }
+        i = i + 1
+    }
+}
+
+// ---------------------------------------------------------------------------
+// x86_64 machine code emission helpers
+// ---------------------------------------------------------------------------
+
+// REX prefix: W=1 always. R=1 if reg1>=8. B=1 if reg2>=8.
+fn ir_x86_rex(uint64 reg1, uint64 reg2) -> uint8 {
+    uint8 rex = 0x48
+    if reg1 >= 8 { rex = rex | 4 }
+    if reg2 >= 8 { rex = rex | 1 }
+    return rex
+}
+
+fn ir_x86_modrm_rr(uint64 reg, uint64 rm) -> uint8 {
+    uint64 v = 0xC0 | ((reg & 7) << 3) | (rm & 7)
+    uint8 r = v
+    return r
+}
+
+fn ir_emit_mov_r64_r64(uint64 dst, uint64 src) {
+    if dst == src { return }
+    emit_byte(ir_x86_rex(src, dst))
+    emit_byte(0x89)
+    emit_byte(ir_x86_modrm_rr(src, dst))
+}
+
+fn ir_emit_mov_r64_imm64(uint64 dst, uint64 imm) {
+    uint8 rex = 0x48
+    if dst >= 8 { rex = rex | 1 }
+    emit_byte(rex)
+    uint64 opc = 0xB8 | (dst & 7)
+    uint8 opcode = opc
+    emit_byte(opcode)
+    emit_u64_le(imm)
+}
+
+fn ir_emit_add_r64_r64(uint64 dst, uint64 src) {
+    emit_byte(ir_x86_rex(src, dst))
+    emit_byte(0x01)
+    emit_byte(ir_x86_modrm_rr(src, dst))
+}
+
+fn ir_emit_sub_r64_r64(uint64 dst, uint64 src) {
+    emit_byte(ir_x86_rex(src, dst))
+    emit_byte(0x29)
+    emit_byte(ir_x86_modrm_rr(src, dst))
+}
+
+fn ir_emit_cmp_r64_r64(uint64 a, uint64 b) {
+    emit_byte(ir_x86_rex(b, a))
+    emit_byte(0x39)
+    emit_byte(ir_x86_modrm_rr(b, a))
+}
+
+fn ir_emit_test_r64_r64(uint64 a, uint64 b) {
+    emit_byte(ir_x86_rex(b, a))
+    emit_byte(0x85)
+    emit_byte(ir_x86_modrm_rr(b, a))
+}
+
+fn ir_emit_imul_r64_r64(uint64 dst, uint64 src) {
+    emit_byte(ir_x86_rex(dst, src))
+    emit_byte(0x0F)
+    emit_byte(0xAF)
+    emit_byte(ir_x86_modrm_rr(dst, src))
+}
+
+fn ir_emit_neg_r64(uint64 reg) {
+    uint8 rex = 0x48
+    if reg >= 8 { rex = rex | 1 }
+    emit_byte(rex)
+    emit_byte(0xF7)
+    uint64 v = 0xC0 | (3 << 3) | (reg & 7)
+    uint8 modrm = v
+    emit_byte(modrm)
+}
+
+fn ir_emit_not_r64(uint64 reg) {
+    uint8 rex = 0x48
+    if reg >= 8 { rex = rex | 1 }
+    emit_byte(rex)
+    emit_byte(0xF7)
+    uint64 v = 0xC0 | (2 << 3) | (reg & 7)
+    uint8 modrm = v
+    emit_byte(modrm)
+}
+
+// ---------------------------------------------------------------------------
+// Spill helpers
+// ---------------------------------------------------------------------------
+
+static uint64 ir_spill_base = 0
+static uint64 ir_spill_count = 0
+
+fn ir_spill_offset(uint64 vreg) -> uint64 {
+    // vreg >= (IR_NUM_REGS+1) are spilled (vregs are 1-based)
+    uint64 slot = vreg - IR_NUM_REGS - 1
+    return ir_spill_base + slot * 8
+}
+
+fn ir_emit_load_spill(uint64 dst_reg, uint64 vreg) {
+    // mov dst_reg, [rsp + spill_offset]
+    uint64 off = ir_spill_offset(vreg)
+    uint8 rex = 0x48
+    if dst_reg >= 8 { rex = rex | 4 }
+    emit_byte(rex)
+    emit_byte(0x8B)
+    if off < 128 {
+        uint64 v = 0x44 | ((dst_reg & 7) << 3)
+        uint8 modrm = v
+        emit_byte(modrm)
+        emit_byte(0x24)
+        uint8 o8 = off
+        emit_byte(o8)
+    } else {
+        uint64 v = 0x84 | ((dst_reg & 7) << 3)
+        uint8 modrm = v
+        emit_byte(modrm)
+        emit_byte(0x24)
+        emit_u32_le(off)
+    }
+}
+
+fn ir_emit_store_spill(uint64 src_reg, uint64 vreg) {
+    // mov [rsp + spill_offset], src_reg
+    uint64 off = ir_spill_offset(vreg)
+    uint8 rex = 0x48
+    if src_reg >= 8 { rex = rex | 4 }
+    emit_byte(rex)
+    emit_byte(0x89)
+    if off < 128 {
+        uint64 v = 0x44 | ((src_reg & 7) << 3)
+        uint8 modrm = v
+        emit_byte(modrm)
+        emit_byte(0x24)
+        uint8 o8 = off
+        emit_byte(o8)
+    } else {
+        uint64 v = 0x84 | ((src_reg & 7) << 3)
+        uint8 modrm = v
+        emit_byte(modrm)
+        emit_byte(0x24)
+        emit_u32_le(off)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Scratch register helpers: resolve vreg to physical reg or load spill
+// ---------------------------------------------------------------------------
+
+fn ir_resolve_src(uint64 vreg, uint64 scratch) -> uint64 {
+    // Returns the physical register holding the value of vreg.
+    // If vreg is spilled, loads it into scratch (0=rax, 1=rcx) and returns scratch.
+    if vreg == 0 { return scratch }
+    uint64 phys = ir_get_phys_reg(vreg)
+    if phys != 0xFFFFFFFF { return phys }
+    ir_emit_load_spill(scratch, vreg)
+    return scratch
+}
+
+// ---------------------------------------------------------------------------
+// Per-instruction emitter
+// ---------------------------------------------------------------------------
+
+fn ir_emit_x86_insn(uint64 ii) {
+    uint64 op = ir_insn_opcode(ii)
+    uint64 dest_v = ir_insn_dest(ii)
+    uint64 s1_v = ir_insn_src1(ii)
+    uint64 s2_v = ir_insn_src2(ii)
+    uint64 imm = ir_insn_imm(ii)
+
+    // Get physical registers (0xFFFFFFFF = spilled)
+    uint64 dst_r = ir_get_phys_reg(dest_v)
+
+    if op == 1 {
+        // IR_CONST: dst = imm64
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_imm64(dst_r, imm)
+        } else {
+            ir_emit_mov_r64_imm64(0, imm)
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 2 {
+        // IR_ADD
+        uint64 a_reg = ir_resolve_src(s1_v, 0)
+        uint64 b_reg = ir_resolve_src(s2_v, 1)
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, a_reg)
+            ir_emit_add_r64_r64(dst_r, b_reg)
+        } else {
+            ir_emit_mov_r64_r64(0, a_reg)
+            ir_emit_add_r64_r64(0, b_reg)
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 3 {
+        // IR_SUB
+        uint64 a_reg = ir_resolve_src(s1_v, 0)
+        uint64 b_reg = ir_resolve_src(s2_v, 1)
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, a_reg)
+            ir_emit_sub_r64_r64(dst_r, b_reg)
+        } else {
+            ir_emit_mov_r64_r64(0, a_reg)
+            ir_emit_sub_r64_r64(0, b_reg)
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 4 {
+        // IR_MUL: imul dst, src
+        uint64 a_reg = ir_resolve_src(s1_v, 0)
+        uint64 b_reg = ir_resolve_src(s2_v, 1)
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, a_reg)
+            ir_emit_imul_r64_r64(dst_r, b_reg)
+        } else {
+            ir_emit_mov_r64_r64(0, a_reg)
+            ir_emit_imul_r64_r64(0, b_reg)
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 12 {
+        // IR_NEG
+        uint64 a_reg = ir_resolve_src(s1_v, 0)
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, a_reg)
+            ir_emit_neg_r64(dst_r)
+        } else {
+            ir_emit_mov_r64_r64(0, a_reg)
+            ir_emit_neg_r64(0)
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 13 {
+        // IR_NOT
+        uint64 a_reg = ir_resolve_src(s1_v, 0)
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, a_reg)
+            ir_emit_not_r64(dst_r)
+        } else {
+            ir_emit_mov_r64_r64(0, a_reg)
+            ir_emit_not_r64(0)
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 42 {
+        // IR_RET: mov rax, src1
+        uint64 ret_r = ir_resolve_src(s1_v, 0)
+        if ret_r != 0 { ir_emit_mov_r64_r64(0, ret_r) }
+        return
+    }
+
+    if op == 43 {
+        // IR_RET_VOID
+        return
+    }
+
+    if op == 61 {
+        // IR_COPY: if src1 != 0, it's a reg-reg copy; if src1 == 0, it's a param load
+        if s1_v != 0 {
+            // Regular copy
+            uint64 src_reg = ir_resolve_src(s1_v, 0)
+            if dst_r != 0xFFFFFFFF {
+                ir_emit_mov_r64_r64(dst_r, src_reg)
+            } else {
+                ir_emit_mov_r64_r64(0, src_reg)
+                ir_emit_store_spill(0, dest_v)
+            }
+        } else {
+            // Param init: imm = param index
+            // SysV ABI param regs: rdi(7), rsi(6), rdx(2), rcx(1), r8(8), r9(9)
+            uint64 pr = 7
+            if imm == 1 { pr = 6 }
+            if imm == 2 { pr = 2 }
+            if imm == 3 { pr = 1 }
+            if imm == 4 { pr = 8 }
+            if imm == 5 { pr = 9 }
+            if imm < 6 {
+                if dst_r != 0xFFFFFFFF {
+                    ir_emit_mov_r64_r64(dst_r, pr)
+                } else {
+                    ir_emit_mov_r64_r64(0, pr)
+                    ir_emit_store_spill(0, dest_v)
+                }
+            }
+        }
+        return
+    }
+
+    if op == 51 {
+        // IR_ARG: move src to the correct argument register
+        // SysV ABI: rdi(7), rsi(6), rdx(2), rcx(1), r8(8), r9(9)
+        uint64 target = 7
+        if imm == 1 { target = 6 }
+        if imm == 2 { target = 2 }
+        if imm == 3 { target = 1 }
+        if imm == 4 { target = 8 }
+        if imm == 5 { target = 9 }
+        if imm < 6 {
+            uint64 src_reg = ir_resolve_src(s1_v, 0)
+            ir_emit_mov_r64_r64(target, src_reg)
+        }
+        return
+    }
+
+    if op == 52 {
+        // IR_SYSCALL: rax = imm, syscall
+        ir_emit_mov_r64_imm64(0, imm)
+        emit_byte(0x0F)
+        emit_byte(0x05)
+        // Result in rax -> move to dst if needed
+        if dst_r != 0xFFFFFFFF && dst_r != 0 {
+            ir_emit_mov_r64_r64(dst_r, 0)
+        }
+        if dst_r == 0xFFFFFFFF {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 50 {
+        // IR_CALL: call rel32 (will be resolved by fixup system)
+        emit_byte(0xE8)
+        uint64 call_patch = out_len
+        emit_u32_le(0)
+        // Record fixup: imm holds the callee token
+        uint64 fentry = fixup_table + fixup_count * 8
+        uint32 fo = call_patch
+        unsafe { *(fentry as uint32) = fo }
+        uint64 fe4 = fentry + 4
+        uint32 ct = imm
+        unsafe { *(fe4 as uint32) = ct }
+        fixup_count = fixup_count + 1
+        // Result in rax
+        if dst_r != 0xFFFFFFFF && dst_r != 0 {
+            ir_emit_mov_r64_r64(dst_r, 0)
+        }
+        if dst_r == 0xFFFFFFFF {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 40 {
+        // IR_BR: handled in block emission
+        return
+    }
+    if op == 41 {
+        // IR_BR_COND: handled in block emission
+        return
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Block and function emitters
+// ---------------------------------------------------------------------------
+
+// Block start offsets for branch patching
+static uint64 ir_block_offsets = 0
+
+// Branch fixup list: [patch_offset(4), target_bb(4)] x 1024
+static uint64 ir_br_fixups = 0
+static uint64 ir_br_fixup_count = 0
+
+@export
+fn ir_emit_x86_function(uint64 fn_node) {
+    // 1. Lower AST to IR
+    ir_lower_function(fn_node)
+
+    // 2. Compute liveness
+    ir_compute_liveness()
+
+    // 3. Register allocation
+    ir_regalloc_init()
+    ir_graph_color()
+
+    // 4. Compute spill count
+    ir_spill_count = 0
+    if ir_vreg_next > IR_NUM_REGS + 1 {
+        ir_spill_count = ir_vreg_next - IR_NUM_REGS - 1
+    }
+
+    // 5. Emit prologue
+    // push rbx
+    emit_byte(0x53)
+    // push r12..r15
+    emit_byte(0x41)
+    emit_byte(0x54)
+    emit_byte(0x41)
+    emit_byte(0x55)
+    emit_byte(0x41)
+    emit_byte(0x56)
+    emit_byte(0x41)
+    emit_byte(0x57)
+
+    // sub rsp, frame_size
+    uint64 frame_size = ir_spill_count * 8
+    // Alignment: 5 pushes = 40 bytes + 8 (ret addr) = 48. 48 mod 16 = 0.
+    // If frame_size mod 16 != 0, add 8 for alignment.
+    if frame_size > 0 && (frame_size & 15) != 0 { frame_size = frame_size + 8 }
+    ir_spill_base = 0
+
+    if frame_size > 0 {
+        emit_byte(0x48)
+        emit_byte(0x81)
+        emit_byte(0xEC)
+        emit_u32_le(frame_size)
+    }
+
+    // 6. Allocate block offset tracking and branch fixup list
+    if ir_block_offsets == 0 { ir_block_offsets = alloc(4096 * 8) }
+    if ir_br_fixups == 0 { ir_br_fixups = alloc(1024 * 8) }
+    ir_br_fixup_count = 0
+
+    // 7. Emit all blocks
+    uint64 bi = 0
+    while bi < ir_bb_count {
+        // Record this block's code offset
+        uint64 bop = ir_block_offsets + bi * 8
+        unsafe { *(bop as uint64) = out_len }
+
+        // Emit non-terminator instructions
+        uint64 ii = ir_bb_first_insn(bi)
+        while ii != 0xFFFFFFFF {
+            uint64 iop = ir_insn_opcode(ii)
+            // Skip terminators — we handle them after all instructions
+            if iop != 40 && iop != 41 {
+                ir_emit_x86_insn(ii)
+            }
+            ii = ir_insn_next(ii)
+        }
+
+        // Emit block terminator
+        uint64 last = ir_bb_last_insn(bi)
+        if last != 0xFFFFFFFF {
+            uint64 last_op = ir_insn_opcode(last)
+            if last_op == 40 {
+                // Unconditional branch: jmp target_bb
+                uint64 target = ir_insn_imm(last)
+                if target != bi + 1 {
+                    emit_byte(0xE9)
+                    // Record fixup
+                    uint64 fp = ir_br_fixups + ir_br_fixup_count * 8
+                    uint32 po = out_len
+                    unsafe { *(fp as uint32) = po }
+                    uint64 fp4 = fp + 4
+                    uint32 tb = target
+                    unsafe { *(fp4 as uint32) = tb }
+                    ir_br_fixup_count = ir_br_fixup_count + 1
+                    emit_u32_le(0)
+                }
+            }
+            if last_op == 41 {
+                // Conditional branch: test + jnz target_bb
+                uint64 cond_v = ir_insn_src1(last)
+                uint64 cond_r = ir_resolve_src(cond_v, 0)
+                ir_emit_test_r64_r64(cond_r, cond_r)
+                emit_byte(0x0F)
+                emit_byte(0x85)
+                // Record fixup
+                uint64 target = ir_insn_imm(last)
+                uint64 fp = ir_br_fixups + ir_br_fixup_count * 8
+                uint32 po = out_len
+                unsafe { *(fp as uint32) = po }
+                uint64 fp4 = fp + 4
+                uint32 tb = target
+                unsafe { *(fp4 as uint32) = tb }
+                ir_br_fixup_count = ir_br_fixup_count + 1
+                emit_u32_le(0)
+            }
+        }
+
+        bi = bi + 1
+    }
+
+    // 8. Patch branch targets
+    uint64 fi = 0
+    while fi < ir_br_fixup_count {
+        uint64 fp = ir_br_fixups + fi * 8
+        uint32 patch_off = 0
+        unsafe { *(fp as uint32) -> patch_off }
+        uint64 fp4 = fp + 4
+        uint32 target_bb = 0
+        unsafe { *(fp4 as uint32) -> target_bb }
+        uint64 wtb = target_bb
+        // Get target block offset
+        uint64 tbp = ir_block_offsets + wtb * 8
+        uint64 target_off = 0
+        unsafe { *(tbp as uint64) -> target_off }
+        // Displacement = target - (patch_off + 4)
+        uint64 wpo = patch_off
+        uint64 disp = target_off - wpo - 4
+        patch_u32(wpo, disp)
+        fi = fi + 1
+    }
+
+    // 9. Epilogue
+    if frame_size > 0 {
+        emit_byte(0x48)
+        emit_byte(0x81)
+        emit_byte(0xC4)
+        emit_u32_le(frame_size)
+    }
+    emit_byte(0x41)
+    emit_byte(0x5F)
+    emit_byte(0x41)
+    emit_byte(0x5E)
+    emit_byte(0x41)
+    emit_byte(0x5D)
+    emit_byte(0x41)
+    emit_byte(0x5C)
+    emit_byte(0x5B)
+    emit_byte(0xC3)
+}
