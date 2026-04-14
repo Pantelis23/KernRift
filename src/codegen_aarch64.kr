@@ -535,6 +535,50 @@ fn emit_a64_store_dN(uint64 reg, uint64 var_offset) {
     emit_a64(insn)
 }
 
+// STR sN, [sp, #(a64_var_base + offset)] — store 32-bit float from sN
+fn emit_a64_store_sN(uint64 reg, uint64 var_offset) {
+    uint64 abs_off = a64_var_base + var_offset
+    uint64 imm12 = abs_off / 4
+    uint64 insn = 0xBD000000 | (imm12 << 10) | (31 << 5) | reg
+    emit_a64(insn)
+}
+
+// LDR sN, [sp, #(a64_var_base + offset)] — load 32-bit float into sN
+fn emit_a64_load_sN(uint64 reg, uint64 var_offset) {
+    uint64 abs_off = a64_var_base + var_offset
+    uint64 imm12 = abs_off / 4
+    uint64 insn = 0xBD400000 | (imm12 << 10) | (31 << 5) | reg
+    emit_a64(insn)
+}
+
+// LDR dN, [Xbase, #offset] — load 64-bit float from pointer
+fn emit_a64_load_dN_from_ptr(uint64 dreg, uint64 base_reg, uint64 offset) {
+    uint64 imm12 = offset / 8
+    uint64 insn = 0xFD400000 | (imm12 << 10) | (base_reg << 5) | dreg
+    emit_a64(insn)
+}
+
+// LDR sN, [Xbase, #offset] — load 32-bit float from pointer
+fn emit_a64_load_sN_from_ptr(uint64 sreg, uint64 base_reg, uint64 offset) {
+    uint64 imm12 = offset / 4
+    uint64 insn = 0xBD400000 | (imm12 << 10) | (base_reg << 5) | sreg
+    emit_a64(insn)
+}
+
+// STR dN, [Xbase, #offset] — store 64-bit float to pointer
+fn emit_a64_store_dN_to_ptr(uint64 dreg, uint64 base_reg, uint64 offset) {
+    uint64 imm12 = offset / 8
+    uint64 insn = 0xFD000000 | (imm12 << 10) | (base_reg << 5) | dreg
+    emit_a64(insn)
+}
+
+// STR sN, [Xbase, #offset] — store 32-bit float to pointer
+fn emit_a64_store_sN_to_ptr(uint64 sreg, uint64 base_reg, uint64 offset) {
+    uint64 imm12 = offset / 4
+    uint64 insn = 0xBD000000 | (imm12 << 10) | (base_reg << 5) | sreg
+    emit_a64(insn)
+}
+
 // Parse an AArch64 register name token into a 5-bit register code (0..30).
 // Accepts x0..x30. Returns 0xFFFF for unknown names (including xzr/sp).
 fn a64_reg_code(uint64 name_tok) -> uint64 {
@@ -956,6 +1000,20 @@ fn gen_expr_a64(uint64 node) {
             emit_a64_load_x0(var_off)
             if foff != 0 {
                 emit_a64_add_imm(0, 0, foff)
+            }
+            // Check if field is a float type
+            uint64 fftk_a = struct_field_type_kind_by_tok(si, field_tok)
+            if fftk_a == 96 {
+                // f64 field: ldr d0, [x0, #0]
+                emit_a64_load_dN_from_ptr(0, 0, 0)
+                expr_is_float_a64 = 1
+                return
+            }
+            if fftk_a == 95 {
+                // f32 field: ldr s0, [x0, #0]
+                emit_a64_load_sN_from_ptr(0, 0, 0)
+                expr_is_float_a64 = 2
+                return
             }
             if fsz == 1 {
                 emit_a64_ldrb(0, 0, 0)
@@ -3376,6 +3434,7 @@ fn gen_expr_a64(uint64 node) {
         // Load args into registers from temp slots
         // AAPCS64: int args → x0-x7 (independent counter)
         //          float args → d0-d7 (independent counter)
+        //          HFA struct args → consecutive d/s registers
         uint64 call_float_idx = 0
         uint64 fi_a = 0
         while fi_a < arg_count {
@@ -3385,6 +3444,34 @@ fn gen_expr_a64(uint64 node) {
             if ff_val_a != 0 && call_float_idx < 8 {
                 emit_a64_load_dN(call_float_idx, arg_slots_base + fi_a * 8)
                 call_float_idx = call_float_idx + 1
+            } else if ff_val_a == 0 {
+                // Check if this is an HFA struct arg
+                uint64 hfa_saf_addr = arg_struct_flags_a + fi_a * 8
+                uint64 hfa_saf_val = 0
+                unsafe { *(hfa_saf_addr as uint64) -> hfa_saf_val }
+                if hfa_saf_val != 0xFFFFFFFF && abi_struct_pass_by_val != 0 {
+                    uint64 hfa_sflags = struct_abi_flags(hfa_saf_val)
+                    uint64 hfa_is = hfa_sflags & 1
+                    if hfa_is != 0 {
+                        uint64 hfa_count = ((hfa_sflags >> 1) & 3) + 1
+                        uint64 hfa_type = (hfa_sflags >> 3) & 3
+                        // Load struct pointer from temp slot
+                        emit_a64_load_x0(arg_slots_base + fi_a * 8)
+                        // Load each field into consecutive d/s registers
+                        uint64 hi = 0
+                        while hi < hfa_count && call_float_idx < 8 {
+                            if hfa_type == 1 {
+                                uint64 hoff = hi * 8
+                                emit_a64_load_dN_from_ptr(call_float_idx, 0, hoff)
+                            } else {
+                                uint64 hoff = hi * 4
+                                emit_a64_load_sN_from_ptr(call_float_idx, 0, hoff)
+                            }
+                            call_float_idx = call_float_idx + 1
+                            hi = hi + 1
+                        }
+                    }
+                }
             }
             fi_a = fi_a + 1
         }
@@ -3401,6 +3488,13 @@ fn gen_expr_a64(uint64 node) {
                 uint64 saf_val_c = 0
                 unsafe { *(saf_addr_c as uint64) -> saf_val_c }
                 if saf_val_c != 0xFFFFFFFF && abi_struct_pass_by_val != 0 {
+                    // Skip HFA structs — they were handled in the float pass
+                    uint64 sflags_skip = struct_abi_flags(saf_val_c)
+                    uint64 is_hfa_skip = sflags_skip & 1
+                    if is_hfa_skip != 0 {
+                        ii_a = ii_a + 1
+                        continue
+                    }
                     // Struct arg: load eightbytes into consecutive x registers
                     uint64 s_ssize_c = struct_total_size(saf_val_c)
                     if s_ssize_c > 16 {
@@ -3454,6 +3548,12 @@ fn gen_expr_a64(uint64 node) {
                     uint64 ri_sv = 0
                     unsafe { *(ri_saf as uint64) -> ri_sv }
                     if ri_sv != 0xFFFFFFFF && abi_struct_pass_by_val != 0 {
+                        // Skip HFA structs — they don't use int regs
+                        uint64 ri_hfa_flags = struct_abi_flags(ri_sv)
+                        if (ri_hfa_flags & 1) != 0 {
+                            ri_a = ri_a + 1
+                            continue
+                        }
                         uint64 ri_ss = struct_total_size(ri_sv)
                         if ri_ss > 16 {
                             // MEMORY class: pointer is the value to pass
@@ -3541,7 +3641,9 @@ fn gen_expr_a64(uint64 node) {
                 emit_a64_add_imm(0, 31, a64_var_base + caller_sret_area_a)
                 expr_is_struct_a64 = ret_struct_si_a
             } else {
-                // Small struct: unpack from x0/x1 into stack area
+                // Check if this is an HFA return
+                uint64 ret_sflags_c = struct_abi_flags(ret_struct_si_a)
+                uint64 ret_is_hfa_c = ret_sflags_c & 1
                 uint64 ret_ssize_a = struct_total_size(ret_struct_si_a)
                 uint64 ret_sslots_a = (ret_ssize_a + 7) / 8
                 uint64 ret_soff_a = var_count * 8
@@ -3550,11 +3652,28 @@ fn gen_expr_a64(uint64 node) {
                 var_frame_size = var_count * 8
                 uint64 rsrem_a = var_frame_size & 15
                 if rsrem_a != 0 { var_frame_size = var_frame_size + 16 - rsrem_a }
+                if ret_is_hfa_c != 0 {
+                    // HFA return: store d/s registers into stack area
+                    uint64 ret_hfa_count_c = ((ret_sflags_c >> 1) & 3) + 1
+                    uint64 ret_hfa_type_c = (ret_sflags_c >> 3) & 3
+                    uint64 rci = 0
+                    while rci < ret_hfa_count_c {
+                        if ret_hfa_type_c == 1 {
+                            uint64 rcoff = rci * 8
+                            emit_a64_store_dN(rci, ret_soff_a + rcoff)
+                        } else {
+                            uint64 rcoff = rci * 4
+                            emit_a64_store_sN(rci, ret_soff_a + rcoff)
+                        }
+                        rci = rci + 1
+                    }
+                } else {
                 // Eightbyte 0: store from x0
                 emit_a64_str(0, 31, a64_var_base + ret_soff_a)
                 if ret_ssize_a > 8 {
                     // Eightbyte 1: store from x1
                     emit_a64_str(1, 31, a64_var_base + ret_soff_a + 8)
+                }
                 }
                 // Set x0 = pointer to struct area
                 emit_a64_add_imm(0, 31, a64_var_base + ret_soff_a)
@@ -3810,6 +3929,27 @@ fn gen_stmt_a64(uint64 node) {
                         aqi_ret = aqi_ret + 1
                     }
                 } else {
+                    // Check if this is an HFA return
+                    uint64 ret_sflags = struct_abi_flags(ret_si_ar)
+                    uint64 ret_is_hfa = ret_sflags & 1
+                    if ret_is_hfa != 0 {
+                        // HFA return: load fields into consecutive d/s registers
+                        uint64 ret_hfa_count = ((ret_sflags >> 1) & 3) + 1
+                        uint64 ret_hfa_type = (ret_sflags >> 3) & 3
+                        // x0 = pointer to struct data
+                        emit_a64_mov(9, 0)
+                        uint64 rhi = 0
+                        while rhi < ret_hfa_count {
+                            if ret_hfa_type == 1 {
+                                uint64 rhoff = rhi * 8
+                                emit_a64_load_dN_from_ptr(rhi, 9, rhoff)
+                            } else {
+                                uint64 rhoff = rhi * 4
+                                emit_a64_load_sN_from_ptr(rhi, 9, rhoff)
+                            }
+                            rhi = rhi + 1
+                        }
+                    } else {
                     // Small struct: load eightbytes from pointer into x0/x1
                     // x0 = pointer to struct data
                     emit_a64_mov(9, 0)
@@ -3818,6 +3958,7 @@ fn gen_stmt_a64(uint64 node) {
                     if ret_sz_ar > 8 {
                         // Load second eightbyte into x1
                         emit_a64_ldr(1, 9, 8)
+                    }
                     }
                 }
                 expr_is_struct_a64 = 0xFFFFFFFF
@@ -4226,9 +4367,39 @@ fn gen_stmt_a64(uint64 node) {
                 }
             }
             gen_expr_a64(wval)
-            emit_a64_store_x0(temp_slot_0)
             uint64 si = struct_var_lookup(obj_tok)
             if si != 0xFFFFFFFF {
+                // Check if field is a float type
+                uint64 fftk_w = struct_field_type_kind_by_tok(si, field_tok)
+                if fftk_w == 96 {
+                    // f64 field: value is in d0, save to temp, compute addr, store
+                    emit_a64_store_d0(temp_slot_0)
+                    uint64 var_off = var_lookup(obj_tok)
+                    if var_off == 0xFFFFFFFF { var_off = 0 }
+                    uint64 foff = struct_field_offset(si, field_tok)
+                    emit_a64_load_x0(var_off)
+                    if foff != 0 { emit_a64_add_imm(0, 0, foff) }
+                    emit_a64_mov(10, 0)
+                    emit_a64_load_d0(temp_slot_0)
+                    // str d0, [x10, #0]
+                    emit_a64_store_dN_to_ptr(0, 10, 0)
+                    return
+                }
+                if fftk_w == 95 {
+                    // f32 field: value is in s0, save to temp, compute addr, store
+                    emit_a64_store_s0(temp_slot_0)
+                    uint64 var_off = var_lookup(obj_tok)
+                    if var_off == 0xFFFFFFFF { var_off = 0 }
+                    uint64 foff = struct_field_offset(si, field_tok)
+                    emit_a64_load_x0(var_off)
+                    if foff != 0 { emit_a64_add_imm(0, 0, foff) }
+                    emit_a64_mov(10, 0)
+                    emit_a64_load_s0(temp_slot_0)
+                    // str s0, [x10, #0]
+                    emit_a64_store_sN_to_ptr(0, 10, 0)
+                    return
+                }
+                emit_a64_store_x0(temp_slot_0)
                 uint64 var_off = var_lookup(obj_tok)
                 if var_off == 0xFFFFFFFF { var_off = 0 }
                 uint64 foff = struct_field_offset(si, field_tok)
@@ -4241,6 +4412,8 @@ fn gen_stmt_a64(uint64 node) {
                 else if fsz == 2 { emit_a64_strh(0, 10, 0) }
                 else if fsz == 4 { emit_a64_str32(0, 10, 0) }
                 else { emit_a64_str(0, 10, 0) }
+            } else {
+                emit_a64_store_x0(temp_slot_0)
             }
             return
         }
@@ -4571,7 +4744,27 @@ fn gen_function_a64(uint64 fn_node) {
                     var_frame_size = var_count * 8
                     uint64 sv_rem_a = var_frame_size & 15
                     if sv_rem_a != 0 { var_frame_size = var_frame_size + 16 - sv_rem_a }
-                    if sv_ssize_a > 16 {
+                    // Check if this is an HFA struct — spill from d/s regs
+                    uint64 sflags_c = struct_abi_flags(param_si_spill_a)
+                    uint64 is_hfa_c = sflags_c & 1
+                    if is_hfa_c != 0 {
+                        uint64 hfa_count_c = ((sflags_c >> 1) & 3) + 1
+                        uint64 hfa_type_c = (sflags_c >> 3) & 3
+                        uint64 field_size_c = 4
+                        if hfa_type_c == 1 { field_size_c = 8 }
+                        // Spill each d/s register to struct area
+                        uint64 ci = 0
+                        while ci < hfa_count_c {
+                            uint64 foff_c = ci * field_size_c
+                            if hfa_type_c == 1 {
+                                emit_a64_store_dN(float_pidx_a, struct_area_a + foff_c)
+                            } else {
+                                emit_a64_store_sN(float_pidx_a, struct_area_a + foff_c)
+                            }
+                            float_pidx_a = float_pidx_a + 1
+                            ci = ci + 1
+                        }
+                    } else if sv_ssize_a > 16 {
                         // MEMORY class (>16 bytes): register holds a pointer
                         // Copy struct bytes from pointer to local stack area
                         if int_pidx_a <= 7 {

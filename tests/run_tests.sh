@@ -1259,6 +1259,46 @@ fn main() { P a; a.x = 10; a.y = 32; P b = a; exit(b.x + b.y) }' 42
     run_test_a64 "a64_struct_small" 'struct S { uint32 a; uint32 b }
 fn sum(S s) -> uint64 { return s.a + s.b }
 fn main() { S v; v.a = 10; v.b = 32; exit(sum(v)) }' 42
+
+    # ARM64 HFA (Homogeneous Float Aggregate) tests
+    run_test_a64 "a64_hfa_pass_f64" 'struct V { f64 x; f64 y }
+fn sum(V v) -> f64 { return v.x + v.y }
+fn main() {
+    V v; v.x = 3.0; v.y = 4.0
+    f64 r = sum(v)
+    exit(f64_to_int(r))
+}' 7
+
+    run_test_a64 "a64_hfa_return_f64" 'struct V { f64 x; f64 y }
+fn make() -> V { V r; r.x = 10.0; r.y = 32.0; return r }
+fn main() {
+    V v = make()
+    exit(f64_to_int(v.x + v.y))
+}' 42
+
+    run_test_a64 "a64_hfa_pass_return_f64" 'struct V { f64 x; f64 y }
+fn scale(V v, f64 s) -> V {
+    V r; r.x = v.x * s; r.y = v.y * s; return r
+}
+fn main() {
+    V v; v.x = 2.0; v.y = 5.0
+    V r = scale(v, 3.0)
+    exit(f64_to_int(r.x + r.y))
+}' 21
+
+    run_test_a64 "a64_hfa_3field_f64" 'struct V3 { f64 x; f64 y; f64 z }
+fn sum3(V3 v) -> f64 { return v.x + v.y + v.z }
+fn main() {
+    V3 v; v.x = 10.0; v.y = 20.0; v.z = 12.0
+    exit(f64_to_int(sum3(v)))
+}' 42
+
+    run_test_a64 "a64_hfa_4field_f64" 'struct V4 { f64 a; f64 b; f64 c; f64 d }
+fn sum4(V4 v) -> f64 { return v.a + v.b + v.c + v.d }
+fn main() {
+    V4 v; v.a = 10.0; v.b = 11.0; v.c = 12.0; v.d = 9.0
+    exit(f64_to_int(sum4(v)))
+}' 42
 fi
 
 # --- v2.6 feature tests ---
