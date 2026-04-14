@@ -34,6 +34,10 @@ static uint64 expr_is_float = 0
 // Struct literal tracking: 0xFFFFFFFF = not a struct, otherwise struct index
 static uint64 expr_is_struct = 0xFFFFFFFF
 
+// Struct pass-by-value ABI flag: 0 = pass pointer (legacy), 1 = pass eightbytes in registers
+// Set to 1 when BOTH caller (Task 5) and callee (Task 6) changes are in place.
+static uint64 abi_struct_pass_by_val = 0
+
 // Function table: maps function name → code offset in output
 // [name_tok_idx(4), code_offset(4)] × 256
 static uint64 fn_table = 0
@@ -5724,6 +5728,15 @@ fn gen_expr(uint64 node) {
         // Evaluate all args and store to temp slots.
         // Track which args are float (0=int, 1=f64, 2=f32) in a local array.
         uint64[16] arg_float_flags
+        // Track which args are structs (0xFFFFFFFF = not struct, else struct index)
+        uint64[16] arg_struct_flags
+        uint64 asfi = 0
+        while asfi < 16 {
+            uint64 asf_addr = arg_struct_flags + asfi * 8
+            uint64 none_val = 0xFFFFFFFF
+            unsafe { *(asf_addr as uint64) = none_val }
+            asfi = asfi + 1
+        }
         uint64 weval = warg
         uint64 ai = 0
         while weval != 0 {
@@ -5739,6 +5752,10 @@ fn gen_expr(uint64 node) {
                 uint64 zero = 0
                 unsafe { *(aff_addr as uint64) = zero }
             }
+            // Record struct flag for this arg
+            uint64 asf_addr2 = arg_struct_flags + ai * 8
+            uint64 struct_val = expr_is_struct
+            unsafe { *(asf_addr2 as uint64) = struct_val }
             ai = ai + 1
             uint32 anxt = ast_next(weval)
             weval = anxt
@@ -5796,6 +5813,16 @@ fn gen_expr(uint64 node) {
                     emit_load_xmmN_f64(3, arg_slots_base + 24 + win_stack)
                 } else {
                     emit_load_rax_from_stack(arg_slots_base + 24 + win_stack)
+                    // Check if struct arg: dereference if small struct (<=8 bytes)
+                    uint64 wsaf3 = 0
+                    unsafe { *(arg_struct_flags + 3 * 8 as uint64) -> wsaf3 }
+                    if wsaf3 != 0xFFFFFFFF && abi_struct_pass_by_val != 0 {
+                        uint64 ws3 = struct_total_size(wsaf3)
+                        if ws3 <= 8 {
+                            // mov rax, [rax]
+                            emit_byte(0x48); emit_byte(0x8B); emit_byte(0x00)
+                        }
+                    }
                     // mov r9, rax
                     emit_byte(0x49); emit_byte(0x89); emit_byte(0xC1)
                 }
@@ -5807,6 +5834,16 @@ fn gen_expr(uint64 node) {
                     emit_load_xmmN_f64(2, arg_slots_base + 16 + win_stack)
                 } else {
                     emit_load_rax_from_stack(arg_slots_base + 16 + win_stack)
+                    // Check if struct arg: dereference if small struct (<=8 bytes)
+                    uint64 wsaf2 = 0
+                    unsafe { *(arg_struct_flags + 2 * 8 as uint64) -> wsaf2 }
+                    if wsaf2 != 0xFFFFFFFF && abi_struct_pass_by_val != 0 {
+                        uint64 ws2 = struct_total_size(wsaf2)
+                        if ws2 <= 8 {
+                            // mov rax, [rax]
+                            emit_byte(0x48); emit_byte(0x8B); emit_byte(0x00)
+                        }
+                    }
                     emit_mov_r8_rax()
                 }
             }
@@ -5817,6 +5854,16 @@ fn gen_expr(uint64 node) {
                     emit_load_xmmN_f64(1, arg_slots_base + 8 + win_stack)
                 } else {
                     emit_load_rax_from_stack(arg_slots_base + 8 + win_stack)
+                    // Check if struct arg: dereference if small struct (<=8 bytes)
+                    uint64 wsaf1 = 0
+                    unsafe { *(arg_struct_flags + 1 * 8 as uint64) -> wsaf1 }
+                    if wsaf1 != 0xFFFFFFFF && abi_struct_pass_by_val != 0 {
+                        uint64 ws1 = struct_total_size(wsaf1)
+                        if ws1 <= 8 {
+                            // mov rax, [rax]
+                            emit_byte(0x48); emit_byte(0x8B); emit_byte(0x00)
+                        }
+                    }
                     emit_mov_rdx_rax()
                 }
             }
@@ -5827,6 +5874,16 @@ fn gen_expr(uint64 node) {
                     emit_load_xmmN_f64(0, arg_slots_base + win_stack)
                 } else {
                     emit_load_rax_from_stack(arg_slots_base + win_stack)
+                    // Check if struct arg: dereference if small struct (<=8 bytes)
+                    uint64 wsaf0 = 0
+                    unsafe { *(arg_struct_flags as uint64) -> wsaf0 }
+                    if wsaf0 != 0xFFFFFFFF && abi_struct_pass_by_val != 0 {
+                        uint64 ws0 = struct_total_size(wsaf0)
+                        if ws0 <= 8 {
+                            // mov rax, [rax]
+                            emit_byte(0x48); emit_byte(0x8B); emit_byte(0x00)
+                        }
+                    }
                     emit_mov_rcx_rax()
                 }
             }
@@ -5853,23 +5910,78 @@ fn gen_expr(uint64 node) {
                 uint64 fi_val = 0
                 unsafe { *(fi_addr as uint64) -> fi_val }
                 if fi_val == 0 {
-                    emit_load_rax_from_stack(arg_slots_base + ii * 8)
-                    if call_int_idx == 0 { emit_mov_rdi_rax() }
-                    if call_int_idx == 1 { emit_mov_rsi_rax() }
-                    if call_int_idx == 2 { emit_mov_rdx_rax() }
-                    if call_int_idx == 3 {
-                        // mov rcx, rax
-                        emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
+                    // Check if this is a struct arg
+                    uint64 saf_addr = arg_struct_flags + ii * 8
+                    uint64 saf_val = 0
+                    unsafe { *(saf_addr as uint64) -> saf_val }
+                    if saf_val != 0xFFFFFFFF && abi_struct_pass_by_val != 0 {
+                        // Struct arg: load eightbytes into registers per ABI
+                        uint64 s_si = saf_val
+                        uint64 s_c0 = struct_abi_class0(s_si)
+                        uint64 s_c1 = struct_abi_class1(s_si)
+                        // Load struct pointer from temp slot into rax, save to temp_slot_0
+                        emit_load_rax_from_stack(arg_slots_base + ii * 8)
+                        emit_store_rax_to_stack(temp_slot_0)
+                        if s_c0 == 1 && call_int_idx < 6 {
+                            // INTEGER eightbyte 0: load [ptr+0] into next int reg
+                            emit_load_rax_from_stack(temp_slot_0)
+                            // mov rax, [rax]
+                            emit_byte(0x48); emit_byte(0x8B); emit_byte(0x00)
+                            if call_int_idx == 0 { emit_mov_rdi_rax() }
+                            if call_int_idx == 1 { emit_mov_rsi_rax() }
+                            if call_int_idx == 2 { emit_mov_rdx_rax() }
+                            if call_int_idx == 3 {
+                                emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
+                            }
+                            if call_int_idx == 4 {
+                                emit_byte(0x49); emit_byte(0x89); emit_byte(0xC0)
+                            }
+                            if call_int_idx == 5 {
+                                emit_byte(0x49); emit_byte(0x89); emit_byte(0xC1)
+                            }
+                            call_int_idx = call_int_idx + 1
+                        }
+                        if s_c1 == 1 && call_int_idx < 6 {
+                            // INTEGER eightbyte 1: load [ptr+8] into next int reg
+                            emit_load_rax_from_stack(temp_slot_0)
+                            // mov rax, [rax+8]
+                            emit_byte(0x48); emit_byte(0x8B); emit_byte(0x40); emit_byte(0x08)
+                            if call_int_idx == 0 { emit_mov_rdi_rax() }
+                            if call_int_idx == 1 { emit_mov_rsi_rax() }
+                            if call_int_idx == 2 { emit_mov_rdx_rax() }
+                            if call_int_idx == 3 {
+                                emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
+                            }
+                            if call_int_idx == 4 {
+                                emit_byte(0x49); emit_byte(0x89); emit_byte(0xC0)
+                            }
+                            if call_int_idx == 5 {
+                                emit_byte(0x49); emit_byte(0x89); emit_byte(0xC1)
+                            }
+                            call_int_idx = call_int_idx + 1
+                        }
+                        // SSE eightbytes handled in future SSE struct pass
+                        // MEMORY class (>16 bytes) handled in future task
+                    } else {
+                        // Regular integer arg
+                        emit_load_rax_from_stack(arg_slots_base + ii * 8)
+                        if call_int_idx == 0 { emit_mov_rdi_rax() }
+                        if call_int_idx == 1 { emit_mov_rsi_rax() }
+                        if call_int_idx == 2 { emit_mov_rdx_rax() }
+                        if call_int_idx == 3 {
+                            // mov rcx, rax
+                            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
+                        }
+                        if call_int_idx == 4 {
+                            // mov r8, rax (49 89 C0)
+                            emit_byte(0x49); emit_byte(0x89); emit_byte(0xC0)
+                        }
+                        if call_int_idx == 5 {
+                            // mov r9, rax (49 89 C1)
+                            emit_byte(0x49); emit_byte(0x89); emit_byte(0xC1)
+                        }
+                        call_int_idx = call_int_idx + 1
                     }
-                    if call_int_idx == 4 {
-                        // mov r8, rax (49 89 C0)
-                        emit_byte(0x49); emit_byte(0x89); emit_byte(0xC0)
-                    }
-                    if call_int_idx == 5 {
-                        // mov r9, rax (49 89 C1)
-                        emit_byte(0x49); emit_byte(0x89); emit_byte(0xC1)
-                    }
-                    call_int_idx = call_int_idx + 1
                 }
                 ii = ii + 1
             }

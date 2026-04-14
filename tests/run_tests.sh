@@ -2081,6 +2081,26 @@ fn main() {
     exit(p.x)
 }' 10
 
+# --- Struct pass-by-value tests (requires Task 6 callee-side changes) ---
+# run_test "struct_pass_by_value" 'struct P { uint64 x; uint64 y }
+# fn sum(P p) -> uint64 { return p.x + p.y }
+# fn main() {
+#     P a; a.x = 10; a.y = 20
+#     exit(sum(a))
+# }' 30
+
+# run_test "struct_pass_literal" 'struct P { uint64 x; uint64 y }
+# fn sum(P p) -> uint64 { return p.x + p.y }
+# fn main() { exit(sum(P { 10, 20 })) }' 30
+
+# run_test "struct_pass_no_alias" 'struct P { uint64 x; uint64 y }
+# fn modify(P p) -> uint64 { p.x = 99; return p.x }
+# fn main() {
+#     P a; a.x = 10; a.y = 20
+#     uint64 r = modify(a)
+#     exit(a.x)
+# }' 10
+
 # --- Summary ---
 echo ""
 echo "=== Results: $PASS/$TOTAL passed, $FAIL failed ==="
