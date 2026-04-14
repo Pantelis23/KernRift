@@ -949,6 +949,8 @@ fn gen_expr_a64(uint64 node) {
             }
             if fsz == 1 {
                 emit_a64_ldrb(0, 0, 0)
+            } else if fsz == 2 {
+                emit_a64_ldrh(0, 0, 0)
             } else if fsz == 4 {
                 emit_a64_ldr32(0, 0, 0)
             } else {
@@ -981,6 +983,11 @@ fn gen_expr_a64(uint64 node) {
             }
             emit_a64_load_x0(offset)
             expr_is_float_a64 = 0
+            // Track if this is a struct variable
+            uint64 svi_a = struct_var_lookup(wait_tok)
+            if svi_a != 0xFFFFFFFF {
+                expr_is_struct_a64 = svi_a
+            }
         } else {
             uint64 soff = static_lookup(tok)
             if soff != 0xFFFFFFFF {
@@ -3316,6 +3323,15 @@ fn gen_expr_a64(uint64 node) {
         // Evaluate all args and store to temp slots.
         // Track which args are float (0=int, 1=f64, 2=f32).
         uint64[16] arg_float_flags_a
+        // Track which args are structs (0xFFFFFFFF = not struct, else struct index)
+        uint64[16] arg_struct_flags_a
+        uint64 asfi_a = 0
+        while asfi_a < 16 {
+            uint64 asf_init = arg_struct_flags_a + asfi_a * 8
+            uint64 none_val_a = 0xFFFFFFFF
+            unsafe { *(asf_init as uint64) = none_val_a }
+            asfi_a = asfi_a + 1
+        }
         uint64 weval = warg
         uint64 ai = 0
         while weval != 0 {
@@ -3331,6 +3347,10 @@ fn gen_expr_a64(uint64 node) {
                 uint64 zero_af = 0
                 unsafe { *(aff_addr_a as uint64) = zero_af }
             }
+            // Record struct flag for this arg
+            uint64 asf_addr_a = arg_struct_flags_a + ai * 8
+            uint64 struct_val_a = expr_is_struct_a64
+            unsafe { *(asf_addr_a as uint64) = struct_val_a }
             ai = ai + 1
             uint32 anxt = ast_next(weval)
             weval = anxt
@@ -3359,11 +3379,38 @@ fn gen_expr_a64(uint64 node) {
             uint64 fi_val_a = 0
             unsafe { *(fi_addr_a as uint64) -> fi_val_a }
             if fi_val_a == 0 {
-                emit_a64_load_x0(arg_slots_base + ii_a * 8)
-                if call_int_idx != 0 {
-                    emit_a64_mov(call_int_idx, 0)
+                // Check if this is a struct arg
+                uint64 saf_addr_c = arg_struct_flags_a + ii_a * 8
+                uint64 saf_val_c = 0
+                unsafe { *(saf_addr_c as uint64) -> saf_val_c }
+                if saf_val_c != 0xFFFFFFFF && abi_struct_pass_by_val != 0 {
+                    // Struct arg: load eightbytes into consecutive x registers
+                    uint64 s_ssize_c = struct_total_size(saf_val_c)
+                    // Load struct pointer from temp slot
+                    emit_a64_load_x0(arg_slots_base + ii_a * 8)
+                    // Save pointer to temp_slot_0 since loading might clobber it
+                    emit_a64_store_x0(temp_slot_0)
+                    // Load first eightbyte: ldr xN, [x0, #0]
+                    if call_int_idx == 0 {
+                        emit_a64_ldr(0, 0, 0)
+                    } else {
+                        emit_a64_ldr(call_int_idx, 0, 0)
+                    }
+                    call_int_idx = call_int_idx + 1
+                    if s_ssize_c > 8 && call_int_idx < 8 {
+                        // Reload pointer from temp
+                        emit_a64_load_x0(temp_slot_0)
+                        // Load second eightbyte: ldr xN, [x0, #8]
+                        emit_a64_ldr(call_int_idx, 0, 8)
+                        call_int_idx = call_int_idx + 1
+                    }
+                } else {
+                    emit_a64_load_x0(arg_slots_base + ii_a * 8)
+                    if call_int_idx != 0 {
+                        emit_a64_mov(call_int_idx, 0)
+                    }
+                    call_int_idx = call_int_idx + 1
                 }
-                call_int_idx = call_int_idx + 1
             }
             ii_a = ii_a + 1
         }
@@ -3376,7 +3423,17 @@ fn gen_expr_a64(uint64 node) {
                 uint64 ri_val = 0
                 unsafe { *(ri_addr as uint64) -> ri_val }
                 if ri_val == 0 {
-                    emit_a64_load_x0(arg_slots_base + ri_a * 8)
+                    // Check if first int arg is a struct — reload eightbyte 0
+                    uint64 ri_saf = arg_struct_flags_a + ri_a * 8
+                    uint64 ri_sv = 0
+                    unsafe { *(ri_saf as uint64) -> ri_sv }
+                    if ri_sv != 0xFFFFFFFF && abi_struct_pass_by_val != 0 {
+                        // Struct: reload ptr and dereference
+                        emit_a64_load_x0(arg_slots_base + ri_a * 8)
+                        emit_a64_ldr(0, 0, 0)
+                    } else {
+                        emit_a64_load_x0(arg_slots_base + ri_a * 8)
+                    }
                     break
                 }
                 ri_a = ri_a + 1
@@ -3420,6 +3477,28 @@ fn gen_expr_a64(uint64 node) {
         uint64 wct_ret_a = callee_tok
         uint64 ret_fk_a = fn_ret_float_lookup(wct_ret_a)
         expr_is_float_a64 = ret_fk_a
+
+        // Check if callee returns a struct (AAPCS64: ≤16 bytes in x0/x1)
+        uint64 ret_struct_si_a = fn_ret_struct_lookup(callee_tok)
+        if ret_struct_si_a != 0xFFFFFFFF {
+            uint64 ret_ssize_a = struct_total_size(ret_struct_si_a)
+            uint64 ret_sslots_a = (ret_ssize_a + 7) / 8
+            uint64 ret_soff_a = var_count * 8
+            uint64 rsi2_a = 0
+            while rsi2_a < ret_sslots_a { var_count = var_count + 1; rsi2_a = rsi2_a + 1 }
+            var_frame_size = var_count * 8
+            uint64 rsrem_a = var_frame_size & 15
+            if rsrem_a != 0 { var_frame_size = var_frame_size + 16 - rsrem_a }
+            // Eightbyte 0: store from x0
+            emit_a64_str(0, 31, a64_var_base + ret_soff_a)
+            if ret_ssize_a > 8 {
+                // Eightbyte 1: store from x1
+                emit_a64_str(1, 31, a64_var_base + ret_soff_a + 8)
+            }
+            // Set x0 = pointer to struct area
+            emit_a64_add_imm(0, 31, a64_var_base + ret_soff_a)
+            expr_is_struct_a64 = ret_struct_si_a
+        }
 
         // If the callee is an extern fn, record a call site for a linker
         // relocation and skip the internal fixup (the BL's imm26 stays zero
@@ -3477,12 +3556,47 @@ fn gen_stmt_a64(uint64 node) {
         }
         if wsm != 0 {
             uint64 sidx = wsm - 1
-            // Heap-struct initializer form: `StructName n = expr`
+            // Struct initializer form: `StructName n = expr`
             uint32 sinit_a = ast_child(node)
             uint64 wsinit_a = sinit_a
             if wsinit_a != 0 && was == 0 {
-                uint64 ptr_off_h = var_declare(name_tok)
                 gen_expr_a64(wsinit_a)
+                if expr_is_struct_a64 != 0xFFFFFFFF {
+                    // Value semantics: copy struct to own stack area
+                    uint64 copy_size_a = struct_total_size(sidx)
+                    uint64 copy_slots_a = (copy_size_a + 7) / 8
+                    uint64 copy_off_a = var_count * 8
+                    uint64 csi_a = 0
+                    while csi_a < copy_slots_a {
+                        var_count = var_count + 1
+                        csi_a = csi_a + 1
+                    }
+                    var_frame_size = var_count * 8
+                    uint64 crem_a = var_frame_size & 15
+                    if crem_a != 0 { var_frame_size = var_frame_size + 16 - crem_a }
+                    // x0 = source pointer, save it
+                    emit_a64_store_x0(temp_slot_0)
+                    // Inline copy: qword-at-a-time
+                    uint64 qi_a = 0
+                    while qi_a < copy_slots_a {
+                        emit_a64_load_x0(temp_slot_0)
+                        uint64 qoff_a = qi_a * 8
+                        // ldr x9, [x0, #qoff]
+                        emit_a64_ldr(9, 0, qoff_a)
+                        // str x9, [sp, #(a64_var_base + copy_off + qoff)]
+                        emit_a64_str(9, 31, a64_var_base + copy_off_a + qoff_a)
+                        qi_a = qi_a + 1
+                    }
+                    // Variable points to local copy
+                    uint64 ptr_off_h = var_declare(name_tok)
+                    emit_a64_add_imm(0, 31, a64_var_base + copy_off_a)
+                    emit_a64_store_x0(ptr_off_h)
+                    struct_var_register(name_tok, sidx)
+                    expr_is_struct_a64 = 0xFFFFFFFF
+                    return
+                }
+                // Non-struct init (heap pointer): just store
+                uint64 ptr_off_h = var_declare(name_tok)
                 emit_a64_store_x0(ptr_off_h)
                 struct_var_register(name_tok, sidx)
                 return
@@ -3532,6 +3646,32 @@ fn gen_stmt_a64(uint64 node) {
         uint32 val_child = ast_child(node)
         uint64 wvc = val_child
         gen_expr_a64(wvc)
+        // Struct assignment: copy bytes for value semantics
+        if expr_is_struct_a64 != 0xFFFFFFFF {
+            uint64 src_si_a = expr_is_struct_a64
+            uint64 copy_size_as = struct_total_size(src_si_a)
+            uint64 copy_slots_as = (copy_size_as + 7) / 8
+            // x0 = source pointer, save it
+            emit_a64_store_x0(temp_slot_0)
+            // Get dest pointer from variable
+            uint64 dest_off_as = var_lookup(name_tok)
+            emit_a64_load_x0(dest_off_as)
+            emit_a64_store_x0(temp_slot_1)
+            // Copy qword-at-a-time
+            uint64 qi_as = 0
+            while qi_as < copy_slots_as {
+                emit_a64_load_x0(temp_slot_0)
+                uint64 qoff_as = qi_as * 8
+                // ldr x9, [x0, #qoff]
+                emit_a64_ldr(9, 0, qoff_as)
+                emit_a64_load_x0(temp_slot_1)
+                // str x9, [x0, #qoff]
+                emit_a64_str(9, 0, qoff_as)
+                qi_as = qi_as + 1
+            }
+            expr_is_struct_a64 = 0xFFFFFFFF
+            return
+        }
         uint64 offset = var_lookup(name_tok)
         if offset != 0xFFFFFFFF {
             // Check if this variable is float-typed
@@ -3587,6 +3727,20 @@ fn gen_stmt_a64(uint64 node) {
             emit_a64_ldr(0, 31, a64_var_base + temp_slot_0)
         } else if wec != 0 {
             gen_expr_a64(wec)
+            // Struct return: load eightbytes from pointer into x0/x1
+            if expr_is_struct_a64 != 0xFFFFFFFF {
+                uint64 ret_si_ar = expr_is_struct_a64
+                uint64 ret_sz_ar = struct_total_size(ret_si_ar)
+                // x0 = pointer to struct data
+                emit_a64_mov(9, 0)
+                // Load first eightbyte into x0
+                emit_a64_ldr(0, 9, 0)
+                if ret_sz_ar > 8 {
+                    // Load second eightbyte into x1
+                    emit_a64_ldr(1, 9, 8)
+                }
+                expr_is_struct_a64 = 0xFFFFFFFF
+            }
         }
         // Jump to epilogue
         emit_a64_b(0)
@@ -4003,6 +4157,7 @@ fn gen_stmt_a64(uint64 node) {
                 emit_a64_mov(10, 0)
                 emit_a64_load_x0(temp_slot_0)
                 if fsz == 1 { emit_a64_strb(0, 10, 0) }
+                else if fsz == 2 { emit_a64_strh(0, 10, 0) }
                 else if fsz == 4 { emit_a64_str32(0, 10, 0) }
                 else { emit_a64_str(0, 10, 0) }
             }
@@ -4170,6 +4325,11 @@ fn gen_function_a64(uint64 fn_node) {
         uint64 ret_kind_a = tok_kind_at_raw(wrt_a)
         if ret_kind_a == 96 { fn_ret_float_register(name_tok, 1) }
         if ret_kind_a == 95 { fn_ret_float_register(name_tok, 2) }
+        // Register struct return type if applicable
+        uint64 ret_si_a = struct_lookup(wrt_a)
+        if ret_si_a != 0xFFFFFFFF {
+            fn_ret_struct_register(name_tok, ret_si_a)
+        }
     }
 
     // For main: platform-specific _start trampoline
@@ -4294,6 +4454,36 @@ fn gen_function_a64(uint64 fn_node) {
             uint64 pt_kind_spill_a = tok_kind_at_raw(pt_spill_a)
             uint64 param_is_float_a = is_float_type(pt_kind_spill_a)
             if poff != 0xFFFFFFFF {
+                // Check for struct parameter (by-value receiving, AAPCS64)
+                uint64 param_si_spill_a = struct_lookup(pt_spill_a)
+                if param_si_spill_a != 0xFFFFFFFF && abi_struct_pass_by_val != 0 {
+                    // AAPCS64 struct by value: allocate struct-sized area on stack
+                    uint64 sv_ssize_a = struct_total_size(param_si_spill_a)
+                    uint64 sv_sslots_a = (sv_ssize_a + 7) / 8
+                    uint64 struct_area_a = var_count * 8
+                    uint64 sv_ci_a = 0
+                    while sv_ci_a < sv_sslots_a { var_count = var_count + 1; sv_ci_a = sv_ci_a + 1 }
+                    var_frame_size = var_count * 8
+                    uint64 sv_rem_a = var_frame_size & 15
+                    if sv_rem_a != 0 { var_frame_size = var_frame_size + 16 - sv_rem_a }
+                    // Spill register(s) into contiguous struct area
+                    if int_pidx_a <= 7 {
+                        emit_a64_str(int_pidx_a, 31, a64_var_base + struct_area_a)
+                    }
+                    int_pidx_a = int_pidx_a + 1
+                    if sv_ssize_a > 8 && int_pidx_a <= 7 {
+                        emit_a64_str(int_pidx_a, 31, a64_var_base + struct_area_a + 8)
+                        int_pidx_a = int_pidx_a + 1
+                    }
+                    // Store pointer to struct area in the variable's slot
+                    // add x0, sp, #(a64_var_base + struct_area_a)
+                    emit_a64_add_imm(0, 31, a64_var_base + struct_area_a)
+                    emit_a64_str(0, 31, a64_var_base + poff)
+                    pidx = pidx + 1
+                    uint32 pn3_sv = ast_next(wp2)
+                    wp2 = pn3_sv
+                    continue
+                }
                 if param_is_float_a != 0 {
                     // Float param: spill dN to stack
                     if float_pidx_a <= 7 {

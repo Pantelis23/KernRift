@@ -1232,6 +1232,33 @@ fn main() { exit(add(10, 32)) }' 42
     run_test_a64 "a64_atomic" 'fn main() { uint64 buf = alloc(64); atomic_store(buf, 42); exit(atomic_load(buf)) }' 42
     run_test_a64 "a64_static" 'static uint64 x = 0
 fn main() { x = 42; exit(x) }' 42
+
+    # ARM64 struct passing tests
+    run_test_a64 "a64_struct_field" 'struct P { uint64 x; uint64 y }
+fn main() { P a; a.x = 10; a.y = 32; exit(a.x + a.y) }' 42
+
+    run_test_a64 "a64_struct_pass" 'struct P { uint64 x; uint64 y }
+fn sum(P p) -> uint64 { return p.x + p.y }
+fn main() { P a; a.x = 10; a.y = 32; exit(sum(a)) }' 42
+
+    run_test_a64 "a64_struct_pass_2arg" 'struct P { uint64 x; uint64 y }
+fn add(P a, P b) -> uint64 { return a.x + b.y }
+fn main() { P p1; p1.x = 10; p1.y = 0; P p2; p2.x = 0; p2.y = 32; exit(add(p1, p2)) }' 42
+
+    run_test_a64 "a64_struct_return" 'struct P { uint64 x; uint64 y }
+fn make() -> P { P r; r.x = 10; r.y = 32; return r }
+fn main() { P a = make(); exit(a.x + a.y) }' 42
+
+    run_test_a64 "a64_struct_lit" 'struct P { uint64 x; uint64 y }
+fn sum(P p) -> uint64 { return p.x + p.y }
+fn main() { exit(sum(P{x: 10, y: 32})) }' 42
+
+    run_test_a64 "a64_struct_copy" 'struct P { uint64 x; uint64 y }
+fn main() { P a; a.x = 10; a.y = 32; P b = a; exit(b.x + b.y) }' 42
+
+    run_test_a64 "a64_struct_small" 'struct S { uint32 a; uint32 b }
+fn sum(S s) -> uint64 { return s.a + s.b }
+fn main() { S v; v.a = 10; v.b = 32; exit(sum(v)) }' 42
 fi
 
 # --- v2.6 feature tests ---
