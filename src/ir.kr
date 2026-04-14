@@ -939,3 +939,197 @@ fn ir_lower_function(uint64 fn_node) {
     uint64 wbody = body
     if wbody != 0 { ir_lower_block(wbody) }
 }
+
+// ---------------------------------------------------------------------------
+// Liveness analysis — iterative dataflow with bitset live-in/live-out
+// ---------------------------------------------------------------------------
+
+static uint64 ir_live_in = 0      // bitset per block: ir_live_in + bb * set_bytes
+static uint64 ir_live_out = 0     // bitset per block
+static uint64 ir_live_words = 0   // uint64 words per bitset = ceil(vreg_count / 64)
+
+fn ir_liveness_init() {
+    ir_live_words = (ir_vreg_next + 63) / 64
+    if ir_live_words == 0 { ir_live_words = 1 }
+    uint64 set_bytes = ir_live_words * 8
+    uint64 total = ir_bb_count * set_bytes
+    ir_live_in = alloc(total)
+    ir_live_out = alloc(total)
+    // Zero both
+    uint64 i = 0
+    while i < total {
+        uint64 p1 = ir_live_in + i
+        uint64 p2 = ir_live_out + i
+        uint8 z = 0
+        unsafe { *(p1 as uint8) = z }
+        unsafe { *(p2 as uint8) = z }
+        i = i + 1
+    }
+}
+
+fn ir_live_set(uint64 base, uint64 bb, uint64 vreg) {
+    uint64 set_bytes = ir_live_words * 8
+    uint64 word = vreg / 64
+    uint64 bit = vreg & 63
+    uint64 p = base + bb * set_bytes + word * 8
+    uint64 val = 0
+    unsafe { *(p as uint64) -> val }
+    val = val | (1 << bit)
+    unsafe { *(p as uint64) = val }
+}
+
+fn ir_live_clear(uint64 base, uint64 bb, uint64 vreg) {
+    uint64 set_bytes = ir_live_words * 8
+    uint64 word = vreg / 64
+    uint64 bit = vreg & 63
+    uint64 p = base + bb * set_bytes + word * 8
+    uint64 val = 0
+    unsafe { *(p as uint64) -> val }
+    val = val & ~(1 << bit)
+    unsafe { *(p as uint64) = val }
+}
+
+fn ir_live_test(uint64 base, uint64 bb, uint64 vreg) -> uint64 {
+    uint64 set_bytes = ir_live_words * 8
+    uint64 word = vreg / 64
+    uint64 bit = vreg & 63
+    uint64 p = base + bb * set_bytes + word * 8
+    uint64 val = 0
+    unsafe { *(p as uint64) -> val }
+    return (val >> bit) & 1
+}
+
+// Check whether an instruction defines (produces) a vreg.
+fn ir_insn_has_def(uint64 ii) -> uint64 {
+    uint64 op = ir_insn_opcode(ii)
+    if op == 40 { return 0 }   // br
+    if op == 41 { return 0 }   // br_cond
+    if op == 43 { return 0 }   // ret_void
+    if op == 31 { return 0 }   // store
+    if op == 51 { return 0 }   // arg (no value produced)
+    return 1
+}
+
+// Iterative dataflow: compute live-in and live-out for every basic block.
+@export
+fn ir_compute_liveness() {
+    ir_liveness_init()
+    uint64 set_bytes = ir_live_words * 8
+    uint64 changed = 1
+    while changed != 0 {
+        changed = 0
+        uint64 bi = ir_bb_count
+        while bi > 0 {
+            bi = bi - 1
+            // Step 1: live_out[bi] = union of live_in[succ] for each successor
+            uint64 s0 = ir_bb_succ0(bi)
+            uint64 s1 = ir_bb_succ1(bi)
+            uint64 wi = 0
+            while wi < ir_live_words {
+                uint64 out_val = 0
+                if s0 != 0xFFFFFFFF {
+                    uint64 p_s0 = ir_live_in + s0 * set_bytes + wi * 8
+                    uint64 v0 = 0
+                    unsafe { *(p_s0 as uint64) -> v0 }
+                    out_val = out_val | v0
+                }
+                if s1 != 0xFFFFFFFF {
+                    uint64 p_s1 = ir_live_in + s1 * set_bytes + wi * 8
+                    uint64 v1 = 0
+                    unsafe { *(p_s1 as uint64) -> v1 }
+                    out_val = out_val | v1
+                }
+                uint64 p_out = ir_live_out + bi * set_bytes + wi * 8
+                unsafe { *(p_out as uint64) = out_val }
+                wi = wi + 1
+            }
+
+            // Step 2: Start with live_out, walk instructions backwards
+            // Copy live_out to a temp set
+            uint64 tmp = alloc(set_bytes)
+            uint64 ci = 0
+            while ci < set_bytes {
+                uint64 ps = ir_live_out + bi * set_bytes + ci
+                uint64 pd = tmp + ci
+                uint64 bv = 0
+                unsafe { *(ps as uint8) -> bv }
+                uint8 bb = bv
+                unsafe { *(pd as uint8) = bb }
+                ci = ci + 1
+            }
+
+            // Collect instructions into an array for reverse traversal
+            uint64[256] insn_list
+            uint64 insn_count_local = 0
+            uint64 ii = ir_bb_first_insn(bi)
+            while ii != 0xFFFFFFFF && insn_count_local < 256 {
+                uint64 ilp = insn_list + insn_count_local * 8
+                unsafe { *(ilp as uint64) = ii }
+                insn_count_local = insn_count_local + 1
+                ii = ir_insn_next(ii)
+            }
+            // Walk in reverse
+            uint64 ri = insn_count_local
+            while ri > 0 {
+                ri = ri - 1
+                uint64 rlp = insn_list + ri * 8
+                uint64 cur_ii = 0
+                unsafe { *(rlp as uint64) -> cur_ii }
+
+                // Remove def
+                if ir_insn_has_def(cur_ii) != 0 {
+                    uint64 def_v = ir_insn_dest(cur_ii)
+                    if def_v < ir_vreg_next {
+                        uint64 dw = def_v / 64
+                        uint64 db = def_v & 63
+                        uint64 dp = tmp + dw * 8
+                        uint64 dv = 0
+                        unsafe { *(dp as uint64) -> dv }
+                        dv = dv & ~(1 << db)
+                        unsafe { *(dp as uint64) = dv }
+                    }
+                }
+
+                // Add src1 use
+                uint64 op = ir_insn_opcode(cur_ii)
+                uint64 use1 = ir_insn_src1(cur_ii)
+                if use1 < ir_vreg_next && op != 1 {
+                    uint64 uw = use1 / 64
+                    uint64 ub = use1 & 63
+                    uint64 up = tmp + uw * 8
+                    uint64 uv = 0
+                    unsafe { *(up as uint64) -> uv }
+                    uv = uv | (1 << ub)
+                    unsafe { *(up as uint64) = uv }
+                }
+
+                // Add src2 use
+                uint64 use2 = ir_insn_src2(cur_ii)
+                if use2 < ir_vreg_next && op != 1 && op != 12 && op != 13 && op != 42 && op != 61 {
+                    uint64 uw = use2 / 64
+                    uint64 ub = use2 & 63
+                    uint64 up = tmp + uw * 8
+                    uint64 uv = 0
+                    unsafe { *(up as uint64) -> uv }
+                    uv = uv | (1 << ub)
+                    unsafe { *(up as uint64) = uv }
+                }
+            }
+
+            // Check if live_in changed
+            ci = 0
+            while ci < set_bytes {
+                uint64 p_old = ir_live_in + bi * set_bytes + ci
+                uint64 p_new = tmp + ci
+                uint64 ov = 0
+                uint64 nv = 0
+                unsafe { *(p_old as uint8) -> ov }
+                unsafe { *(p_new as uint8) -> nv }
+                if ov != nv { changed = 1 }
+                uint8 nb = nv
+                unsafe { *(p_old as uint8) = nb }
+                ci = ci + 1
+            }
+        }
+    }
+}
