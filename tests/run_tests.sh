@@ -2055,6 +2055,32 @@ fn main() {
     exit(s.a + s.b)
 }' 7
 
+# --- Struct value semantics (copy on assign) ---
+run_test "struct_assign_copy" 'struct P { uint64 x; uint64 y }
+fn main() {
+    P a
+    a.x = 10; a.y = 20
+    P b = a
+    b.x = 99
+    exit(a.x)
+}' 10
+
+run_test "struct_reassign" 'struct P { uint64 x; uint64 y }
+fn main() {
+    P a; a.x = 1; a.y = 2
+    P b; b.x = 10; b.y = 20
+    a = b
+    exit(a.x + a.y)
+}' 30
+
+run_test "struct_literal_copy" 'struct P { uint64 x; uint64 y }
+fn main() {
+    P p = P { 10, 20 }
+    P q = p
+    q.x = 99
+    exit(p.x)
+}' 10
+
 # --- Summary ---
 echo ""
 echo "=== Results: $PASS/$TOTAL passed, $FAIL failed ==="

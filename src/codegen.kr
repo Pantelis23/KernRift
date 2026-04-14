@@ -2540,6 +2540,11 @@ fn gen_expr(uint64 node) {
             }
             emit_load_rax_from_stack(offset)
             expr_is_float = 0
+            // Track if this is a struct variable
+            uint64 svi = struct_var_lookup(wident_tok)
+            if svi != 0xFFFFFFFF {
+                expr_is_struct = svi
+            }
         } else {
             uint64 soff = static_lookup(tok)
             if soff != 0xFFFFFFFF {
@@ -6323,8 +6328,64 @@ fn gen_stmt(uint64 node) {
             uint32 sarr_size_tok_i = ast_data3(node)
             uint64 wsast_i = sarr_size_tok_i
             if wstruct_init != 0 && wsast_i == 0 {
-                uint64 ptr_off_h = var_declare(name_tok)
                 gen_expr(wstruct_init)
+                if expr_is_struct != 0xFFFFFFFF {
+                    // Value semantics: copy struct to own stack area
+                    uint64 copy_size = struct_total_size(sidx)
+                    uint64 copy_slots = (copy_size + 7) / 8
+                    uint64 copy_off = var_count * 8
+                    uint64 csi = 0
+                    while csi < copy_slots {
+                        var_count = var_count + 1
+                        csi = csi + 1
+                    }
+                    var_frame_size = var_count * 8
+                    uint64 crem = var_frame_size & 15
+                    if crem != 0 { var_frame_size = var_frame_size + 16 - crem }
+                    // rax = source pointer, save it
+                    emit_store_rax_to_stack(temp_slot_0)
+                    // Inline copy: qword-at-a-time
+                    uint64 qi = 0
+                    while qi < copy_slots {
+                        emit_load_rax_from_stack(temp_slot_0)
+                        uint64 qoff = qi * 8
+                        // mov rcx, [rax + qoff]
+                        if qoff == 0 {
+                            emit_byte(0x48); emit_byte(0x8B); emit_byte(0x08)
+                        } else if qoff < 128 {
+                            emit_byte(0x48); emit_byte(0x8B); emit_byte(0x48)
+                            uint8 qo8 = qoff; emit_byte(qo8)
+                        } else {
+                            emit_byte(0x48); emit_byte(0x8B); emit_byte(0x88)
+                            emit_u32_le(qoff)
+                        }
+                        // mov [rsp + copy_off + qoff], rcx
+                        uint64 dst_off = copy_off + qoff
+                        if dst_off < 128 {
+                            emit_byte(0x48); emit_byte(0x89); emit_byte(0x4C)
+                            emit_byte(0x24); uint8 do8 = dst_off; emit_byte(do8)
+                        } else {
+                            emit_byte(0x48); emit_byte(0x89); emit_byte(0x8C)
+                            emit_byte(0x24); emit_u32_le(dst_off)
+                        }
+                        qi = qi + 1
+                    }
+                    // Variable points to local copy
+                    uint64 ptr_off_h = var_declare(name_tok)
+                    if copy_off < 128 {
+                        emit_byte(0x48); emit_byte(0x8D); emit_byte(0x44)
+                        emit_byte(0x24); uint8 co8f = copy_off; emit_byte(co8f)
+                    } else {
+                        emit_byte(0x48); emit_byte(0x8D); emit_byte(0x84)
+                        emit_byte(0x24); emit_u32_le(copy_off)
+                    }
+                    emit_store_rax_to_stack(ptr_off_h)
+                    struct_var_register(name_tok, sidx)
+                    expr_is_struct = 0xFFFFFFFF
+                    return
+                }
+                // Non-struct init (heap pointer): just store
+                uint64 ptr_off_h = var_declare(name_tok)
                 emit_store_rax_to_stack(ptr_off_h)
                 struct_var_register(name_tok, sidx)
                 return
@@ -6525,6 +6586,48 @@ fn gen_stmt(uint64 node) {
         uint32 val_child = ast_child(node)
         uint64 wvc = val_child
         gen_expr(wvc)
+        // Struct assignment: copy bytes for value semantics
+        if expr_is_struct != 0xFFFFFFFF {
+            uint64 src_si = expr_is_struct
+            uint64 copy_size = struct_total_size(src_si)
+            uint64 copy_slots = (copy_size + 7) / 8
+            // rax = source pointer
+            emit_store_rax_to_stack(temp_slot_0)
+            // Get dest pointer from variable
+            uint64 dest_off = var_lookup(name_tok)
+            emit_load_rax_from_stack(dest_off)
+            emit_store_rax_to_stack(temp_slot_1)
+            // Copy qword-at-a-time
+            uint64 qi = 0
+            while qi < copy_slots {
+                emit_load_rax_from_stack(temp_slot_0)
+                uint64 qoff = qi * 8
+                // mov rcx, [rax + qoff]
+                if qoff == 0 {
+                    emit_byte(0x48); emit_byte(0x8B); emit_byte(0x08)
+                } else if qoff < 128 {
+                    emit_byte(0x48); emit_byte(0x8B); emit_byte(0x48)
+                    uint8 qo8 = qoff; emit_byte(qo8)
+                } else {
+                    emit_byte(0x48); emit_byte(0x8B); emit_byte(0x88)
+                    emit_u32_le(qoff)
+                }
+                emit_load_rax_from_stack(temp_slot_1)
+                // mov [rax + qoff], rcx
+                if qoff == 0 {
+                    emit_byte(0x48); emit_byte(0x89); emit_byte(0x08)
+                } else if qoff < 128 {
+                    emit_byte(0x48); emit_byte(0x89); emit_byte(0x48)
+                    uint8 qo82 = qoff; emit_byte(qo82)
+                } else {
+                    emit_byte(0x48); emit_byte(0x89); emit_byte(0x88)
+                    emit_u32_le(qoff)
+                }
+                qi = qi + 1
+            }
+            expr_is_struct = 0xFFFFFFFF
+            return
+        }
         uint64 offset = var_lookup(name_tok)
         if offset != 0xFFFFFFFF {
             uint64 vtype_a = var_type_lookup(name_tok)
