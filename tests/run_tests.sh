@@ -2434,6 +2434,75 @@ else
 fi
 rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_test_$$
 
+echo ""
+echo "--- Debug info (-g) ---"
+if [ "$ARCH" = "x86_64" ] && command -v readelf > /dev/null 2>&1; then
+
+# Test: -g produces .debug_line section
+TOTAL=$((TOTAL + 1))
+REPO_ROOT="$DIR/.."
+printf 'fn main() { exit(42) }\n' > "$REPO_ROOT/test_tmp_$$.kr"
+if $KRC $KRC_FLAGS -g "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_g_$$ > /dev/null 2>&1; then
+    if readelf -S /tmp/krc_g_$$ 2>/dev/null | grep -q "debug_line"; then
+        PASS=$((PASS + 1))
+        echo "  debug_line_exists: PASS"
+    else
+        echo "FAIL: debug_line_exists (section not found)"
+        FAIL=$((FAIL + 1))
+    fi
+else
+    echo "FAIL: debug_line_exists (compilation failed)"
+    FAIL=$((FAIL + 1))
+fi
+
+# Test: binary with -g runs correctly
+TOTAL=$((TOTAL + 1))
+chmod +x /tmp/krc_g_$$
+/tmp/krc_g_$$ > /dev/null 2>&1
+actual=$?
+if [ "$actual" = "42" ]; then
+    PASS=$((PASS + 1))
+    echo "  debug_runs: PASS (exit=42)"
+else
+    echo "FAIL: debug_runs (expected 42, got $actual)"
+    FAIL=$((FAIL + 1))
+fi
+
+# Test: without -g, no debug section
+TOTAL=$((TOTAL + 1))
+$KRC $KRC_FLAGS "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_nog_$$ > /dev/null 2>&1
+if readelf -S /tmp/krc_nog_$$ 2>/dev/null | grep -q "debug_line"; then
+    echo "FAIL: debug_no_flag (.debug_line should not exist)"
+    FAIL=$((FAIL + 1))
+else
+    PASS=$((PASS + 1))
+    echo "  debug_no_flag: PASS"
+fi
+
+# Test: readelf can decode the line info
+TOTAL=$((TOTAL + 1))
+if readelf --debug-dump=line /tmp/krc_g_$$ 2>&1 | grep -q "DWARF Version"; then
+    PASS=$((PASS + 1))
+    echo "  debug_line_valid: PASS"
+else
+    echo "FAIL: debug_line_valid (readelf could not decode)"
+    FAIL=$((FAIL + 1))
+fi
+
+# Test: symtab has function names
+TOTAL=$((TOTAL + 1))
+if readelf -s /tmp/krc_g_$$ 2>/dev/null | grep -q "main"; then
+    PASS=$((PASS + 1))
+    echo "  debug_symtab: PASS"
+else
+    echo "FAIL: debug_symtab (main not in symbol table)"
+    FAIL=$((FAIL + 1))
+fi
+
+rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_g_$$ /tmp/krc_nog_$$
+
+fi  # end x86_64 + readelf gate
+
 # --- Summary ---
 echo ""
 echo "=== Results: $PASS/$TOTAL passed, $FAIL failed ==="
