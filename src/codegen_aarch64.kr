@@ -357,6 +357,10 @@ fn emit_a64_blr(uint64 rn) {
 
 // Record an IAT fixup: patch_off = output offset of MOVZ instruction, slot = IAT slot index
 fn a64_win_fixup_add(uint64 patch_off, uint64 slot) {
+    if a64_win_iat_fixup_count >= 4096 {
+        write(2, "error: a64_win_iat_fixups overflow (max 4096)\n", 46)
+        exit(1)
+    }
     uint64 entry = a64_win_iat_fixups + a64_win_iat_fixup_count * 8
     uint32 po = patch_off
     unsafe { *(entry as uint32) = po }

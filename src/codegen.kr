@@ -423,12 +423,16 @@ fn var_reset() {
 
 fn var_type_init() {
     if var_type_table == 0 {
-        var_type_table = alloc(4096)
+        var_type_table = alloc(8192)
     }
 }
 
 fn var_type_register(uint64 name_tok, uint64 type_kind) {
     var_type_init()
+    if var_type_count >= 1024 {
+        write(2, "error: var_type_table overflow (max 1024)\n", 42)
+        exit(1)
+    }
     uint64 entry = var_type_table + var_type_count * 8
     uint32 nt = name_tok
     unsafe { *(entry as uint32) = nt }
@@ -463,6 +467,10 @@ fn var_declare(uint64 name_tok) -> uint64 {
     uint64 existing = var_lookup(name_tok)
     if existing != 0xFFFFFFFF {
         return existing
+    }
+    if var_table_size >= 4096 {
+        write(2, "error: var_table overflow (max 4096)\n", 37)
+        exit(1)
     }
     uint64 offset = var_count * 8
     uint64 entry = var_table + var_table_size * 8
@@ -507,6 +515,10 @@ fn var_lookup(uint64 name_tok) -> uint64 {
 // Each struct entry is 16 bytes header + 16 bytes per field = 16 + 16*16 = 272 max
 @export
 fn struct_register(uint64 name_tok) -> uint64 {
+    if struct_count >= 64 {
+        write(2, "error: struct_table overflow (max 64)\n", 38)
+        exit(1)
+    }
     uint64 base = struct_table + struct_count * 272
     uint32 nt = name_tok
     unsafe { *(base as uint32) = nt }
@@ -746,6 +758,10 @@ fn struct_abi_flags(uint64 struct_idx) -> uint64 {
 
 // Track which variables are struct-typed
 fn struct_var_register(uint64 var_tok, uint64 struct_idx) {
+    if struct_var_count >= 1024 {
+        write(2, "error: struct_var_table overflow (max 1024)\n", 44)
+        exit(1)
+    }
     uint64 entry = struct_var_table + struct_var_count * 8
     uint32 vt = var_tok
     unsafe { *(entry as uint32) = vt }
@@ -779,6 +795,10 @@ fn struct_var_lookup(uint64 var_tok) -> uint64 {
 
 @export
 fn enum_register(uint64 enum_tok, uint64 field_tok, uint64 value) {
+    if enum_count >= 512 {
+        write(2, "error: enum_table overflow (max 512)\n", 37)
+        exit(1)
+    }
     uint64 entry = enum_table + enum_count * 16
     uint32 et = enum_tok
     unsafe { *(entry as uint32) = et }
@@ -820,6 +840,10 @@ fn enum_lookup(uint64 enum_tok, uint64 field_tok) -> uint64 {
 
 @export
 fn static_declare(uint64 name_tok) -> uint64 {
+    if static_count >= 1024 {
+        write(2, "error: static_table overflow (max 1024)\n", 40)
+        exit(1)
+    }
     uint64 offset = static_data_size
     uint64 entry = static_table + static_count * 8
     uint32 nt = name_tok
@@ -852,6 +876,10 @@ fn static_set_init_last(uint64 value) {
 // Device table helpers: device_register returns the new device index.
 @export
 fn device_register(uint64 name_tok, uint64 base_addr) -> uint64 {
+    if device_count >= 64 {
+        write(2, "error: device_table overflow (max 64)\n", 38)
+        exit(1)
+    }
     uint64 entry = device_table + device_count * 16
     uint32 nt = name_tok
     unsafe { *(entry as uint32) = nt }
@@ -864,6 +892,10 @@ fn device_register(uint64 name_tok, uint64 base_addr) -> uint64 {
 
 @export
 fn device_add_field(uint64 dev_idx, uint64 field_tok, uint64 offset, uint64 size) {
+    if device_field_count >= 256 {
+        write(2, "error: device_field_table overflow (max 256)\n", 45)
+        exit(1)
+    }
     uint64 entry = device_field_table + device_field_count * 16
     uint32 di = dev_idx
     unsafe { *(entry as uint32) = di }
@@ -953,6 +985,10 @@ fn device_field_size_of(uint64 dev_idx, uint64 field_tok) -> uint64 {
 
 // Record a slice parameter's length slot. Per-function, cleared on function entry.
 fn slice_len_register(uint64 ptr_off, uint64 len_off) {
+    if slice_len_count >= 32 {
+        write(2, "error: slice_len_table overflow (max 32)\n", 41)
+        exit(1)
+    }
     uint64 entry = slice_len_table + slice_len_count * 8
     uint32 po = ptr_off
     unsafe { *(entry as uint32) = po }
@@ -983,6 +1019,10 @@ fn slice_len_lookup(uint64 ptr_off) -> uint64 {
 
 @export
 fn static_declare_array(uint64 name_tok, uint64 byte_size) -> uint64 {
+    if static_count >= 1024 {
+        write(2, "error: static_table overflow (max 1024)\n", 40)
+        exit(1)
+    }
     // Align static_data_size up to 8 for clean placement
     uint64 rem = static_data_size & 7
     if rem != 0 { static_data_size = static_data_size + 8 - rem }
@@ -1106,6 +1146,10 @@ fn static_lookup_by_name(uint64 name_str, uint64 name_len) -> uint64 {
 
 @export
 fn type_alias_register(uint64 name_tok, uint64 target_size) {
+    if type_alias_count >= 64 {
+        write(2, "error: type_alias_table overflow (max 64)\n", 42)
+        exit(1)
+    }
     uint64 entry = type_alias_table + type_alias_count * 8
     uint32 nt = name_tok
     unsafe { *(entry as uint32) = nt }
@@ -1157,6 +1201,10 @@ fn type_tok_elem_size(uint64 type_tok) -> uint64 {
 
 // Register a local array's element size so that index ops can scale correctly.
 fn arr_elem_register(uint64 name_tok, uint64 elem_size) {
+    if arr_elem_count >= 512 {
+        write(2, "error: arr_elem_table overflow (max 512)\n", 41)
+        exit(1)
+    }
     uint64 entry = arr_elem_table + arr_elem_count * 8
     uint32 nt = name_tok
     unsafe { *(entry as uint32) = nt }
@@ -1190,6 +1238,10 @@ fn arr_elem_lookup(uint64 name_tok) -> uint64 {
 
 // Emit: load static at data_offset into rax (RIP-relative, placeholder)
 fn emit_static_load(uint64 data_offset) {
+    if static_fixup_count >= 8192 {
+        write(2, "error: static_fixups overflow (max 8192)\n", 41)
+        exit(1)
+    }
     // mov disp32(%rip), %rax → 48 8B 05 [disp32]
     emit_byte(0x48)
     emit_byte(0x8B)
@@ -1208,6 +1260,10 @@ fn emit_static_load(uint64 data_offset) {
 // Emit: lea rax, [rip + disp32] — RIP-relative address of a static
 // Used for static arrays to put the address of the data in rax.
 fn emit_static_lea(uint64 data_offset) {
+    if static_fixup_count >= 8192 {
+        write(2, "error: static_fixups overflow (max 8192)\n", 41)
+        exit(1)
+    }
     // lea rax, [rip + disp32] → 48 8D 05 [disp32]
     emit_byte(0x48)
     emit_byte(0x8D)
@@ -1226,6 +1282,10 @@ fn emit_static_lea(uint64 data_offset) {
 
 // Emit: store rax to static at data_offset (RIP-relative, placeholder)
 fn emit_static_store(uint64 data_offset) {
+    if static_fixup_count >= 8192 {
+        write(2, "error: static_fixups overflow (max 8192)\n", 41)
+        exit(1)
+    }
     // mov %rax, disp32(%rip) → 48 89 05 [disp32]
     emit_byte(0x48)
     emit_byte(0x89)
@@ -1354,6 +1414,10 @@ fn emit_static_data() {
 // ---------------------------------------------------------------------------
 
 fn fn_register(uint64 name_tok, uint64 code_offset) {
+    if fn_count >= 1024 {
+        write(2, "error: fn_table overflow (max 1024)\n", 36)
+        exit(1)
+    }
     uint64 entry = fn_table + fn_count * 8
     uint32 nt = name_tok
     unsafe { *(entry as uint32) = nt }
@@ -1384,6 +1448,10 @@ fn fn_lookup(uint64 name_tok) -> uint64 {
 // Register an extern function. Returns its extern index for later use.
 @export
 fn extern_fn_register(uint64 name_tok) -> uint64 {
+    if extern_fn_count >= 256 {
+        write(2, "error: extern_fn_table overflow (max 256)\n", 42)
+        exit(1)
+    }
     uint64 idx = extern_fn_count
     uint64 entry = extern_fn_table + extern_fn_count * 8
     uint32 nt = name_tok
@@ -1412,6 +1480,10 @@ fn extern_fn_lookup(uint64 name_tok) -> uint64 {
 //   x86_64: the start of the 4-byte disp32 (call site + 1)
 //   ARM64:  the start of the BL instruction
 fn extern_call_record(uint64 code_off, uint64 extern_idx) {
+    if extern_call_count >= 1024 {
+        write(2, "error: extern_call_sites overflow (max 1024)\n", 45)
+        exit(1)
+    }
     uint64 entry = extern_call_sites + extern_call_count * 16
     uint32 co = code_off
     unsafe { *(entry as uint32) = co }
@@ -1620,6 +1692,10 @@ fn emit_store_xmmN_f64(uint64 reg, uint64 offset) {
 
 // Register a function's float return type
 fn fn_ret_float_register(uint64 name_tok, uint64 float_kind) {
+    if fn_ret_float_count >= 512 {
+        write(2, "error: fn_ret_float_table overflow (max 512)\n", 45)
+        exit(1)
+    }
     uint64 entry = fn_ret_float_table + fn_ret_float_count * 8
     uint32 nt = name_tok
     unsafe { *(entry as uint32) = nt }
@@ -1651,6 +1727,10 @@ fn fn_ret_float_lookup(uint64 name_tok) -> uint64 {
 
 // Register a function's struct return type
 fn fn_ret_struct_register(uint64 name_tok, uint64 struct_idx) {
+    if fn_ret_struct_count >= 512 {
+        write(2, "error: fn_ret_struct_table overflow (max 512)\n", 46)
+        exit(1)
+    }
     uint64 entry = fn_ret_struct_table + fn_ret_struct_count * 8
     uint32 nt = name_tok
     unsafe { *(entry as uint32) = nt }
@@ -1881,6 +1961,10 @@ fn emit_mov_rdx_rax() {
 // ---------------------------------------------------------------------------
 
 fn win_fixup_add(uint64 patch_off, uint64 slot) {
+    if win_iat_fixup_count >= 4096 {
+        write(2, "error: win_iat_fixups overflow (max 4096)\n", 42)
+        exit(1)
+    }
     uint64 entry = win_iat_fixups + win_iat_fixup_count * 8
     uint32 po = patch_off
     unsafe { *(entry as uint32) = po }
@@ -1995,6 +2079,10 @@ fn resolver_add_str(uint64 s) -> uint64 {
     uint64 ch = 0
     unsafe { *(p as uint8) -> ch }
     while ch != 0 {
+        if str_len >= 65536 {
+            write(2, "error: str_buf overflow (max 65536)\n", 36)
+            exit(1)
+        }
         uint8 cb = ch
         uint64 dp = str_buf + str_len
         unsafe { *(dp as uint8) = cb }
@@ -2002,6 +2090,10 @@ fn resolver_add_str(uint64 s) -> uint64 {
         i = i + 1
         p = s + i
         unsafe { *(p as uint8) -> ch }
+    }
+    if str_len >= 65536 {
+        write(2, "error: str_buf overflow (max 65536)\n", 36)
+        exit(1)
     }
     uint64 dp = str_buf + str_len
     uint8 nz = 0
@@ -2012,6 +2104,10 @@ fn resolver_add_str(uint64 s) -> uint64 {
 
 // Helper: emit lea rdx, [rip+disp32] with string fixup
 fn emit_lea_rdx_str(uint64 str_offset) {
+    if str_fixup_count >= 4096 {
+        write(2, "error: str_fixups overflow (max 4096)\n", 38)
+        exit(1)
+    }
     emit_byte(0x48); emit_byte(0x8D); emit_byte(0x15)
     uint64 fentry = str_fixups + str_fixup_count * 8
     uint32 cp = out_len
@@ -2025,6 +2121,10 @@ fn emit_lea_rdx_str(uint64 str_offset) {
 
 // Helper: emit lea rcx, [rip+disp32] with string fixup
 fn emit_lea_rcx_str(uint64 str_offset) {
+    if str_fixup_count >= 4096 {
+        write(2, "error: str_fixups overflow (max 4096)\n", 38)
+        exit(1)
+    }
     emit_byte(0x48); emit_byte(0x8D); emit_byte(0x0D)
     uint64 fentry = str_fixups + str_fixup_count * 8
     uint32 cp = out_len
@@ -2364,6 +2464,11 @@ fn gen_expr(uint64 node) {
         uint64 wtok = tok
         uint64 tstart = tok_text_start(wtok)
         uint64 tlen = tok_text_len(wtok)
+        // Check str_buf capacity before copying
+        if str_len + tlen >= 65536 {
+            write(2, "error: str_buf overflow (max 65536)\n", 36)
+            exit(1)
+        }
         // String data offset in str_buf
         uint64 str_offset = str_len
         // Copy string bytes (skip opening quote, process escapes, skip closing quote)
@@ -2393,6 +2498,10 @@ fn gen_expr(uint64 node) {
         unsafe { *(sp as uint8) = zero }
         str_len = str_len + 1
         // Emit: lea disp32(%rip), %rax → 48 8D 05 [disp32]
+        if str_fixup_count >= 4096 {
+            write(2, "error: str_fixups overflow (max 4096)\n", 38)
+            exit(1)
+        }
         emit_byte(0x48)
         emit_byte(0x8D)
         emit_byte(0x05)
@@ -4571,6 +4680,10 @@ fn gen_expr(uint64 node) {
             emit_u32_le(0)
             // Record in fixup table — we store the token of the string literal
             // resolve_fixups_fnaddr will handle these
+            if fnaddr_fixup_count >= 1024 {
+                write(2, "error: fnaddr_fixup_table overflow (max 1024)\n", 46)
+                exit(1)
+            }
             uint64 fentry_fa = fnaddr_fixup_table + fnaddr_fixup_count * 8
             uint32 fa_off = fnaddr_fixup_off
             unsafe { *(fentry_fa as uint32) = fa_off }
@@ -6224,6 +6337,10 @@ fn gen_expr(uint64 node) {
         }
 
         // Record fixup
+        if fixup_count >= 32768 {
+            write(2, "error: fixup_table overflow (max 32768)\n", 40)
+            exit(1)
+        }
         uint64 fentry = fixup_table + fixup_count * 8
         uint32 fo = fixup_off
         unsafe { *(fentry as uint32) = fo }
@@ -7025,6 +7142,10 @@ fn gen_stmt(uint64 node) {
         uint64 ret_patch = out_len
         emit_u32_le(0)
         // Record fixup
+        if ret_fixup_count >= 256 {
+            write(2, "error: ret_fixups overflow (max 256)\n", 37)
+            exit(1)
+        }
         uint64 rentry = ret_fixups + ret_fixup_count * 4
         uint32 rp32 = ret_patch
         unsafe { *(rentry as uint32) = rp32 }
@@ -7132,6 +7253,10 @@ fn gen_stmt(uint64 node) {
         uint64 loop_start = out_len
 
         // Push loop context
+        if loop_depth >= 16 {
+            write(2, "error: loop_stack overflow (max 16)\n", 36)
+            exit(1)
+        }
         uint64 lentry = loop_stack + loop_depth * 16
         unsafe { *(lentry as uint64) = loop_start }
         uint64 lentry8 = lentry + 8
@@ -7188,6 +7313,10 @@ fn gen_stmt(uint64 node) {
 
     // Break
     if kind == 17 {
+        if break_fixup_count >= 256 {
+            write(2, "error: break_fixups overflow (max 256)\n", 39)
+            exit(1)
+        }
         emit_byte(0xE9)
         uint64 brk_off = out_len
         emit_u32_le(0)
@@ -7246,6 +7375,10 @@ fn gen_stmt(uint64 node) {
             uint64 wbody = body_idx
             gen_block(wbody)
             // jmp end_match (stored in break_fixups)
+            if break_fixup_count >= 256 {
+                write(2, "error: break_fixups overflow (max 256)\n", 39)
+                exit(1)
+            }
             emit_byte(0xE9)
             uint64 end_patch = out_len
             emit_u32_le(0)
@@ -8557,6 +8690,10 @@ fn dce_has(uint64 name_tok) -> uint64 {
 // Returns 1 if newly added, 0 if already present
 fn dce_add(uint64 name_tok) -> uint64 {
     if dce_has(name_tok) != 0 { return 0 }
+    if dce_count >= 2048 {
+        write(2, "error: dce_table overflow (max 2048)\n", 37)
+        exit(1)
+    }
     uint64 entry = dce_table + dce_count * 4
     uint32 nt = name_tok
     unsafe { *(entry as uint32) = nt }
@@ -8606,6 +8743,10 @@ fn dce_add_by_str(uint64 str_tok) {
 
 // Register a function in the DCE function map
 fn dce_register_fn(uint64 name_tok, uint64 fn_node) {
+    if dce_fn_map_count >= 1024 {
+        write(2, "error: dce_fn_map overflow (max 1024)\n", 38)
+        exit(1)
+    }
     uint64 entry = dce_fn_map + dce_fn_map_count * 8
     uint32 nt = name_tok
     unsafe { *(entry as uint32) = nt }
