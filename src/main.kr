@@ -2107,12 +2107,12 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
     uint64 source = import_buf
     uint64 size = import_buf_len
 
-    uint64 max_tok = 131072
+    uint64 max_tok = 196608
     uint64 my_tokens = alloc(max_tok * 16)
     lexer_init(source, size, my_tokens, max_tok)
     uint64 tcount = lexer_run()
 
-    ast_init(131072)
+    ast_init(196608)
     codegen_init(1048576, source, my_tokens)
     parser_init(my_tokens, tcount)
     uint64 root = parse_module()
@@ -2637,7 +2637,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     uint64 source = import_buf
     uint64 size = import_buf_len
 
-    uint64 max_tok = 131072
+    uint64 max_tok = 196608
     uint64 my_tokens = alloc(max_tok * 16)
     lexer_init(source, size, my_tokens, max_tok)
     uint64 tcount = lexer_run()
@@ -2676,7 +2676,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
 
     // === Compile x86_64 ELF (Linux) ===
     target_os = 0
-    ast_init(131072)
+    ast_init(196608)
     codegen_init(4194304, source, my_tokens)
     parser_init(my_tokens, saved_tcount)
     uint64 root = parse_module()
@@ -2770,6 +2770,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     type_alias_count = 0
     arr_elem_count = 0
     fn_ret_float_count = 0
+    fn_ret_struct_count = 0
     slice_len_count = 0
     device_count = 0
     device_field_count = 0
@@ -2779,7 +2780,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
 
     // Re-parse (need fresh AST; restore source+tokens to pristine state first)
     restore_src_and_tokens(source, size, src_snapshot, my_tokens, tok_bytes, tok_snapshot)
-    ast_init(131072)
+    ast_init(196608)
     parser_init(my_tokens, saved_tcount)
     uint64 root2 = parse_module()
 
@@ -2854,6 +2855,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     type_alias_count = 0
     arr_elem_count = 0
     fn_ret_float_count = 0
+    fn_ret_struct_count = 0
     slice_len_count = 0
     device_count = 0
     device_field_count = 0
@@ -2862,7 +2864,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     a64_win_iat_fixup_count = 0
 
     restore_src_and_tokens(source, size, src_snapshot, my_tokens, tok_bytes, tok_snapshot)
-    ast_init(131072)
+    ast_init(196608)
     parser_init(my_tokens, saved_tcount)
     uint64 root3 = parse_module()
     dce_init()
@@ -2944,6 +2946,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     type_alias_count = 0
     arr_elem_count = 0
     fn_ret_float_count = 0
+    fn_ret_struct_count = 0
     slice_len_count = 0
     device_count = 0
     device_field_count = 0
@@ -2952,7 +2955,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     a64_win_iat_fixup_count = 0
 
     restore_src_and_tokens(source, size, src_snapshot, my_tokens, tok_bytes, tok_snapshot)
-    ast_init(131072)
+    ast_init(196608)
     parser_init(my_tokens, saved_tcount)
     uint64 root4 = parse_module()
     dce_init()
@@ -3056,6 +3059,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     type_alias_count = 0
     arr_elem_count = 0
     fn_ret_float_count = 0
+    fn_ret_struct_count = 0
     slice_len_count = 0
     device_count = 0
     device_field_count = 0
@@ -3064,7 +3068,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     a64_win_iat_fixup_count = 0
 
     restore_src_and_tokens(source, size, src_snapshot, my_tokens, tok_bytes, tok_snapshot)
-    ast_init(131072)
+    ast_init(196608)
     parser_init(my_tokens, saved_tcount)
     uint64 root5 = parse_module()
     dce_init()
@@ -3137,6 +3141,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     type_alias_count = 0
     arr_elem_count = 0
     fn_ret_float_count = 0
+    fn_ret_struct_count = 0
     slice_len_count = 0
     device_count = 0
     device_field_count = 0
@@ -3145,7 +3150,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     a64_win_iat_fixup_count = 0
 
     restore_src_and_tokens(source, size, src_snapshot, my_tokens, tok_bytes, tok_snapshot)
-    ast_init(131072)
+    ast_init(196608)
     parser_init(my_tokens, saved_tcount)
     uint64 root6 = parse_module()
     dce_init()
@@ -3253,6 +3258,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     type_alias_count = 0
     arr_elem_count = 0
     fn_ret_float_count = 0
+    fn_ret_struct_count = 0
     slice_len_count = 0
     device_count = 0
     device_field_count = 0
@@ -3261,7 +3267,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     a64_win_iat_fixup_count = 0
 
     restore_src_and_tokens(source, size, src_snapshot, my_tokens, tok_bytes, tok_snapshot)
-    ast_init(131072)
+    ast_init(196608)
     parser_init(my_tokens, saved_tcount)
     uint64 root8 = parse_module()
     dce_init()
@@ -3351,6 +3357,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     type_alias_count = 0
     arr_elem_count = 0
     fn_ret_float_count = 0
+    fn_ret_struct_count = 0
     slice_len_count = 0
     device_count = 0
     device_field_count = 0
@@ -3359,7 +3366,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     a64_win_iat_fixup_count = 0
 
     restore_src_and_tokens(source, size, src_snapshot, my_tokens, tok_bytes, tok_snapshot)
-    ast_init(131072)
+    ast_init(196608)
     parser_init(my_tokens, saved_tcount)
     uint64 root7 = parse_module()
     dce_init()
@@ -3919,11 +3926,11 @@ fn main() {
         import_process(input_path)
         uint64 source = import_buf
         uint64 size = import_buf_len
-        uint64 max_tok = 131072
+        uint64 max_tok = 196608
         uint64 my_tokens = alloc(max_tok * 16)
         lexer_init(source, size, my_tokens, max_tok)
         uint64 tcount = lexer_run()
-        ast_init(131072)
+        ast_init(196608)
         codegen_init(1048576, source, my_tokens)
         parser_init(my_tokens, tcount)
         uint64 root = parse_module()
@@ -3962,11 +3969,11 @@ fn main() {
         import_process(input_path)
         uint64 source = import_buf
         uint64 size = import_buf_len
-        uint64 max_tok = 131072
+        uint64 max_tok = 196608
         uint64 my_tokens = alloc(max_tok * 16)
         lexer_init(source, size, my_tokens, max_tok)
         uint64 tcount = lexer_run()
-        ast_init(131072)
+        ast_init(196608)
         codegen_init(1048576, source, my_tokens)
         parser_init(my_tokens, tcount)
         uint64 root = parse_module()

@@ -2096,6 +2096,25 @@ fn main() {
     exit(a.x)
 }' 10
 
+# --- Struct return by value tests ---
+run_test "struct_return_small" 'struct P { uint64 x; uint64 y }
+fn make(uint64 x, uint64 y) -> P {
+    return P { x, y }
+}
+fn main() {
+    P p = make(10, 20)
+    exit(p.x + p.y)
+}' 30
+
+run_test "struct_return_field" 'struct P { uint64 x; uint64 y }
+fn make() -> P { return P { 3, 4 } }
+fn main() { P p = make(); exit(p.x) }' 3
+
+run_test "struct_return_chain" 'struct P { uint64 x; uint64 y }
+fn make(uint64 v) -> P { return P { v, v + 1 } }
+fn sum(P p) -> uint64 { return p.x + p.y }
+fn main() { exit(sum(make(10))) }' 21
+
 # --- Summary ---
 echo ""
 echo "=== Results: $PASS/$TOTAL passed, $FAIL failed ==="

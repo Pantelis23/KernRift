@@ -182,6 +182,11 @@ static uint64 r12_save_slot = 0
 static uint64 fn_ret_float_table = 0
 static uint64 fn_ret_float_count = 0
 
+// Function return-type struct table: maps fn name_tok → struct index
+// [name_tok(4), struct_idx(4)] × 512
+static uint64 fn_ret_struct_table = 0
+static uint64 fn_ret_struct_count = 0
+
 @export
 fn codegen_init(uint64 capacity, uint64 source, uint64 tokens) {
     out_buf = alloc(capacity)
@@ -242,6 +247,8 @@ fn codegen_init(uint64 capacity, uint64 source, uint64 tokens) {
     pin_param1_offset = 0xFFFFFFFF
     fn_ret_float_table = alloc(512 * 8)
     fn_ret_float_count = 0
+    fn_ret_struct_table = alloc(512 * 8)
+    fn_ret_struct_count = 0
 }
 
 // ---------------------------------------------------------------------------
@@ -1617,6 +1624,37 @@ fn fn_ret_float_lookup(uint64 name_tok) -> uint64 {
         i = i + 1
     }
     return 0
+}
+
+// Register a function's struct return type
+fn fn_ret_struct_register(uint64 name_tok, uint64 struct_idx) {
+    uint64 entry = fn_ret_struct_table + fn_ret_struct_count * 8
+    uint32 nt = name_tok
+    unsafe { *(entry as uint32) = nt }
+    uint64 e4 = entry + 4
+    uint32 si = struct_idx
+    unsafe { *(e4 as uint32) = si }
+    fn_ret_struct_count = fn_ret_struct_count + 1
+}
+
+// Look up a function's struct return type: 0xFFFFFFFF = not struct, else struct_idx
+fn fn_ret_struct_lookup(uint64 name_tok) -> uint64 {
+    uint64 i = 0
+    while i < fn_ret_struct_count {
+        uint64 entry = fn_ret_struct_table + i * 8
+        uint32 nt = 0
+        unsafe { *(entry as uint32) -> nt }
+        uint64 wnt = nt
+        if tok_text_eq(wnt, name_tok) != 0 {
+            uint64 e4 = entry + 4
+            uint32 si = 0
+            unsafe { *(e4 as uint32) -> si }
+            uint64 wsi = si
+            return wsi
+        }
+        i = i + 1
+    }
+    return 0xFFFFFFFF
 }
 
 // Helper: is this type token a float type?
@@ -6046,6 +6084,35 @@ fn gen_expr(uint64 node) {
         uint64 ret_fk = fn_ret_float_lookup(wct_ret)
         expr_is_float = ret_fk
 
+        // Check if callee returns a struct
+        uint64 ret_struct_si = fn_ret_struct_lookup(callee_tok)
+        if ret_struct_si != 0xFFFFFFFF {
+            uint64 ret_ssize = struct_total_size(ret_struct_si)
+            uint64 ret_sslots = (ret_ssize + 7) / 8
+            uint64 ret_soff = var_count * 8
+            uint64 rsi2 = 0
+            while rsi2 < ret_sslots { var_count = var_count + 1; rsi2 = rsi2 + 1 }
+            var_frame_size = var_count * 8
+            uint64 rsrem = var_frame_size & 15
+            if rsrem != 0 { var_frame_size = var_frame_size + 16 - rsrem }
+            emit_store_rax_to_stack(ret_soff)
+            if ret_ssize > 8 {
+                // mov rax, rdx
+                emit_byte(0x48); emit_byte(0x89); emit_byte(0xD0)
+                uint64 ret_soff2 = ret_soff + 8
+                emit_store_rax_to_stack(ret_soff2)
+            }
+            // lea rax, [rsp + ret_soff]
+            if ret_soff < 128 {
+                emit_byte(0x48); emit_byte(0x8D); emit_byte(0x44)
+                emit_byte(0x24); uint8 rso8 = ret_soff; emit_byte(rso8)
+            } else {
+                emit_byte(0x48); emit_byte(0x8D); emit_byte(0x84)
+                emit_byte(0x24); emit_u32_le(ret_soff)
+            }
+            expr_is_struct = ret_struct_si
+        }
+
         // If the callee is an extern fn, record a call site for the linker
         // relocation and skip the internal fixup table — the linker fills the
         // disp32 at .o emit time with R_X86_64_PLT32.
@@ -6800,6 +6867,27 @@ fn gen_stmt(uint64 node) {
         } else if wec != 0 {
             gen_expr(wec)
         }
+        // If returning a struct, load eightbytes into rax/rdx
+        if expr_is_struct != 0xFFFFFFFF {
+            uint64 ret_si = expr_is_struct
+            uint64 ret_size = struct_total_size(ret_si)
+            // rax = pointer to struct data
+            emit_store_rax_to_stack(temp_slot_0)
+            // Load eightbyte 0 into rax: mov rax, [rax]
+            emit_byte(0x48); emit_byte(0x8B); emit_byte(0x00)
+            if ret_size > 8 {
+                // Save eightbyte 0
+                emit_store_rax_to_stack(temp_slot_1)
+                // Load eightbyte 1: mov rax, [saved_ptr+8]
+                emit_load_rax_from_stack(temp_slot_0)
+                emit_byte(0x48); emit_byte(0x8B); emit_byte(0x40); emit_byte(0x08)
+                // mov rdx, rax
+                emit_byte(0x48); emit_byte(0x89); emit_byte(0xC2)
+                // Restore eightbyte 0 to rax
+                emit_load_rax_from_stack(temp_slot_1)
+            }
+            expr_is_struct = 0xFFFFFFFF
+        }
         // Jump to epilogue (placeholder — patched after function body)
         emit_byte(0xE9)
         uint64 ret_patch = out_len
@@ -7403,6 +7491,11 @@ fn gen_function(uint64 fn_node) {
         uint64 ret_kind = tok_kind_at_raw(wrt)
         if ret_kind == 96 { fn_ret_float_register(name_tok, 1) }
         if ret_kind == 95 { fn_ret_float_register(name_tok, 2) }
+        // Register struct return type if applicable
+        uint64 ret_si = struct_lookup(wrt)
+        if ret_si != 0xFFFFFFFF {
+            fn_ret_struct_register(name_tok, ret_si)
+        }
     }
 
     // For main function: emit _start trampoline that stores argc/argv to statics
