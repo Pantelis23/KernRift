@@ -2322,6 +2322,52 @@ fn main() {
     exit(r)
 }' 1
 
+# Helper: check that compilation FAILS with expected error message
+run_error_check() {
+    local name="$1"
+    local input="$2"
+    local expected_msg="$3"
+    TOTAL=$((TOTAL + 1))
+    local REPO_ROOT="$DIR/.."
+    printf '%s\n' "$input" > "$REPO_ROOT/test_tmp_$$.kr"
+    if $KRC $KRC_FLAGS "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_test_$$ > /dev/null 2>/tmp/krc_diag_$$; then
+        echo "FAIL: $name (should not compile)"
+        FAIL=$((FAIL + 1))
+    else
+        if grep -q "$expected_msg" /tmp/krc_diag_$$; then
+            PASS=$((PASS + 1))
+            echo "  $name: PASS"
+        else
+            echo "FAIL: $name (expected '$expected_msg')"
+            FAIL=$((FAIL + 1))
+        fi
+    fi
+    rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_test_$$ /tmp/krc_diag_$$
+}
+
+# Helper: check that compilation SUCCEEDS but emits expected warning
+run_warning_check() {
+    local name="$1"
+    local input="$2"
+    local expected_msg="$3"
+    TOTAL=$((TOTAL + 1))
+    local REPO_ROOT="$DIR/.."
+    printf '%s\n' "$input" > "$REPO_ROOT/test_tmp_$$.kr"
+    $KRC $KRC_FLAGS "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_test_$$ > /dev/null 2>/tmp/krc_diag_$$
+    if grep -q "$expected_msg" /tmp/krc_diag_$$; then
+        PASS=$((PASS + 1))
+        echo "  $name: PASS"
+    else
+        echo "FAIL: $name (expected warning '$expected_msg')"
+        FAIL=$((FAIL + 1))
+    fi
+    rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_test_$$ /tmp/krc_diag_$$
+}
+
+echo ""
+echo "--- Compiler diagnostics ---"
+run_error_check "diag_undef_var" 'fn main() { exit(xyz_undefined_name) }' "undeclared identifier"
+
 # --- Summary ---
 echo ""
 echo "=== Results: $PASS/$TOTAL passed, $FAIL failed ==="
