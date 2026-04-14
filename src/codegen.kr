@@ -3167,6 +3167,131 @@ fn gen_expr(uint64 node) {
             return
         }
 
+        // Struct comparison: == and != on struct values
+        uint32 rhs_idx_pre = ast_data2(node)
+        uint64 wrhs_pre = rhs_idx_pre
+        uint32 lhs_k_pre = ast_kind(wlhs)
+        uint32 rhs_k_pre = ast_kind(wrhs_pre)
+        uint64 lhs_si_pre = 0xFFFFFFFF
+        uint64 rhs_si_pre = 0xFFFFFFFF
+        if lhs_k_pre == 32 {
+            uint32 lt_pre = ast_data1(wlhs)
+            uint64 wlt_pre = lt_pre
+            lhs_si_pre = struct_var_lookup(wlt_pre)
+        }
+        if lhs_si_pre != 0xFFFFFFFF && rhs_k_pre == 32 {
+            uint32 rt_pre = ast_data1(wrhs_pre)
+            uint64 wrt_pre = rt_pre
+            rhs_si_pre = struct_var_lookup(wrt_pre)
+        }
+        if lhs_si_pre != 0xFFFFFFFF && rhs_si_pre != 0xFFFFFFFF {
+            // Both operands are struct variables — emit qword-by-qword comparison
+            gen_expr(wlhs)
+            uint64 sc_lhs_slot = var_count * 8
+            var_count = var_count + 1
+            var_frame_size = var_count * 8
+            uint64 sc_rem1 = var_frame_size & 15
+            if sc_rem1 != 0 { var_frame_size = var_frame_size + 16 - sc_rem1 }
+            emit_store_rax_to_stack(sc_lhs_slot)
+
+            gen_expr(wrhs_pre)
+            uint64 sc_rhs_slot = var_count * 8
+            var_count = var_count + 1
+            uint64 sc_acc_slot = var_count * 8
+            var_count = var_count + 1
+            var_frame_size = var_count * 8
+            uint64 sc_rem2 = var_frame_size & 15
+            if sc_rem2 != 0 { var_frame_size = var_frame_size + 16 - sc_rem2 }
+            emit_store_rax_to_stack(sc_rhs_slot)
+
+            uint64 sc_size = struct_total_size(lhs_si_pre)
+            uint64 sc_slots = (sc_size + 7) / 8
+
+            // Start with result = 1 (assume equal)
+            emit_mov_rax_imm(1)
+            emit_store_rax_to_stack(sc_acc_slot)
+
+            uint64 qi = 0
+            while qi < sc_slots {
+                // Load lhs qword
+                emit_load_rax_from_stack(sc_lhs_slot)
+                uint64 qoff = qi * 8
+                if qoff == 0 {
+                    // mov rax, [rax]
+                    emit_byte(0x48); emit_byte(0x8B); emit_byte(0x00)
+                } else {
+                    if qoff < 128 {
+                        // mov rax, [rax+disp8]
+                        emit_byte(0x48); emit_byte(0x8B); emit_byte(0x40)
+                        uint8 qo8 = qoff; emit_byte(qo8)
+                    } else {
+                        // mov rax, [rax+disp32]
+                        emit_byte(0x48); emit_byte(0x8B); emit_byte(0x80)
+                        uint32 qo32 = qoff
+                        uint8 qb0 = qo32 & 0xFF; emit_byte(qb0)
+                        uint8 qb1 = (qo32 >> 8) & 0xFF; emit_byte(qb1)
+                        uint8 qb2 = (qo32 >> 16) & 0xFF; emit_byte(qb2)
+                        uint8 qb3 = (qo32 >> 24) & 0xFF; emit_byte(qb3)
+                    }
+                }
+                // mov rcx, rax
+                emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
+
+                // Load rhs qword
+                emit_load_rax_from_stack(sc_rhs_slot)
+                if qoff == 0 {
+                    emit_byte(0x48); emit_byte(0x8B); emit_byte(0x00)
+                } else {
+                    if qoff < 128 {
+                        emit_byte(0x48); emit_byte(0x8B); emit_byte(0x40)
+                        uint8 qo8r = qoff; emit_byte(qo8r)
+                    } else {
+                        emit_byte(0x48); emit_byte(0x8B); emit_byte(0x80)
+                        uint32 qo32r = qoff
+                        uint8 qb0r = qo32r & 0xFF; emit_byte(qb0r)
+                        uint8 qb1r = (qo32r >> 8) & 0xFF; emit_byte(qb1r)
+                        uint8 qb2r = (qo32r >> 16) & 0xFF; emit_byte(qb2r)
+                        uint8 qb3r = (qo32r >> 24) & 0xFF; emit_byte(qb3r)
+                    }
+                }
+
+                // cmp rcx, rax
+                emit_byte(0x48); emit_byte(0x39); emit_byte(0xC1)
+                // sete al
+                emit_byte(0x0F); emit_byte(0x94); emit_byte(0xC0)
+                // movzx eax, al
+                emit_byte(0x0F); emit_byte(0xB6); emit_byte(0xC0)
+
+                // AND with accumulated result
+                // mov rcx, rax
+                emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
+                emit_load_rax_from_stack(sc_acc_slot)
+                // and rax, rcx
+                emit_byte(0x48); emit_byte(0x21); emit_byte(0xC8)
+                emit_store_rax_to_stack(sc_acc_slot)
+
+                qi = qi + 1
+            }
+
+            emit_load_rax_from_stack(sc_acc_slot)
+
+            // Check operator: == (35) or != (36)
+            uint32 op_tok_sc = ast_data1(node)
+            uint64 wop_sc = op_tok_sc
+            uint64 p_sc = cg_tokens + wop_sc * 16
+            uint32 op_kind_sc = 0
+            unsafe { *(p_sc as uint32) -> op_kind_sc }
+            if op_kind_sc == 36 {
+                // != : invert (xor rax, 1)
+                emit_byte(0x48); emit_byte(0x83); emit_byte(0xF0); emit_byte(0x01)
+            }
+
+            rax_invalidate()
+            expr_is_float = 0
+            expr_is_struct = 0xFFFFFFFF
+            return
+        }
+
         uint32 rhs_idx = ast_data2(node)
         uint64 wrhs = rhs_idx
         uint32 rhs_kind_cmp = ast_kind(wrhs)

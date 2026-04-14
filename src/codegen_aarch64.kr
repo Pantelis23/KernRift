@@ -1311,6 +1311,93 @@ fn gen_expr_a64(uint64 node) {
             return
         }
 
+        // Struct comparison: == and != on struct values
+        uint32 rhs_idx_pre_a = ast_data2(node)
+        uint64 wrhs_pre_a = rhs_idx_pre_a
+        uint32 lhs_k_pre_a = ast_kind(wlhs)
+        uint32 rhs_k_pre_a = ast_kind(wrhs_pre_a)
+        uint64 lhs_si_pre_a = 0xFFFFFFFF
+        uint64 rhs_si_pre_a = 0xFFFFFFFF
+        if lhs_k_pre_a == 32 {
+            uint32 lt_pre_a = ast_data1(wlhs)
+            uint64 wlt_pre_a = lt_pre_a
+            lhs_si_pre_a = struct_var_lookup(wlt_pre_a)
+        }
+        if lhs_si_pre_a != 0xFFFFFFFF && rhs_k_pre_a == 32 {
+            uint32 rt_pre_a = ast_data1(wrhs_pre_a)
+            uint64 wrt_pre_a = rt_pre_a
+            rhs_si_pre_a = struct_var_lookup(wrt_pre_a)
+        }
+        if lhs_si_pre_a != 0xFFFFFFFF && rhs_si_pre_a != 0xFFFFFFFF {
+            // Both operands are struct variables — emit qword-by-qword comparison
+            gen_expr_a64(wlhs)
+            uint64 sc_lhs_a = var_count * 8
+            var_count = var_count + 1
+            var_frame_size = var_count * 8
+            uint64 scr1a = var_frame_size & 15
+            if scr1a != 0 { var_frame_size = var_frame_size + 16 - scr1a }
+            emit_a64_store_x0(sc_lhs_a)
+
+            gen_expr_a64(wrhs_pre_a)
+            uint64 sc_rhs_a = var_count * 8
+            var_count = var_count + 1
+            uint64 sc_acc_a = var_count * 8
+            var_count = var_count + 1
+            var_frame_size = var_count * 8
+            uint64 scr2a = var_frame_size & 15
+            if scr2a != 0 { var_frame_size = var_frame_size + 16 - scr2a }
+            emit_a64_store_x0(sc_rhs_a)
+
+            uint64 sc_sz_a = struct_total_size(lhs_si_pre_a)
+            uint64 sc_sl_a = (sc_sz_a + 7) / 8
+
+            // Start with result = 1 (assume equal)
+            emit_a64_mov_imm(0, 1)
+            emit_a64_store_x0(sc_acc_a)
+
+            uint64 qi_a = 0
+            while qi_a < sc_sl_a {
+                uint64 qoff_a = qi_a * 8
+                // Load lhs qword: ldr x0, [x0, #qoff_a] (x0 = lhs ptr from stack)
+                emit_a64_load_x0(sc_lhs_a)
+                emit_a64_ldr(0, 0, qoff_a)
+                // mov x9, x0 (save lhs qword)
+                emit_a64_mov(9, 0)
+                // Load rhs qword
+                emit_a64_load_x0(sc_rhs_a)
+                emit_a64_ldr(0, 0, qoff_a)
+                // cmp x9, x0
+                emit_a64_cmp(9, 0)
+                // cset x0, eq (1 if equal, 0 if not)
+                emit_a64_cset(0, 0)
+                // AND with accumulated result: load acc into x9, and x0, x0, x9
+                emit_a64_mov(10, 0)
+                emit_a64_load_x0(sc_acc_a)
+                emit_a64_and(0, 0, 10)
+                emit_a64_store_x0(sc_acc_a)
+
+                qi_a = qi_a + 1
+            }
+
+            emit_a64_load_x0(sc_acc_a)
+
+            // Check operator: == (35) or != (36)
+            uint32 op_tok_sca = ast_data1(node)
+            uint64 wop_sca = op_tok_sca
+            uint64 p_sca = cg_tokens + wop_sca * 16
+            uint32 op_kind_sca = 0
+            unsafe { *(p_sca as uint32) -> op_kind_sca }
+            if op_kind_sca == 36 {
+                // != : invert (eor x0, x0, x9 where x9=1)
+                emit_a64_mov_imm(9, 1)
+                emit_a64_eor(0, 0, 9)
+            }
+
+            expr_is_float_a64 = 0
+            expr_is_struct_a64 = 0xFFFFFFFF
+            return
+        }
+
         gen_expr_a64(wlhs)
         uint64 lhs_is_float_c = expr_is_float_a64
         uint64 cmp_temp = var_count * 8

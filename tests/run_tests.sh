@@ -2274,6 +2274,51 @@ fn main() {
     exit(sum(l))
 }' 10
 
+run_test "struct_eq" 'struct P { uint64 x; uint64 y }
+fn main() {
+    P a; a.x = 10; a.y = 20
+    P b; b.x = 10; b.y = 20
+    uint64 r = 0
+    if a == b { r = 1 }
+    exit(r)
+}' 1
+
+run_test "struct_ne" 'struct P { uint64 x; uint64 y }
+fn main() {
+    P a; a.x = 10; a.y = 20
+    P b; b.x = 10; b.y = 99
+    uint64 r = 0
+    if a != b { r = 1 }
+    exit(r)
+}' 1
+
+run_test "struct_eq_false" 'struct P { uint64 x; uint64 y }
+fn main() {
+    P a; a.x = 10; a.y = 20
+    P b; b.x = 10; b.y = 99
+    uint64 r = 0
+    if a == b { r = 1 }
+    exit(r)
+}' 0
+
+run_test "struct_ne_false" 'struct P { uint64 x; uint64 y }
+fn main() {
+    P a; a.x = 10; a.y = 20
+    P b; b.x = 10; b.y = 20
+    uint64 r = 0
+    if a != b { r = 1 }
+    exit(r)
+}' 0
+
+run_test "struct_eq_3field" 'struct V { uint64 x; uint64 y; uint64 z }
+fn main() {
+    V a; a.x = 1; a.y = 2; a.z = 3
+    V b; b.x = 1; b.y = 2; b.z = 3
+    uint64 r = 0
+    if a == b { r = 1 }
+    exit(r)
+}' 1
+
 # --- Summary ---
 echo ""
 echo "=== Results: $PASS/$TOTAL passed, $FAIL failed ==="
