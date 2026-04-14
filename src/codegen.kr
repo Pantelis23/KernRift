@@ -38,6 +38,9 @@ static uint64 expr_is_struct = 0xFFFFFFFF
 // Set to 1 when BOTH caller (Task 5) and callee (Task 6) changes are in place.
 static uint64 abi_struct_pass_by_val = 1
 
+// Debug mode: emit runtime safety checks (division by zero, etc.)
+static uint64 debug_mode = 0
+
 // Function table: maps function name → code offset in output
 // [name_tok_idx(4), code_offset(4)] × 256
 static uint64 fn_table = 0
@@ -3070,6 +3073,32 @@ fn gen_expr(uint64 node) {
         else if op_kind == 22 { emit_mul_rax_rcx() }    // *
         else if op_kind == 32 {
             // / division: rax / rcx
+            if debug_mode != 0 {
+                // Division by zero check: test rcx, rcx; jnz +skip; exit(1)
+                emit_byte(0x48); emit_byte(0x85); emit_byte(0xC9)  // test rcx, rcx
+                emit_byte(0x75)  // jnz rel8
+                uint64 dz_jnz_patch = out_len
+                emit_byte(0)  // placeholder
+                // Divisor is zero — exit(1)
+                emit_mov_rax_imm(1)
+                emit_mov_rdi_rax()
+                if target_os == 2 {
+                    emit_mov_rcx_rax()
+                    emit_win_alloc_stack(0x20)
+                    emit_win_call_iat(0)
+                } else if target_os == 1 {
+                    emit_mov_rax_imm(0x2000001)
+                    emit_byte(0x0F); emit_byte(0x05)
+                } else {
+                    emit_mov_rax_imm(231)
+                    emit_byte(0x0F); emit_byte(0x05)
+                }
+                // Patch jnz to skip the trap
+                uint64 dz_skip = out_len - dz_jnz_patch - 1
+                uint8 dz_skip8 = dz_skip
+                uint64 dz_pp = out_buf + dz_jnz_patch
+                unsafe { *(dz_pp as uint8) = dz_skip8 }
+            }
             // xor rdx, rdx; div rcx → quotient in rax
             emit_byte(0x48)
             emit_byte(0x31)
@@ -3080,6 +3109,32 @@ fn gen_expr(uint64 node) {
         }
         else if op_kind == 33 {
             // % modulo: rax % rcx
+            if debug_mode != 0 {
+                // Division by zero check: test rcx, rcx; jnz +skip; exit(1)
+                emit_byte(0x48); emit_byte(0x85); emit_byte(0xC9)  // test rcx, rcx
+                emit_byte(0x75)  // jnz rel8
+                uint64 mz_jnz_patch = out_len
+                emit_byte(0)  // placeholder
+                // Divisor is zero — exit(1)
+                emit_mov_rax_imm(1)
+                emit_mov_rdi_rax()
+                if target_os == 2 {
+                    emit_mov_rcx_rax()
+                    emit_win_alloc_stack(0x20)
+                    emit_win_call_iat(0)
+                } else if target_os == 1 {
+                    emit_mov_rax_imm(0x2000001)
+                    emit_byte(0x0F); emit_byte(0x05)
+                } else {
+                    emit_mov_rax_imm(231)
+                    emit_byte(0x0F); emit_byte(0x05)
+                }
+                // Patch jnz to skip the trap
+                uint64 mz_skip = out_len - mz_jnz_patch - 1
+                uint8 mz_skip8 = mz_skip
+                uint64 mz_pp = out_buf + mz_jnz_patch
+                unsafe { *(mz_pp as uint8) = mz_skip8 }
+            }
             // xor rdx, rdx; div rcx → remainder in rdx; mov rax, rdx
             emit_byte(0x48)
             emit_byte(0x31)

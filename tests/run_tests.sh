@@ -2368,6 +2368,29 @@ echo ""
 echo "--- Compiler diagnostics ---"
 run_error_check "diag_undef_var" 'fn main() { exit(xyz_undefined_name) }' "undeclared identifier"
 
+# --- Runtime debug checks ---
+echo ""
+echo "--- Runtime debug checks (--debug) ---"
+TOTAL=$((TOTAL + 1))
+REPO_ROOT="$DIR/.."
+printf 'fn main() { uint64 a = 10; uint64 b = 0; uint64 c = a / b; exit(c) }\n' > "$REPO_ROOT/test_tmp_$$.kr"
+if $KRC $KRC_FLAGS --debug "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_test_$$ > /dev/null 2>&1; then
+    chmod +x /tmp/krc_test_$$
+    /tmp/krc_test_$$ > /dev/null 2>&1
+    actual=$?
+    if [ "$actual" != "0" ]; then
+        PASS=$((PASS + 1))
+        echo "  debug_divzero: PASS (trapped, exit=$actual)"
+    else
+        echo "FAIL: debug_divzero (should have trapped)"
+        FAIL=$((FAIL + 1))
+    fi
+else
+    echo "FAIL: debug_divzero (compilation failed)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_test_$$
+
 # --- Summary ---
 echo ""
 echo "=== Results: $PASS/$TOTAL passed, $FAIL failed ==="
