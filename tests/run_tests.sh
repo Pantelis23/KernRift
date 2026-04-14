@@ -2152,6 +2152,8 @@ fn sum(P p) -> uint64 { return p.x + p.y }
 fn main() { exit(sum(make(10))) }' 21
 
 # --- Struct pass-by-value SSE (float eightbytes) tests ---
+# These require SSE struct passing (x86_64 SysV only — ARM64 needs HFA support)
+if [ "$ARCH" = "x86_64" ]; then
 run_test "struct_pass_f64" 'struct V { f64 x; f64 y }
 fn sum(V v) -> f64 { return v.x + v.y }
 fn main() {
@@ -2167,6 +2169,7 @@ fn main() {
     f64 r = get_val(m)
     exit(f64_to_int(r))
 }' 42
+fi
 
 # --- Large struct (MEMORY class) passing tests ---
 run_test "struct_large_pass" 'struct Big { uint64 a; uint64 b; uint64 c }
