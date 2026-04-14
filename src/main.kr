@@ -2119,6 +2119,7 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
 
     // Semantic validation: check arg counts, missing returns, duplicate functions
     uint64 sema_errs = run_semantic_checks(root, source, my_tokens)
+    diag_report_all()
     if sema_errs != 0 {
         uint8[24] ebuf
         uint64 elen = fmt_uint(ebuf, sema_errs)
@@ -2683,6 +2684,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
 
     // Semantic validation: check arg counts, missing returns, duplicate functions
     uint64 sema_errs = run_semantic_checks(root, source, my_tokens)
+    diag_report_all()
     if sema_errs != 0 {
         uint8[24] ebuf2
         uint64 elen2 = fmt_uint(ebuf2, sema_errs)
@@ -2771,6 +2773,9 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     arr_elem_count = 0
     fn_ret_float_count = 0
     fn_ret_struct_count = 0
+    diag_count = 0
+    diag_error_count = 0
+    diag_warn_count = 0
     slice_len_count = 0
     device_count = 0
     device_field_count = 0
@@ -2856,6 +2861,9 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     arr_elem_count = 0
     fn_ret_float_count = 0
     fn_ret_struct_count = 0
+    diag_count = 0
+    diag_error_count = 0
+    diag_warn_count = 0
     slice_len_count = 0
     device_count = 0
     device_field_count = 0
@@ -2947,6 +2955,9 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     arr_elem_count = 0
     fn_ret_float_count = 0
     fn_ret_struct_count = 0
+    diag_count = 0
+    diag_error_count = 0
+    diag_warn_count = 0
     slice_len_count = 0
     device_count = 0
     device_field_count = 0
@@ -3060,6 +3071,9 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     arr_elem_count = 0
     fn_ret_float_count = 0
     fn_ret_struct_count = 0
+    diag_count = 0
+    diag_error_count = 0
+    diag_warn_count = 0
     slice_len_count = 0
     device_count = 0
     device_field_count = 0
@@ -3142,6 +3156,9 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     arr_elem_count = 0
     fn_ret_float_count = 0
     fn_ret_struct_count = 0
+    diag_count = 0
+    diag_error_count = 0
+    diag_warn_count = 0
     slice_len_count = 0
     device_count = 0
     device_field_count = 0
@@ -3259,6 +3276,9 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     arr_elem_count = 0
     fn_ret_float_count = 0
     fn_ret_struct_count = 0
+    diag_count = 0
+    diag_error_count = 0
+    diag_warn_count = 0
     slice_len_count = 0
     device_count = 0
     device_field_count = 0
@@ -3358,6 +3378,9 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     arr_elem_count = 0
     fn_ret_float_count = 0
     fn_ret_struct_count = 0
+    diag_count = 0
+    diag_error_count = 0
+    diag_warn_count = 0
     slice_len_count = 0
     device_count = 0
     device_field_count = 0

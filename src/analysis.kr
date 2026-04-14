@@ -24,6 +24,12 @@ static uint64 sema_errors = 0
 static uint64 sema_source = 0
 static uint64 sema_tok_buf = 0
 
+// Diagnostic collection
+static uint64 diag_table = 0
+static uint64 diag_count = 0
+static uint64 diag_error_count = 0
+static uint64 diag_warn_count = 0
+
 // Annotation types
 // 0 = ctx (context: task, irq, nmi, any)
 // 1 = eff (effect: io, alloc, block, net, fs, none)
@@ -463,6 +469,113 @@ fn sema_tok_text_len(uint64 tok_idx) -> uint64 {
     uint32 val = 0
     unsafe { *(p as uint32) -> val }
     return val
+}
+
+fn sema_tok_line(uint64 tok_idx) -> uint64 {
+    uint64 p = sema_tok_buf + tok_idx * 16 + 12
+    uint32 val = 0
+    unsafe { *(p as uint32) -> val }
+    return val
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostic collection
+// ---------------------------------------------------------------------------
+
+fn diag_init() {
+    if diag_table == 0 {
+        diag_table = alloc(1024 * 8)
+    }
+    diag_count = 0
+    diag_error_count = 0
+    diag_warn_count = 0
+}
+
+// severity: 0 = error, 1 = warning
+fn diag_emit(uint64 tok_idx, uint64 severity, uint64 msg_id) {
+    if diag_count >= 1024 { return }
+    uint64 entry = diag_table + diag_count * 8
+    uint32 ti = tok_idx
+    unsafe { *(entry as uint32) = ti }
+    uint64 e4 = entry + 4
+    uint8 sev = severity
+    unsafe { *(e4 as uint8) = sev }
+    uint64 e5 = entry + 5
+    uint8 mid = msg_id
+    unsafe { *(e5 as uint8) = mid }
+    diag_count = diag_count + 1
+    if severity == 0 { diag_error_count = diag_error_count + 1 }
+    if severity == 1 { diag_warn_count = diag_warn_count + 1 }
+}
+
+fn diag_msg_text(uint64 msg_id) -> uint64 {
+    if msg_id == 1 { return "undefined variable" }
+    if msg_id == 2 { return "type mismatch" }
+    if msg_id == 3 { return "redefinition of variable in same scope" }
+    if msg_id == 4 { return "unused variable (prefix with _ to suppress)" }
+    if msg_id == 5 { return "unreachable code after return/break/exit" }
+    if msg_id == 6 { return "implicit float-to-int conversion (use f64_to_int)" }
+    if msg_id == 7 { return "implicit int-to-float conversion (use int_to_f64)" }
+    if msg_id == 8 { return "narrowing conversion may lose data" }
+    if msg_id == 9 { return "variable used before initialization" }
+    if msg_id == 10 { return "argument type mismatch" }
+    if msg_id == 11 { return "return type mismatch" }
+    if msg_id == 12 { return "binary operation requires matching types" }
+    if msg_id == 13 { return "comparison requires matching types" }
+    return "unknown diagnostic"
+}
+
+@export
+fn diag_report_all() {
+    uint64 i = 0
+    while i < diag_count {
+        uint64 entry = diag_table + i * 8
+        uint32 ti = 0
+        unsafe { *(entry as uint32) -> ti }
+        uint64 wti = ti
+        uint64 e4 = entry + 4
+        uint8 sev = 0
+        unsafe { *(e4 as uint8) -> sev }
+        uint64 wsev = sev
+        uint64 e5 = entry + 5
+        uint8 mid = 0
+        unsafe { *(e5 as uint8) -> mid }
+        uint64 wmid = mid
+        // Use sema_source for token text access
+        uint64 tstart = sema_tok_text_start(wti)
+        uint64 tlen = sema_tok_text_len(wti)
+        // Print file:line from srcmap
+        uint64 file_path = srcmap_file(tstart)
+        if file_path != 0 { write(2, file_path, str_len(file_path)) }
+        write(2, ":", 1)
+        uint8[24] lbuf
+        uint64 tok_line = sema_tok_line(wti)
+        uint64 llen = fmt_uint(lbuf, tok_line)
+        write(2, lbuf, llen)
+        if wsev == 0 { write(2, ": error: ", 9) }
+        if wsev == 1 { write(2, ": warning: ", 11) }
+        uint64 msg = diag_msg_text(wmid)
+        write(2, msg, str_len(msg))
+        // Append variable name for relevant diagnostics
+        if wmid == 1 || wmid == 3 || wmid == 4 || wmid == 9 {
+            write(2, " '", 2)
+            write(2, sema_source + tstart, tlen)
+            write(2, "'", 1)
+        }
+        write(2, "\n", 1)
+        i = i + 1
+    }
+    // Summary line
+    if diag_count > 0 {
+        write(2, "\n", 1)
+        uint8[24] ebuf
+        uint64 elen = fmt_uint(ebuf, diag_error_count)
+        write(2, ebuf, elen)
+        write(2, " error(s), ", 11)
+        uint64 wlen = fmt_uint(ebuf, diag_warn_count)
+        write(2, ebuf, wlen)
+        write(2, " warning(s)\n", 12)
+    }
 }
 
 fn sema_tok_matches(uint64 tok_idx, uint64 target, uint64 target_len) -> uint64 {
@@ -1058,8 +1171,9 @@ fn sema_check_returns(uint64 root) {
 @export
 fn run_semantic_checks(uint64 root, uint64 source, uint64 tok_buf) -> uint64 {
     sema_init(source, tok_buf)
+    diag_init()
     sema_collect_signatures(root)
     sema_check_functions(root)
     sema_check_returns(root)
-    return sema_errors
+    return sema_errors + diag_error_count
 }
