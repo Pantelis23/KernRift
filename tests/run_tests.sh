@@ -15,8 +15,10 @@ run_test() {
     local expected="$3"
     TOTAL=$((TOTAL + 1))
 
-    printf '%s\n' "$input" > /tmp/krc_test_$$.kr
-    if $KRC $KRC_FLAGS /tmp/krc_test_$$.kr -o /tmp/krc_test_$$ > /dev/null 2>&1; then
+    local REPO_ROOT="$DIR/.."
+    printf '%s\n' "$input" > "$REPO_ROOT/test_tmp_$$.kr"
+    if $KRC $KRC_FLAGS "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_test_$$ > /dev/null 2>&1; then
+        rm -f "$REPO_ROOT/test_tmp_$$.kr"
         chmod +x /tmp/krc_test_$$
         local got=0
         /tmp/krc_test_$$ > /dev/null 2>&1 && got=0 || got=$?
@@ -30,7 +32,7 @@ run_test() {
         echo "FAIL: $name (compilation failed)"
         FAIL=$((FAIL + 1))
     fi
-    rm -f /tmp/krc_test_$$.kr /tmp/krc_test_$$
+    rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_test_$$
 }
 
 run_test_output() {
@@ -40,8 +42,10 @@ run_test_output() {
     local expected_exit="${4:-0}"
     TOTAL=$((TOTAL + 1))
 
-    printf '%s\n' "$input" > /tmp/krc_test_$$.kr
-    if $KRC $KRC_FLAGS /tmp/krc_test_$$.kr -o /tmp/krc_test_$$ > /dev/null 2>&1; then
+    local REPO_ROOT="$DIR/.."
+    printf '%s\n' "$input" > "$REPO_ROOT/test_tmp_$$.kr"
+    if $KRC $KRC_FLAGS "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_test_$$ > /dev/null 2>&1; then
+        rm -f "$REPO_ROOT/test_tmp_$$.kr"
         chmod +x /tmp/krc_test_$$
         local got_output
         got_output=$(/tmp/krc_test_$$ 2>/dev/null)
@@ -60,7 +64,7 @@ run_test_output() {
         echo "FAIL: $name (compilation failed)"
         FAIL=$((FAIL + 1))
     fi
-    rm -f /tmp/krc_test_$$.kr /tmp/krc_test_$$
+    rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_test_$$
 }
 
 echo "=== KernRift Self-Hosted Compiler Test Suite ==="
@@ -656,7 +660,7 @@ if [ "$ARCH" != "aarch64" ]; then
         echo "FAIL: msr_compile (compilation failed)"
         FAIL=$((FAIL + 1))
     fi
-    rm -f /tmp/krc_test_$$.kr /tmp/krc_test_$$
+    rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_test_$$
 
     TOTAL=$((TOTAL + 1))
     printf 'fn main() { exit(42) }\n@naked fn msr_test() { asm("wrmsr") }\n' > /tmp/krc_test_$$.kr
@@ -673,7 +677,7 @@ if [ "$ARCH" != "aarch64" ]; then
         echo "FAIL: msr_wrmsr_compile (compilation failed)"
         FAIL=$((FAIL + 1))
     fi
-    rm -f /tmp/krc_test_$$.kr /tmp/krc_test_$$
+    rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_test_$$
 else
     echo "  msr_compile: SKIP (x86-only)"; PASS=$((PASS+1)); TOTAL=$((TOTAL+1))
     echo "  msr_wrmsr_compile: SKIP (x86-only)"; PASS=$((PASS+1)); TOTAL=$((TOTAL+1))
