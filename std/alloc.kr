@@ -1,7 +1,7 @@
 // KernRift Standard Library — Allocators
 // Arena: bump allocator backed by mmap slab with optional guard page
 
-import "std/fmt.kr"
+import "fmt.kr"
 
 fn arena_new(u64 capacity) -> u64 {
     // Allocate slab: 40 (header) + capacity + 4096 (guard page)

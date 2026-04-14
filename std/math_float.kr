@@ -8,8 +8,8 @@
 // cannot be reassigned after declaration. All code here uses fresh
 // variable names and recursive helpers instead.
 
-import "std/fmt.kr"
-import "std/string.kr"
+import "fmt.kr"
+import "string.kr"
 
 // ── Constants ────────────────────────────────────────────────────────
 // KernRift V1 float literals only keep the integer part, so we build
