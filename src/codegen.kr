@@ -177,6 +177,13 @@ static uint64 device_field_count = 0
 static uint64 r12_in_use = 0
 static uint64 r12_save_slot = 0
 
+// sret hidden pointer slot: when a function returns a MEMORY-class struct
+// (>16 bytes), the caller passes the return address as a hidden first arg
+// in rdi (SysV) or rcx (Windows).  The callee saves it here at entry so
+// the return path can copy the struct data to the caller-supplied buffer.
+// 0xFFFFFFFF means "not an sret function".
+static uint64 sret_slot = 0xFFFFFFFF
+
 // Function return-type float table: maps fn name_tok → float kind (1=f64, 2=f32)
 // [name_tok(4), float_kind(4)] × 512
 static uint64 fn_ret_float_table = 0
@@ -5978,6 +5985,27 @@ fn gen_expr(uint64 node) {
         // SysV: int args → rdi, rsi, rdx, rcx, r8, r9 (independent counter)
         //       float args → xmm0, xmm1, xmm2, ... (independent counter)
         // Windows: positional rcx, rdx, r8, r9 + shadow space + overflow
+
+        // Pre-check: does the callee return a MEMORY-class struct via sret?
+        uint64 caller_sret_needed = 0
+        uint64 caller_sret_area = 0
+        uint64 caller_sret_check = fn_ret_struct_lookup(callee_tok)
+        if caller_sret_check != 0xFFFFFFFF {
+            uint64 caller_sret_c0_chk = struct_abi_class0(caller_sret_check)
+            if caller_sret_c0_chk == 3 {
+                caller_sret_needed = 1
+                // Allocate stack space for the return value
+                uint64 caller_ret_sz = struct_total_size(caller_sret_check)
+                uint64 caller_ret_sl = (caller_ret_sz + 7) / 8
+                caller_sret_area = var_count * 8
+                uint64 csi = 0
+                while csi < caller_ret_sl { var_count = var_count + 1; csi = csi + 1 }
+                var_frame_size = var_count * 8
+                uint64 csrem = var_frame_size & 15
+                if csrem != 0 { var_frame_size = var_frame_size + 16 - csrem }
+            }
+        }
+
         uint64 win_stack = 0
         if target_os == 2 {
             // Windows x64: shadow space (32 bytes min) + overflow args
@@ -6116,7 +6144,21 @@ fn gen_expr(uint64 node) {
                 fi = fi + 1
             }
             // Second pass: load integer args into rdi, rsi, rdx, rcx, r8, r9
+            // If sret is needed, rdi carries the hidden sret pointer; other args
+            // shift by one register slot.
             uint64 call_int_idx = 0
+            if caller_sret_needed != 0 {
+                // lea rax, [rsp + caller_sret_area]
+                if caller_sret_area < 128 {
+                    emit_byte(0x48); emit_byte(0x8D); emit_byte(0x44)
+                    emit_byte(0x24); uint8 csa8 = caller_sret_area; emit_byte(csa8)
+                } else {
+                    emit_byte(0x48); emit_byte(0x8D); emit_byte(0x84)
+                    emit_byte(0x24); emit_u32_le(caller_sret_area)
+                }
+                emit_mov_rdi_rax()
+                call_int_idx = 1
+            }
             uint64 ii = 0
             while ii < arg_count && call_int_idx < 6 {
                 uint64 fi_addr = arg_float_flags + ii * 8
@@ -6295,49 +6337,62 @@ fn gen_expr(uint64 node) {
         expr_is_float = ret_fk
 
         // Check if callee returns a struct
-        // TODO: MEMORY class (>16 bytes) struct return via sret hidden pointer
         uint64 ret_struct_si = fn_ret_struct_lookup(callee_tok)
         if ret_struct_si != 0xFFFFFFFF {
-            uint64 ret_ssize = struct_total_size(ret_struct_si)
-            uint64 ret_sslots = (ret_ssize + 7) / 8
-            uint64 ret_soff = var_count * 8
-            uint64 rsi2 = 0
-            while rsi2 < ret_sslots { var_count = var_count + 1; rsi2 = rsi2 + 1 }
-            var_frame_size = var_count * 8
-            uint64 rsrem = var_frame_size & 15
-            if rsrem != 0 { var_frame_size = var_frame_size + 16 - rsrem }
             uint64 rc0 = struct_abi_class0(ret_struct_si)
-            uint64 rc1 = struct_abi_class1(ret_struct_si)
-            // Eightbyte 0: store from rax or xmm0
-            if rc0 == 1 {
-                emit_store_rax_to_stack(ret_soff)
-            }
-            if rc0 == 2 {
-                // movsd [rsp+ret_soff], xmm0
-                emit_store_xmmN_f64(0, ret_soff)
-            }
-            if ret_ssize > 8 {
-                // Eightbyte 1: store from rdx or xmm1
-                uint64 ret_soff2 = ret_soff + 8
-                if rc1 == 1 {
-                    // mov rax, rdx
-                    emit_byte(0x48); emit_byte(0x89); emit_byte(0xD0)
-                    emit_store_rax_to_stack(ret_soff2)
+            if rc0 == 3 {
+                // MEMORY class: data was written into caller_sret_area by callee
+                // via the hidden sret pointer.  Point rax at that area.
+                if caller_sret_area < 128 {
+                    emit_byte(0x48); emit_byte(0x8D); emit_byte(0x44)
+                    emit_byte(0x24); uint8 csa8r = caller_sret_area; emit_byte(csa8r)
+                } else {
+                    emit_byte(0x48); emit_byte(0x8D); emit_byte(0x84)
+                    emit_byte(0x24); emit_u32_le(caller_sret_area)
                 }
-                if rc1 == 2 {
-                    // movsd [rsp+ret_soff2], xmm1
-                    emit_store_xmmN_f64(1, ret_soff2)
-                }
-            }
-            // lea rax, [rsp + ret_soff]
-            if ret_soff < 128 {
-                emit_byte(0x48); emit_byte(0x8D); emit_byte(0x44)
-                emit_byte(0x24); uint8 rso8 = ret_soff; emit_byte(rso8)
+                expr_is_struct = ret_struct_si
             } else {
-                emit_byte(0x48); emit_byte(0x8D); emit_byte(0x84)
-                emit_byte(0x24); emit_u32_le(ret_soff)
+                // Small struct (INTEGER/SSE): unpack from registers into stack area
+                uint64 ret_ssize = struct_total_size(ret_struct_si)
+                uint64 ret_sslots = (ret_ssize + 7) / 8
+                uint64 ret_soff = var_count * 8
+                uint64 rsi2 = 0
+                while rsi2 < ret_sslots { var_count = var_count + 1; rsi2 = rsi2 + 1 }
+                var_frame_size = var_count * 8
+                uint64 rsrem = var_frame_size & 15
+                if rsrem != 0 { var_frame_size = var_frame_size + 16 - rsrem }
+                uint64 rc1 = struct_abi_class1(ret_struct_si)
+                // Eightbyte 0: store from rax or xmm0
+                if rc0 == 1 {
+                    emit_store_rax_to_stack(ret_soff)
+                }
+                if rc0 == 2 {
+                    // movsd [rsp+ret_soff], xmm0
+                    emit_store_xmmN_f64(0, ret_soff)
+                }
+                if ret_ssize > 8 {
+                    // Eightbyte 1: store from rdx or xmm1
+                    uint64 ret_soff2 = ret_soff + 8
+                    if rc1 == 1 {
+                        // mov rax, rdx
+                        emit_byte(0x48); emit_byte(0x89); emit_byte(0xD0)
+                        emit_store_rax_to_stack(ret_soff2)
+                    }
+                    if rc1 == 2 {
+                        // movsd [rsp+ret_soff2], xmm1
+                        emit_store_xmmN_f64(1, ret_soff2)
+                    }
+                }
+                // lea rax, [rsp + ret_soff]
+                if ret_soff < 128 {
+                    emit_byte(0x48); emit_byte(0x8D); emit_byte(0x44)
+                    emit_byte(0x24); uint8 rso8 = ret_soff; emit_byte(rso8)
+                } else {
+                    emit_byte(0x48); emit_byte(0x8D); emit_byte(0x84)
+                    emit_byte(0x24); emit_u32_le(ret_soff)
+                }
+                expr_is_struct = ret_struct_si
             }
-            expr_is_struct = ret_struct_si
         }
 
         // If the callee is an extern fn, record a call site for the linker
@@ -7110,8 +7165,8 @@ fn gen_stmt(uint64 node) {
         } else if wec != 0 {
             gen_expr(wec)
         }
-        // If returning a struct, load eightbytes into rax/rdx or xmm0/xmm1
-        // TODO: MEMORY class (>16 bytes) struct return via sret hidden pointer
+        // If returning a struct, load eightbytes into rax/rdx or xmm0/xmm1,
+        // or copy to sret buffer for MEMORY class (>16 bytes).
         if expr_is_struct != 0xFFFFFFFF {
             uint64 ret_si = expr_is_struct
             uint64 ret_size = struct_total_size(ret_si)
@@ -7119,6 +7174,41 @@ fn gen_stmt(uint64 node) {
             uint64 ret_c1 = struct_abi_class1(ret_si)
             // rax = pointer to struct data
             emit_store_rax_to_stack(temp_slot_0)
+            if ret_c0 == 3 {
+                // MEMORY class return: copy struct to sret buffer, return sret in rax
+                // temp_slot_0 = source pointer (from gen_expr)
+                // sret_slot = destination pointer (caller-supplied sret address)
+                uint64 qi = 0
+                uint64 qslots = (ret_size + 7) / 8
+                while qi < qslots {
+                    // Load source qword: mov rcx, [src + qi*8]
+                    emit_load_rax_from_stack(temp_slot_0)
+                    uint64 qoff = qi * 8
+                    if qoff == 0 {
+                        emit_byte(0x48); emit_byte(0x8B); emit_byte(0x08)
+                    } else if qoff < 128 {
+                        emit_byte(0x48); emit_byte(0x8B); emit_byte(0x48)
+                        uint8 qo8 = qoff; emit_byte(qo8)
+                    } else {
+                        emit_byte(0x48); emit_byte(0x8B); emit_byte(0x88)
+                        emit_u32_le(qoff)
+                    }
+                    // Store to dest qword: mov [dest + qi*8], rcx
+                    emit_load_rax_from_stack(sret_slot)
+                    if qoff == 0 {
+                        emit_byte(0x48); emit_byte(0x89); emit_byte(0x08)
+                    } else if qoff < 128 {
+                        emit_byte(0x48); emit_byte(0x89); emit_byte(0x48)
+                        uint8 qo82 = qoff; emit_byte(qo82)
+                    } else {
+                        emit_byte(0x48); emit_byte(0x89); emit_byte(0x88)
+                        emit_u32_le(qoff)
+                    }
+                    qi = qi + 1
+                }
+                // Return sret pointer in rax (C ABI requirement)
+                emit_load_rax_from_stack(sret_slot)
+            }
             if ret_c0 == 1 {
                 // INTEGER eightbyte 0: load [ptr+0] into rax
                 emit_byte(0x48); emit_byte(0x8B); emit_byte(0x00)
@@ -7777,6 +7867,23 @@ fn gen_function(uint64 fn_node) {
         }
     }
 
+    // Check if return type is a MEMORY-class struct (needs sret hidden pointer)
+    sret_slot = 0xFFFFFFFF
+    if wrt != 0 {
+        uint64 sret_si = struct_lookup(wrt)
+        if sret_si != 0xFFFFFFFF {
+            uint64 sret_c0 = struct_abi_class0(sret_si)
+            if sret_c0 == 3 {
+                // Reserve a stack slot for the sret pointer
+                sret_slot = var_count * 8
+                var_count = var_count + 1
+                var_frame_size = var_count * 8
+                uint64 sret_rem = var_frame_size & 15
+                if sret_rem != 0 { var_frame_size = var_frame_size + 16 - sret_rem }
+            }
+        }
+    }
+
     // For main function: emit _start trampoline that stores argc/argv to statics
     // Skip in freestanding mode
     uint64 wnt = name_tok
@@ -7910,7 +8017,8 @@ fn gen_function(uint64 fn_node) {
 
     // Check if params are read-only AND function is not naked/Windows/overflow
     // Do not pin float params or struct params (pinning uses integer callee-saved registers)
-    if is_naked == 0 && pidx_scan <= 6 && target_os != 2 && p0_is_float == 0 && p0_is_struct == 0 {
+    // Disable pinning when sret is active (rdi holds sret pointer, not first param)
+    if is_naked == 0 && pidx_scan <= 6 && target_os != 2 && p0_is_float == 0 && p0_is_struct == 0 && sret_slot == 0xFFFFFFFF {
         if p0_off != 0xFFFFFFFF && wbs != 0 {
             if scan_assigns(wbs, p0_off) == 0 {
                 pin_param0_offset = p0_off
@@ -7949,6 +8057,36 @@ fn gen_function(uint64 fn_node) {
     uint64 pidx = 0
     uint64 int_pidx = 0
     uint64 float_pidx = 0
+
+    // If this function returns a MEMORY-class struct, the hidden sret pointer
+    // arrives in rdi (SysV) or rcx (Windows) as the first argument.  Spill it
+    // to the reserved sret_slot and advance int_pidx so normal params start at
+    // the next register slot.
+    if sret_slot != 0xFFFFFFFF {
+        if target_os != 2 {
+            // SysV: sret pointer in rdi — mov [rsp+sret_slot], rdi
+            if sret_slot < 128 {
+                emit_byte(0x48); emit_byte(0x89); emit_byte(0x7C)
+                emit_byte(0x24); uint8 ss8 = sret_slot; emit_byte(ss8)
+            } else {
+                emit_byte(0x48); emit_byte(0x89); emit_byte(0xBC)
+                emit_byte(0x24); emit_u32_le(sret_slot)
+            }
+            int_pidx = 1
+        } else {
+            // Windows: sret pointer in rcx — mov [rsp+sret_slot], rcx
+            if sret_slot < 128 {
+                emit_byte(0x48); emit_byte(0x89); emit_byte(0x4C)
+                emit_byte(0x24); uint8 ss8w = sret_slot; emit_byte(ss8w)
+            } else {
+                emit_byte(0x48); emit_byte(0x89); emit_byte(0x8C)
+                emit_byte(0x24); emit_u32_le(sret_slot)
+            }
+            pidx = 1
+            int_pidx = 1
+        }
+    }
+
     uint64 wp2 = first_param
     while wp2 != 0 {
         uint32 pk2 = ast_kind(wp2)

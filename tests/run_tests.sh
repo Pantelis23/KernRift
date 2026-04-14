@@ -2184,6 +2184,27 @@ run_test "struct_large_literal" 'struct Big { uint64 a; uint64 b; uint64 c }
 fn sum(Big b) -> uint64 { return b.a + b.b + b.c }
 fn main() { exit(sum(Big { 1, 2, 3 })) }' 6
 
+# --- MEMORY-class struct return (sret hidden pointer, >16 bytes) tests ---
+run_test "struct_return_large" 'struct Big { uint64 a; uint64 b; uint64 c }
+fn make() -> Big {
+    Big b; b.a = 10; b.b = 20; b.c = 30
+    return b
+}
+fn main() {
+    Big r = make()
+    exit(r.a + r.b + r.c)
+}' 60
+
+run_test "struct_return_large_args" 'struct Big { uint64 a; uint64 b; uint64 c }
+fn make(uint64 x, uint64 y, uint64 z) -> Big {
+    Big b; b.a = x; b.b = y; b.c = z
+    return b
+}
+fn main() {
+    Big r = make(1, 2, 3)
+    exit(r.a + r.b + r.c)
+}' 6
+
 # --- Summary ---
 echo ""
 echo "=== Results: $PASS/$TOTAL passed, $FAIL failed ==="
