@@ -2503,6 +2503,22 @@ rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_g_$$ /tmp/krc_nog_$$
 
 fi  # end x86_64 + readelf gate
 
+# --- IR dump test ---
+echo ""
+echo "--- IR dump test ---"
+TOTAL=$((TOTAL + 1))
+REPO_ROOT="$DIR/.."
+printf 'fn main() { exit(42) }\n' > "$REPO_ROOT/test_tmp_$$.kr"
+IR_OUT=$($KRC --emit=ir "$REPO_ROOT/test_tmp_$$.kr" 2>/dev/null)
+if echo "$IR_OUT" | grep -q "const"; then
+    PASS=$((PASS + 1))
+    echo "  ir_dump: PASS"
+else
+    echo "FAIL: ir_dump (no const in IR output)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$REPO_ROOT/test_tmp_$$.kr"
+
 # --- Summary ---
 echo ""
 echo "=== Results: $PASS/$TOTAL passed, $FAIL failed ==="

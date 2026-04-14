@@ -2098,7 +2098,7 @@ fn time_ns() -> uint64 {
 }
 
 // arch: 0=x86_64, 1=arm64
-// emit: 0=elfexe, 1=machoexe, 2=peexe, 3=obj (ELF relocatable), 5=asm listing
+// emit: 0=elfexe, 1=machoexe, 2=peexe, 3=obj (ELF relocatable), 5=asm listing, 6=ir dump
 fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode) {
     uint64 t_start = time_ns()
     import_init()
@@ -2131,6 +2131,40 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
     // Dead code elimination: scan AST for reachable functions
     dce_init()
     dce_scan(root)
+
+    // IR dump: lower each function to IR and print, then exit early
+    if emit_mode == 6 {
+        ir_init()
+        uint32 child = ast_child(root)
+        uint64 wchild = child
+        while wchild != 0 {
+            uint32 ck = ast_kind(wchild)
+            if ck == 2 {
+                uint32 fn_name = ast_data1(wchild)
+                if dce_is_live(fn_name) != 0 {
+                    uint64 ns = tok_text_start(fn_name)
+                    uint64 nl = tok_text_len(fn_name)
+                    write(1, "function ", 9)
+                    write(1, source + ns, nl)
+                    write(1, ":\n", 2)
+                    ir_lower_function(wchild)
+                    ir_dump()
+                    write(1, "\n", 1)
+                }
+            }
+            uint32 nxt = ast_next(wchild)
+            wchild = nxt
+        }
+        // Print summary
+        uint8[64] nb
+        uint64 tl = fmt_uint(nb, tcount)
+        write(1, nb, tl)
+        write(1, " tokens, ", 9)
+        uint64 nl2 = fmt_uint(nb, ast_count)
+        write(1, nb, nl2)
+        write(1, " nodes -> IR dump\n", 18)
+        exit(0)
+    }
 
     // Emit headers based on format (skip for .o — code goes at offset 0)
     uint64 header_size = 120
@@ -3743,12 +3777,14 @@ fn main() {
                     emit_mode = 4
                 } else if str_starts_with(emit_str, "asm", 3) != 0 {
                     emit_mode = 5
+                } else if str_starts_with(emit_str, "ir", 2) != 0 {
+                    emit_mode = 6
                 } else {
                     write(2, "error: unknown emit format '", 28)
                     uint64 esl = str_len(emit_str)
                     write(2, emit_str, esl)
                     write(2, "'\n", 2)
-                    write(2, "valid: elfexe, macho, pe, obj, android, asm\n", 44)
+                    write(2, "valid: elfexe, macho, pe, obj, android, asm, ir\n", 48)
                     exit(1)
                 }
             } else if str_eq_full(arg, "-c") != 0 {
