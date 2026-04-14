@@ -2164,6 +2164,26 @@ fn main() {
     exit(f64_to_int(r))
 }' 42
 
+# --- Large struct (MEMORY class) passing tests ---
+run_test "struct_large_pass" 'struct Big { uint64 a; uint64 b; uint64 c }
+fn sum(Big b) -> uint64 { return b.a + b.b + b.c }
+fn main() {
+    Big x; x.a = 1; x.b = 2; x.c = 3
+    exit(sum(x))
+}' 6
+
+run_test "struct_large_copy" 'struct Big { uint64 a; uint64 b; uint64 c }
+fn main() {
+    Big x; x.a = 10; x.b = 20; x.c = 30
+    Big y = x
+    y.a = 99
+    exit(x.a)
+}' 10
+
+run_test "struct_large_literal" 'struct Big { uint64 a; uint64 b; uint64 c }
+fn sum(Big b) -> uint64 { return b.a + b.b + b.c }
+fn main() { exit(sum(Big { 1, 2, 3 })) }' 6
+
 # --- Summary ---
 echo ""
 echo "=== Results: $PASS/$TOTAL passed, $FAIL failed ==="

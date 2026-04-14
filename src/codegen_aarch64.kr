@@ -3386,6 +3386,14 @@ fn gen_expr_a64(uint64 node) {
                 if saf_val_c != 0xFFFFFFFF && abi_struct_pass_by_val != 0 {
                     // Struct arg: load eightbytes into consecutive x registers
                     uint64 s_ssize_c = struct_total_size(saf_val_c)
+                    if s_ssize_c > 16 {
+                        // MEMORY class (>16 bytes): pass pointer in next x register
+                        emit_a64_load_x0(arg_slots_base + ii_a * 8)
+                        if call_int_idx != 0 {
+                            emit_a64_mov(call_int_idx, 0)
+                        }
+                        call_int_idx = call_int_idx + 1
+                    } else {
                     // Load struct pointer from temp slot
                     emit_a64_load_x0(arg_slots_base + ii_a * 8)
                     // Save pointer to temp_slot_0 since loading might clobber it
@@ -3403,6 +3411,7 @@ fn gen_expr_a64(uint64 node) {
                         // Load second eightbyte: ldr xN, [x0, #8]
                         emit_a64_ldr(call_int_idx, 0, 8)
                         call_int_idx = call_int_idx + 1
+                    }
                     }
                 } else {
                     emit_a64_load_x0(arg_slots_base + ii_a * 8)
@@ -3428,9 +3437,15 @@ fn gen_expr_a64(uint64 node) {
                     uint64 ri_sv = 0
                     unsafe { *(ri_saf as uint64) -> ri_sv }
                     if ri_sv != 0xFFFFFFFF && abi_struct_pass_by_val != 0 {
+                        uint64 ri_ss = struct_total_size(ri_sv)
+                        if ri_ss > 16 {
+                            // MEMORY class: pointer is the value to pass
+                            emit_a64_load_x0(arg_slots_base + ri_a * 8)
+                        } else {
                         // Struct: reload ptr and dereference
                         emit_a64_load_x0(arg_slots_base + ri_a * 8)
                         emit_a64_ldr(0, 0, 0)
+                        }
                     } else {
                         emit_a64_load_x0(arg_slots_base + ri_a * 8)
                     }
@@ -3479,6 +3494,7 @@ fn gen_expr_a64(uint64 node) {
         expr_is_float_a64 = ret_fk_a
 
         // Check if callee returns a struct (AAPCS64: ≤16 bytes in x0/x1)
+        // TODO: MEMORY class (>16 bytes) struct return via x8 sret pointer
         uint64 ret_struct_si_a = fn_ret_struct_lookup(callee_tok)
         if ret_struct_si_a != 0xFFFFFFFF {
             uint64 ret_ssize_a = struct_total_size(ret_struct_si_a)
@@ -4466,6 +4482,25 @@ fn gen_function_a64(uint64 fn_node) {
                     var_frame_size = var_count * 8
                     uint64 sv_rem_a = var_frame_size & 15
                     if sv_rem_a != 0 { var_frame_size = var_frame_size + 16 - sv_rem_a }
+                    if sv_ssize_a > 16 {
+                        // MEMORY class (>16 bytes): register holds a pointer
+                        // Copy struct bytes from pointer to local stack area
+                        if int_pidx_a <= 7 {
+                            // Save source pointer: mov x9, xN
+                            emit_a64_mov(9, int_pidx_a)
+                        }
+                        int_pidx_a = int_pidx_a + 1
+                        // Inline qword copy from [x9] to [sp + a64_var_base + struct_area_a]
+                        uint64 aqi = 0
+                        while aqi < sv_sslots_a {
+                            uint64 aqoff = aqi * 8
+                            // ldr x10, [x9, #aqoff]
+                            emit_a64_ldr(10, 9, aqoff)
+                            // str x10, [sp, #(a64_var_base + struct_area_a + aqoff)]
+                            emit_a64_str(10, 31, a64_var_base + struct_area_a + aqoff)
+                            aqi = aqi + 1
+                        }
+                    } else {
                     // Spill register(s) into contiguous struct area
                     if int_pidx_a <= 7 {
                         emit_a64_str(int_pidx_a, 31, a64_var_base + struct_area_a)
@@ -4474,6 +4509,7 @@ fn gen_function_a64(uint64 fn_node) {
                     if sv_ssize_a > 8 && int_pidx_a <= 7 {
                         emit_a64_str(int_pidx_a, 31, a64_var_base + struct_area_a + 8)
                         int_pidx_a = int_pidx_a + 1
+                    }
                     }
                     // Store pointer to struct area in the variable's slot
                     // add x0, sp, #(a64_var_base + struct_area_a)

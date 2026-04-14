@@ -6066,7 +6066,24 @@ fn gen_expr(uint64 node) {
                             emit_byte(s_modrm1); emit_byte(0x08)
                             call_float_idx = call_float_idx + 1
                         }
-                        // MEMORY class (>16 bytes) handled in future task
+                        if s_c0 == 3 {
+                            // MEMORY class (>16 bytes): pass pointer to struct data
+                            // The temp slot holds the struct pointer already
+                            emit_load_rax_from_stack(arg_slots_base + ii * 8)
+                            if call_int_idx == 0 { emit_mov_rdi_rax() }
+                            if call_int_idx == 1 { emit_mov_rsi_rax() }
+                            if call_int_idx == 2 { emit_mov_rdx_rax() }
+                            if call_int_idx == 3 {
+                                emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
+                            }
+                            if call_int_idx == 4 {
+                                emit_byte(0x49); emit_byte(0x89); emit_byte(0xC0)
+                            }
+                            if call_int_idx == 5 {
+                                emit_byte(0x49); emit_byte(0x89); emit_byte(0xC1)
+                            }
+                            call_int_idx = call_int_idx + 1
+                        }
                     } else {
                         // Regular integer arg
                         emit_load_rax_from_stack(arg_slots_base + ii * 8)
@@ -6151,6 +6168,7 @@ fn gen_expr(uint64 node) {
         expr_is_float = ret_fk
 
         // Check if callee returns a struct
+        // TODO: MEMORY class (>16 bytes) struct return via sret hidden pointer
         uint64 ret_struct_si = fn_ret_struct_lookup(callee_tok)
         if ret_struct_si != 0xFFFFFFFF {
             uint64 ret_ssize = struct_total_size(ret_struct_si)
@@ -6962,6 +6980,7 @@ fn gen_stmt(uint64 node) {
             gen_expr(wec)
         }
         // If returning a struct, load eightbytes into rax/rdx or xmm0/xmm1
+        // TODO: MEMORY class (>16 bytes) struct return via sret hidden pointer
         if expr_is_struct != 0xFFFFFFFF {
             uint64 ret_si = expr_is_struct
             uint64 ret_size = struct_total_size(ret_si)
@@ -7943,6 +7962,59 @@ fn gen_function(uint64 fn_node) {
                         float_pidx = float_pidx + 1
                     }
 
+                    // MEMORY class: register holds a pointer to struct data
+                    // Copy struct bytes from pointer to local stack area
+                    if sv_c0 == 3 {
+                        // Spill the pointer register to temp_slot_0
+                        if int_pidx == 0 {
+                            // mov rax, rdi (48 89 F8)
+                            emit_byte(0x48); emit_byte(0x89); emit_byte(0xF8)
+                        }
+                        if int_pidx == 1 {
+                            // mov rax, rsi (48 89 F0)
+                            emit_byte(0x48); emit_byte(0x89); emit_byte(0xF0)
+                        }
+                        if int_pidx == 2 {
+                            // mov rax, rdx (48 89 D0)
+                            emit_byte(0x48); emit_byte(0x89); emit_byte(0xD0)
+                        }
+                        if int_pidx == 3 {
+                            // mov rax, rcx (48 89 C8)
+                            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC8)
+                        }
+                        if int_pidx == 4 {
+                            // mov rax, r8 (4C 89 C0)
+                            emit_byte(0x4C); emit_byte(0x89); emit_byte(0xC0)
+                        }
+                        if int_pidx == 5 {
+                            // mov rax, r9 (4C 89 C8)
+                            emit_byte(0x4C); emit_byte(0x89); emit_byte(0xC8)
+                        }
+                        emit_store_rax_to_stack(temp_slot_0)
+                        int_pidx = int_pidx + 1
+                        // Inline qword copy from [pointer] to [rsp + struct_area]
+                        uint64 mqi = 0
+                        while mqi < sv_sslots {
+                            emit_load_rax_from_stack(temp_slot_0)
+                            uint64 mqoff = mqi * 8
+                            if mqoff == 0 {
+                                // mov rax, [rax]
+                                emit_byte(0x48); emit_byte(0x8B); emit_byte(0x00)
+                            } else {
+                                // mov rax, [rax + mqoff]
+                                if mqoff < 128 {
+                                    emit_byte(0x48); emit_byte(0x8B); emit_byte(0x40)
+                                    uint8 mqo8 = mqoff; emit_byte(mqo8)
+                                } else {
+                                    emit_byte(0x48); emit_byte(0x8B); emit_byte(0x80)
+                                    emit_u32_le(mqoff)
+                                }
+                            }
+                            emit_store_rax_to_stack(struct_area + mqoff)
+                            mqi = mqi + 1
+                        }
+                    }
+
                     // Store pointer to struct area in the variable's slot
                     // lea rax, [rsp + struct_area]
                     if struct_area < 128 {
@@ -8004,6 +8076,45 @@ fn gen_function(uint64 fn_node) {
                                 emit_byte(0x4C); emit_byte(0x89); emit_byte(0x8C)
                                 emit_byte(0x24); emit_u32_le(wv_struct_area)
                             }
+                        }
+                    } else {
+                        // Windows MEMORY: register holds a pointer to struct (>8 bytes)
+                        // Move register to rax, save, then copy
+                        if pidx == 0 {
+                            // mov rax, rcx (48 89 C8)
+                            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC8)
+                        }
+                        if pidx == 1 {
+                            // mov rax, rdx (48 89 D0)
+                            emit_byte(0x48); emit_byte(0x89); emit_byte(0xD0)
+                        }
+                        if pidx == 2 {
+                            // mov rax, r8 (4C 89 C0)
+                            emit_byte(0x4C); emit_byte(0x89); emit_byte(0xC0)
+                        }
+                        if pidx == 3 {
+                            // mov rax, r9 (4C 89 C8)
+                            emit_byte(0x4C); emit_byte(0x89); emit_byte(0xC8)
+                        }
+                        emit_store_rax_to_stack(temp_slot_0)
+                        // Inline qword copy from [pointer] to [rsp + wv_struct_area]
+                        uint64 wqi = 0
+                        while wqi < wv_sslots {
+                            emit_load_rax_from_stack(temp_slot_0)
+                            uint64 wqoff = wqi * 8
+                            if wqoff == 0 {
+                                emit_byte(0x48); emit_byte(0x8B); emit_byte(0x00)
+                            } else {
+                                if wqoff < 128 {
+                                    emit_byte(0x48); emit_byte(0x8B); emit_byte(0x40)
+                                    uint8 wqo8 = wqoff; emit_byte(wqo8)
+                                } else {
+                                    emit_byte(0x48); emit_byte(0x8B); emit_byte(0x80)
+                                    emit_u32_le(wqoff)
+                                }
+                            }
+                            emit_store_rax_to_stack(wv_struct_area + wqoff)
+                            wqi = wqi + 1
                         }
                     }
                     int_pidx = int_pidx + 1
