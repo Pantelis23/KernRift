@@ -9808,6 +9808,316 @@ fn emit_program_header(uint64 text_size) {
     emit_u64_le(0x200000)
 }
 
+// Emit DWARF 5 .debug_line, .symtab, .strtab, .shstrtab sections and section
+// header table at the end of an ELF executable.  Only called when -g is active.
+// text_start = file offset where .text begins (typically 120 = ELF hdr + phdr).
+@export
+fn emit_elf_debug_footer(uint64 text_start) {
+    if debug_info_mode == 0 { return }
+
+    // === 1. Emit .debug_line section ===
+    uint64 debug_line_off = out_len
+    // DWARF 5 .debug_line section
+    uint64 unit_length_patch = out_len
+    emit_u32_le(0)            // unit_length placeholder
+    emit_u16_le(5)            // version = 5
+    emit_byte(8)              // address_size
+    emit_byte(0)              // segment_selector_size
+    uint64 header_length_patch = out_len
+    emit_u32_le(0)            // header_length placeholder
+    emit_byte(1)              // minimum_instruction_length
+    emit_byte(1)              // maximum_ops_per_instruction
+    emit_byte(1)              // default_is_stmt
+    emit_byte(251)            // line_base = -5 (signed byte)
+    emit_byte(14)             // line_range
+    emit_byte(13)             // opcode_base
+    // standard_opcode_lengths for opcodes 1-12:
+    emit_byte(0); emit_byte(1); emit_byte(1); emit_byte(1)
+    emit_byte(1); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_byte(1); emit_byte(0); emit_byte(0); emit_byte(1)
+
+    // Directory table (DWARF 5): 1 entry = "."
+    emit_byte(1)              // directory_entry_format_count
+    emit_uleb128(1)           // DW_LNCT_path
+    emit_uleb128(8)           // DW_FORM_string
+    emit_uleb128(1)           // directories_count = 1
+    emit_byte(46); emit_byte(0)  // ".\0"
+
+    // File name table (DWARF 5): 1 file
+    emit_byte(2)              // file_name_entry_format_count
+    emit_uleb128(1)           // DW_LNCT_path
+    emit_uleb128(8)           // DW_FORM_string
+    emit_uleb128(2)           // DW_LNCT_directory_index
+    emit_uleb128(15)          // DW_FORM_udata
+    emit_uleb128(1)           // file_names_count = 1
+    // File entry: "source.kr" + directory 0
+    emit_byte(115); emit_byte(111); emit_byte(117); emit_byte(114)
+    emit_byte(99); emit_byte(101); emit_byte(46); emit_byte(107)
+    emit_byte(114); emit_byte(0)  // "source.kr\0"
+    emit_uleb128(0)           // directory_index = 0
+
+    // Patch header_length
+    uint64 header_end = out_len
+    patch_u32(header_length_patch, header_end - header_length_patch - 4)
+
+    // Line number program
+    // DW_LNE_set_address: extended opcode 2, sets initial address
+    emit_byte(0)              // extended opcode marker
+    emit_uleb128(9)           // operand length = 1 + 8
+    emit_byte(2)              // DW_LNE_set_address
+    emit_u64_le(0x400000 + text_start)  // base address
+
+    // Encode line table entries as line number program
+    uint64 prev_line = 1
+    uint64 prev_pc = text_start
+    uint64 li = 0
+    while li < line_table_count {
+        uint64 le = line_table + li * 8
+        uint32 code_off = 0
+        unsafe { *(le as uint32) -> code_off }
+        uint64 wco = code_off
+        uint64 le6 = le + 6
+        uint16 line_num = 0
+        unsafe { *(le6 as uint16) -> line_num }
+        uint64 wln = line_num
+        if wln == 0 { li = li + 1; continue }
+
+        uint64 pc_delta = wco - prev_pc
+        // line_delta (signed): for subtraction that might go negative
+        // KernRift uses u64, so compute carefully
+        uint64 line_delta = wln - prev_line
+
+        // Try special opcode: opcode = (line_delta + 5) + (14 * pc_delta) + 13
+        uint64 adjusted = line_delta + 5
+        uint64 opcode = adjusted + 14 * pc_delta + 13
+        if adjusted < 14 && opcode <= 255 && opcode >= 13 && pc_delta < 18 {
+            uint8 op = opcode
+            emit_byte(op)
+        } else {
+            if pc_delta != 0 {
+                emit_byte(2)  // DW_LNS_advance_pc
+                emit_uleb128(pc_delta)
+            }
+            if line_delta != 0 {
+                emit_byte(3)  // DW_LNS_advance_line
+                emit_sleb128(line_delta)
+            }
+            emit_byte(1)      // DW_LNS_copy
+        }
+
+        prev_line = wln
+        prev_pc = wco
+        li = li + 1
+    }
+
+    // DW_LNE_end_sequence
+    emit_byte(0); emit_uleb128(1); emit_byte(1)
+
+    // Patch unit_length
+    uint64 debug_line_end = out_len
+    patch_u32(unit_length_patch, debug_line_end - unit_length_patch - 4)
+    uint64 debug_line_size = debug_line_end - debug_line_off
+
+    // === 2. Emit .symtab ===
+    uint64 symtab_off = out_len
+    // Null symbol (24 bytes of zeros)
+    uint64 zi = 0
+    while zi < 24 { emit_byte(0); zi = zi + 1 }
+
+    // Build strtab: collect all function names into a temp buffer to know offsets
+    uint64 name_buf = alloc(fn_count * 64 + 64)
+    uint64 name_buf_pos = 1  // offset 0 is \0
+    uint64[512] name_offsets  // strtab offset per function
+
+    uint64 fi = 0
+    while fi < fn_count {
+        uint64 fe = fn_table + fi * 8
+        uint32 fn_tok = 0
+        unsafe { *(fe as uint32) -> fn_tok }
+        uint64 wft = fn_tok
+        uint64 name_start = tok_text_start(wft)
+        uint64 name_len = tok_text_len(wft)
+        uint64 noff_addr = name_offsets + fi * 8
+        unsafe { *(noff_addr as uint64) = name_buf_pos }
+        // Copy name to name_buf
+        uint64 ni = 0
+        while ni < name_len {
+            uint64 sp = cg_source + name_start + ni
+            uint64 dp = name_buf + name_buf_pos
+            uint64 ch = 0
+            unsafe { *(sp as uint8) -> ch }
+            uint8 cb = ch
+            unsafe { *(dp as uint8) = cb }
+            name_buf_pos = name_buf_pos + 1
+            ni = ni + 1
+        }
+        // Null terminate
+        uint64 np = name_buf + name_buf_pos
+        uint8 nz = 0
+        unsafe { *(np as uint8) = nz }
+        name_buf_pos = name_buf_pos + 1
+        fi = fi + 1
+    }
+
+    // Emit Elf64_Sym entries (24 bytes each)
+    fi = 0
+    while fi < fn_count {
+        uint64 fe = fn_table + fi * 8
+        uint32 fn_tok = 0
+        unsafe { *(fe as uint32) -> fn_tok }
+        uint64 fe4 = fe + 4
+        uint32 fn_off = 0
+        unsafe { *(fe4 as uint32) -> fn_off }
+        uint64 wfo = fn_off
+
+        // st_name (4 bytes): offset in strtab
+        uint64 noff_addr = name_offsets + fi * 8
+        uint64 noff = 0
+        unsafe { *(noff_addr as uint64) -> noff }
+        uint32 stn = noff
+        emit_u32_le(stn)
+
+        // st_info (1 byte): STB_GLOBAL(1) << 4 | STT_FUNC(2) = 0x12
+        emit_byte(0x12)
+        // st_other (1 byte)
+        emit_byte(0)
+        // st_shndx (2 bytes): section index of .text = 1
+        emit_u16_le(1)
+        // st_value (8 bytes): virtual address
+        emit_u64_le(0x400000 + wfo)
+        // st_size (8 bytes): function size (approximate: next fn offset - this offset)
+        uint64 fn_size = 0
+        if fi + 1 < fn_count {
+            uint64 next_fe = fn_table + (fi + 1) * 8 + 4
+            uint32 next_off = 0
+            unsafe { *(next_fe as uint32) -> next_off }
+            fn_size = next_off - wfo
+        }
+        emit_u64_le(fn_size)
+
+        fi = fi + 1
+    }
+    uint64 symtab_size = out_len - symtab_off
+    uint64 sym_count = fn_count + 1  // +1 for null symbol
+
+    // === 3. Emit .strtab ===
+    uint64 strtab_off = out_len
+    emit_byte(0)  // null string at offset 0
+    // Copy from name_buf
+    uint64 si = 1
+    while si < name_buf_pos {
+        uint64 sp = name_buf + si
+        uint64 ch = 0
+        unsafe { *(sp as uint8) -> ch }
+        uint8 cb = ch
+        emit_byte(cb)
+        si = si + 1
+    }
+    uint64 strtab_size = out_len - strtab_off
+
+    // === 4. Emit .shstrtab ===
+    uint64 shstrtab_off = out_len
+    // Section name strings: \0 .text\0 .debug_line\0 .symtab\0 .strtab\0 .shstrtab\0
+    emit_byte(0)  // idx 0: empty string
+    // .text = idx 1
+    uint64 text_name_idx = out_len - shstrtab_off
+    emit_byte(46); emit_byte(116); emit_byte(101); emit_byte(120); emit_byte(116); emit_byte(0)
+    // .debug_line = idx 7
+    uint64 debug_line_name_idx = out_len - shstrtab_off
+    emit_byte(46); emit_byte(100); emit_byte(101); emit_byte(98); emit_byte(117); emit_byte(103)
+    emit_byte(95); emit_byte(108); emit_byte(105); emit_byte(110); emit_byte(101); emit_byte(0)
+    // .symtab = idx 19
+    uint64 symtab_name_idx = out_len - shstrtab_off
+    emit_byte(46); emit_byte(115); emit_byte(121); emit_byte(109); emit_byte(116)
+    emit_byte(97); emit_byte(98); emit_byte(0)
+    // .strtab = idx 27
+    uint64 strtab_name_idx = out_len - shstrtab_off
+    emit_byte(46); emit_byte(115); emit_byte(116); emit_byte(114); emit_byte(116)
+    emit_byte(97); emit_byte(98); emit_byte(0)
+    // .shstrtab = idx 35
+    uint64 shstrtab_name_idx = out_len - shstrtab_off
+    emit_byte(46); emit_byte(115); emit_byte(104); emit_byte(115); emit_byte(116)
+    emit_byte(114); emit_byte(116); emit_byte(97); emit_byte(98); emit_byte(0)
+    uint64 shstrtab_size = out_len - shstrtab_off
+
+    // Align to 8 bytes
+    while (out_len & 7) != 0 { emit_byte(0) }
+
+    // === 5. Section header table (6 entries x 64 bytes) ===
+    uint64 shdr_off = out_len
+
+    // Section 0: null (64 bytes of zeros)
+    uint64 nzi = 0
+    while nzi < 64 { emit_byte(0); nzi = nzi + 1 }
+
+    // Section 1: .text
+    emit_u32_le(text_name_idx)    // sh_name
+    emit_u32_le(1)                 // sh_type = SHT_PROGBITS
+    emit_u64_le(6)                 // sh_flags = SHF_ALLOC | SHF_EXECINSTR
+    emit_u64_le(0x400000 + text_start) // sh_addr
+    emit_u64_le(text_start)        // sh_offset (file offset)
+    uint64 text_end = debug_line_off  // .text ends where .debug_line begins
+    emit_u64_le(text_end - text_start) // sh_size
+    emit_u32_le(0)                 // sh_link
+    emit_u32_le(0)                 // sh_info
+    emit_u64_le(16)                // sh_addralign
+    emit_u64_le(0)                 // sh_entsize
+
+    // Section 2: .debug_line
+    emit_u32_le(debug_line_name_idx)
+    emit_u32_le(1)                 // SHT_PROGBITS
+    emit_u64_le(0)                 // no flags (not loaded)
+    emit_u64_le(0)                 // sh_addr = 0
+    emit_u64_le(debug_line_off)    // sh_offset
+    emit_u64_le(debug_line_size)   // sh_size
+    emit_u32_le(0)
+    emit_u32_le(0)
+    emit_u64_le(1)                 // sh_addralign
+    emit_u64_le(0)
+
+    // Section 3: .symtab
+    emit_u32_le(symtab_name_idx)
+    emit_u32_le(2)                 // SHT_SYMTAB
+    emit_u64_le(0)                 // no flags
+    emit_u64_le(0)                 // sh_addr = 0
+    emit_u64_le(symtab_off)        // sh_offset
+    emit_u64_le(symtab_size)       // sh_size
+    emit_u32_le(4)                 // sh_link = .strtab section index
+    emit_u32_le(1)                 // sh_info = index of first global symbol
+    emit_u64_le(8)                 // sh_addralign
+    emit_u64_le(24)                // sh_entsize = sizeof(Elf64_Sym)
+
+    // Section 4: .strtab
+    emit_u32_le(strtab_name_idx)
+    emit_u32_le(3)                 // SHT_STRTAB
+    emit_u64_le(0)
+    emit_u64_le(0)
+    emit_u64_le(strtab_off)
+    emit_u64_le(strtab_size)
+    emit_u32_le(0)
+    emit_u32_le(0)
+    emit_u64_le(1)
+    emit_u64_le(0)
+
+    // Section 5: .shstrtab
+    emit_u32_le(shstrtab_name_idx)
+    emit_u32_le(3)                 // SHT_STRTAB
+    emit_u64_le(0)
+    emit_u64_le(0)
+    emit_u64_le(shstrtab_off)
+    emit_u64_le(shstrtab_size)
+    emit_u32_le(0)
+    emit_u32_le(0)
+    emit_u64_le(1)
+    emit_u64_le(0)
+
+    // === 6. Patch ELF header ===
+    patch_u64(40, shdr_off)    // e_shoff
+    patch_u16(58, 64)          // e_shentsize
+    patch_u16(60, 6)           // e_shnum
+    patch_u16(62, 5)           // e_shstrndx
+}
+
 // Emit an ELF relocatable object file (.o) wrapping the code already in out_buf.
 // text_len = size of executable code (from offset 0)
 // data_len = size of static data (immediately after code)

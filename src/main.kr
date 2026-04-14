@@ -2304,6 +2304,10 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
         patch_u32(100, (total_size >> 32) & 0xFFFFFFFF)
         patch_u32(104, total_size & 0xFFFFFFFF)
         patch_u32(108, (total_size >> 32) & 0xFFFFFFFF)
+        // Emit DWARF debug sections if -g active
+        if debug_info_mode != 0 {
+            emit_elf_debug_footer(text_start)
+        }
     } else if emit_mode == 1 {
         // Mach-O
         uint64 page_size = 4096
