@@ -397,3 +397,398 @@ fn ir_bb_append_insn(uint64 bb, uint64 insn_idx) {
     // Update block's last_insn
     unsafe { *(p_last as uint32) = ii }
 }
+
+// ---------------------------------------------------------------------------
+// Variable name → vreg mapping for current function
+// ---------------------------------------------------------------------------
+
+static uint64 ir_var_map = 0       // [name_tok(4), vreg(4)] × 1024
+static uint64 ir_var_map_count = 0
+
+fn ir_var_map_init() {
+    if ir_var_map == 0 { ir_var_map = alloc(1024 * 8) }
+    ir_var_map_count = 0
+}
+
+fn ir_var_set(uint64 name_tok, uint64 vreg) {
+    // Update existing or add new
+    uint64 i = 0
+    while i < ir_var_map_count {
+        uint64 entry = ir_var_map + i * 8
+        uint32 stored = 0
+        unsafe { *(entry as uint32) -> stored }
+        uint64 ws = stored
+        if tok_text_eq(ws, name_tok) != 0 {
+            uint64 e4 = entry + 4
+            uint32 vr = vreg
+            unsafe { *(e4 as uint32) = vr }
+            return
+        }
+        i = i + 1
+    }
+    // Add new entry
+    if ir_var_map_count >= 1024 { return }
+    uint64 entry = ir_var_map + ir_var_map_count * 8
+    uint32 nt = name_tok
+    unsafe { *(entry as uint32) = nt }
+    uint64 e4 = entry + 4
+    uint32 vr = vreg
+    unsafe { *(e4 as uint32) = vr }
+    ir_var_map_count = ir_var_map_count + 1
+}
+
+fn ir_var_get(uint64 name_tok) -> uint64 {
+    uint64 i = 0
+    while i < ir_var_map_count {
+        uint64 entry = ir_var_map + i * 8
+        uint32 stored = 0
+        unsafe { *(entry as uint32) -> stored }
+        uint64 ws = stored
+        if tok_text_eq(ws, name_tok) != 0 {
+            uint64 e4 = entry + 4
+            uint32 vr = 0
+            unsafe { *(e4 as uint32) -> vr }
+            return vr
+        }
+        i = i + 1
+    }
+    return 0xFFFFFFFF
+}
+
+// ---------------------------------------------------------------------------
+// Current basic block tracking
+// ---------------------------------------------------------------------------
+
+static uint64 ir_current_bb = 0
+
+// ---------------------------------------------------------------------------
+// Expression lowering
+// ---------------------------------------------------------------------------
+
+fn ir_lower_expr(uint64 node) -> uint64 {
+    if node == 0 { return 0xFFFFFFFF }
+    uint32 kind = ast_kind(node)
+
+    // IntLit (30)
+    if kind == 30 {
+        uint32 tok = ast_data1(node)
+        uint64 val = parse_int_token(tok)
+        uint64 dest = ir_new_vreg()
+        ir_emit(IR_CONST, dest, 0, 0, val, ir_current_bb)
+        return dest
+    }
+
+    // Ident (32)
+    if kind == 32 {
+        uint32 tok = ast_data1(node)
+        uint64 vreg = ir_var_get(tok)
+        if vreg != 0xFFFFFFFF { return vreg }
+        // Unknown — could be static, enum, etc. Return const 0 placeholder
+        uint64 dest = ir_new_vreg()
+        ir_emit(IR_CONST, dest, 0, 0, 0, ir_current_bb)
+        return dest
+    }
+
+    // BinOp (33)
+    if kind == 33 {
+        uint32 op_tok = ast_data1(node)
+        uint32 lhs_node = ast_child(node)
+        uint32 rhs_node = ast_data2(node)
+        uint64 lhs = ir_lower_expr(lhs_node)
+        uint64 rhs = ir_lower_expr(rhs_node)
+        uint64 dest = ir_new_vreg()
+        uint64 op_kind = tok_kind_at_raw(op_tok)
+        uint64 ir_op = IR_ADD
+        if op_kind == 30 { ir_op = IR_ADD }     // +
+        if op_kind == 31 { ir_op = IR_SUB }     // -
+        if op_kind == 22 { ir_op = IR_MUL }     // *
+        if op_kind == 32 { ir_op = IR_DIV }     // /
+        if op_kind == 33 { ir_op = IR_MOD }     // %
+        if op_kind == 23 { ir_op = IR_AND }     // &
+        if op_kind == 24 { ir_op = IR_OR }      // |
+        if op_kind == 25 { ir_op = IR_XOR }     // ^
+        if op_kind == 43 { ir_op = IR_SHL }     // <<
+        if op_kind == 44 { ir_op = IR_SHR }     // >>
+        ir_emit(ir_op, dest, lhs, rhs, 0, ir_current_bb)
+        return dest
+    }
+
+    // Compare (38)
+    if kind == 38 {
+        uint32 op_tok = ast_data1(node)
+        uint32 lhs_node = ast_child(node)
+        uint32 rhs_node = ast_data2(node)
+        uint64 lhs = ir_lower_expr(lhs_node)
+        uint64 rhs = ir_lower_expr(rhs_node)
+        uint64 dest = ir_new_vreg()
+        uint64 op_kind = tok_kind_at_raw(op_tok)
+        uint64 ir_op = IR_CMP_EQ
+        if op_kind == 35 { ir_op = IR_CMP_EQ }  // ==
+        if op_kind == 36 { ir_op = IR_CMP_NE }  // !=
+        if op_kind == 37 { ir_op = IR_CMP_LT }  // <
+        if op_kind == 38 { ir_op = IR_CMP_LE }  // <=
+        if op_kind == 39 { ir_op = IR_CMP_GT }  // >
+        if op_kind == 40 { ir_op = IR_CMP_GE }  // >=
+        ir_emit(ir_op, dest, lhs, rhs, 0, ir_current_bb)
+        return dest
+    }
+
+    // UnaryOp (34)
+    if kind == 34 {
+        uint32 op_tok = ast_data1(node)
+        uint32 operand = ast_child(node)
+        uint64 src = ir_lower_expr(operand)
+        uint64 dest = ir_new_vreg()
+        uint64 op_kind = tok_kind_at_raw(op_tok)
+        if op_kind == 31 {
+            ir_emit(IR_NEG, dest, src, 0, 0, ir_current_bb)
+        } else if op_kind == 27 {
+            ir_emit(IR_NOT, dest, src, 0, 0, ir_current_bb)
+        } else {
+            ir_emit(IR_COPY, dest, src, 0, 0, ir_current_bb)
+        }
+        return dest
+    }
+
+    // Call (35)
+    if kind == 35 {
+        uint32 callee_tok = ast_data1(node)
+        uint64 wct = callee_tok
+        // Check for exit() builtin
+        if tok_matches(wct, "exit", 4) != 0 {
+            uint32 arg = ast_child(node)
+            uint64 av = ir_lower_expr(arg)
+            ir_emit(IR_ARG, 0, av, 0, 0, ir_current_bb)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_SYSCALL, dest, 0, 0, 231, ir_current_bb)
+            return dest
+        }
+        // General call: evaluate args, emit ARG instructions, emit CALL
+        uint32 arg = ast_child(node)
+        uint64 warg = arg
+        uint64 arg_idx = 0
+        while warg != 0 {
+            uint64 av = ir_lower_expr(warg)
+            ir_emit(IR_ARG, 0, av, 0, arg_idx, ir_current_bb)
+            arg_idx = arg_idx + 1
+            uint32 anxt = ast_next(warg)
+            warg = anxt
+        }
+        uint64 dest = ir_new_vreg()
+        ir_emit(IR_CALL, dest, 0, 0, callee_tok, ir_current_bb)
+        return dest
+    }
+
+    // SizeofLit (49)
+    if kind == 49 {
+        uint32 sz = ast_data1(node)
+        uint64 val = sz
+        uint64 dest = ir_new_vreg()
+        ir_emit(IR_CONST, dest, 0, 0, val, ir_current_bb)
+        return dest
+    }
+
+    // LogicalAnd (39): short-circuit
+    if kind == 39 {
+        uint32 lhs_node = ast_child(node)
+        uint32 rhs_idx = ast_data1(node)
+        uint64 lhs = ir_lower_expr(lhs_node)
+        // Short circuit: if lhs is 0, result is 0; else evaluate rhs
+        uint64 bb_rhs = ir_new_bb()
+        uint64 bb_merge = ir_new_bb()
+        ir_emit(IR_BR_COND, 0, lhs, 0, bb_rhs, ir_current_bb)
+        ir_bb_set_succ(ir_current_bb, bb_merge, bb_rhs)
+        ir_current_bb = bb_rhs
+        uint64 rhs = ir_lower_expr(rhs_idx)
+        ir_emit(IR_BR, 0, 0, 0, bb_merge, ir_current_bb)
+        ir_bb_set_succ(ir_current_bb, bb_merge, 0xFFFFFFFF)
+        ir_current_bb = bb_merge
+        // Result: use rhs if evaluated, else 0
+        // Simplified: just return rhs (proper phi needed for full SSA)
+        return rhs
+    }
+
+    // LogicalOr (40): similar short-circuit
+    if kind == 40 {
+        uint32 lhs_node = ast_child(node)
+        uint32 rhs_idx = ast_data1(node)
+        uint64 lhs = ir_lower_expr(lhs_node)
+        uint64 bb_rhs = ir_new_bb()
+        uint64 bb_merge = ir_new_bb()
+        // If lhs is nonzero, skip rhs
+        ir_emit(IR_BR_COND, 0, lhs, 0, bb_merge, ir_current_bb)
+        ir_bb_set_succ(ir_current_bb, bb_rhs, bb_merge)
+        ir_current_bb = bb_rhs
+        uint64 rhs = ir_lower_expr(rhs_idx)
+        ir_emit(IR_BR, 0, 0, 0, bb_merge, ir_current_bb)
+        ir_bb_set_succ(ir_current_bb, bb_merge, 0xFFFFFFFF)
+        ir_current_bb = bb_merge
+        return rhs
+    }
+
+    // Default: const 0
+    uint64 dest = ir_new_vreg()
+    ir_emit(IR_CONST, dest, 0, 0, 0, ir_current_bb)
+    return dest
+}
+
+// ---------------------------------------------------------------------------
+// Statement lowering
+// ---------------------------------------------------------------------------
+
+fn ir_lower_stmt(uint64 node) {
+    if node == 0 { return }
+    uint32 kind = ast_kind(node)
+
+    // VarDecl (10)
+    if kind == 10 {
+        uint32 name_tok = ast_data2(node)
+        uint32 init = ast_child(node)
+        uint64 winit = init
+        if winit != 0 {
+            uint64 val = ir_lower_expr(winit)
+            ir_var_set(name_tok, val)
+        } else {
+            uint64 zero = ir_new_vreg()
+            ir_emit(IR_CONST, zero, 0, 0, 0, ir_current_bb)
+            ir_var_set(name_tok, zero)
+        }
+        return
+    }
+
+    // Assign (11)
+    if kind == 11 {
+        uint32 name_tok = ast_data1(node)
+        uint32 val_node = ast_child(node)
+        uint64 val = ir_lower_expr(val_node)
+        ir_var_set(name_tok, val)
+        return
+    }
+
+    // Return (12)
+    if kind == 12 {
+        uint32 expr = ast_child(node)
+        uint64 wexpr = expr
+        if wexpr != 0 {
+            uint64 val = ir_lower_expr(wexpr)
+            ir_emit(IR_RET, 0, val, 0, 0, ir_current_bb)
+        } else {
+            ir_emit(IR_RET_VOID, 0, 0, 0, 0, ir_current_bb)
+        }
+        return
+    }
+
+    // ExprStmt (16)
+    if kind == 16 {
+        uint32 expr = ast_child(node)
+        uint64 wexpr = expr
+        if wexpr != 0 { ir_lower_expr(wexpr) }
+        return
+    }
+
+    // If (13)
+    if kind == 13 {
+        uint32 cond_node = ast_child(node)
+        uint64 cond = ir_lower_expr(cond_node)
+        uint64 bb_then = ir_new_bb()
+        uint64 bb_merge = ir_new_bb()
+        uint32 else_body = ast_data2(node)
+        uint64 welse = else_body
+        uint64 bb_else = bb_merge
+        if welse != 0 { bb_else = ir_new_bb() }
+        ir_emit(IR_BR_COND, 0, cond, 0, bb_then, ir_current_bb)
+        ir_bb_set_succ(ir_current_bb, bb_else, bb_then)
+        // Then
+        ir_current_bb = bb_then
+        uint32 then_body = ast_data1(node)
+        uint64 wthen = then_body
+        if wthen != 0 { ir_lower_block(wthen) }
+        ir_emit(IR_BR, 0, 0, 0, bb_merge, ir_current_bb)
+        ir_bb_set_succ(ir_current_bb, bb_merge, 0xFFFFFFFF)
+        // Else
+        if welse != 0 {
+            ir_current_bb = bb_else
+            ir_lower_block(welse)
+            ir_emit(IR_BR, 0, 0, 0, bb_merge, ir_current_bb)
+            ir_bb_set_succ(ir_current_bb, bb_merge, 0xFFFFFFFF)
+        }
+        ir_current_bb = bb_merge
+        return
+    }
+
+    // While (14)
+    if kind == 14 {
+        uint64 bb_header = ir_new_bb()
+        uint64 bb_body = ir_new_bb()
+        uint64 bb_exit = ir_new_bb()
+        ir_emit(IR_BR, 0, 0, 0, bb_header, ir_current_bb)
+        ir_bb_set_succ(ir_current_bb, bb_header, 0xFFFFFFFF)
+        ir_current_bb = bb_header
+        uint32 cond_node = ast_child(node)
+        uint64 cond = ir_lower_expr(cond_node)
+        ir_emit(IR_BR_COND, 0, cond, 0, bb_body, ir_current_bb)
+        ir_bb_set_succ(ir_current_bb, bb_exit, bb_body)
+        ir_current_bb = bb_body
+        uint32 body = ast_data1(node)
+        uint64 wbody = body
+        if wbody != 0 { ir_lower_block(wbody) }
+        ir_emit(IR_BR, 0, 0, 0, bb_header, ir_current_bb)
+        ir_bb_set_succ(ir_current_bb, bb_header, 0xFFFFFFFF)
+        ir_current_bb = bb_exit
+        return
+    }
+
+    // Block (15)
+    if kind == 15 {
+        ir_lower_block(node)
+        return
+    }
+
+    // Break (17), Continue (18) — need loop context tracking (defer)
+    // Match (19) — defer
+    // TupleDestruct (44), TupleDestruct3 (47) — defer
+    // FieldAccess (36) as statement — defer
+}
+
+fn ir_lower_block(uint64 block_node) {
+    if block_node == 0 { return }
+    uint32 child = ast_child(block_node)
+    uint64 wchild = child
+    while wchild != 0 {
+        ir_lower_stmt(wchild)
+        uint32 nxt = ast_next(wchild)
+        wchild = nxt
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Function lowering
+// ---------------------------------------------------------------------------
+
+fn ir_lower_function(uint64 fn_node) {
+    ir_reset()
+    ir_var_map_init()
+    ir_current_bb = ir_new_bb()  // entry block
+
+    // Register parameters
+    uint32 param = ast_child(fn_node)
+    uint64 wparam = param
+    uint64 param_idx = 0
+    while wparam != 0 {
+        uint32 pk = ast_kind(wparam)
+        if pk == 3 {
+            uint32 pname = ast_data2(wparam)
+            uint64 pvreg = ir_new_vreg()
+            ir_emit(IR_COPY, pvreg, 0, 0, param_idx, ir_current_bb)
+            ir_var_set(pname, pvreg)
+            param_idx = param_idx + 1
+        }
+        uint32 pnxt = ast_next(wparam)
+        wparam = pnxt
+    }
+
+    // Lower body
+    uint32 body = ast_data3(fn_node)
+    uint64 wbody = body
+    if wbody != 0 { ir_lower_block(wbody) }
+}
