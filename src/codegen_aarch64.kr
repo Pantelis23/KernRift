@@ -2076,7 +2076,14 @@ fn gen_expr_a64(uint64 node) {
             // x0 = user pointer (ptr+8 from alloc)
             // Real base = x0 - 8, size = [x0], total = size + 8
             if target_os == 2 {
-                // Windows ARM64 dealloc: VirtualFree not yet in IAT (TODO)
+                // Windows ARM64: VirtualFree(base, 0, MEM_RELEASE)
+                // x0 = user ptr (ptr+8), base = x0 - 8
+                emit_a64(0xD1002000)    // sub x0, x0, #8
+                // x1 = 0 (dwSize)
+                emit_a64(0xD2800001)    // mov x1, #0
+                // x2 = 0x8000 (MEM_RELEASE)
+                emit_a64(0xD2900002)    // mov x2, #0x8000
+                emit_a64_win_call_iat(13)
             } else {
                 // sub x0, x0, #8 → base address
                 emit_a64(0xD1002000)

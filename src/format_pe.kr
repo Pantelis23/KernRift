@@ -28,7 +28,8 @@ static uint64 IAT_CreateProcessA = 9
 static uint64 IAT_WaitForSingleObject = 10
 static uint64 IAT_GetExitCodeProcess = 11
 static uint64 IAT_GetModuleFileNameA = 12
-static uint64 IAT_ENTRY_COUNT = 13
+static uint64 IAT_VirtualFree = 13
+static uint64 IAT_ENTRY_COUNT = 14
 
 // Compute .idata section size
 fn pe_idata_size() -> uint64 {
@@ -50,9 +51,9 @@ fn emit_pe_idata(uint64 idata_rva) -> uint64 {
     // Layout offsets within .idata (9 IAT entries, 20-byte hint/name slots):
     uint64 idt_off = 0
     uint64 ilt_off = 40
-    uint64 iat_off = 152
-    uint64 hints_off = 264
-    uint64 dllname_off = 576
+    uint64 iat_off = 160
+    uint64 hints_off = 280
+    uint64 dllname_off = 616
 
     // IDT entry for kernel32.dll (20 bytes)
     emit_u32_le(idata_rva + ilt_off)     // OriginalFirstThunk → ILT
@@ -65,9 +66,9 @@ fn emit_pe_idata(uint64 idata_rva) -> uint64 {
     uint64 z = 0
     while z < 20 { emit_byte(0); z = z + 1 }
 
-    // ILT: 8 entries + null (each is 8 bytes = RVA to hint/name)
+    // ILT: 14 entries + null (each is 8 bytes = RVA to hint/name)
     uint64 h = 0
-    while h < 13 {
+    while h < 14 {
         emit_u64_le(idata_rva + hints_off + h * 24)
         h = h + 1
     }
@@ -75,7 +76,7 @@ fn emit_pe_idata(uint64 idata_rva) -> uint64 {
 
     // IAT: identical to ILT (loader patches this at runtime)
     h = 0
-    while h < 13 {
+    while h < 14 {
         emit_u64_le(idata_rva + hints_off + h * 24)
         h = h + 1
     }
@@ -191,6 +192,15 @@ fn emit_pe_idata(uint64 idata_rva) -> uint64 {
     emit_byte(101); emit_byte(78); emit_byte(97); emit_byte(109)
     emit_byte(101); emit_byte(65); emit_byte(0)
     emit_byte(0); emit_byte(0); emit_byte(0)
+
+    // 13: VirtualFree (11 chars) — 2+12+10=24
+    emit_u16_le(0)
+    emit_byte(86); emit_byte(105); emit_byte(114); emit_byte(116)   // Virt
+    emit_byte(117); emit_byte(97); emit_byte(108); emit_byte(70)    // ualF
+    emit_byte(114); emit_byte(101); emit_byte(101); emit_byte(0)    // ree\0
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_byte(0); emit_byte(0)
 
     // DLL name: "kernel32.dll\0"
     emit_byte(107); emit_byte(101); emit_byte(114); emit_byte(110)
