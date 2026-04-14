@@ -197,6 +197,15 @@ static uint64 fn_ret_float_count = 0
 static uint64 fn_ret_struct_table = 0
 static uint64 fn_ret_struct_count = 0
 
+// Debug info: DWARF line table infrastructure
+static uint64 debug_info_mode = 0
+static uint64 line_table = 0
+static uint64 line_table_count = 0
+static uint64 last_recorded_line = 0
+static uint64 current_file_id = 0
+static uint64 debug_file_table = 0
+static uint64 debug_file_count = 0
+
 @export
 fn codegen_init(uint64 capacity, uint64 source, uint64 tokens) {
     out_buf = alloc(capacity)
@@ -259,6 +268,10 @@ fn codegen_init(uint64 capacity, uint64 source, uint64 tokens) {
     fn_ret_float_count = 0
     fn_ret_struct_table = alloc(512 * 8)
     fn_ret_struct_count = 0
+    line_table = alloc(65536 * 8)
+    line_table_count = 0
+    debug_file_table = alloc(256 * 8)
+    debug_file_count = 0
 }
 
 // ---------------------------------------------------------------------------
@@ -310,6 +323,72 @@ fn patch_u32(uint64 offset, uint64 val) {
     unsafe { *(p2 as uint8) = b2 }
     uint64 p3 = p + 3
     unsafe { *(p3 as uint8) = b3 }
+}
+
+fn patch_u16(uint64 offset, uint64 val) {
+    uint64 p = out_buf + offset
+    uint8 b0 = val & 0xFF
+    uint8 b1 = (val >> 8) & 0xFF
+    unsafe { *(p as uint8) = b0 }
+    uint64 p1 = p + 1
+    unsafe { *(p1 as uint8) = b1 }
+}
+
+fn patch_u64(uint64 offset, uint64 val) {
+    patch_u32(offset, val & 0xFFFFFFFF)
+    patch_u32(offset + 4, (val >> 32) & 0xFFFFFFFF)
+}
+
+// ---------------------------------------------------------------------------
+// DWARF line table recording
+// ---------------------------------------------------------------------------
+
+fn line_table_record(uint64 tok_idx) {
+    if debug_info_mode == 0 { return }
+    if tok_idx == 0 { return }
+    uint64 line = tok_line_at(tok_idx)
+    if line == last_recorded_line && line_table_count > 0 { return }
+    if line_table_count >= 65536 { return }
+    uint64 entry = line_table + line_table_count * 8
+    uint32 off = out_len
+    unsafe { *(entry as uint32) = off }
+    uint64 e4 = entry + 4
+    uint16 fid = current_file_id
+    unsafe { *(e4 as uint16) = fid }
+    uint64 e6 = entry + 6
+    uint16 ln = line
+    unsafe { *(e6 as uint16) = ln }
+    line_table_count = line_table_count + 1
+    last_recorded_line = line
+}
+
+// LEB128 encoding helpers (for DWARF)
+
+fn emit_uleb128(uint64 val) {
+    uint64 v = val
+    while v >= 128 {
+        uint8 b = (v & 0x7F) | 0x80
+        emit_byte(b)
+        v = v >> 7
+    }
+    uint8 b = v & 0x7F
+    emit_byte(b)
+}
+
+fn emit_sleb128(uint64 val) {
+    uint64 more = 1
+    uint64 v = val
+    while more != 0 {
+        uint8 b = v & 0x7F
+        v = v >> 7
+        if (b & 0x40) != 0 {
+            if v == 0xFFFFFFFFFFFFFFFF { more = 0 }
+        } else {
+            if v == 0 { more = 0 }
+        }
+        if more != 0 { b = b | 0x80 }
+        emit_byte(b)
+    }
 }
 
 // ---------------------------------------------------------------------------
