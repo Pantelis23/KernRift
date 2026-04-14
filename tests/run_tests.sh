@@ -30,6 +30,7 @@ run_test() {
         fi
     else
         echo "FAIL: $name (compilation failed)"
+        $KRC $KRC_FLAGS "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_test_$$ 2>&1 | head -3
         FAIL=$((FAIL + 1))
     fi
     rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_test_$$
