@@ -1,0 +1,399 @@
+// KernRift self-hosted compiler — SSA IR infrastructure
+//
+// Arena-based intermediate representation for SSA-form optimisation passes.
+//
+// Instruction format (32 bytes per instruction):
+//   [0..4)   opcode     (uint32)
+//   [4..8)   dest_vreg  (uint32)
+//   [8..12)  src1       (uint32)
+//   [12..16) src2       (uint32)
+//   [16..24) imm64      (uint64)
+//   [24..28) bb_idx     (uint32) — owning basic block
+//   [28..32) next       (uint32) — next instruction in block list (0xFFFFFFFF = end)
+//
+// Basic block format (16 bytes per block):
+//   [0..4)   first_insn (uint32) — first instruction index (0xFFFFFFFF = empty)
+//   [4..8)   last_insn  (uint32) — last instruction index  (0xFFFFFFFF = empty)
+//   [8..12)  succ0      (uint32) — first successor block   (0xFFFFFFFF = none)
+//   [12..16) succ1      (uint32) — second successor block  (0xFFFFFFFF = none)
+
+// ---------------------------------------------------------------------------
+// Opcode constants
+// ---------------------------------------------------------------------------
+
+static uint64 IR_CONST = 1
+static uint64 IR_ADD = 2
+static uint64 IR_SUB = 3
+static uint64 IR_MUL = 4
+static uint64 IR_DIV = 5
+static uint64 IR_MOD = 6
+static uint64 IR_AND = 7
+static uint64 IR_OR = 8
+static uint64 IR_XOR = 9
+static uint64 IR_SHL = 10
+static uint64 IR_SHR = 11
+static uint64 IR_NEG = 12
+static uint64 IR_NOT = 13
+
+static uint64 IR_CMP_EQ = 14
+static uint64 IR_CMP_NE = 15
+static uint64 IR_CMP_LT = 16
+static uint64 IR_CMP_LE = 17
+static uint64 IR_CMP_GT = 18
+static uint64 IR_CMP_GE = 19
+
+static uint64 IR_FADD = 20
+static uint64 IR_FSUB = 21
+static uint64 IR_FMUL = 22
+static uint64 IR_FDIV = 23
+static uint64 IR_FCMP_EQ = 24
+static uint64 IR_FCMP_LT = 25
+static uint64 IR_ITOF = 26
+static uint64 IR_FTOI = 27
+
+static uint64 IR_LOAD = 30
+static uint64 IR_STORE = 31
+static uint64 IR_STACK_ADDR = 32
+
+static uint64 IR_BR = 40
+static uint64 IR_BR_COND = 41
+static uint64 IR_RET = 42
+static uint64 IR_RET_VOID = 43
+
+static uint64 IR_CALL = 50
+static uint64 IR_ARG = 51
+static uint64 IR_SYSCALL = 52
+
+static uint64 IR_PHI = 60
+static uint64 IR_COPY = 61
+
+// ---------------------------------------------------------------------------
+// Instruction arena
+// ---------------------------------------------------------------------------
+
+static uint64 ir_insn_buf = 0       // pointer to instruction arena
+static uint64 ir_insn_count = 0     // number of instructions allocated
+static uint64 ir_insn_cap = 0       // max instructions
+
+// ---------------------------------------------------------------------------
+// Basic block arena
+// ---------------------------------------------------------------------------
+
+static uint64 ir_bb_buf = 0         // pointer to basic block arena
+static uint64 ir_bb_count = 0       // number of blocks allocated
+static uint64 ir_bb_cap = 0         // max blocks
+
+// ---------------------------------------------------------------------------
+// Virtual register allocator
+// ---------------------------------------------------------------------------
+
+static uint64 ir_vreg_next = 0      // next vreg number to allocate
+
+// ---------------------------------------------------------------------------
+// Initialisation and reset
+// ---------------------------------------------------------------------------
+
+// Allocate arenas for instructions and basic blocks.
+@export
+fn ir_init() {
+    ir_insn_cap = 65536
+    ir_insn_buf = alloc(ir_insn_cap * 32)
+    ir_insn_count = 0
+
+    ir_bb_cap = 4096
+    ir_bb_buf = alloc(ir_bb_cap * 16)
+    ir_bb_count = 0
+
+    ir_vreg_next = 1
+}
+
+// Reset all counters to zero so the arenas can be reused.
+@export
+fn ir_reset() {
+    ir_insn_count = 0
+    ir_bb_count = 0
+    ir_vreg_next = 1
+}
+
+// ---------------------------------------------------------------------------
+// Virtual register allocation
+// ---------------------------------------------------------------------------
+
+// Allocate the next virtual register number.
+@export
+fn ir_new_vreg() -> uint64 {
+    uint64 v = ir_vreg_next
+    ir_vreg_next = ir_vreg_next + 1
+    return v
+}
+
+// ---------------------------------------------------------------------------
+// Instruction helpers (internal)
+// ---------------------------------------------------------------------------
+
+// Return the base pointer for instruction at index `idx` (0-based).
+fn ir_insn_base(uint64 idx) -> uint64 {
+    return ir_insn_buf + idx * 32
+}
+
+// ---------------------------------------------------------------------------
+// Instruction field accessors
+// ---------------------------------------------------------------------------
+
+// Read the opcode (offset 0, uint32) of instruction `idx`.
+@export
+fn ir_insn_opcode(uint64 idx) -> uint64 {
+    uint64 p = ir_insn_base(idx)
+    uint32 val = 0
+    unsafe { *(p as uint32) -> val }
+    return val
+}
+
+// Read the destination vreg (offset 4, uint32) of instruction `idx`.
+@export
+fn ir_insn_dest(uint64 idx) -> uint64 {
+    uint64 p = ir_insn_base(idx) + 4
+    uint32 val = 0
+    unsafe { *(p as uint32) -> val }
+    return val
+}
+
+// Read src1 (offset 8, uint32) of instruction `idx`.
+@export
+fn ir_insn_src1(uint64 idx) -> uint64 {
+    uint64 p = ir_insn_base(idx) + 8
+    uint32 val = 0
+    unsafe { *(p as uint32) -> val }
+    return val
+}
+
+// Read src2 (offset 12, uint32) of instruction `idx`.
+@export
+fn ir_insn_src2(uint64 idx) -> uint64 {
+    uint64 p = ir_insn_base(idx) + 12
+    uint32 val = 0
+    unsafe { *(p as uint32) -> val }
+    return val
+}
+
+// Read the 64-bit immediate (offset 16, uint64) of instruction `idx`.
+@export
+fn ir_insn_imm(uint64 idx) -> uint64 {
+    uint64 p = ir_insn_base(idx) + 16
+    uint64 val = 0
+    unsafe { *(p as uint64) -> val }
+    return val
+}
+
+// Read the owning basic block index (offset 24, uint32) of instruction `idx`.
+@export
+fn ir_insn_bb(uint64 idx) -> uint64 {
+    uint64 p = ir_insn_base(idx) + 24
+    uint32 val = 0
+    unsafe { *(p as uint32) -> val }
+    return val
+}
+
+// Read the next-instruction link (offset 28, uint32) of instruction `idx`.
+@export
+fn ir_insn_next(uint64 idx) -> uint64 {
+    uint64 p = ir_insn_base(idx) + 28
+    uint32 val = 0
+    unsafe { *(p as uint32) -> val }
+    return val
+}
+
+// ---------------------------------------------------------------------------
+// Emit an instruction
+// ---------------------------------------------------------------------------
+
+// Create a new instruction, append it to the given basic block, and return
+// the instruction index (0-based).
+@export
+fn ir_emit(uint64 opcode, uint64 dest, uint64 src1, uint64 src2, uint64 imm64, uint64 bb) -> uint64 {
+    if ir_insn_count >= ir_insn_cap {
+        write(2, "error: IR instruction overflow\n", 31)
+        exit(1)
+    }
+
+    uint64 idx = ir_insn_count
+    ir_insn_count = ir_insn_count + 1
+    uint64 base = ir_insn_base(idx)
+
+    // opcode  [0..4)
+    uint32 op32 = opcode
+    unsafe { *(base as uint32) = op32 }
+
+    // dest_vreg [4..8)
+    uint64 p4 = base + 4
+    uint32 d32 = dest
+    unsafe { *(p4 as uint32) = d32 }
+
+    // src1 [8..12)
+    uint64 p8 = base + 8
+    uint32 s1 = src1
+    unsafe { *(p8 as uint32) = s1 }
+
+    // src2 [12..16)
+    uint64 p12 = base + 12
+    uint32 s2 = src2
+    unsafe { *(p12 as uint32) = s2 }
+
+    // imm64 [16..24)
+    uint64 p16 = base + 16
+    unsafe { *(p16 as uint64) = imm64 }
+
+    // bb_idx [24..28)
+    uint64 p24 = base + 24
+    uint32 bb32 = bb
+    unsafe { *(p24 as uint32) = bb32 }
+
+    // next [28..32) — end of list sentinel
+    uint64 p28 = base + 28
+    uint32 sentinel = 0xFFFFFFFF
+    unsafe { *(p28 as uint32) = sentinel }
+
+    // Append this instruction to the basic block's list
+    ir_bb_append_insn(bb, idx)
+
+    return idx
+}
+
+// ---------------------------------------------------------------------------
+// Basic block helpers (internal)
+// ---------------------------------------------------------------------------
+
+// Return the base pointer for basic block at index `idx` (0-based).
+fn ir_bb_base(uint64 idx) -> uint64 {
+    return ir_bb_buf + idx * 16
+}
+
+// ---------------------------------------------------------------------------
+// Basic block creation
+// ---------------------------------------------------------------------------
+
+// Create a new empty basic block and return its index (0-based).
+@export
+fn ir_new_bb() -> uint64 {
+    if ir_bb_count >= ir_bb_cap {
+        write(2, "error: IR basic block overflow\n", 31)
+        exit(1)
+    }
+
+    uint64 idx = ir_bb_count
+    ir_bb_count = ir_bb_count + 1
+    uint64 base = ir_bb_base(idx)
+
+    // first_insn = 0xFFFFFFFF (empty)
+    uint32 sentinel = 0xFFFFFFFF
+    unsafe { *(base as uint32) = sentinel }
+
+    // last_insn = 0xFFFFFFFF (empty)
+    uint64 p4 = base + 4
+    unsafe { *(p4 as uint32) = sentinel }
+
+    // succ0 = 0xFFFFFFFF (none)
+    uint64 p8 = base + 8
+    unsafe { *(p8 as uint32) = sentinel }
+
+    // succ1 = 0xFFFFFFFF (none)
+    uint64 p12 = base + 12
+    unsafe { *(p12 as uint32) = sentinel }
+
+    return idx
+}
+
+// ---------------------------------------------------------------------------
+// Basic block field accessors
+// ---------------------------------------------------------------------------
+
+// Read first_insn (offset 0, uint32) of block `bb`.
+@export
+fn ir_bb_first_insn(uint64 bb) -> uint64 {
+    uint64 p = ir_bb_base(bb)
+    uint32 val = 0
+    unsafe { *(p as uint32) -> val }
+    return val
+}
+
+// Read last_insn (offset 4, uint32) of block `bb`.
+@export
+fn ir_bb_last_insn(uint64 bb) -> uint64 {
+    uint64 p = ir_bb_base(bb) + 4
+    uint32 val = 0
+    unsafe { *(p as uint32) -> val }
+    return val
+}
+
+// Read succ0 (offset 8, uint32) of block `bb`.
+@export
+fn ir_bb_succ0(uint64 bb) -> uint64 {
+    uint64 p = ir_bb_base(bb) + 8
+    uint32 val = 0
+    unsafe { *(p as uint32) -> val }
+    return val
+}
+
+// Read succ1 (offset 12, uint32) of block `bb`.
+@export
+fn ir_bb_succ1(uint64 bb) -> uint64 {
+    uint64 p = ir_bb_base(bb) + 12
+    uint32 val = 0
+    unsafe { *(p as uint32) -> val }
+    return val
+}
+
+// ---------------------------------------------------------------------------
+// Basic block successor setter
+// ---------------------------------------------------------------------------
+
+// Set the two successors of block `bb`.
+@export
+fn ir_bb_set_succ(uint64 bb, uint64 succ0, uint64 succ1) {
+    uint64 base = ir_bb_base(bb)
+
+    uint64 p8 = base + 8
+    uint32 s0 = succ0
+    unsafe { *(p8 as uint32) = s0 }
+
+    uint64 p12 = base + 12
+    uint32 s1 = succ1
+    unsafe { *(p12 as uint32) = s1 }
+}
+
+// ---------------------------------------------------------------------------
+// Append instruction to basic block
+// ---------------------------------------------------------------------------
+
+// Link instruction `insn_idx` into block `bb`'s instruction list.
+// Updates the block's first_insn/last_insn and the previous tail's
+// next pointer.
+@export
+fn ir_bb_append_insn(uint64 bb, uint64 insn_idx) {
+    uint64 base = ir_bb_base(bb)
+    uint64 p_first = base
+    uint64 p_last = base + 4
+
+    uint32 first = 0
+    unsafe { *(p_first as uint32) -> first }
+
+    if first == 0xFFFFFFFF {
+        // Block is empty — this is the first instruction.
+        uint32 ii = insn_idx
+        unsafe { *(p_first as uint32) = ii }
+        unsafe { *(p_last as uint32) = ii }
+        return
+    }
+
+    // Block is non-empty — link previous last instruction's next to this one.
+    uint32 last = 0
+    unsafe { *(p_last as uint32) -> last }
+
+    // Set previous last instruction's next pointer to insn_idx
+    uint64 prev_next_ptr = ir_insn_base(last) + 28
+    uint32 ii = insn_idx
+    unsafe { *(prev_next_ptr as uint32) = ii }
+
+    // Update block's last_insn
+    unsafe { *(p_last as uint32) = ii }
+}
