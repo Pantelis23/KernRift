@@ -9242,10 +9242,10 @@ fn gen_function(uint64 fn_node) {
 
     // Stack size warning — fires on genuinely pathological frames
     // (huge inline buffers, accidentally unbounded locals). The compiler's
-    // own dispatch functions legitimately allocate ~20KB across mutually
+    // own dispatch functions legitimately allocate ~33KB across mutually
     // exclusive branches, so the threshold is set high enough to let them
     // pass while still catching user mistakes.
-    if var_frame_size > 32768 {
+    if var_frame_size > 49152 {
         write(2, "warning: large stack frame (", 28)
         uint8[32] fsb
         uint64 fsl = fmt_uint(fsb, var_frame_size)
