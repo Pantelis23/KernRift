@@ -96,6 +96,20 @@ static uint64 IR_VSTORE = 94         // volatile store: mfence + store
 static uint64 IR_VLOAD = 95          // volatile load: load + mfence
 static uint64 IR_ASM_BLOCK = 96      // inline asm block passthrough
 
+// Float builtins / conversions
+static uint64 IR_FSQRT = 97         // dest = sqrt(src1) f64
+static uint64 IR_FFMA = 98          // dest = src1*src2+imm_vreg f64 (a*b+c)
+static uint64 IR_FCMP_NE = 99       // dest = (src1 != src2) f64
+static uint64 IR_FCMP_LE = 100      // dest = (src1 <= src2) f64
+static uint64 IR_FCMP_GT = 101      // dest = (src1 > src2) f64
+static uint64 IR_FCMP_GE = 102      // dest = (src1 >= src2) f64
+static uint64 IR_F32TOF64 = 103     // dest = cvtss2sd src1
+static uint64 IR_F64TOF32 = 104     // dest = cvtsd2ss src1
+static uint64 IR_F32TOF16 = 105     // dest = f32-to-f16 bit conversion
+static uint64 IR_F16TOF32 = 106     // dest = f16-to-f32 bit conversion
+static uint64 IR_ITOF32 = 107       // dest = cvtsi2ss src1 (int to f32 bits)
+static uint64 IR_FTOI32 = 108       // dest = cvttss2si src1 (f32 bits to int)
+
 // ---------------------------------------------------------------------------
 // Instruction arena
 // ---------------------------------------------------------------------------
@@ -118,6 +132,10 @@ static uint64 ir_bb_cap = 0         // max blocks
 
 static uint64 ir_vreg_next = 0      // next vreg number to allocate
 
+// Float-kind per vreg: 0=int, 1=f64, 2=f32
+static uint64 ir_vreg_fkind_buf = 0  // array of uint8, indexed by vreg
+static uint64 ir_vreg_fkind_cap = 0
+
 // ---------------------------------------------------------------------------
 // Initialisation and reset
 // ---------------------------------------------------------------------------
@@ -134,6 +152,11 @@ fn ir_init() {
     ir_bb_count = 0
 
     ir_vreg_next = 1
+
+    // Float-kind per vreg
+    ir_vreg_fkind_cap = 65536
+    ir_vreg_fkind_buf = alloc(ir_vreg_fkind_cap)
+    memset(ir_vreg_fkind_buf, 0, ir_vreg_fkind_cap)
 
     // Loop context stacks (max 32 nesting levels)
     ir_loop_exit_stack = alloc(32 * 8)
@@ -154,6 +177,9 @@ fn ir_reset() {
     ir_bb_count = 0
     ir_vreg_next = 1
     ir_loop_depth = 0
+    if ir_vreg_fkind_buf != 0 {
+        memset(ir_vreg_fkind_buf, 0, ir_vreg_fkind_cap)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -166,6 +192,24 @@ fn ir_new_vreg() -> uint64 {
     uint64 v = ir_vreg_next
     ir_vreg_next = ir_vreg_next + 1
     return v
+}
+
+fn ir_vreg_fkind_set(uint64 vreg, uint64 fk) {
+    if vreg < ir_vreg_fkind_cap {
+        uint64 p = ir_vreg_fkind_buf + vreg
+        uint8 b = fk
+        unsafe { *(p as uint8) = b }
+    }
+}
+
+fn ir_vreg_fkind_get(uint64 vreg) -> uint64 {
+    if vreg < ir_vreg_fkind_cap {
+        uint64 p = ir_vreg_fkind_buf + vreg
+        uint64 b = 0
+        unsafe { *(p as uint8) -> b }
+        return b
+    }
+    return 0
 }
 
 // ---------------------------------------------------------------------------
@@ -634,6 +678,72 @@ fn ir_lower_expr(uint64 node) -> uint64 {
         return dest
     }
 
+    // FloatLit (46): parse integer+fraction, emit ITOF + arithmetic
+    if kind == 46 {
+        uint32 lit_tok = ast_data1(node)
+        uint64 wlt = lit_tok
+        uint64 tstart = tok_text_start(wlt)
+        uint64 tlen = tok_text_len(wlt)
+        // Parse integer part and fractional part
+        uint64 int_val = 0
+        uint64 frac_val = 0
+        uint64 frac_divisor = 1
+        uint64 past_dot = 0
+        uint64 is_f32 = 0
+        uint64 fi = 0
+        while fi < tlen {
+            uint64 ch = tok_source_byte(wlt, fi)
+            if ch == 46 { past_dot = 1; fi = fi + 1; continue }
+            if ch == 102 { is_f32 = 1; fi = fi + 1; continue }
+            if ch >= 48 && ch <= 57 {
+                if past_dot == 0 {
+                    int_val = int_val * 10 + (ch - 48)
+                } else {
+                    frac_val = frac_val * 10 + (ch - 48)
+                    frac_divisor = frac_divisor * 10
+                }
+            }
+            fi = fi + 1
+        }
+        // Convert integer part to f64
+        uint64 int_c = ir_new_vreg()
+        ir_emit(IR_CONST, int_c, 0, 0, int_val, ir_current_bb)
+        uint64 int_f = ir_new_vreg()
+        ir_emit(IR_ITOF, int_f, int_c, 0, 0, ir_current_bb)
+        ir_vreg_fkind_set(int_f, 1)
+        uint64 result = int_f
+        if frac_val != 0 {
+            // Convert frac_val to f64
+            uint64 frac_c = ir_new_vreg()
+            ir_emit(IR_CONST, frac_c, 0, 0, frac_val, ir_current_bb)
+            uint64 frac_f = ir_new_vreg()
+            ir_emit(IR_ITOF, frac_f, frac_c, 0, 0, ir_current_bb)
+            ir_vreg_fkind_set(frac_f, 1)
+            // Convert frac_divisor to f64
+            uint64 div_c = ir_new_vreg()
+            ir_emit(IR_CONST, div_c, 0, 0, frac_divisor, ir_current_bb)
+            uint64 div_f = ir_new_vreg()
+            ir_emit(IR_ITOF, div_f, div_c, 0, 0, ir_current_bb)
+            ir_vreg_fkind_set(div_f, 1)
+            // frac = frac_val / frac_divisor
+            uint64 frac_r = ir_new_vreg()
+            ir_emit(IR_FDIV, frac_r, frac_f, div_f, 1, ir_current_bb)
+            ir_vreg_fkind_set(frac_r, 1)
+            // result = int_part + frac
+            result = ir_new_vreg()
+            ir_emit(IR_FADD, result, int_f, frac_r, 1, ir_current_bb)
+            ir_vreg_fkind_set(result, 1)
+        }
+        if is_f32 != 0 {
+            // Narrow f64 to f32
+            uint64 f32_v = ir_new_vreg()
+            ir_emit(IR_F64TOF32, f32_v, result, 0, 0, ir_current_bb)
+            ir_vreg_fkind_set(f32_v, 2)
+            return f32_v
+        }
+        return result
+    }
+
     // StrLit (31) — store string in str_buf, emit lea rip-relative
     if kind == 31 {
         uint32 tok = ast_data1(node)
@@ -704,6 +814,19 @@ fn ir_lower_expr(uint64 node) -> uint64 {
         uint64 rhs = ir_lower_expr(rhs_node)
         uint64 dest = ir_new_vreg()
         uint64 op_kind = tok_kind_at_raw(op_tok)
+        // Check if LHS is float-typed
+        uint64 lhs_fk = ir_vreg_fkind_get(lhs)
+        if lhs_fk != 0 {
+            // Float arithmetic
+            uint64 ir_op = IR_FADD
+            if op_kind == 30 || op_kind == 45 { ir_op = IR_FADD }   // + +=
+            if op_kind == 31 || op_kind == 46 { ir_op = IR_FSUB }   // - -=
+            if op_kind == 22 || op_kind == 47 { ir_op = IR_FMUL }   // * *=
+            if op_kind == 32 || op_kind == 48 { ir_op = IR_FDIV }   // / /=
+            ir_emit(ir_op, dest, lhs, rhs, lhs_fk, ir_current_bb)
+            ir_vreg_fkind_set(dest, lhs_fk)
+            return dest
+        }
         uint64 ir_op = IR_ADD
         if op_kind == 30 || op_kind == 45 { ir_op = IR_ADD }     // + +=
         if op_kind == 31 || op_kind == 46 { ir_op = IR_SUB }     // - -=
@@ -768,6 +891,19 @@ fn ir_lower_expr(uint64 node) -> uint64 {
         uint64 lhs = ir_lower_expr(lhs_node)
         uint64 rhs = ir_lower_expr(rhs_node)
         uint64 dest = ir_new_vreg()
+        // Check if LHS is float-typed
+        uint64 cmp_fk = ir_vreg_fkind_get(lhs)
+        if cmp_fk != 0 {
+            uint64 ir_op = IR_FCMP_EQ
+            if op_kind == 35 { ir_op = IR_FCMP_EQ }  // ==
+            if op_kind == 36 { ir_op = IR_FCMP_NE }  // !=
+            if op_kind == 37 { ir_op = IR_FCMP_LT }  // <
+            if op_kind == 38 { ir_op = IR_FCMP_LE }  // <=
+            if op_kind == 39 { ir_op = IR_FCMP_GT }  // >
+            if op_kind == 40 { ir_op = IR_FCMP_GE }  // >=
+            ir_emit(ir_op, dest, lhs, rhs, cmp_fk, ir_current_bb)
+            return dest
+        }
         uint64 ir_op = IR_CMP_EQ
         if op_kind == 35 { ir_op = IR_CMP_EQ }  // ==
         if op_kind == 36 { ir_op = IR_CMP_NE }  // !=
@@ -1505,6 +1641,117 @@ fn ir_lower_expr(uint64 node) -> uint64 {
             return dest
         }
 
+        // ---------------------------------------------------------------
+        // Float builtins
+        // ---------------------------------------------------------------
+
+        // int_to_f64(x): convert integer to f64, return f64 bit pattern
+        if tok_matches(wct, "int_to_f64", 10) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 src_v = ir_lower_expr(first_arg)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_ITOF, dest, src_v, 0, 0, ir_current_bb)
+            ir_vreg_fkind_set(dest, 1)
+            return dest
+        }
+
+        // f64_to_int(x): convert f64 bit pattern to integer
+        if tok_matches(wct, "f64_to_int", 10) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 src_v = ir_lower_expr(first_arg)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_FTOI, dest, src_v, 0, 0, ir_current_bb)
+            ir_vreg_fkind_set(dest, 0)
+            return dest
+        }
+
+        // int_to_f32(x): convert integer to f32, return f32 bit pattern
+        if tok_matches(wct, "int_to_f32", 10) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 src_v = ir_lower_expr(first_arg)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_ITOF32, dest, src_v, 0, 0, ir_current_bb)
+            ir_vreg_fkind_set(dest, 2)
+            return dest
+        }
+
+        // f32_to_int(x): convert f32 bit pattern to integer
+        if tok_matches(wct, "f32_to_int", 10) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 src_v = ir_lower_expr(first_arg)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_FTOI32, dest, src_v, 0, 0, ir_current_bb)
+            ir_vreg_fkind_set(dest, 0)
+            return dest
+        }
+
+        // sqrt(x) / sqrt_f64(x): f64 square root
+        if tok_matches(wct, "sqrt_f64", 8) != 0 || tok_matches(wct, "sqrt", 4) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 src_v = ir_lower_expr(first_arg)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_FSQRT, dest, src_v, 0, 0, ir_current_bb)
+            ir_vreg_fkind_set(dest, 1)
+            return dest
+        }
+
+        // fma_f64(a, b, c): a*b + c in f64
+        if tok_matches(wct, "fma_f64", 7) != 0 {
+            uint32 arg_a = ast_child(node)
+            uint64 wa_a = arg_a
+            uint32 arg_b = ast_next(wa_a)
+            uint64 wa_b = arg_b
+            uint32 arg_c = ast_next(wa_b)
+            uint64 wa_c = arg_c
+            uint64 a_v = ir_lower_expr(wa_a)
+            uint64 b_v = ir_lower_expr(wa_b)
+            uint64 c_v = ir_lower_expr(wa_c)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_FFMA, dest, a_v, b_v, c_v, ir_current_bb)
+            ir_vreg_fkind_set(dest, 1)
+            return dest
+        }
+
+        // f32_to_f64(x): widen f32 to f64
+        if tok_matches(wct, "f32_to_f64", 10) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 src_v = ir_lower_expr(first_arg)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_F32TOF64, dest, src_v, 0, 0, ir_current_bb)
+            ir_vreg_fkind_set(dest, 1)
+            return dest
+        }
+
+        // f64_to_f32(x): narrow f64 to f32
+        if tok_matches(wct, "f64_to_f32", 10) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 src_v = ir_lower_expr(first_arg)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_F64TOF32, dest, src_v, 0, 0, ir_current_bb)
+            ir_vreg_fkind_set(dest, 2)
+            return dest
+        }
+
+        // f32_to_f16(x): convert f32 bits to f16 bits (integer result)
+        if tok_matches(wct, "f32_to_f16", 10) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 src_v = ir_lower_expr(first_arg)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_F32TOF16, dest, src_v, 0, 0, ir_current_bb)
+            ir_vreg_fkind_set(dest, 0)
+            return dest
+        }
+
+        // f16_to_f32(x): convert f16 bits to f32 bits
+        if tok_matches(wct, "f16_to_f32", 10) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 src_v = ir_lower_expr(first_arg)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_F16TOF32, dest, src_v, 0, 0, ir_current_bb)
+            ir_vreg_fkind_set(dest, 2)
+            return dest
+        }
+
         // get_target_os() → compile-time OS constant
         if tok_matches(wct, "get_target_os", 13) != 0 {
             uint64 dest = ir_new_vreg()
@@ -1678,6 +1925,8 @@ fn ir_lower_expr(uint64 node) -> uint64 {
                     }
                     uint64 dest = ir_new_vreg()
                     ir_emit(IR_LOAD, dest, addr_v, fsz, 0, ir_current_bb)
+                    if ftk == 96 { ir_vreg_fkind_set(dest, 1) }
+                    if ftk == 95 { ir_vreg_fkind_set(dest, 2) }
                     ir_fa_struct_idx = 0xFFFFFFFF
                     return dest
                 }
@@ -1711,6 +1960,10 @@ fn ir_lower_expr(uint64 node) -> uint64 {
                     }
                     uint64 dest = ir_new_vreg()
                     ir_emit(IR_LOAD, dest, addr_v, fsz_i, 0, ir_current_bb)
+                    // Check struct array field type for float kind
+                    uint64 sftk_i = struct_field_type_kind_by_tok(sia, field_tok)
+                    if sftk_i == 96 { ir_vreg_fkind_set(dest, 1) }
+                    if sftk_i == 95 { ir_vreg_fkind_set(dest, 2) }
                     return dest
                 }
             }
@@ -1772,6 +2025,9 @@ fn ir_lower_expr(uint64 node) -> uint64 {
             }
             uint64 dest = ir_new_vreg()
             ir_emit(IR_LOAD, dest, addr_v, fsz, 0, ir_current_bb)
+            // Set float kind if field is f64(96) or f32(95)
+            if ftk == 96 { ir_vreg_fkind_set(dest, 1) }
+            if ftk == 95 { ir_vreg_fkind_set(dest, 2) }
             ir_fa_struct_idx = 0xFFFFFFFF
             return dest
         }
@@ -1968,12 +2224,23 @@ fn ir_lower_stmt(uint64 node) {
         }
         uint32 init = ast_child(node)
         uint64 winit = init
+        // Check if type is float (f64=96, f32=95)
+        uint32 vd_type_tok = ast_data1(node)
+        uint64 vd_type_kind = tok_kind_at_raw(vd_type_tok)
+        uint64 vd_fk = 0
+        if vd_type_kind == 96 { vd_fk = 1 }
+        if vd_type_kind == 95 { vd_fk = 2 }
         if winit != 0 {
             uint64 val = ir_lower_expr(winit)
+            // If type is float but init expr didn't set float kind, set it now
+            if vd_fk != 0 && ir_vreg_fkind_get(val) == 0 {
+                ir_vreg_fkind_set(val, vd_fk)
+            }
             ir_var_set(name_tok, val)
         } else {
             uint64 zero = ir_new_vreg()
             ir_emit(IR_CONST, zero, 0, 0, 0, ir_current_bb)
+            if vd_fk != 0 { ir_vreg_fkind_set(zero, vd_fk) }
             ir_var_set(name_tok, zero)
         }
         return
@@ -2736,6 +3003,19 @@ fn ir_opcode_name(uint64 op) -> uint64 {
     if op == 93 { return "atomic_cas" }
     if op == 94 { return "vstore" }
     if op == 95 { return "vload" }
+    if op == 96 { return "asm_block" }
+    if op == 97 { return "fsqrt" }
+    if op == 98 { return "ffma" }
+    if op == 99 { return "fcmp_ne" }
+    if op == 100 { return "fcmp_le" }
+    if op == 101 { return "fcmp_gt" }
+    if op == 102 { return "fcmp_ge" }
+    if op == 103 { return "f32tof64" }
+    if op == 104 { return "f64tof32" }
+    if op == 105 { return "f32tof16" }
+    if op == 106 { return "f16tof32" }
+    if op == 107 { return "itof32" }
+    if op == 108 { return "ftoi32" }
     return "???"
 }
 
@@ -2882,9 +3162,13 @@ fn ir_lower_function(uint64 fn_node) {
             ir_emit(IR_COPY, pvreg, 0, 0, param_idx, ir_current_bb)
             ir_var_set(pname, pvreg)
             param_idx = param_idx + 1
-            // If param type is a struct, register it so field access works
+            // If param type is float, set float kind
             uint32 param_type = ast_data1(wparam)
             uint64 wpt = param_type
+            uint64 ptk = tok_kind_at_raw(wpt)
+            if ptk == 96 { ir_vreg_fkind_set(pvreg, 1) }
+            if ptk == 95 { ir_vreg_fkind_set(pvreg, 2) }
+            // If param type is a struct, register it so field access works
             uint64 psi = struct_lookup(wpt)
             if psi != 0xFFFFFFFF {
                 struct_var_register(pname, psi)
@@ -3091,8 +3375,8 @@ fn ir_compute_liveness() {
                     unsafe { *(up as uint64) = uv }
                 }
 
-                // Add imm-as-vreg use for MEMCPY(72), MEMSET(76), RET3(83), ATOMIC_CAS(93)
-                if op == 72 || op == 76 || op == 83 || op == 93 {
+                // Add imm-as-vreg use for MEMCPY(72), MEMSET(76), RET3(83), ATOMIC_CAS(93), FFMA(98)
+                if op == 72 || op == 76 || op == 83 || op == 93 || op == 98 {
                     uint64 use_imm = ir_insn_imm(cur_ii)
                     if use_imm < ir_vreg_next && use_imm > 0 {
                         uint64 iw = use_imm / 64
@@ -5019,6 +5303,307 @@ fn ir_emit_x86_insn(uint64 ii) {
         // mfence
         emit_byte(0x0F); emit_byte(0xAE); emit_byte(0xF0)
         if dst_r == 0xFFFFFFFF {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    // ---------------------------------------------------------------
+    // Float opcodes
+    // ---------------------------------------------------------------
+
+    if op == 26 {
+        // IR_ITOF: cvtsi2sd xmm0, rax; movq rax, xmm0
+        uint64 a_reg = ir_resolve_src(s1_v, 0)
+        ir_emit_mov_r64_r64(0, a_reg)
+        // cvtsi2sd xmm0, rax: F2 48 0F 2A C0
+        emit_byte(0xF2); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x2A); emit_byte(0xC0)
+        // movq rax, xmm0: 66 48 0F 7E C0
+        emit_byte(0x66); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x7E); emit_byte(0xC0)
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, 0)
+        } else {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 27 {
+        // IR_FTOI: movq xmm0, rax; cvttsd2si rax, xmm0
+        uint64 a_reg = ir_resolve_src(s1_v, 0)
+        ir_emit_mov_r64_r64(0, a_reg)
+        // movq xmm0, rax: 66 48 0F 6E C0
+        emit_byte(0x66); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x6E); emit_byte(0xC0)
+        // cvttsd2si rax, xmm0: F2 48 0F 2C C0
+        emit_byte(0xF2); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x2C); emit_byte(0xC0)
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, 0)
+        } else {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 107 {
+        // IR_ITOF32: cvtsi2ss xmm0, rax; movd eax, xmm0; zero-extend
+        uint64 a_reg = ir_resolve_src(s1_v, 0)
+        ir_emit_mov_r64_r64(0, a_reg)
+        // cvtsi2ss xmm0, rax: F3 48 0F 2A C0
+        emit_byte(0xF3); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x2A); emit_byte(0xC0)
+        // movq rax, xmm0: 66 48 0F 7E C0
+        emit_byte(0x66); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x7E); emit_byte(0xC0)
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, 0)
+        } else {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 108 {
+        // IR_FTOI32: movq xmm0, rax; cvttss2si rax, xmm0
+        uint64 a_reg = ir_resolve_src(s1_v, 0)
+        ir_emit_mov_r64_r64(0, a_reg)
+        // movq xmm0, rax: 66 48 0F 6E C0
+        emit_byte(0x66); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x6E); emit_byte(0xC0)
+        // cvttss2si rax, xmm0: F3 48 0F 2C C0
+        emit_byte(0xF3); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x2C); emit_byte(0xC0)
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, 0)
+        } else {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    // Float arithmetic: FADD(20), FSUB(21), FMUL(22), FDIV(23)
+    // imm holds float kind: 1=f64, 2=f32
+    // Values are bit patterns in GPRs; move to xmm for computation, back to GPR
+    if op >= 20 && op <= 23 {
+        uint64 a_reg = ir_resolve_src(s1_v, 0)
+        uint64 b_reg = ir_resolve_src(s2_v, 1)
+        uint64 fk = imm
+        // movq xmm0, a_reg: 66 48 0F 6E C0 (rax->xmm0)
+        ir_emit_mov_r64_r64(0, a_reg)
+        emit_byte(0x66); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x6E); emit_byte(0xC0)
+        // movq xmm1, b_reg: 66 48 0F 6E C8 (rax->xmm1)
+        ir_emit_mov_r64_r64(0, b_reg)
+        emit_byte(0x66); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x6E); emit_byte(0xC8)
+        // Perform operation
+        if fk == 2 {
+            // f32 ops: prefix F3
+            if op == 20 { emit_byte(0xF3); emit_byte(0x0F); emit_byte(0x58); emit_byte(0xC1) } // addss
+            if op == 21 { emit_byte(0xF3); emit_byte(0x0F); emit_byte(0x5C); emit_byte(0xC1) } // subss
+            if op == 22 { emit_byte(0xF3); emit_byte(0x0F); emit_byte(0x59); emit_byte(0xC1) } // mulss
+            if op == 23 { emit_byte(0xF3); emit_byte(0x0F); emit_byte(0x5E); emit_byte(0xC1) } // divss
+        } else {
+            // f64 ops: prefix F2
+            if op == 20 { emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x58); emit_byte(0xC1) } // addsd
+            if op == 21 { emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x5C); emit_byte(0xC1) } // subsd
+            if op == 22 { emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x59); emit_byte(0xC1) } // mulsd
+            if op == 23 { emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x5E); emit_byte(0xC1) } // divsd
+        }
+        // movq rax, xmm0: 66 48 0F 7E C0
+        emit_byte(0x66); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x7E); emit_byte(0xC0)
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, 0)
+        } else {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    // Float comparisons: FCMP_EQ(24), FCMP_LT(25), FCMP_NE(99), FCMP_LE(100),
+    //                     FCMP_GT(101), FCMP_GE(102)
+    // imm holds float kind: 1=f64, 2=f32
+    if op == 24 || op == 25 || op == 99 || op == 100 || op == 101 || op == 102 {
+        uint64 a_reg = ir_resolve_src(s1_v, 0)
+        uint64 b_reg = ir_resolve_src(s2_v, 1)
+        uint64 fk = imm
+        // movq xmm0, a_reg
+        ir_emit_mov_r64_r64(0, a_reg)
+        emit_byte(0x66); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x6E); emit_byte(0xC0)
+        // movq xmm1, b_reg
+        ir_emit_mov_r64_r64(0, b_reg)
+        emit_byte(0x66); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x6E); emit_byte(0xC8)
+        // ucomisd/ucomiss xmm0, xmm1
+        if fk == 2 {
+            // ucomiss xmm0, xmm1: 0F 2E C1
+            emit_byte(0x0F); emit_byte(0x2E); emit_byte(0xC1)
+        } else {
+            // ucomisd xmm0, xmm1: 66 0F 2E C1
+            emit_byte(0x66); emit_byte(0x0F); emit_byte(0x2E); emit_byte(0xC1)
+        }
+        // Set result based on comparison kind
+        emit_byte(0x0F)
+        if op == 24 { emit_byte(0x94) }    // sete  (==)
+        if op == 99 { emit_byte(0x95) }    // setne (!=)
+        if op == 25 { emit_byte(0x92) }    // setb  (<)
+        if op == 100 { emit_byte(0x96) }   // setbe (<=)
+        if op == 101 { emit_byte(0x97) }   // seta  (>)
+        if op == 102 { emit_byte(0x93) }   // setae (>=)
+        emit_byte(0xC0)
+        // movzx rax, al: 48 0F B6 C0
+        emit_byte(0x48); emit_byte(0x0F); emit_byte(0xB6); emit_byte(0xC0)
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, 0)
+        } else {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 97 {
+        // IR_FSQRT: movq xmm0, rax; sqrtsd xmm0, xmm0; movq rax, xmm0
+        uint64 a_reg = ir_resolve_src(s1_v, 0)
+        ir_emit_mov_r64_r64(0, a_reg)
+        // movq xmm0, rax: 66 48 0F 6E C0
+        emit_byte(0x66); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x6E); emit_byte(0xC0)
+        // sqrtsd xmm0, xmm0: F2 0F 51 C0
+        emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x51); emit_byte(0xC0)
+        // movq rax, xmm0: 66 48 0F 7E C0
+        emit_byte(0x66); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x7E); emit_byte(0xC0)
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, 0)
+        } else {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 98 {
+        // IR_FFMA: a*b + c, all f64 bit patterns in GPRs
+        // src1=a, src2=b, imm=c (vreg)
+        uint64 a_reg = ir_resolve_src(s1_v, 0)
+        uint64 b_reg = ir_resolve_src(s2_v, 1)
+        uint64 c_reg = ir_resolve_src(imm, 2)
+        // movq xmm0, a_reg
+        ir_emit_mov_r64_r64(0, a_reg)
+        emit_byte(0x66); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x6E); emit_byte(0xC0)
+        // movq xmm1, b_reg
+        ir_emit_mov_r64_r64(0, b_reg)
+        emit_byte(0x66); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x6E); emit_byte(0xC8)
+        // mulsd xmm0, xmm1: F2 0F 59 C1
+        emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x59); emit_byte(0xC1)
+        // movq xmm1, c_reg
+        ir_emit_mov_r64_r64(0, c_reg)
+        emit_byte(0x66); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x6E); emit_byte(0xC8)
+        // addsd xmm0, xmm1: F2 0F 58 C1
+        emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x58); emit_byte(0xC1)
+        // movq rax, xmm0: 66 48 0F 7E C0
+        emit_byte(0x66); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x7E); emit_byte(0xC0)
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, 0)
+        } else {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 103 {
+        // IR_F32TOF64: movq xmm0, rax; cvtss2sd xmm0, xmm0; movq rax, xmm0
+        uint64 a_reg = ir_resolve_src(s1_v, 0)
+        ir_emit_mov_r64_r64(0, a_reg)
+        emit_byte(0x66); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x6E); emit_byte(0xC0)
+        // cvtss2sd xmm0, xmm0: F3 0F 5A C0
+        emit_byte(0xF3); emit_byte(0x0F); emit_byte(0x5A); emit_byte(0xC0)
+        // movq rax, xmm0: 66 48 0F 7E C0
+        emit_byte(0x66); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x7E); emit_byte(0xC0)
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, 0)
+        } else {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 104 {
+        // IR_F64TOF32: movq xmm0, rax; cvtsd2ss xmm0, xmm0; movq rax, xmm0
+        uint64 a_reg = ir_resolve_src(s1_v, 0)
+        ir_emit_mov_r64_r64(0, a_reg)
+        emit_byte(0x66); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x6E); emit_byte(0xC0)
+        // cvtsd2ss xmm0, xmm0: F2 0F 5A C0
+        emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x5A); emit_byte(0xC0)
+        // movq rax, xmm0: 66 48 0F 7E C0
+        emit_byte(0x66); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x7E); emit_byte(0xC0)
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, 0)
+        } else {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 105 {
+        // IR_F32TOF16: software conversion f32 bits -> f16 bits (integer result)
+        // Input: f32 bit pattern in GPR (only lower 32 bits meaningful)
+        uint64 a_reg = ir_resolve_src(s1_v, 0)
+        ir_emit_mov_r64_r64(0, a_reg)
+        // movq xmm0, rax
+        emit_byte(0x66); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x6E); emit_byte(0xC0)
+        // movd eax, xmm0: 66 0F 7E C0
+        emit_byte(0x66); emit_byte(0x0F); emit_byte(0x7E); emit_byte(0xC0)
+        // mov ecx, eax (save f32 bits)
+        emit_byte(0x89); emit_byte(0xC1)
+        // sign: shr eax, 16; and eax, 0x8000
+        emit_byte(0xC1); emit_byte(0xE8); emit_byte(16)
+        emit_byte(0x25); emit_u32_le(0x8000)
+        // mov edx, eax (save sign)
+        emit_byte(0x89); emit_byte(0xC2)
+        // exp: mov eax, ecx; shr eax, 23; and eax, 0xFF; sub eax, 112
+        emit_byte(0x89); emit_byte(0xC8)
+        emit_byte(0xC1); emit_byte(0xE8); emit_byte(23)
+        emit_byte(0x25); emit_u32_le(0xFF)
+        emit_byte(0x2D); emit_u32_le(112)
+        // clamp exp: and eax, 0x1F
+        emit_byte(0x25); emit_u32_le(0x1F)
+        // shl eax, 10; or edx, eax
+        emit_byte(0xC1); emit_byte(0xE0); emit_byte(10)
+        emit_byte(0x09); emit_byte(0xC2)
+        // mantissa: mov eax, ecx; shr eax, 13; and eax, 0x3FF
+        emit_byte(0x89); emit_byte(0xC8)
+        emit_byte(0xC1); emit_byte(0xE8); emit_byte(13)
+        emit_byte(0x25); emit_u32_le(0x3FF)
+        // or eax, edx
+        emit_byte(0x09); emit_byte(0xD0)
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, 0)
+        } else {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 106 {
+        // IR_F16TOF32: software conversion f16 bits -> f32 bits (f32 result)
+        // Input: f16 bit pattern in GPR (lower 16 bits)
+        uint64 a_reg = ir_resolve_src(s1_v, 0)
+        ir_emit_mov_r64_r64(0, a_reg)
+        // mov ecx, eax (save f16 bits)
+        emit_byte(0x89); emit_byte(0xC1)
+        // sign: shl eax, 16; and eax, 0x80000000
+        emit_byte(0xC1); emit_byte(0xE0); emit_byte(16)
+        emit_byte(0x25); emit_u32_le(0x80000000)
+        // mov edx, eax (save sign)
+        emit_byte(0x89); emit_byte(0xC2)
+        // exp: mov eax, ecx; shr eax, 10; and eax, 0x1F; add eax, 112
+        emit_byte(0x89); emit_byte(0xC8)
+        emit_byte(0xC1); emit_byte(0xE8); emit_byte(10)
+        emit_byte(0x25); emit_u32_le(0x1F)
+        emit_byte(0x05); emit_u32_le(112)
+        // shl eax, 23; or edx, eax
+        emit_byte(0xC1); emit_byte(0xE0); emit_byte(23)
+        emit_byte(0x09); emit_byte(0xC2)
+        // mantissa: mov eax, ecx; and eax, 0x3FF; shl eax, 13
+        emit_byte(0x89); emit_byte(0xC8)
+        emit_byte(0x25); emit_u32_le(0x3FF)
+        emit_byte(0xC1); emit_byte(0xE0); emit_byte(13)
+        // or eax, edx
+        emit_byte(0x09); emit_byte(0xD0)
+        // Result is f32 bit pattern in eax (as uint64 in rax)
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, 0)
+        } else {
             ir_emit_store_spill(0, dest_v)
         }
         return
