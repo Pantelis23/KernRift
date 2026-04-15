@@ -77,6 +77,7 @@ static uint64 IR_STR_EQ = 75
 static uint64 IR_MEMSET = 76
 static uint64 IR_STATIC_LOAD = 77     // dest = load from static data offset (imm64)
 static uint64 IR_STATIC_STORE = 78    // store src1 to static data offset (imm64)
+static uint64 IR_STR_CONST = 79       // dest = lea string data (imm = str_offset)
 
 // ---------------------------------------------------------------------------
 // Instruction arena
@@ -541,11 +542,8 @@ fn ir_lower_expr(uint64 node) -> uint64 {
         uint8 zero = 0
         unsafe { *(sp as uint8) = zero }
         str_len = str_len + 1
-        // We can't emit the lea directly here (we're in IR lowering, not code emission).
-        // Use IR_CONST with a special marker: imm = str_offset | (1 << 63) to flag it.
         uint64 dest = ir_new_vreg()
-        uint64 str_marker = str_offset | 0x8000000000000000
-        ir_emit(IR_CONST, dest, 0, 0, str_marker, ir_current_bb)
+        ir_emit(IR_STR_CONST, dest, 0, 0, str_offset, ir_current_bb)
         return dest
     }
 
@@ -578,16 +576,16 @@ fn ir_lower_expr(uint64 node) -> uint64 {
         uint64 dest = ir_new_vreg()
         uint64 op_kind = tok_kind_at_raw(op_tok)
         uint64 ir_op = IR_ADD
-        if op_kind == 30 { ir_op = IR_ADD }     // +
-        if op_kind == 31 { ir_op = IR_SUB }     // -
-        if op_kind == 22 { ir_op = IR_MUL }     // *
-        if op_kind == 32 { ir_op = IR_DIV }     // /
-        if op_kind == 33 { ir_op = IR_MOD }     // %
-        if op_kind == 23 { ir_op = IR_AND }     // &
-        if op_kind == 24 { ir_op = IR_OR }      // |
-        if op_kind == 25 { ir_op = IR_XOR }     // ^
-        if op_kind == 43 { ir_op = IR_SHL }     // <<
-        if op_kind == 44 { ir_op = IR_SHR }     // >>
+        if op_kind == 30 || op_kind == 45 { ir_op = IR_ADD }     // + +=
+        if op_kind == 31 || op_kind == 46 { ir_op = IR_SUB }     // - -=
+        if op_kind == 22 || op_kind == 47 { ir_op = IR_MUL }     // * *=
+        if op_kind == 32 || op_kind == 48 { ir_op = IR_DIV }     // / /=
+        if op_kind == 33 || op_kind == 49 { ir_op = IR_MOD }     // % %=
+        if op_kind == 23 || op_kind == 50 { ir_op = IR_AND }     // & &=
+        if op_kind == 24 || op_kind == 51 { ir_op = IR_OR }      // | |=
+        if op_kind == 25 || op_kind == 52 { ir_op = IR_XOR }     // ^ ^=
+        if op_kind == 43 || op_kind == 53 { ir_op = IR_SHL }     // << <<=
+        if op_kind == 44 || op_kind == 54 { ir_op = IR_SHR }     // >> >>=
         ir_emit(ir_op, dest, lhs, rhs, 0, ir_current_bb)
         return dest
     }
@@ -796,6 +794,109 @@ fn ir_lower_expr(uint64 node) -> uint64 {
             return dest
         }
         // str_eq(a, b) → IR_STR_EQ
+        // Signed comparison builtins
+        if tok_matches(wct, "signed_lt", 9) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 a_v = ir_lower_expr(arg1)
+            uint32 arg2 = ast_next(arg1)
+            uint64 b_v = ir_lower_expr(arg2)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_CMP_LT + 100, dest, a_v, b_v, 0, ir_current_bb)
+            return dest
+        }
+        if tok_matches(wct, "signed_gt", 9) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 a_v = ir_lower_expr(arg1)
+            uint32 arg2 = ast_next(arg1)
+            uint64 b_v = ir_lower_expr(arg2)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_CMP_GT + 100, dest, a_v, b_v, 0, ir_current_bb)
+            return dest
+        }
+        if tok_matches(wct, "signed_le", 9) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 a_v = ir_lower_expr(arg1)
+            uint32 arg2 = ast_next(arg1)
+            uint64 b_v = ir_lower_expr(arg2)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_CMP_LE + 100, dest, a_v, b_v, 0, ir_current_bb)
+            return dest
+        }
+        if tok_matches(wct, "signed_ge", 9) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 a_v = ir_lower_expr(arg1)
+            uint32 arg2 = ast_next(arg1)
+            uint64 b_v = ir_lower_expr(arg2)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_CMP_GE + 100, dest, a_v, b_v, 0, ir_current_bb)
+            return dest
+        }
+
+        // file_open/file_close/file_read/file_write builtins
+        if tok_matches(wct, "file_open", 9) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 path_v = ir_lower_expr(arg1)
+            uint32 arg2 = ast_next(arg1)
+            uint64 mode_v = ir_lower_expr(arg2)
+            // mode: 0=read(O_RDONLY), 1=write(O_WRONLY|O_CREAT|O_TRUNC = 0x241)
+            // flags = mode == 0 ? 0 : 0x241
+            uint64 flags_v = ir_new_vreg()
+            uint64 zero_v = ir_new_vreg()
+            ir_emit(IR_CONST, zero_v, 0, 0, 0, ir_current_bb)
+            uint64 cmp_v = ir_new_vreg()
+            ir_emit(IR_CMP_EQ, cmp_v, mode_v, zero_v, 0, ir_current_bb)
+            // if mode==0, flags=0; else flags=0x241
+            // Simple approach: flags = mode * 0x241
+            uint64 magic_v = ir_new_vreg()
+            ir_emit(IR_CONST, magic_v, 0, 0, 577, ir_current_bb)
+            ir_emit(IR_MUL, flags_v, mode_v, magic_v, 0, ir_current_bb)
+            // syscall 2 = open(path, flags, 0644)
+            uint64 perm_v = ir_new_vreg()
+            ir_emit(IR_CONST, perm_v, 0, 0, 420, ir_current_bb)
+            ir_emit(IR_ARG, 0, path_v, 0, 0, ir_current_bb)
+            ir_emit(IR_ARG, 0, flags_v, 0, 1, ir_current_bb)
+            ir_emit(IR_ARG, 0, perm_v, 0, 2, ir_current_bb)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_SYSCALL, dest, 0, 0, 2, ir_current_bb)
+            return dest
+        }
+        if tok_matches(wct, "file_close", 10) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 fd_v = ir_lower_expr(arg1)
+            ir_emit(IR_ARG, 0, fd_v, 0, 0, ir_current_bb)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_SYSCALL, dest, 0, 0, 3, ir_current_bb)
+            return dest
+        }
+        if tok_matches(wct, "file_write", 10) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 fd_v = ir_lower_expr(arg1)
+            uint32 arg2 = ast_next(arg1)
+            uint64 buf_v = ir_lower_expr(arg2)
+            uint32 arg3 = ast_next(arg2)
+            uint64 len_v = ir_lower_expr(arg3)
+            ir_emit(IR_ARG, 0, fd_v, 0, 0, ir_current_bb)
+            ir_emit(IR_ARG, 0, buf_v, 0, 1, ir_current_bb)
+            ir_emit(IR_ARG, 0, len_v, 0, 2, ir_current_bb)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_SYSCALL, dest, 0, 0, 1, ir_current_bb)
+            return dest
+        }
+        if tok_matches(wct, "file_read", 9) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 fd_v = ir_lower_expr(arg1)
+            uint32 arg2 = ast_next(arg1)
+            uint64 buf_v = ir_lower_expr(arg2)
+            uint32 arg3 = ast_next(arg2)
+            uint64 len_v = ir_lower_expr(arg3)
+            ir_emit(IR_ARG, 0, fd_v, 0, 0, ir_current_bb)
+            ir_emit(IR_ARG, 0, buf_v, 0, 1, ir_current_bb)
+            ir_emit(IR_ARG, 0, len_v, 0, 2, ir_current_bb)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_SYSCALL, dest, 0, 0, 0, ir_current_bb)
+            return dest
+        }
+
         // print(arg) — write string or integer to stdout
         if tok_matches(wct, "print", 5) != 0 {
             uint32 first_arg = ast_child(node)
@@ -1738,6 +1839,8 @@ fn ir_insn_has_def(uint64 ii) -> uint64 {
     if op == 31 { return 0 }   // store
     if op == 51 { return 0 }   // arg (no value produced)
     if op == 71 { return 0 }   // dealloc (no value produced)
+    if op == 76 { return 0 }   // memset (no value produced — returns void)
+    if op == 78 { return 0 }   // static_store (no value produced)
     return 1
 }
 
@@ -2114,44 +2217,43 @@ fn ir_emit_x86_insn(uint64 ii) {
     // Get physical registers (0xFFFFFFFF = spilled)
     uint64 dst_r = ir_get_phys_reg(dest_v)
 
+    if op == 79 {
+        // IR_STR_CONST: dst = lea string data (imm = str_offset)
+        uint64 str_offset = imm
+        uint64 lea_dst = dst_r
+        if lea_dst == 0xFFFFFFFF { lea_dst = 0 }
+        uint8 lea_rex = 0x48
+        if lea_dst >= 8 { lea_rex = lea_rex | 4 }
+        emit_byte(lea_rex)
+        emit_byte(0x8D)
+        uint64 lea_modrm = 0x05 | ((lea_dst & 7) << 3)
+        uint8 lea_m = lea_modrm
+        emit_byte(lea_m)
+        if str_fixup_count >= 4096 {
+            write(2, "error: str_fixups overflow (max 4096)\n", 38)
+            exit(1)
+        }
+        uint64 fentry = str_fixups + str_fixup_count * 8
+        uint32 cp = out_len
+        unsafe { *(fentry as uint32) = cp }
+        uint64 fe4 = fentry + 4
+        uint32 so = str_offset
+        unsafe { *(fe4 as uint32) = so }
+        str_fixup_count = str_fixup_count + 1
+        emit_u32_le(0)
+        if dst_r == 0xFFFFFFFF {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
     if op == 1 {
         // IR_CONST: dst = imm64
-        // Check for string literal marker (high bit set)
-        if (imm & 0x8000000000000000) != 0 {
-            uint64 str_offset = imm & 0x7FFFFFFFFFFFFFFF
-            // Emit: lea disp32(%rip), %reg → REX 8D modrm [disp32]
-            uint64 lea_dst = dst_r
-            if lea_dst == 0xFFFFFFFF { lea_dst = 0 }
-            uint8 lea_rex = 0x48
-            if lea_dst >= 8 { lea_rex = lea_rex | 4 }
-            emit_byte(lea_rex)
-            emit_byte(0x8D)
-            uint64 lea_modrm = 0x05 | ((lea_dst & 7) << 3)
-            uint8 lea_m = lea_modrm
-            emit_byte(lea_m)
-            // Record str_fixup for later patching
-            if str_fixup_count >= 4096 {
-                write(2, "error: str_fixups overflow (max 4096)\n", 38)
-                exit(1)
-            }
-            uint64 fentry = str_fixups + str_fixup_count * 8
-            uint32 cp = out_len
-            unsafe { *(fentry as uint32) = cp }
-            uint64 fe4 = fentry + 4
-            uint32 so = str_offset
-            unsafe { *(fe4 as uint32) = so }
-            str_fixup_count = str_fixup_count + 1
-            emit_u32_le(0)
-            if dst_r == 0xFFFFFFFF {
-                ir_emit_store_spill(0, dest_v)
-            }
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_imm64(dst_r, imm)
         } else {
-            if dst_r != 0xFFFFFFFF {
-                ir_emit_mov_r64_imm64(dst_r, imm)
-            } else {
-                ir_emit_mov_r64_imm64(0, imm)
-                ir_emit_store_spill(0, dest_v)
-            }
+            ir_emit_mov_r64_imm64(0, imm)
+            ir_emit_store_spill(0, dest_v)
         }
         return
     }
@@ -2415,6 +2517,26 @@ fn ir_emit_x86_insn(uint64 ii) {
         emit_byte(0xB6)
         emit_byte(0xC0)
         // Move result to dst
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, 0)
+        } else {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    // Signed comparisons (op = IR_CMP_xx + 100)
+    if op >= 116 && op <= 119 {
+        uint64 a_reg = ir_resolve_src(s1_v, 0)
+        uint64 b_reg = ir_resolve_src(s2_v, 1)
+        ir_emit_cmp_r64_r64(a_reg, b_reg)
+        emit_byte(0x0F)
+        if op == 116 { emit_byte(0x9C) }  // setl  (signed <)
+        if op == 117 { emit_byte(0x9E) }  // setle (signed <=)
+        if op == 118 { emit_byte(0x9F) }  // setg  (signed >)
+        if op == 119 { emit_byte(0x9D) }  // setge (signed >=)
+        emit_byte(0xC0)
+        emit_byte(0x48); emit_byte(0x0F); emit_byte(0xB6); emit_byte(0xC0)
         if dst_r != 0xFFFFFFFF {
             ir_emit_mov_r64_r64(dst_r, 0)
         } else {
