@@ -2526,6 +2526,66 @@ else
 fi
 rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_ir_$$
 
+# -- IR while loop --
+TOTAL=$((TOTAL + 1))
+printf 'fn main() { uint64 i = 0; uint64 s = 0; while i < 10 { s = s + i; i = i + 1 } exit(s) }\n' > "$REPO_ROOT/test_tmp_$$.kr"
+if $KRC $KRC_FLAGS --ir "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_ir_$$ > /dev/null 2>&1; then
+    chmod +x /tmp/krc_ir_$$
+    timeout 2 /tmp/krc_ir_$$ > /dev/null 2>&1
+    actual=$?
+    if [ "$actual" = "45" ]; then
+        PASS=$((PASS + 1))
+        echo "  ir_while_loop: PASS"
+    else
+        echo "FAIL: ir_while_loop (expected 45, got $actual)"
+        FAIL=$((FAIL + 1))
+    fi
+else
+    echo "FAIL: ir_while_loop (compilation failed)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_ir_$$
+
+# -- IR division --
+TOTAL=$((TOTAL + 1))
+printf 'fn main() { exit(10 / 3) }\n' > "$REPO_ROOT/test_tmp_$$.kr"
+if $KRC $KRC_FLAGS --ir "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_ir_$$ > /dev/null 2>&1; then
+    chmod +x /tmp/krc_ir_$$
+    /tmp/krc_ir_$$ > /dev/null 2>&1
+    actual=$?
+    if [ "$actual" = "3" ]; then
+        PASS=$((PASS + 1))
+        echo "  ir_division: PASS"
+    else
+        echo "FAIL: ir_division (expected 3, got $actual)"
+        FAIL=$((FAIL + 1))
+    fi
+else
+    echo "FAIL: ir_division (compilation failed)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_ir_$$
+
+# -- IR if/else --
+TOTAL=$((TOTAL + 1))
+printf 'fn main() { uint64 x = 10; if x > 5 { exit(1) } else { exit(0) } }\n' > "$REPO_ROOT/test_tmp_$$.kr"
+if $KRC $KRC_FLAGS --ir "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_ir_$$ > /dev/null 2>&1; then
+    chmod +x /tmp/krc_ir_$$
+    /tmp/krc_ir_$$ > /dev/null 2>&1
+    actual=$?
+    if [ "$actual" = "1" ]; then
+        PASS=$((PASS + 1))
+        echo "  ir_if_else: PASS"
+    else
+        echo "FAIL: ir_if_else (expected 1, got $actual)"
+        FAIL=$((FAIL + 1))
+    fi
+else
+    echo "FAIL: ir_if_else (compilation failed)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_ir_$$
+
 # --- IR dump test ---
 echo ""
 echo "--- IR dump test ---"

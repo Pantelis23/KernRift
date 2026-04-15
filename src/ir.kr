@@ -723,17 +723,59 @@ fn ir_lower_stmt(uint64 node) {
         uint64 bb_exit = ir_new_bb()
         ir_emit(IR_BR, 0, 0, 0, bb_header, ir_current_bb)
         ir_bb_set_succ(ir_current_bb, bb_header, 0xFFFFFFFF)
+        // Snapshot variable map before header
+        uint64 snap_count = ir_var_map_count
+        uint64 snap_buf = alloc(snap_count * 8)
+        uint64 si = 0
+        while si < snap_count {
+            uint64 sp = ir_var_map + si * 8
+            uint64 dp = snap_buf + si * 8
+            uint64 sv = 0
+            unsafe { *(sp as uint64) -> sv }
+            unsafe { *(dp as uint64) = sv }
+            si = si + 1
+        }
         ir_current_bb = bb_header
         uint32 cond_node = ast_child(node)
         uint64 cond = ir_lower_expr(cond_node)
         ir_emit(IR_BR_COND, 0, cond, 0, bb_body, ir_current_bb)
         ir_bb_set_succ(ir_current_bb, bb_exit, bb_body)
+        // Snapshot variable map after header (to know which vregs header uses)
+        uint64 hdr_count = ir_var_map_count
+        uint64 hdr_buf = alloc(hdr_count * 8)
+        si = 0
+        while si < hdr_count {
+            uint64 sp = ir_var_map + si * 8
+            uint64 dp = hdr_buf + si * 8
+            uint64 sv = 0
+            unsafe { *(sp as uint64) -> sv }
+            unsafe { *(dp as uint64) = sv }
+            si = si + 1
+        }
         ir_current_bb = bb_body
         uint32 body = ast_data1(node)
         uint64 wbody = body
         if wbody != 0 { ir_lower_block(wbody) }
+        // After body, emit COPY for any variables that changed since header
+        si = 0
+        while si < hdr_count {
+            uint64 hp = hdr_buf + si * 8 + 4
+            uint32 hdr_vreg = 0
+            unsafe { *(hp as uint32) -> hdr_vreg }
+            uint64 cp = ir_var_map + si * 8 + 4
+            uint32 cur_vreg = 0
+            unsafe { *(cp as uint32) -> cur_vreg }
+            uint64 wh = hdr_vreg
+            uint64 wc = cur_vreg
+            if wh != wc && wh != 0xFFFFFFFF {
+                ir_emit(IR_COPY, wh, wc, 0, 0, ir_current_bb)
+            }
+            si = si + 1
+        }
         ir_emit(IR_BR, 0, 0, 0, bb_header, ir_current_bb)
         ir_bb_set_succ(ir_current_bb, bb_header, 0xFFFFFFFF)
+        // Restore variable map to post-body state for exit block
+        // (variables should have their latest values for code after the loop)
         ir_current_bb = bb_exit
         return
     }
@@ -1428,6 +1470,172 @@ fn ir_emit_x86_insn(uint64 ii) {
         return
     }
 
+    if op == 5 {
+        // IR_DIV: rax = dividend / divisor, result in rax
+        uint64 a_reg = ir_resolve_src(s1_v, 0)
+        uint64 b_reg = ir_resolve_src(s2_v, 1)
+        ir_emit_mov_r64_r64(0, a_reg)
+        // xor rdx, rdx (zero-extend dividend)
+        emit_byte(0x48)
+        emit_byte(0x31)
+        emit_byte(0xD2)
+        // Ensure divisor is not in rax or rdx
+        if b_reg == 0 || b_reg == 2 {
+            ir_emit_mov_r64_r64(1, b_reg)
+            b_reg = 1
+        }
+        // div b_reg: REX.W + F7 /6
+        uint8 div_rex = 0x48
+        if b_reg >= 8 { div_rex = div_rex | 1 }
+        emit_byte(div_rex)
+        emit_byte(0xF7)
+        uint64 div_modrm = 0xF0 | (b_reg & 7)
+        uint8 div_m = div_modrm
+        emit_byte(div_m)
+        // Result in rax -> move to dst
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, 0)
+        } else {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 6 {
+        // IR_MOD: rax = dividend / divisor, remainder in rdx
+        uint64 a_reg = ir_resolve_src(s1_v, 0)
+        uint64 b_reg = ir_resolve_src(s2_v, 1)
+        ir_emit_mov_r64_r64(0, a_reg)
+        // xor rdx, rdx
+        emit_byte(0x48)
+        emit_byte(0x31)
+        emit_byte(0xD2)
+        if b_reg == 0 || b_reg == 2 {
+            ir_emit_mov_r64_r64(1, b_reg)
+            b_reg = 1
+        }
+        uint8 mod_rex = 0x48
+        if b_reg >= 8 { mod_rex = mod_rex | 1 }
+        emit_byte(mod_rex)
+        emit_byte(0xF7)
+        uint64 mod_modrm = 0xF0 | (b_reg & 7)
+        uint8 mod_m = mod_modrm
+        emit_byte(mod_m)
+        // Remainder in rdx -> move to dst
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, 2)
+        } else {
+            ir_emit_store_spill(2, dest_v)
+        }
+        return
+    }
+
+    if op == 7 {
+        // IR_AND
+        uint64 a_reg = ir_resolve_src(s1_v, 0)
+        uint64 b_reg = ir_resolve_src(s2_v, 1)
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, a_reg)
+            // and dst, src: REX + 21 /r
+            emit_byte(ir_x86_rex(b_reg, dst_r))
+            emit_byte(0x21)
+            emit_byte(ir_x86_modrm_rr(b_reg, dst_r))
+        } else {
+            ir_emit_mov_r64_r64(0, a_reg)
+            emit_byte(ir_x86_rex(b_reg, 0))
+            emit_byte(0x21)
+            emit_byte(ir_x86_modrm_rr(b_reg, 0))
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 8 {
+        // IR_OR
+        uint64 a_reg = ir_resolve_src(s1_v, 0)
+        uint64 b_reg = ir_resolve_src(s2_v, 1)
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, a_reg)
+            emit_byte(ir_x86_rex(b_reg, dst_r))
+            emit_byte(0x09)
+            emit_byte(ir_x86_modrm_rr(b_reg, dst_r))
+        } else {
+            ir_emit_mov_r64_r64(0, a_reg)
+            emit_byte(ir_x86_rex(b_reg, 0))
+            emit_byte(0x09)
+            emit_byte(ir_x86_modrm_rr(b_reg, 0))
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 9 {
+        // IR_XOR
+        uint64 a_reg = ir_resolve_src(s1_v, 0)
+        uint64 b_reg = ir_resolve_src(s2_v, 1)
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, a_reg)
+            emit_byte(ir_x86_rex(b_reg, dst_r))
+            emit_byte(0x31)
+            emit_byte(ir_x86_modrm_rr(b_reg, dst_r))
+        } else {
+            ir_emit_mov_r64_r64(0, a_reg)
+            emit_byte(ir_x86_rex(b_reg, 0))
+            emit_byte(0x31)
+            emit_byte(ir_x86_modrm_rr(b_reg, 0))
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 10 {
+        // IR_SHL: shl dst, cl — shift count must be in cl (rcx low byte)
+        uint64 a_reg = ir_resolve_src(s1_v, 0)
+        uint64 b_reg = ir_resolve_src(s2_v, 1)
+        if b_reg != 1 { ir_emit_mov_r64_r64(1, b_reg) }
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, a_reg)
+            uint8 shl_rex = 0x48
+            if dst_r >= 8 { shl_rex = shl_rex | 1 }
+            emit_byte(shl_rex)
+            emit_byte(0xD3)
+            uint64 shl_modrm = 0xE0 | (dst_r & 7)
+            uint8 shl_m = shl_modrm
+            emit_byte(shl_m)
+        } else {
+            ir_emit_mov_r64_r64(0, a_reg)
+            emit_byte(0x48)
+            emit_byte(0xD3)
+            emit_byte(0xE0)
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 11 {
+        // IR_SHR: shr dst, cl
+        uint64 a_reg = ir_resolve_src(s1_v, 0)
+        uint64 b_reg = ir_resolve_src(s2_v, 1)
+        if b_reg != 1 { ir_emit_mov_r64_r64(1, b_reg) }
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, a_reg)
+            uint8 shr_rex = 0x48
+            if dst_r >= 8 { shr_rex = shr_rex | 1 }
+            emit_byte(shr_rex)
+            emit_byte(0xD3)
+            uint64 shr_modrm = 0xE8 | (dst_r & 7)
+            uint8 shr_m = shr_modrm
+            emit_byte(shr_m)
+        } else {
+            ir_emit_mov_r64_r64(0, a_reg)
+            emit_byte(0x48)
+            emit_byte(0xD3)
+            emit_byte(0xE8)
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
     if op == 12 {
         // IR_NEG
         uint64 a_reg = ir_resolve_src(s1_v, 0)
@@ -1451,6 +1659,34 @@ fn ir_emit_x86_insn(uint64 ii) {
         } else {
             ir_emit_mov_r64_r64(0, a_reg)
             ir_emit_not_r64(0)
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op >= 14 && op <= 19 {
+        // IR_CMP_EQ through IR_CMP_GE: cmp + setcc + movzx
+        uint64 a_reg = ir_resolve_src(s1_v, 0)
+        uint64 b_reg = ir_resolve_src(s2_v, 1)
+        ir_emit_cmp_r64_r64(a_reg, b_reg)
+        // setcc al: 0F xx C0
+        emit_byte(0x0F)
+        if op == 14 { emit_byte(0x94) }  // sete
+        if op == 15 { emit_byte(0x95) }  // setne
+        if op == 16 { emit_byte(0x92) }  // setb  (unsigned <)
+        if op == 17 { emit_byte(0x96) }  // setbe (unsigned <=)
+        if op == 18 { emit_byte(0x97) }  // seta  (unsigned >)
+        if op == 19 { emit_byte(0x93) }  // setae (unsigned >=)
+        emit_byte(0xC0)
+        // movzx rax, al: 48 0F B6 C0
+        emit_byte(0x48)
+        emit_byte(0x0F)
+        emit_byte(0xB6)
+        emit_byte(0xC0)
+        // Move result to dst
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, 0)
+        } else {
             ir_emit_store_spill(0, dest_v)
         }
         return
@@ -1664,22 +1900,35 @@ fn ir_emit_x86_function(uint64 fn_node) {
                 }
             }
             if last_op == 41 {
-                // Conditional branch: test + jnz target_bb
+                // Conditional branch: test + jnz true_target + jmp false_target
                 uint64 cond_v = ir_insn_src1(last)
                 uint64 cond_r = ir_resolve_src(cond_v, 0)
                 ir_emit_test_r64_r64(cond_r, cond_r)
                 emit_byte(0x0F)
                 emit_byte(0x85)
-                // Record fixup
-                uint64 target = ir_insn_imm(last)
+                // Record fixup for jnz -> true target
+                uint64 target_true = ir_insn_imm(last)
                 uint64 fp = ir_br_fixups + ir_br_fixup_count * 8
                 uint32 po = out_len
                 unsafe { *(fp as uint32) = po }
                 uint64 fp4 = fp + 4
-                uint32 tb = target
+                uint32 tb = target_true
                 unsafe { *(fp4 as uint32) = tb }
                 ir_br_fixup_count = ir_br_fixup_count + 1
                 emit_u32_le(0)
+                // Emit jmp to false target (succ0) if not fall-through
+                uint64 target_false = ir_bb_succ0(bi)
+                if target_false != 0xFFFFFFFF && target_false != bi + 1 {
+                    emit_byte(0xE9)
+                    uint64 fp2 = ir_br_fixups + ir_br_fixup_count * 8
+                    uint32 po2 = out_len
+                    unsafe { *(fp2 as uint32) = po2 }
+                    uint64 fp24 = fp2 + 4
+                    uint32 tb2 = target_false
+                    unsafe { *(fp24 as uint32) = tb2 }
+                    ir_br_fixup_count = ir_br_fixup_count + 1
+                    emit_u32_le(0)
+                }
             }
         }
 
