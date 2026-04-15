@@ -114,6 +114,13 @@ fn ir_init() {
     ir_bb_count = 0
 
     ir_vreg_next = 1
+
+    // Loop context stacks (max 32 nesting levels)
+    ir_loop_exit_stack = alloc(32 * 8)
+    ir_loop_header_stack = alloc(32 * 8)
+    ir_loop_hdr_buf_stack = alloc(32 * 8)
+    ir_loop_hdr_count_stack = alloc(32 * 8)
+    ir_loop_depth = 0
 }
 
 // Reset all counters to zero so the arenas can be reused.
@@ -122,6 +129,7 @@ fn ir_reset() {
     ir_insn_count = 0
     ir_bb_count = 0
     ir_vreg_next = 1
+    ir_loop_depth = 0
 }
 
 // ---------------------------------------------------------------------------
@@ -469,6 +477,13 @@ fn ir_var_get(uint64 name_tok) -> uint64 {
 // ---------------------------------------------------------------------------
 
 static uint64 ir_current_bb = 0
+
+// Loop context stack for break/continue
+static uint64 ir_loop_exit_stack = 0       // bb indices for break targets
+static uint64 ir_loop_header_stack = 0     // bb indices for continue targets
+static uint64 ir_loop_hdr_buf_stack = 0    // header vreg snapshot pointers
+static uint64 ir_loop_hdr_count_stack = 0  // header vreg snapshot counts
+static uint64 ir_loop_depth = 0
 
 // ---------------------------------------------------------------------------
 // Expression lowering
@@ -1011,10 +1026,24 @@ fn ir_lower_stmt(uint64 node) {
             unsafe { *(dp as uint64) = sv }
             si = si + 1
         }
+        // Push loop context for break/continue
+        uint64 lp = ir_loop_exit_stack + ir_loop_depth * 8
+        unsafe { *(lp as uint64) = bb_exit }
+        uint64 lh = ir_loop_header_stack + ir_loop_depth * 8
+        unsafe { *(lh as uint64) = bb_header }
+        uint64 lb = ir_loop_hdr_buf_stack + ir_loop_depth * 8
+        unsafe { *(lb as uint64) = hdr_buf }
+        uint64 lc = ir_loop_hdr_count_stack + ir_loop_depth * 8
+        unsafe { *(lc as uint64) = hdr_count }
+        ir_loop_depth = ir_loop_depth + 1
+
         ir_current_bb = bb_body
         uint32 body = ast_data1(node)
         uint64 wbody = body
         if wbody != 0 { ir_lower_block(wbody) }
+
+        ir_loop_depth = ir_loop_depth - 1
+
         // After body, emit COPY for any variables that changed since header
         si = 0
         while si < hdr_count {
@@ -1130,7 +1159,80 @@ fn ir_lower_stmt(uint64 node) {
         return
     }
 
-    // Break (17), Continue (18) — need loop context tracking (defer)
+    // Break (17)
+    if kind == 17 {
+        if ir_loop_depth > 0 {
+            uint64 ld = ir_loop_depth - 1
+            // Copy changed vars back to header vregs before jumping
+            uint64 lbp = ir_loop_hdr_buf_stack + ld * 8
+            uint64 hb = 0
+            unsafe { *(lbp as uint64) -> hb }
+            uint64 lcp = ir_loop_hdr_count_stack + ld * 8
+            uint64 hc = 0
+            unsafe { *(lcp as uint64) -> hc }
+            uint64 bi = 0
+            while bi < hc {
+                uint64 hp = hb + bi * 8 + 4
+                uint32 hdr_vreg = 0
+                unsafe { *(hp as uint32) -> hdr_vreg }
+                uint64 cp = ir_var_map + bi * 8 + 4
+                uint32 cur_vreg = 0
+                unsafe { *(cp as uint32) -> cur_vreg }
+                uint64 wh = hdr_vreg
+                uint64 wc = cur_vreg
+                if wh != wc && wh != 0xFFFFFFFF {
+                    ir_emit(IR_COPY, wh, wc, 0, 0, ir_current_bb)
+                }
+                bi = bi + 1
+            }
+            uint64 lep = ir_loop_exit_stack + ld * 8
+            uint64 exit_bb = 0
+            unsafe { *(lep as uint64) -> exit_bb }
+            ir_emit(IR_BR, 0, 0, 0, exit_bb, ir_current_bb)
+            ir_bb_set_succ(ir_current_bb, exit_bb, 0xFFFFFFFF)
+            // Create a new unreachable block for any code after break
+            ir_current_bb = ir_new_bb()
+        }
+        return
+    }
+
+    // Continue (18)
+    if kind == 18 {
+        if ir_loop_depth > 0 {
+            uint64 ld = ir_loop_depth - 1
+            // Copy changed vars back to header vregs before jumping
+            uint64 lbp = ir_loop_hdr_buf_stack + ld * 8
+            uint64 hb = 0
+            unsafe { *(lbp as uint64) -> hb }
+            uint64 lcp = ir_loop_hdr_count_stack + ld * 8
+            uint64 hc = 0
+            unsafe { *(lcp as uint64) -> hc }
+            uint64 bi = 0
+            while bi < hc {
+                uint64 hp = hb + bi * 8 + 4
+                uint32 hdr_vreg = 0
+                unsafe { *(hp as uint32) -> hdr_vreg }
+                uint64 cp = ir_var_map + bi * 8 + 4
+                uint32 cur_vreg = 0
+                unsafe { *(cp as uint32) -> cur_vreg }
+                uint64 wh = hdr_vreg
+                uint64 wc = cur_vreg
+                if wh != wc && wh != 0xFFFFFFFF {
+                    ir_emit(IR_COPY, wh, wc, 0, 0, ir_current_bb)
+                }
+                bi = bi + 1
+            }
+            uint64 lhp = ir_loop_header_stack + ld * 8
+            uint64 header_bb = 0
+            unsafe { *(lhp as uint64) -> header_bb }
+            ir_emit(IR_BR, 0, 0, 0, header_bb, ir_current_bb)
+            ir_bb_set_succ(ir_current_bb, header_bb, 0xFFFFFFFF)
+            // Create a new unreachable block for any code after continue
+            ir_current_bb = ir_new_bb()
+        }
+        return
+    }
+
     // TupleDestruct (44), TupleDestruct3 (47) — defer
     // FieldAccess (36) as statement — defer
 }

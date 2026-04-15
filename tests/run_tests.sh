@@ -2646,6 +2646,88 @@ else
 fi
 rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_ir_$$
 
+# --- ir_break ---
+cat > "$REPO_ROOT/test_tmp_$$.kr" << 'IREOF'
+fn main() { uint64 i = 0; while i < 100 { if i == 5 { break }; i = i + 1 }; exit(i) }
+IREOF
+if timeout 10 "$KRC" --ir --arch=x86_64 "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_ir_$$ 2>/dev/null; then
+    chmod +x /tmp/krc_ir_$$; /tmp/krc_ir_$$; actual=$?
+    if [ "$actual" -eq 5 ]; then
+        echo "  ir_break: PASS"
+    else
+        echo "FAIL: ir_break (expected 5, got $actual)"; FAIL=$((FAIL + 1))
+    fi
+else
+    echo "FAIL: ir_break (compilation failed)"; FAIL=$((FAIL + 1))
+fi
+rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_ir_$$
+
+# --- ir_continue ---
+cat > "$REPO_ROOT/test_tmp_$$.kr" << 'IREOF'
+fn main() { uint64 i = 0; uint64 s = 0; while i < 10 { i = i + 1; if i == 5 { continue }; s = s + 1 }; exit(s) }
+IREOF
+if timeout 10 "$KRC" --ir --arch=x86_64 "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_ir_$$ 2>/dev/null; then
+    chmod +x /tmp/krc_ir_$$; /tmp/krc_ir_$$; actual=$?
+    if [ "$actual" -eq 9 ]; then
+        echo "  ir_continue: PASS"
+    else
+        echo "FAIL: ir_continue (expected 9, got $actual)"; FAIL=$((FAIL + 1))
+    fi
+else
+    echo "FAIL: ir_continue (compilation failed)"; FAIL=$((FAIL + 1))
+fi
+rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_ir_$$
+
+# --- ir_fn_call ---
+cat > "$REPO_ROOT/test_tmp_$$.kr" << 'IREOF'
+fn add(uint64 a, uint64 b) -> uint64 { return a + b }
+fn main() { exit(add(20, 22)) }
+IREOF
+if timeout 10 "$KRC" --ir --arch=x86_64 "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_ir_$$ 2>/dev/null; then
+    chmod +x /tmp/krc_ir_$$; /tmp/krc_ir_$$; actual=$?
+    if [ "$actual" -eq 42 ]; then
+        echo "  ir_fn_call: PASS"
+    else
+        echo "FAIL: ir_fn_call (expected 42, got $actual)"; FAIL=$((FAIL + 1))
+    fi
+else
+    echo "FAIL: ir_fn_call (compilation failed)"; FAIL=$((FAIL + 1))
+fi
+rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_ir_$$
+
+# --- ir_recursion ---
+cat > "$REPO_ROOT/test_tmp_$$.kr" << 'IREOF'
+fn fib(uint64 n) -> uint64 { if n <= 1 { return n }; return fib(n - 1) + fib(n - 2) }
+fn main() { exit(fib(10)) }
+IREOF
+if timeout 10 "$KRC" --ir --arch=x86_64 "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_ir_$$ 2>/dev/null; then
+    chmod +x /tmp/krc_ir_$$; /tmp/krc_ir_$$; actual=$?
+    if [ "$actual" -eq 55 ]; then
+        echo "  ir_recursion: PASS"
+    else
+        echo "FAIL: ir_recursion (expected 55, got $actual)"; FAIL=$((FAIL + 1))
+    fi
+else
+    echo "FAIL: ir_recursion (compilation failed)"; FAIL=$((FAIL + 1))
+fi
+rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_ir_$$
+
+# --- ir_match ---
+cat > "$REPO_ROOT/test_tmp_$$.kr" << 'IREOF'
+fn main() { uint64 x = 2; uint64 r = 0; match x { 1 => { r = 10 } 2 => { r = 42 } 3 => { r = 30 } }; exit(r) }
+IREOF
+if timeout 10 "$KRC" --ir --arch=x86_64 "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_ir_$$ 2>/dev/null; then
+    chmod +x /tmp/krc_ir_$$; /tmp/krc_ir_$$; actual=$?
+    if [ "$actual" -eq 42 ]; then
+        echo "  ir_match: PASS"
+    else
+        echo "FAIL: ir_match (expected 42, got $actual)"; FAIL=$((FAIL + 1))
+    fi
+else
+    echo "FAIL: ir_match (compilation failed)"; FAIL=$((FAIL + 1))
+fi
+rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_ir_$$
+
 # --- IR dump test ---
 echo ""
 echo "--- IR dump test ---"
