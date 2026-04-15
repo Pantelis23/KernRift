@@ -110,6 +110,19 @@ static uint64 IR_F16TOF32 = 106     // dest = f16-to-f32 bit conversion
 static uint64 IR_ITOF32 = 107       // dest = cvtsi2ss src1 (int to f32 bits)
 static uint64 IR_FTOI32 = 108       // dest = cvttss2si src1 (f32 bits to int)
 
+// Atomic RMW (CAS-loop based)
+static uint64 IR_ATOMIC_SUB = 109    // atomic_sub(ptr, val): negate + lock xadd
+static uint64 IR_ATOMIC_AND = 110    // atomic_and(ptr, val): CAS-loop with AND
+static uint64 IR_ATOMIC_OR = 111     // atomic_or(ptr, val): CAS-loop with OR
+static uint64 IR_ATOMIC_XOR = 112    // atomic_xor(ptr, val): CAS-loop with XOR
+
+// Process / OS builtins
+static uint64 IR_EXEC = 113         // exec_process(path): execve with auto-argv
+static uint64 IR_EXEC_ARGV = 114    // exec_process_argv(path, argv): execve
+static uint64 IR_SET_EXEC = 115     // set_executable(path): chmod +x
+static uint64 IR_FSQRT32 = 116      // dest = sqrtss(src1) f32
+static uint64 IR_TIME_NS = 117      // dest = monotonic nanosecond counter
+
 // ---------------------------------------------------------------------------
 // Instruction arena
 // ---------------------------------------------------------------------------
@@ -1139,6 +1152,136 @@ fn ir_lower_expr(uint64 node) -> uint64 {
             ir_emit(IR_ATOMIC_CAS, dest, ptr_v, exp_v, des_v, ir_current_bb)
             return dest
         }
+        // atomic_sub(ptr, val) → IR_ATOMIC_SUB (returns old value)
+        if tok_matches(wct, "atomic_sub", 10) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 ptr_v = ir_lower_expr(arg1)
+            uint32 arg2 = ast_next(arg1)
+            uint64 val_v = ir_lower_expr(arg2)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_ATOMIC_SUB, dest, ptr_v, val_v, 0, ir_current_bb)
+            return dest
+        }
+        // atomic_and(ptr, val) → IR_ATOMIC_AND (returns old value)
+        if tok_matches(wct, "atomic_and", 10) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 ptr_v = ir_lower_expr(arg1)
+            uint32 arg2 = ast_next(arg1)
+            uint64 val_v = ir_lower_expr(arg2)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_ATOMIC_AND, dest, ptr_v, val_v, 0, ir_current_bb)
+            return dest
+        }
+        // atomic_or(ptr, val) → IR_ATOMIC_OR (returns old value)
+        if tok_matches(wct, "atomic_or", 9) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 ptr_v = ir_lower_expr(arg1)
+            uint32 arg2 = ast_next(arg1)
+            uint64 val_v = ir_lower_expr(arg2)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_ATOMIC_OR, dest, ptr_v, val_v, 0, ir_current_bb)
+            return dest
+        }
+        // atomic_xor(ptr, val) → IR_ATOMIC_XOR (returns old value)
+        if tok_matches(wct, "atomic_xor", 10) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 ptr_v = ir_lower_expr(arg1)
+            uint32 arg2 = ast_next(arg1)
+            uint64 val_v = ir_lower_expr(arg2)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_ATOMIC_XOR, dest, ptr_v, val_v, 0, ir_current_bb)
+            return dest
+        }
+        // exec_process_argv(path, argv) → IR_EXEC_ARGV
+        if tok_matches(wct, "exec_process_argv", 17) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 path_v = ir_lower_expr(arg1)
+            uint32 arg2 = ast_next(arg1)
+            uint64 argv_v = ir_lower_expr(arg2)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_EXEC_ARGV, dest, path_v, argv_v, 0, ir_current_bb)
+            return dest
+        }
+        // exec_process(path) → IR_EXEC
+        if tok_matches(wct, "exec_process", 12) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 path_v = ir_lower_expr(arg1)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_EXEC, dest, path_v, 0, 0, ir_current_bb)
+            return dest
+        }
+        // get_module_path(buf, size) → returns 0 on Linux (no-op)
+        if tok_matches(wct, "get_module_path", 15) != 0 {
+            uint32 arg1 = ast_child(node)
+            ir_lower_expr(arg1)
+            uint32 arg2 = ast_next(arg1)
+            ir_lower_expr(arg2)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_CONST, dest, 0, 0, 0, ir_current_bb)
+            return dest
+        }
+        // set_executable(path) → IR_SET_EXEC
+        if tok_matches(wct, "set_executable", 14) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 path_v = ir_lower_expr(arg1)
+            ir_emit(IR_SET_EXEC, 0, path_v, 0, 0, ir_current_bb)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_CONST, dest, 0, 0, 0, ir_current_bb)
+            return dest
+        }
+        // sqrt_f32(x) → IR_FSQRT32
+        if tok_matches(wct, "sqrt_f32", 8) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 src_v = ir_lower_expr(first_arg)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_FSQRT32, dest, src_v, 0, 0, ir_current_bb)
+            ir_vreg_fkind_set(dest, 2)
+            return dest
+        }
+        // time_ns() → IR_TIME_NS
+        if tok_matches(wct, "time_ns", 7) != 0 {
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_TIME_NS, dest, 0, 0, 0, ir_current_bb)
+            return dest
+        }
+        // vload8(ptr) → IR_VLOAD width 1
+        if tok_matches(wct, "vload8", 6) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 ptr_v = ir_lower_expr(arg1)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_VLOAD, dest, ptr_v, 0, 1, ir_current_bb)
+            return dest
+        }
+        // vload16(ptr) → IR_VLOAD width 2
+        if tok_matches(wct, "vload16", 7) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 ptr_v = ir_lower_expr(arg1)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_VLOAD, dest, ptr_v, 0, 2, ir_current_bb)
+            return dest
+        }
+        // vstore8(ptr, val) → IR_VSTORE width 1
+        if tok_matches(wct, "vstore8", 7) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 ptr_v = ir_lower_expr(arg1)
+            uint32 arg2 = ast_next(arg1)
+            uint64 val_v = ir_lower_expr(arg2)
+            ir_emit(IR_VSTORE, 1, ptr_v, val_v, 0, ir_current_bb)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_CONST, dest, 0, 0, 0, ir_current_bb)
+            return dest
+        }
+        // vstore16(ptr, val) → IR_VSTORE width 2
+        if tok_matches(wct, "vstore16", 8) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 ptr_v = ir_lower_expr(arg1)
+            uint32 arg2 = ast_next(arg1)
+            uint64 val_v = ir_lower_expr(arg2)
+            ir_emit(IR_VSTORE, 2, ptr_v, val_v, 0, ir_current_bb)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_CONST, dest, 0, 0, 0, ir_current_bb)
+            return dest
+        }
         // bit_range(val, start, width) → (val >> start) & ((1 << width) - 1)
         if tok_matches(wct, "bit_range", 9) != 0 {
             uint32 arg1 = ast_child(node)
@@ -1403,6 +1546,29 @@ fn ir_lower_expr(uint64 node) -> uint64 {
             uint64 dest = ir_new_vreg()
             ir_emit(IR_SYSCALL, dest, 0, 0, 0, ir_current_bb)
             return dest
+        }
+
+        // file_size(fd) — lseek(fd, 0, SEEK_END) then lseek(fd, 0, SEEK_SET)
+        if tok_matches(wct, "file_size", 9) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 fd_v = ir_lower_expr(arg1)
+            uint64 zero_v = ir_new_vreg()
+            ir_emit(IR_CONST, zero_v, 0, 0, 0, ir_current_bb)
+            uint64 two_v = ir_new_vreg()
+            ir_emit(IR_CONST, two_v, 0, 0, 2, ir_current_bb)
+            // lseek(fd, 0, SEEK_END=2) -> size
+            ir_emit(IR_ARG, 0, fd_v, 0, 0, ir_current_bb)
+            ir_emit(IR_ARG, 0, zero_v, 0, 1, ir_current_bb)
+            ir_emit(IR_ARG, 0, two_v, 0, 2, ir_current_bb)
+            uint64 size_v = ir_new_vreg()
+            ir_emit(IR_SYSCALL, size_v, 0, 0, 8, ir_current_bb)
+            // lseek(fd, 0, SEEK_SET=0) -> rewind
+            ir_emit(IR_ARG, 0, fd_v, 0, 0, ir_current_bb)
+            ir_emit(IR_ARG, 0, zero_v, 0, 1, ir_current_bb)
+            ir_emit(IR_ARG, 0, zero_v, 0, 2, ir_current_bb)
+            uint64 dummy = ir_new_vreg()
+            ir_emit(IR_SYSCALL, dummy, 0, 0, 8, ir_current_bb)
+            return size_v
         }
 
         // print(arg) — write string or integer to stdout
@@ -3016,6 +3182,15 @@ fn ir_opcode_name(uint64 op) -> uint64 {
     if op == 106 { return "f16tof32" }
     if op == 107 { return "itof32" }
     if op == 108 { return "ftoi32" }
+    if op == 109 { return "atomic_sub" }
+    if op == 110 { return "atomic_and" }
+    if op == 111 { return "atomic_or" }
+    if op == 112 { return "atomic_xor" }
+    if op == 113 { return "exec" }
+    if op == 114 { return "exec_argv" }
+    if op == 115 { return "set_exec" }
+    if op == 116 { return "fsqrt32" }
+    if op == 117 { return "time_ns" }
     return "???"
 }
 
@@ -5302,6 +5477,248 @@ fn ir_emit_x86_insn(uint64 ii) {
         }
         // mfence
         emit_byte(0x0F); emit_byte(0xAE); emit_byte(0xF0)
+        if dst_r == 0xFFFFFFFF {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 109 {
+        // IR_ATOMIC_SUB: negate val, then lock xadd [ptr], val → old value
+        uint64 ptr_r = ir_resolve_src(s1_v, 0)
+        uint64 val_r = ir_resolve_src(s2_v, 1)
+        // We need val in rcx, ptr in rdi, result in rax
+        // mov rcx, val_r
+        ir_emit_mov_r64_r64(1, val_r)
+        // neg rcx: 48 F7 D9
+        emit_byte(0x48); emit_byte(0xF7); emit_byte(0xD9)
+        // mov rdi, ptr_r (to free up registers)
+        ir_emit_mov_r64_r64(7, ptr_r)
+        // lock xadd [rdi], rcx: F0 48 0F C1 0F
+        emit_byte(0xF0); emit_byte(0x48); emit_byte(0x0F); emit_byte(0xC1); emit_byte(0x0F)
+        // rcx now has old value; mov rax, rcx: 48 89 C8
+        emit_byte(0x48); emit_byte(0x89); emit_byte(0xC8)
+        if dst_r != 0xFFFFFFFF && dst_r != 0 {
+            ir_emit_mov_r64_r64(dst_r, 0)
+        }
+        if dst_r == 0xFFFFFFFF {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 110 {
+        // IR_ATOMIC_AND: CAS loop — mov rax,[rdi]; mov rdx,rax; and rdx,rcx; lock cmpxchg [rdi],rdx; jne retry
+        uint64 ptr_r = ir_resolve_src(s1_v, 0)
+        uint64 val_r = ir_resolve_src(s2_v, 1)
+        // rcx = val, rdi = ptr
+        ir_emit_mov_r64_r64(1, val_r)
+        ir_emit_mov_r64_r64(7, ptr_r)
+        // retry: mov rax, [rdi]: 48 8B 07
+        emit_byte(0x48); emit_byte(0x8B); emit_byte(0x07)
+        // mov rdx, rax: 48 89 C2
+        emit_byte(0x48); emit_byte(0x89); emit_byte(0xC2)
+        // and rdx, rcx: 48 21 CA
+        emit_byte(0x48); emit_byte(0x21); emit_byte(0xCA)
+        // lock cmpxchg [rdi], rdx: F0 48 0F B1 17
+        emit_byte(0xF0); emit_byte(0x48); emit_byte(0x0F); emit_byte(0xB1); emit_byte(0x17)
+        // jne retry (-16 = 0xF0): 75 F0
+        emit_byte(0x75); emit_byte(0xF0)
+        // rax = old value
+        if dst_r != 0xFFFFFFFF && dst_r != 0 {
+            ir_emit_mov_r64_r64(dst_r, 0)
+        }
+        if dst_r == 0xFFFFFFFF {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 111 {
+        // IR_ATOMIC_OR: CAS loop with OR
+        uint64 ptr_r = ir_resolve_src(s1_v, 0)
+        uint64 val_r = ir_resolve_src(s2_v, 1)
+        ir_emit_mov_r64_r64(1, val_r)
+        ir_emit_mov_r64_r64(7, ptr_r)
+        // retry: mov rax, [rdi]: 48 8B 07
+        emit_byte(0x48); emit_byte(0x8B); emit_byte(0x07)
+        // mov rdx, rax: 48 89 C2
+        emit_byte(0x48); emit_byte(0x89); emit_byte(0xC2)
+        // or rdx, rcx: 48 09 CA
+        emit_byte(0x48); emit_byte(0x09); emit_byte(0xCA)
+        // lock cmpxchg [rdi], rdx: F0 48 0F B1 17
+        emit_byte(0xF0); emit_byte(0x48); emit_byte(0x0F); emit_byte(0xB1); emit_byte(0x17)
+        // jne retry (-16): 75 F0
+        emit_byte(0x75); emit_byte(0xF0)
+        if dst_r != 0xFFFFFFFF && dst_r != 0 {
+            ir_emit_mov_r64_r64(dst_r, 0)
+        }
+        if dst_r == 0xFFFFFFFF {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 112 {
+        // IR_ATOMIC_XOR: CAS loop with XOR
+        uint64 ptr_r = ir_resolve_src(s1_v, 0)
+        uint64 val_r = ir_resolve_src(s2_v, 1)
+        ir_emit_mov_r64_r64(1, val_r)
+        ir_emit_mov_r64_r64(7, ptr_r)
+        // retry: mov rax, [rdi]: 48 8B 07
+        emit_byte(0x48); emit_byte(0x8B); emit_byte(0x07)
+        // mov rdx, rax: 48 89 C2
+        emit_byte(0x48); emit_byte(0x89); emit_byte(0xC2)
+        // xor rdx, rcx: 48 31 CA
+        emit_byte(0x48); emit_byte(0x31); emit_byte(0xCA)
+        // lock cmpxchg [rdi], rdx: F0 48 0F B1 17
+        emit_byte(0xF0); emit_byte(0x48); emit_byte(0x0F); emit_byte(0xB1); emit_byte(0x17)
+        // jne retry (-16): 75 F0
+        emit_byte(0x75); emit_byte(0xF0)
+        if dst_r != 0xFFFFFFFF && dst_r != 0 {
+            ir_emit_mov_r64_r64(dst_r, 0)
+        }
+        if dst_r == 0xFFFFFFFF {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 113 {
+        // IR_EXEC: execve(path, [path, NULL], envp)
+        uint64 path_r = ir_resolve_src(s1_v, 0)
+        // rdi = path
+        ir_emit_mov_r64_r64(7, path_r)
+        // push 0 (argv[1] = NULL): 6A 00
+        emit_byte(0x6A); emit_byte(0x00)
+        // push rdi (argv[0] = path): 57
+        emit_byte(0x57)
+        // mov rsi, rsp (argv): 48 89 E6
+        emit_byte(0x48); emit_byte(0x89); emit_byte(0xE6)
+        // envp: try to load cli_envp static, else NULL
+        uint64 envp_off = static_lookup_by_name("cli_envp", 8)
+        if envp_off != 0xFFFFFFFF {
+            emit_static_load(envp_off)
+            // mov rdx, rax: 48 89 C2
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC2)
+        } else {
+            // xor rdx, rdx: 48 31 D2
+            emit_byte(0x48); emit_byte(0x31); emit_byte(0xD2)
+        }
+        // mov rax, 59 (execve): 48 C7 C0 3B 00 00 00
+        ir_emit_mov_r64_imm64(0, 59)
+        // syscall: 0F 05
+        emit_byte(0x0F); emit_byte(0x05)
+        // If execve fails, restore stack: add rsp, 16
+        emit_byte(0x48); emit_byte(0x83); emit_byte(0xC4); emit_byte(0x10)
+        // Save errno to exec_errno if defined
+        uint64 errno_off = static_lookup_by_name("exec_errno", 10)
+        if errno_off != 0xFFFFFFFF {
+            emit_static_store(errno_off)
+        }
+        if dst_r != 0xFFFFFFFF && dst_r != 0 {
+            ir_emit_mov_r64_r64(dst_r, 0)
+        }
+        if dst_r == 0xFFFFFFFF {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 114 {
+        // IR_EXEC_ARGV: execve(path, argv, envp)
+        uint64 path_r = ir_resolve_src(s1_v, 0)
+        uint64 argv_r = ir_resolve_src(s2_v, 1)
+        // rdi = path
+        ir_emit_mov_r64_r64(7, path_r)
+        // rsi = argv
+        ir_emit_mov_r64_r64(6, argv_r)
+        // envp: try to load cli_envp static, else NULL
+        uint64 envp_off_a = static_lookup_by_name("cli_envp", 8)
+        if envp_off_a != 0xFFFFFFFF {
+            emit_static_load(envp_off_a)
+            // mov rdx, rax: 48 89 C2
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC2)
+        } else {
+            // xor rdx, rdx: 48 31 D2
+            emit_byte(0x48); emit_byte(0x31); emit_byte(0xD2)
+        }
+        // mov rax, 59 (execve)
+        ir_emit_mov_r64_imm64(0, 59)
+        // syscall: 0F 05
+        emit_byte(0x0F); emit_byte(0x05)
+        // Save errno to exec_errno if defined
+        uint64 errno_off_a = static_lookup_by_name("exec_errno", 10)
+        if errno_off_a != 0xFFFFFFFF {
+            emit_static_store(errno_off_a)
+        }
+        if dst_r != 0xFFFFFFFF && dst_r != 0 {
+            ir_emit_mov_r64_r64(dst_r, 0)
+        }
+        if dst_r == 0xFFFFFFFF {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 115 {
+        // IR_SET_EXEC: chmod(path, 0755) via syscall 90
+        uint64 path_r = ir_resolve_src(s1_v, 0)
+        // rdi = path
+        ir_emit_mov_r64_r64(7, path_r)
+        // rsi = 0x1ED (0755 octal)
+        ir_emit_mov_r64_imm64(6, 0x1ED)
+        // rax = 90 (chmod)
+        ir_emit_mov_r64_imm64(0, 90)
+        // syscall: 0F 05
+        emit_byte(0x0F); emit_byte(0x05)
+        return
+    }
+
+    if op == 116 {
+        // IR_FSQRT32: movd xmm0, eax; sqrtss xmm0, xmm0; movd eax, xmm0
+        uint64 a_reg = ir_resolve_src(s1_v, 0)
+        ir_emit_mov_r64_r64(0, a_reg)
+        // movd xmm0, eax: 66 0F 6E C0
+        emit_byte(0x66); emit_byte(0x0F); emit_byte(0x6E); emit_byte(0xC0)
+        // sqrtss xmm0, xmm0: F3 0F 51 C0
+        emit_byte(0xF3); emit_byte(0x0F); emit_byte(0x51); emit_byte(0xC0)
+        // movd eax, xmm0: 66 0F 7E C0
+        emit_byte(0x66); emit_byte(0x0F); emit_byte(0x7E); emit_byte(0xC0)
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, 0)
+        } else {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 117 {
+        // IR_TIME_NS: clock_gettime(CLOCK_MONOTONIC=1, &ts) via syscall 228
+        // sub rsp, 16
+        emit_byte(0x48); emit_byte(0x83); emit_byte(0xEC); emit_byte(16)
+        // mov edi, 1 (CLOCK_MONOTONIC)
+        emit_byte(0xBF); emit_byte(1); emit_byte(0); emit_byte(0); emit_byte(0)
+        // mov rsi, rsp
+        emit_byte(0x48); emit_byte(0x89); emit_byte(0xE6)
+        // mov eax, 228
+        ir_emit_mov_r64_imm64(0, 228)
+        // syscall
+        emit_byte(0x0F); emit_byte(0x05)
+        // mov rax, [rsp] (seconds)
+        emit_byte(0x48); emit_byte(0x8B); emit_byte(0x04); emit_byte(0x24)
+        // imul rax, rax, 1000000000
+        emit_byte(0x48); emit_byte(0x69); emit_byte(0xC0)
+        emit_u32_le(1000000000)
+        // mov rcx, [rsp+8] (nanoseconds)
+        emit_byte(0x48); emit_byte(0x8B); emit_byte(0x4C); emit_byte(0x24); emit_byte(8)
+        // add rax, rcx
+        emit_byte(0x48); emit_byte(0x01); emit_byte(0xC8)
+        // add rsp, 16
+        emit_byte(0x48); emit_byte(0x83); emit_byte(0xC4); emit_byte(16)
+        if dst_r != 0xFFFFFFFF && dst_r != 0 {
+            ir_emit_mov_r64_r64(dst_r, 0)
+        }
         if dst_r == 0xFFFFFFFF {
             ir_emit_store_spill(0, dest_v)
         }
