@@ -67,6 +67,9 @@ static uint64 IR_SYSCALL = 52
 static uint64 IR_PHI = 60
 static uint64 IR_COPY = 61
 
+static uint64 IR_ALLOC = 70
+static uint64 IR_DEALLOC = 71
+
 // ---------------------------------------------------------------------------
 // Instruction arena
 // ---------------------------------------------------------------------------
@@ -630,6 +633,95 @@ fn ir_lower_expr(uint64 node) -> uint64 {
             ir_emit(IR_SYSCALL, dest, 0, 0, 1, ir_current_bb)
             return dest
         }
+        // alloc(size) → IR_ALLOC
+        if tok_matches(wct, "alloc", 5) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 size_v = ir_lower_expr(arg1)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_ALLOC, dest, size_v, 0, 0, ir_current_bb)
+            return dest
+        }
+        // dealloc(ptr) → IR_DEALLOC
+        if tok_matches(wct, "dealloc", 7) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 ptr_v = ir_lower_expr(arg1)
+            ir_emit(IR_DEALLOC, 0, ptr_v, 0, 0, ir_current_bb)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_CONST, dest, 0, 0, 0, ir_current_bb)
+            return dest
+        }
+        // store64(ptr, val) → IR_STORE
+        if tok_matches(wct, "store64", 7) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 ptr_v = ir_lower_expr(arg1)
+            uint32 arg2 = ast_next(arg1)
+            uint64 val_v = ir_lower_expr(arg2)
+            ir_emit(IR_STORE, 8, ptr_v, val_v, 0, ir_current_bb)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_CONST, dest, 0, 0, 0, ir_current_bb)
+            return dest
+        }
+        // load64(ptr) → IR_LOAD
+        if tok_matches(wct, "load64", 6) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 ptr_v = ir_lower_expr(arg1)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_LOAD, dest, ptr_v, 0, 8, ir_current_bb)
+            return dest
+        }
+        // store32(ptr, val) → IR_STORE width 4
+        if tok_matches(wct, "store32", 7) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 ptr_v = ir_lower_expr(arg1)
+            uint32 arg2 = ast_next(arg1)
+            uint64 val_v = ir_lower_expr(arg2)
+            ir_emit(IR_STORE, 4, ptr_v, val_v, 0, ir_current_bb)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_CONST, dest, 0, 0, 0, ir_current_bb)
+            return dest
+        }
+        // load32(ptr) → IR_LOAD width 4
+        if tok_matches(wct, "load32", 6) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 ptr_v = ir_lower_expr(arg1)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_LOAD, dest, ptr_v, 0, 4, ir_current_bb)
+            return dest
+        }
+        // store8(ptr, val) → IR_STORE width 1
+        if tok_matches(wct, "store8", 6) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 ptr_v = ir_lower_expr(arg1)
+            uint32 arg2 = ast_next(arg1)
+            uint64 val_v = ir_lower_expr(arg2)
+            ir_emit(IR_STORE, 1, ptr_v, val_v, 0, ir_current_bb)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_CONST, dest, 0, 0, 0, ir_current_bb)
+            return dest
+        }
+        // load8(ptr) → IR_LOAD width 1
+        if tok_matches(wct, "load8", 5) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 ptr_v = ir_lower_expr(arg1)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_LOAD, dest, ptr_v, 0, 1, ir_current_bb)
+            return dest
+        }
+        // read(fd, buf, len) → syscall 0
+        if tok_matches(wct, "read", 4) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 fd = ir_lower_expr(arg1)
+            uint32 arg2 = ast_next(arg1)
+            uint64 buf = ir_lower_expr(arg2)
+            uint32 arg3 = ast_next(arg2)
+            uint64 len = ir_lower_expr(arg3)
+            ir_emit(IR_ARG, 0, fd, 0, 0, ir_current_bb)
+            ir_emit(IR_ARG, 0, buf, 0, 1, ir_current_bb)
+            ir_emit(IR_ARG, 0, len, 0, 2, ir_current_bb)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_SYSCALL, dest, 0, 0, 0, ir_current_bb)
+            return dest
+        }
         // General call: evaluate all arg exprs first, then emit ARGs + CALL
         // This prevents nested calls from clobbering arg registers.
         uint64[6] call_arg_vregs
@@ -945,6 +1037,8 @@ fn ir_opcode_name(uint64 op) -> uint64 {
     if op == 52 { return "syscall" }
     if op == 60 { return "phi" }
     if op == 61 { return "copy" }
+    if op == 70 { return "alloc" }
+    if op == 71 { return "dealloc" }
     return "???"
 }
 
@@ -1158,6 +1252,7 @@ fn ir_insn_has_def(uint64 ii) -> uint64 {
     if op == 43 { return 0 }   // ret_void
     if op == 31 { return 0 }   // store
     if op == 51 { return 0 }   // arg (no value produced)
+    if op == 71 { return 0 }   // dealloc (no value produced)
     return 1
 }
 
@@ -1826,6 +1921,247 @@ fn ir_emit_x86_insn(uint64 ii) {
         } else {
             ir_emit_store_spill(0, dest_v)
         }
+        return
+    }
+
+    if op == 30 {
+        // IR_LOAD: dest = *(src1), width in imm (1, 4, or 8)
+        uint64 addr_reg = ir_resolve_src(s1_v, 1)
+        uint64 dr = dst_r
+        if dr == 0xFFFFFFFF { dr = 0 }
+        if imm == 8 {
+            // mov r64, [addr_reg]: REX.W 8B modrm
+            uint8 ld_rex = 0x48
+            if dr >= 8 { ld_rex = ld_rex | 4 }
+            if addr_reg >= 8 { ld_rex = ld_rex | 1 }
+            emit_byte(ld_rex)
+            emit_byte(0x8B)
+            uint64 ld_modrm = ((dr & 7) << 3) | (addr_reg & 7)
+            // rsp(4) and rbp(5) as base need SIB or disp
+            if (addr_reg & 7) == 4 {
+                uint8 ldm = ld_modrm
+                emit_byte(ldm)
+                emit_byte(0x24)
+            } else if (addr_reg & 7) == 5 {
+                uint8 ldm = ld_modrm | 0x40
+                emit_byte(ldm)
+                emit_byte(0)
+            } else {
+                uint8 ldm = ld_modrm
+                emit_byte(ldm)
+            }
+        } else if imm == 4 {
+            // mov r32, [addr_reg]: no REX.W for 32-bit
+            uint8 ld_rex = 0x40
+            if dr >= 8 { ld_rex = ld_rex | 4 }
+            if addr_reg >= 8 { ld_rex = ld_rex | 1 }
+            if ld_rex != 0x40 { emit_byte(ld_rex) }
+            emit_byte(0x8B)
+            uint64 ld_modrm = ((dr & 7) << 3) | (addr_reg & 7)
+            if (addr_reg & 7) == 4 {
+                uint8 ldm = ld_modrm
+                emit_byte(ldm)
+                emit_byte(0x24)
+            } else if (addr_reg & 7) == 5 {
+                uint8 ldm = ld_modrm | 0x40
+                emit_byte(ldm)
+                emit_byte(0)
+            } else {
+                uint8 ldm = ld_modrm
+                emit_byte(ldm)
+            }
+        } else {
+            // 1-byte load: movzx r32, byte [addr_reg]: REX? 0F B6 modrm
+            uint8 ld_rex = 0x40
+            if dr >= 8 { ld_rex = ld_rex | 4 }
+            if addr_reg >= 8 { ld_rex = ld_rex | 1 }
+            if ld_rex != 0x40 { emit_byte(ld_rex) }
+            emit_byte(0x0F)
+            emit_byte(0xB6)
+            uint64 ld_modrm = ((dr & 7) << 3) | (addr_reg & 7)
+            if (addr_reg & 7) == 4 {
+                uint8 ldm = ld_modrm
+                emit_byte(ldm)
+                emit_byte(0x24)
+            } else if (addr_reg & 7) == 5 {
+                uint8 ldm = ld_modrm | 0x40
+                emit_byte(ldm)
+                emit_byte(0)
+            } else {
+                uint8 ldm = ld_modrm
+                emit_byte(ldm)
+            }
+        }
+        if dst_r == 0xFFFFFFFF {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 31 {
+        // IR_STORE: *(src1) = src2, width in dest field (1, 4, or 8)
+        uint64 addr_reg = ir_resolve_src(s1_v, 0)
+        uint64 val_reg = ir_resolve_src(s2_v, 1)
+        uint64 width = dest_v
+        if width == 8 {
+            // mov [addr_reg], val_reg: REX.W 89 modrm
+            uint8 st_rex = 0x48
+            if val_reg >= 8 { st_rex = st_rex | 4 }
+            if addr_reg >= 8 { st_rex = st_rex | 1 }
+            emit_byte(st_rex)
+            emit_byte(0x89)
+            uint64 st_modrm = ((val_reg & 7) << 3) | (addr_reg & 7)
+            if (addr_reg & 7) == 4 {
+                uint8 stm = st_modrm
+                emit_byte(stm)
+                emit_byte(0x24)
+            } else if (addr_reg & 7) == 5 {
+                uint8 stm = st_modrm | 0x40
+                emit_byte(stm)
+                emit_byte(0)
+            } else {
+                uint8 stm = st_modrm
+                emit_byte(stm)
+            }
+        } else if width == 4 {
+            // mov [addr_reg], val_reg32: no REX.W
+            uint8 st_rex = 0x40
+            if val_reg >= 8 { st_rex = st_rex | 4 }
+            if addr_reg >= 8 { st_rex = st_rex | 1 }
+            if st_rex != 0x40 { emit_byte(st_rex) }
+            emit_byte(0x89)
+            uint64 st_modrm = ((val_reg & 7) << 3) | (addr_reg & 7)
+            if (addr_reg & 7) == 4 {
+                uint8 stm = st_modrm
+                emit_byte(stm)
+                emit_byte(0x24)
+            } else if (addr_reg & 7) == 5 {
+                uint8 stm = st_modrm | 0x40
+                emit_byte(stm)
+                emit_byte(0)
+            } else {
+                uint8 stm = st_modrm
+                emit_byte(stm)
+            }
+        } else {
+            // 1-byte store: mov [addr_reg], val_reg8: REX? 88 modrm
+            // Need REX if using sil/dil/spl/bpl or high regs
+            uint8 st_rex = 0x40
+            if val_reg >= 8 { st_rex = st_rex | 4 }
+            if addr_reg >= 8 { st_rex = st_rex | 1 }
+            // Always emit REX for byte ops to access sil/dil etc
+            emit_byte(st_rex)
+            emit_byte(0x88)
+            uint64 st_modrm = ((val_reg & 7) << 3) | (addr_reg & 7)
+            if (addr_reg & 7) == 4 {
+                uint8 stm = st_modrm
+                emit_byte(stm)
+                emit_byte(0x24)
+            } else if (addr_reg & 7) == 5 {
+                uint8 stm = st_modrm | 0x40
+                emit_byte(stm)
+                emit_byte(0)
+            } else {
+                uint8 stm = st_modrm
+                emit_byte(stm)
+            }
+        }
+        return
+    }
+
+    if op == 70 {
+        // IR_ALLOC: inline mmap(0, size+8, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON, -1, 0)
+        // src1 = size vreg, result = pointer (past 8-byte size header)
+        //
+        // Strategy: push original size on stack, set up syscall args (all caller-saved
+        // or syscall-specific regs), do syscall, pop size, store header, return ptr+8.
+        // This avoids clobbering any callee-saved registers.
+        uint64 size_reg = ir_resolve_src(s1_v, 0)
+        // push original size onto stack for later
+        if size_reg >= 8 {
+            // push r8..r15: 41 5x
+            emit_byte(0x41)
+            uint64 push_opc = 0x50 | (size_reg & 7)
+            uint8 po = push_opc
+            emit_byte(po)
+        } else {
+            uint64 push_opc = 0x50 | size_reg
+            uint8 po = push_opc
+            emit_byte(po)
+        }
+        // rsi = size + 8 (length)
+        ir_emit_mov_r64_r64(6, size_reg)  // rsi = size
+        // add rsi, 8
+        emit_byte(0x48)
+        emit_byte(0x83)
+        emit_byte(0xC6)
+        emit_byte(0x08)
+        // xor rdi, rdi (addr = 0)
+        emit_byte(0x48)
+        emit_byte(0x31)
+        emit_byte(0xFF)
+        // mov rdx, 3 (PROT_READ|PROT_WRITE)
+        ir_emit_mov_r64_imm64(2, 3)
+        // mov r10, 0x22 (MAP_PRIVATE|MAP_ANON)
+        ir_emit_mov_r64_imm64(10, 0x22)
+        // mov r8, -1 (fd)
+        ir_emit_mov_r64_imm64(8, 0xFFFFFFFFFFFFFFFF)
+        // xor r9, r9 (offset = 0)
+        emit_byte(0x4D)
+        emit_byte(0x31)
+        emit_byte(0xC9)
+        // mov rax, 9 (mmap syscall)
+        ir_emit_mov_r64_imm64(0, 9)
+        // syscall
+        emit_byte(0x0F)
+        emit_byte(0x05)
+        // rax = raw ptr. Pop original size into rcx (caller-saved scratch)
+        emit_byte(0x59)  // pop rcx
+        // Store size at [rax]: mov [rax], rcx
+        emit_byte(0x48)
+        emit_byte(0x89)
+        emit_byte(0x08)
+        // lea rax, [rax+8] — return ptr past header
+        emit_byte(0x48)
+        emit_byte(0x8D)
+        emit_byte(0x40)
+        emit_byte(0x08)
+        // Move result to dest
+        if dst_r != 0xFFFFFFFF && dst_r != 0 {
+            ir_emit_mov_r64_r64(dst_r, 0)
+        }
+        if dst_r == 0xFFFFFFFF {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 71 {
+        // IR_DEALLOC: munmap(ptr-8, *(ptr-8)+8)
+        // src1 = user ptr vreg
+        uint64 ptr_reg = ir_resolve_src(s1_v, 0)
+        // rdi = ptr - 8 (real base)
+        ir_emit_mov_r64_r64(7, ptr_reg)
+        // sub rdi, 8
+        emit_byte(0x48)
+        emit_byte(0x83)
+        emit_byte(0xEF)
+        emit_byte(0x08)
+        // rsi = *(rdi) + 8 (total length)
+        // mov rsi, [rdi]
+        emit_byte(0x48)
+        emit_byte(0x8B)
+        emit_byte(0x37)
+        // add rsi, 8
+        emit_byte(0x48)
+        emit_byte(0x83)
+        emit_byte(0xC6)
+        emit_byte(0x08)
+        // mov rax, 11 (munmap syscall)
+        ir_emit_mov_r64_imm64(0, 11)
+        // syscall
+        emit_byte(0x0F)
+        emit_byte(0x05)
         return
     }
 

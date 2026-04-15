@@ -2586,6 +2586,66 @@ else
 fi
 rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_ir_$$
 
+# -- IR alloc/store64/load64/dealloc --
+TOTAL=$((TOTAL + 1))
+printf 'fn main() { uint64 p = alloc(64); store64(p, 42); uint64 v = load64(p); dealloc(p); exit(v) }\n' > "$REPO_ROOT/test_tmp_$$.kr"
+if $KRC $KRC_FLAGS --ir "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_ir_$$ > /dev/null 2>&1; then
+    chmod +x /tmp/krc_ir_$$
+    /tmp/krc_ir_$$ > /dev/null 2>&1
+    actual=$?
+    if [ "$actual" = "42" ]; then
+        PASS=$((PASS + 1))
+        echo "  ir_alloc_store_load: PASS"
+    else
+        echo "FAIL: ir_alloc_store_load (expected 42, got $actual)"
+        FAIL=$((FAIL + 1))
+    fi
+else
+    echo "FAIL: ir_alloc_store_load (compilation failed)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_ir_$$
+
+# -- IR store8/load8 --
+TOTAL=$((TOTAL + 1))
+printf 'fn main() { uint64 p = alloc(16); store8(p, 65); uint64 v = load8(p); dealloc(p); exit(v) }\n' > "$REPO_ROOT/test_tmp_$$.kr"
+if $KRC $KRC_FLAGS --ir "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_ir_$$ > /dev/null 2>&1; then
+    chmod +x /tmp/krc_ir_$$
+    /tmp/krc_ir_$$ > /dev/null 2>&1
+    actual=$?
+    if [ "$actual" = "65" ]; then
+        PASS=$((PASS + 1))
+        echo "  ir_store8_load8: PASS"
+    else
+        echo "FAIL: ir_store8_load8 (expected 65, got $actual)"
+        FAIL=$((FAIL + 1))
+    fi
+else
+    echo "FAIL: ir_store8_load8 (compilation failed)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_ir_$$
+
+# -- IR multi-alloc --
+TOTAL=$((TOTAL + 1))
+printf 'fn main() { uint64 a = alloc(64); uint64 b = alloc(64); store64(a, 10); store64(b, 32); uint64 r = load64(a) + load64(b); dealloc(a); dealloc(b); exit(r) }\n' > "$REPO_ROOT/test_tmp_$$.kr"
+if $KRC $KRC_FLAGS --ir "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_ir_$$ > /dev/null 2>&1; then
+    chmod +x /tmp/krc_ir_$$
+    /tmp/krc_ir_$$ > /dev/null 2>&1
+    actual=$?
+    if [ "$actual" = "42" ]; then
+        PASS=$((PASS + 1))
+        echo "  ir_multi_alloc: PASS"
+    else
+        echo "FAIL: ir_multi_alloc (expected 42, got $actual)"
+        FAIL=$((FAIL + 1))
+    fi
+else
+    echo "FAIL: ir_multi_alloc (compilation failed)"
+    FAIL=$((FAIL + 1))
+fi
+rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_ir_$$
+
 # --- IR dump test ---
 echo ""
 echo "--- IR dump test ---"
