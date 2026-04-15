@@ -478,6 +478,51 @@ fn ir_lower_expr(uint64 node) -> uint64 {
         return dest
     }
 
+    // StrLit (31) — store string in str_buf, emit lea rip-relative
+    if kind == 31 {
+        uint32 tok = ast_data1(node)
+        uint64 wtok = tok
+        uint64 tstart = tok_text_start(wtok)
+        uint64 tlen = tok_text_len(wtok)
+        if str_len + tlen >= 65536 {
+            write(2, "error: str_buf overflow (max 65536)\n", 36)
+            exit(1)
+        }
+        uint64 str_offset = str_len
+        // Copy string bytes (skip quotes, process escapes)
+        uint64 si = 1
+        while si < tlen - 1 {
+            uint64 ch = tok_source_byte(wtok, si)
+            if ch == 92 {
+                si = si + 1
+                uint64 esc = tok_source_byte(wtok, si)
+                if esc == 110 { ch = 10 }
+                else if esc == 116 { ch = 9 }
+                else if esc == 114 { ch = 13 }
+                else if esc == 48 { ch = 0 }
+                else if esc == 92 { ch = 92 }
+                else if esc == 34 { ch = 34 }
+                else { ch = esc }
+            }
+            uint64 sp = str_buf + str_len
+            uint8 cb = ch
+            unsafe { *(sp as uint8) = cb }
+            str_len = str_len + 1
+            si = si + 1
+        }
+        // Null-terminate
+        uint64 sp = str_buf + str_len
+        uint8 zero = 0
+        unsafe { *(sp as uint8) = zero }
+        str_len = str_len + 1
+        // We can't emit the lea directly here (we're in IR lowering, not code emission).
+        // Use IR_CONST with a special marker: imm = str_offset | (1 << 63) to flag it.
+        uint64 dest = ir_new_vreg()
+        uint64 str_marker = str_offset | 0x8000000000000000
+        ir_emit(IR_CONST, dest, 0, 0, str_marker, ir_current_bb)
+        return dest
+    }
+
     // Ident (32)
     if kind == 32 {
         uint32 tok = ast_data1(node)
@@ -541,8 +586,15 @@ fn ir_lower_expr(uint64 node) -> uint64 {
         uint64 dest = ir_new_vreg()
         uint64 op_kind = tok_kind_at_raw(op_tok)
         if op_kind == 31 {
+            // - (negate)
             ir_emit(IR_NEG, dest, src, 0, 0, ir_current_bb)
         } else if op_kind == 27 {
+            // ! (logical NOT) — compare src == 0
+            uint64 zero = ir_new_vreg()
+            ir_emit(IR_CONST, zero, 0, 0, 0, ir_current_bb)
+            ir_emit(IR_CMP_EQ, dest, src, zero, 0, ir_current_bb)
+        } else if op_kind == 26 {
+            // ~ (bitwise NOT)
             ir_emit(IR_NOT, dest, src, 0, 0, ir_current_bb)
         } else {
             ir_emit(IR_COPY, dest, src, 0, 0, ir_current_bb)
@@ -563,16 +615,43 @@ fn ir_lower_expr(uint64 node) -> uint64 {
             ir_emit(IR_SYSCALL, dest, 0, 0, 231, ir_current_bb)
             return dest
         }
-        // General call: evaluate args, emit ARG instructions, emit CALL
+        // write(fd, buf, len) → syscall 1
+        if tok_matches(wct, "write", 5) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 fd = ir_lower_expr(arg1)
+            uint32 arg2 = ast_next(arg1)
+            uint64 buf = ir_lower_expr(arg2)
+            uint32 arg3 = ast_next(arg2)
+            uint64 len = ir_lower_expr(arg3)
+            ir_emit(IR_ARG, 0, fd, 0, 0, ir_current_bb)
+            ir_emit(IR_ARG, 0, buf, 0, 1, ir_current_bb)
+            ir_emit(IR_ARG, 0, len, 0, 2, ir_current_bb)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_SYSCALL, dest, 0, 0, 1, ir_current_bb)
+            return dest
+        }
+        // General call: evaluate all arg exprs first, then emit ARGs + CALL
+        // This prevents nested calls from clobbering arg registers.
+        uint64[6] call_arg_vregs
         uint32 arg = ast_child(node)
         uint64 warg = arg
-        uint64 arg_idx = 0
-        while warg != 0 {
+        uint64 arg_count = 0
+        while warg != 0 && arg_count < 6 {
             uint64 av = ir_lower_expr(warg)
-            ir_emit(IR_ARG, 0, av, 0, arg_idx, ir_current_bb)
-            arg_idx = arg_idx + 1
+            uint64 avp = call_arg_vregs + arg_count * 8
+            unsafe { *(avp as uint64) = av }
+            arg_count = arg_count + 1
             uint32 anxt = ast_next(warg)
             warg = anxt
+        }
+        // Now emit ARG instructions
+        uint64 ai = 0
+        while ai < arg_count {
+            uint64 avp = call_arg_vregs + ai * 8
+            uint64 av = 0
+            unsafe { *(avp as uint64) -> av }
+            ir_emit(IR_ARG, 0, av, 0, ai, ir_current_bb)
+            ai = ai + 1
         }
         uint64 dest = ir_new_vreg()
         ir_emit(IR_CALL, dest, 0, 0, callee_tok, ir_current_bb)
@@ -589,41 +668,66 @@ fn ir_lower_expr(uint64 node) -> uint64 {
     }
 
     // LogicalAnd (39): short-circuit
+    // result = 0 initially; if lhs != 0, result = rhs
     if kind == 39 {
         uint32 lhs_node = ast_child(node)
-        uint32 rhs_idx = ast_data1(node)
+        uint32 rhs_idx = ast_data2(node)
+        uint64 result = ir_new_vreg()
+        ir_emit(IR_CONST, result, 0, 0, 0, ir_current_bb)
         uint64 lhs = ir_lower_expr(lhs_node)
-        // Short circuit: if lhs is 0, result is 0; else evaluate rhs
         uint64 bb_rhs = ir_new_bb()
         uint64 bb_merge = ir_new_bb()
         ir_emit(IR_BR_COND, 0, lhs, 0, bb_rhs, ir_current_bb)
         ir_bb_set_succ(ir_current_bb, bb_merge, bb_rhs)
         ir_current_bb = bb_rhs
         uint64 rhs = ir_lower_expr(rhs_idx)
+        ir_emit(IR_COPY, result, rhs, 0, 0, ir_current_bb)
         ir_emit(IR_BR, 0, 0, 0, bb_merge, ir_current_bb)
         ir_bb_set_succ(ir_current_bb, bb_merge, 0xFFFFFFFF)
         ir_current_bb = bb_merge
-        // Result: use rhs if evaluated, else 0
-        // Simplified: just return rhs (proper phi needed for full SSA)
-        return rhs
+        return result
     }
 
-    // LogicalOr (40): similar short-circuit
+    // LogicalOr (40): short-circuit
+    // result = 1 initially; if lhs == 0, result = rhs
     if kind == 40 {
         uint32 lhs_node = ast_child(node)
-        uint32 rhs_idx = ast_data1(node)
+        uint32 rhs_idx = ast_data2(node)
+        uint64 result = ir_new_vreg()
+        ir_emit(IR_CONST, result, 0, 0, 1, ir_current_bb)
         uint64 lhs = ir_lower_expr(lhs_node)
         uint64 bb_rhs = ir_new_bb()
         uint64 bb_merge = ir_new_bb()
-        // If lhs is nonzero, skip rhs
+        // If lhs is nonzero, skip rhs (result stays 1)
         ir_emit(IR_BR_COND, 0, lhs, 0, bb_merge, ir_current_bb)
         ir_bb_set_succ(ir_current_bb, bb_rhs, bb_merge)
         ir_current_bb = bb_rhs
         uint64 rhs = ir_lower_expr(rhs_idx)
+        ir_emit(IR_COPY, result, rhs, 0, 0, ir_current_bb)
         ir_emit(IR_BR, 0, 0, 0, bb_merge, ir_current_bb)
         ir_bb_set_succ(ir_current_bb, bb_merge, 0xFFFFFFFF)
         ir_current_bb = bb_merge
-        return rhs
+        return result
+    }
+
+    // FieldAccess (36) — enum constant lookup
+    if kind == 36 {
+        uint32 field_tok = ast_data2(node)
+        uint32 child_idx = ast_child(node)
+        uint64 wchild_fa = child_idx
+        uint32 obj_tok = 0
+        if wchild_fa != 0 {
+            uint32 ck_fa = ast_kind(wchild_fa)
+            if ck_fa == 32 {
+                obj_tok = ast_data1(wchild_fa)
+            }
+        }
+        uint64 wobj = obj_tok
+        uint64 wfield = field_tok
+        uint64 val = enum_lookup(wobj, wfield)
+        uint64 dest = ir_new_vreg()
+        ir_emit(IR_CONST, dest, 0, 0, val, ir_current_bb)
+        return dest
     }
 
     // Default: const 0
@@ -708,7 +812,12 @@ fn ir_lower_stmt(uint64 node) {
         // Else
         if welse != 0 {
             ir_current_bb = bb_else
-            ir_lower_block(welse)
+            uint32 else_kind = ast_kind(welse)
+            if else_kind == 15 {
+                ir_lower_block(welse)
+            } else {
+                ir_lower_stmt(welse)
+            }
             ir_emit(IR_BR, 0, 0, 0, bb_merge, ir_current_bb)
             ir_bb_set_succ(ir_current_bb, bb_merge, 0xFFFFFFFF)
         }
@@ -1180,28 +1289,25 @@ fn ir_compute_liveness() {
 // Register allocator — greedy coloring
 // ---------------------------------------------------------------------------
 
-static uint64 IR_NUM_REGS = 7
+static uint64 IR_NUM_REGS = 5
 
 // Map color index -> physical register code
-// Colors 0-6 -> rbx(3), r10(10), r11(11), r12(12), r13(13), r14(14), r15(15)
+// Colors 0-4 -> rbx(3), r12(12), r13(13), r14(14), r15(15)
+// Only callee-saved registers — safe across function calls.
 static uint64 ir_phys_regs = 0
 
 fn ir_regalloc_init() {
-    if ir_phys_regs == 0 { ir_phys_regs = alloc(7 * 8) }
+    if ir_phys_regs == 0 { ir_phys_regs = alloc(5 * 8) }
     uint64 p0 = ir_phys_regs
     unsafe { *(p0 as uint64) = 3 }
     uint64 p1 = ir_phys_regs + 8
-    unsafe { *(p1 as uint64) = 10 }
+    unsafe { *(p1 as uint64) = 12 }
     uint64 p2 = ir_phys_regs + 16
-    unsafe { *(p2 as uint64) = 11 }
+    unsafe { *(p2 as uint64) = 13 }
     uint64 p3 = ir_phys_regs + 24
-    unsafe { *(p3 as uint64) = 12 }
+    unsafe { *(p3 as uint64) = 14 }
     uint64 p4 = ir_phys_regs + 32
-    unsafe { *(p4 as uint64) = 13 }
-    uint64 p5 = ir_phys_regs + 40
-    unsafe { *(p5 as uint64) = 14 }
-    uint64 p6 = ir_phys_regs + 48
-    unsafe { *(p6 as uint64) = 15 }
+    unsafe { *(p4 as uint64) = 15 }
 }
 
 // Register assignment table: [color(4)] x vreg_count. 0xFFFFFFFF = spilled
@@ -1416,11 +1522,42 @@ fn ir_emit_x86_insn(uint64 ii) {
 
     if op == 1 {
         // IR_CONST: dst = imm64
-        if dst_r != 0xFFFFFFFF {
-            ir_emit_mov_r64_imm64(dst_r, imm)
+        // Check for string literal marker (high bit set)
+        if (imm & 0x8000000000000000) != 0 {
+            uint64 str_offset = imm & 0x7FFFFFFFFFFFFFFF
+            // Emit: lea disp32(%rip), %reg → REX 8D modrm [disp32]
+            uint64 lea_dst = dst_r
+            if lea_dst == 0xFFFFFFFF { lea_dst = 0 }
+            uint8 lea_rex = 0x48
+            if lea_dst >= 8 { lea_rex = lea_rex | 4 }
+            emit_byte(lea_rex)
+            emit_byte(0x8D)
+            uint64 lea_modrm = 0x05 | ((lea_dst & 7) << 3)
+            uint8 lea_m = lea_modrm
+            emit_byte(lea_m)
+            // Record str_fixup for later patching
+            if str_fixup_count >= 4096 {
+                write(2, "error: str_fixups overflow (max 4096)\n", 38)
+                exit(1)
+            }
+            uint64 fentry = str_fixups + str_fixup_count * 8
+            uint32 cp = out_len
+            unsafe { *(fentry as uint32) = cp }
+            uint64 fe4 = fentry + 4
+            uint32 so = str_offset
+            unsafe { *(fe4 as uint32) = so }
+            str_fixup_count = str_fixup_count + 1
+            emit_u32_le(0)
+            if dst_r == 0xFFFFFFFF {
+                ir_emit_store_spill(0, dest_v)
+            }
         } else {
-            ir_emit_mov_r64_imm64(0, imm)
-            ir_emit_store_spill(0, dest_v)
+            if dst_r != 0xFFFFFFFF {
+                ir_emit_mov_r64_imm64(dst_r, imm)
+            } else {
+                ir_emit_mov_r64_imm64(0, imm)
+                ir_emit_store_spill(0, dest_v)
+            }
         }
         return
     }
@@ -1693,14 +1830,27 @@ fn ir_emit_x86_insn(uint64 ii) {
     }
 
     if op == 42 {
-        // IR_RET: mov rax, src1
+        // IR_RET: mov rax, src1 then jmp to epilogue
         uint64 ret_r = ir_resolve_src(s1_v, 0)
         if ret_r != 0 { ir_emit_mov_r64_r64(0, ret_r) }
+        // Emit jmp to epilogue (patched later)
+        emit_byte(0xE9)
+        uint64 rfp = ir_ret_fixups + ir_ret_fixup_count * 4
+        uint32 rpo = out_len
+        unsafe { *(rfp as uint32) = rpo }
+        ir_ret_fixup_count = ir_ret_fixup_count + 1
+        emit_u32_le(0)
         return
     }
 
     if op == 43 {
-        // IR_RET_VOID
+        // IR_RET_VOID: jmp to epilogue
+        emit_byte(0xE9)
+        uint64 rfp = ir_ret_fixups + ir_ret_fixup_count * 4
+        uint32 rpo = out_len
+        unsafe { *(rfp as uint32) = rpo }
+        ir_ret_fixup_count = ir_ret_fixup_count + 1
+        emit_u32_le(0)
         return
     }
 
@@ -1811,6 +1961,10 @@ static uint64 ir_block_offsets = 0
 static uint64 ir_br_fixups = 0
 static uint64 ir_br_fixup_count = 0
 
+// Return fixup list: patch offsets for jmp-to-epilogue, patched after all blocks
+static uint64 ir_ret_fixups = 0
+static uint64 ir_ret_fixup_count = 0
+
 @export
 fn ir_emit_x86_function(uint64 fn_node) {
     // 1. Lower AST to IR
@@ -1856,10 +2010,12 @@ fn ir_emit_x86_function(uint64 fn_node) {
         emit_u32_le(frame_size)
     }
 
-    // 6. Allocate block offset tracking and branch fixup list
+    // 6. Allocate block offset tracking and branch/return fixup lists
     if ir_block_offsets == 0 { ir_block_offsets = alloc(4096 * 8) }
     if ir_br_fixups == 0 { ir_br_fixups = alloc(1024 * 8) }
+    if ir_ret_fixups == 0 { ir_ret_fixups = alloc(1024 * 4) }
     ir_br_fixup_count = 0
+    ir_ret_fixup_count = 0
 
     // 7. Emit all blocks
     uint64 bi = 0
@@ -1956,7 +2112,20 @@ fn ir_emit_x86_function(uint64 fn_node) {
         fi = fi + 1
     }
 
-    // 9. Epilogue
+    // 9. Patch return fixups — all IR_RET jmp targets point to the epilogue
+    uint64 epilogue_off = out_len
+    uint64 ri2 = 0
+    while ri2 < ir_ret_fixup_count {
+        uint64 rfp = ir_ret_fixups + ri2 * 4
+        uint32 rpatch = 0
+        unsafe { *(rfp as uint32) -> rpatch }
+        uint64 wrp = rpatch
+        uint64 rdisp = epilogue_off - wrp - 4
+        patch_u32(wrp, rdisp)
+        ri2 = ri2 + 1
+    }
+
+    // 10. Epilogue
     if frame_size > 0 {
         emit_byte(0x48)
         emit_byte(0x81)
