@@ -70,6 +70,12 @@ static uint64 IR_COPY = 61
 static uint64 IR_ALLOC = 70
 static uint64 IR_DEALLOC = 71
 
+static uint64 IR_MEMCPY = 72
+static uint64 IR_STRLEN = 73
+static uint64 IR_FMT_UINT = 74
+static uint64 IR_STR_EQ = 75
+static uint64 IR_MEMSET = 76
+
 // ---------------------------------------------------------------------------
 // Instruction arena
 // ---------------------------------------------------------------------------
@@ -722,6 +728,58 @@ fn ir_lower_expr(uint64 node) -> uint64 {
             ir_emit(IR_SYSCALL, dest, 0, 0, 0, ir_current_bb)
             return dest
         }
+        // memcpy(dst, src, len) → IR_MEMCPY
+        if tok_matches(wct, "memcpy", 6) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 dst_v = ir_lower_expr(arg1)
+            uint32 arg2 = ast_next(arg1)
+            uint64 src_v = ir_lower_expr(arg2)
+            uint32 arg3 = ast_next(arg2)
+            uint64 len_v = ir_lower_expr(arg3)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_MEMCPY, dest, dst_v, src_v, len_v, ir_current_bb)
+            return dest
+        }
+        // memset(dst, val, len) → IR_MEMSET
+        if tok_matches(wct, "memset", 6) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 dst_v = ir_lower_expr(arg1)
+            uint32 arg2 = ast_next(arg1)
+            uint64 val_v = ir_lower_expr(arg2)
+            uint32 arg3 = ast_next(arg2)
+            uint64 len_v = ir_lower_expr(arg3)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_MEMSET, dest, dst_v, val_v, len_v, ir_current_bb)
+            return dest
+        }
+        // str_len(s) → IR_STRLEN
+        if tok_matches(wct, "str_len", 7) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 str_v = ir_lower_expr(arg1)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_STRLEN, dest, str_v, 0, 0, ir_current_bb)
+            return dest
+        }
+        // fmt_uint(buf, val) → IR_FMT_UINT
+        if tok_matches(wct, "fmt_uint", 8) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 buf_v = ir_lower_expr(arg1)
+            uint32 arg2 = ast_next(arg1)
+            uint64 val_v = ir_lower_expr(arg2)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_FMT_UINT, dest, buf_v, val_v, 0, ir_current_bb)
+            return dest
+        }
+        // str_eq(a, b) → IR_STR_EQ
+        if tok_matches(wct, "str_eq", 6) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 a_v = ir_lower_expr(arg1)
+            uint32 arg2 = ast_next(arg1)
+            uint64 b_v = ir_lower_expr(arg2)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_STR_EQ, dest, a_v, b_v, 0, ir_current_bb)
+            return dest
+        }
         // General call: evaluate all arg exprs first, then emit ARGs + CALL
         // This prevents nested calls from clobbering arg registers.
         uint64[6] call_arg_vregs
@@ -987,8 +1045,92 @@ fn ir_lower_stmt(uint64 node) {
         return
     }
 
+    // Match (19)
+    if kind == 19 {
+        uint32 scrutinee = ast_child(node)
+        uint64 scrut_v = ir_lower_expr(scrutinee)
+        // Snapshot variable map before match
+        uint64 match_snap_count = ir_var_map_count
+        uint64 match_snap = alloc(match_snap_count * 8)
+        uint64 mi = 0
+        while mi < match_snap_count {
+            uint64 ms = ir_var_map + mi * 8
+            uint64 md = match_snap + mi * 8
+            uint64 mv = 0
+            unsafe { *(ms as uint64) -> mv }
+            unsafe { *(md as uint64) = mv }
+            mi = mi + 1
+        }
+        uint32 arm_idx = ast_data1(node)
+        uint64 warm = arm_idx
+        uint64 bb_exit = ir_new_bb()
+        while warm != 0 {
+            uint32 ak = ast_kind(warm)
+            if ak == 20 {
+                uint32 val_expr = ast_data1(warm)
+                uint32 body_block = ast_data2(warm)
+                uint64 val_v = ir_lower_expr(val_expr)
+                uint64 cmp_v = ir_new_vreg()
+                ir_emit(IR_CMP_EQ, cmp_v, scrut_v, val_v, 0, ir_current_bb)
+                uint64 bb_body = ir_new_bb()
+                uint64 bb_next = ir_new_bb()
+                ir_emit(IR_BR_COND, 0, cmp_v, 0, bb_body, ir_current_bb)
+                ir_bb_set_succ(ir_current_bb, bb_next, bb_body)
+                // Restore variable map to pre-match state for this arm
+                mi = 0
+                while mi < match_snap_count {
+                    uint64 ms = match_snap + mi * 8
+                    uint64 md = ir_var_map + mi * 8
+                    uint64 mv = 0
+                    unsafe { *(ms as uint64) -> mv }
+                    unsafe { *(md as uint64) = mv }
+                    mi = mi + 1
+                }
+                ir_var_map_count = match_snap_count
+                ir_current_bb = bb_body
+                uint64 wbody = body_block
+                if wbody != 0 { ir_lower_block(wbody) }
+                // Emit COPY for any changed variables back to pre-match vregs
+                mi = 0
+                while mi < match_snap_count {
+                    uint64 sp_match = match_snap + mi * 8 + 4
+                    uint32 snap_vreg = 0
+                    unsafe { *(sp_match as uint32) -> snap_vreg }
+                    uint64 cp_match = ir_var_map + mi * 8 + 4
+                    uint32 cur_vreg = 0
+                    unsafe { *(cp_match as uint32) -> cur_vreg }
+                    uint64 wsv = snap_vreg
+                    uint64 wcv = cur_vreg
+                    if wsv != wcv && wsv != 0xFFFFFFFF {
+                        ir_emit(IR_COPY, wsv, wcv, 0, 0, ir_current_bb)
+                    }
+                    mi = mi + 1
+                }
+                ir_emit(IR_BR, 0, 0, 0, bb_exit, ir_current_bb)
+                ir_bb_set_succ(ir_current_bb, bb_exit, 0xFFFFFFFF)
+                ir_current_bb = bb_next
+            }
+            uint32 anxt = ast_next(warm)
+            warm = anxt
+        }
+        ir_emit(IR_BR, 0, 0, 0, bb_exit, ir_current_bb)
+        ir_bb_set_succ(ir_current_bb, bb_exit, 0xFFFFFFFF)
+        // Restore var map to pre-match state for exit block
+        mi = 0
+        while mi < match_snap_count {
+            uint64 ms = match_snap + mi * 8
+            uint64 md = ir_var_map + mi * 8
+            uint64 mv = 0
+            unsafe { *(ms as uint64) -> mv }
+            unsafe { *(md as uint64) = mv }
+            mi = mi + 1
+        }
+        ir_var_map_count = match_snap_count
+        ir_current_bb = bb_exit
+        return
+    }
+
     // Break (17), Continue (18) — need loop context tracking (defer)
-    // Match (19) — defer
     // TupleDestruct (44), TupleDestruct3 (47) — defer
     // FieldAccess (36) as statement — defer
 }
@@ -1039,6 +1181,11 @@ fn ir_opcode_name(uint64 op) -> uint64 {
     if op == 61 { return "copy" }
     if op == 70 { return "alloc" }
     if op == 71 { return "dealloc" }
+    if op == 72 { return "memcpy" }
+    if op == 73 { return "strlen" }
+    if op == 74 { return "fmt_uint" }
+    if op == 75 { return "str_eq" }
+    if op == 76 { return "memset" }
     return "???"
 }
 
@@ -1126,6 +1273,17 @@ fn ir_dump() {
                     write(1, nbuf, nlen)
                     write(1, "]", 1)
                 }
+            } else if op == 72 || op == 76 {
+                // memcpy/memset: src1, src2, imm(vreg)
+                write(1, " v", 2)
+                nlen = fmt_uint(nbuf, s1)
+                write(1, nbuf, nlen)
+                write(1, ", v", 3)
+                nlen = fmt_uint(nbuf, s2)
+                write(1, nbuf, nlen)
+                write(1, ", v", 3)
+                nlen = fmt_uint(nbuf, imm)
+                write(1, nbuf, nlen)
             } else {
                 // Binary ops: src1, src2
                 write(1, " v", 2)
@@ -1359,6 +1517,20 @@ fn ir_compute_liveness() {
                     unsafe { *(up as uint64) -> uv }
                     uv = uv | (1 << ub)
                     unsafe { *(up as uint64) = uv }
+                }
+
+                // Add imm-as-vreg use for MEMCPY(72) and MEMSET(76)
+                if op == 72 || op == 76 {
+                    uint64 use_imm = ir_insn_imm(cur_ii)
+                    if use_imm < ir_vreg_next && use_imm > 0 {
+                        uint64 iw = use_imm / 64
+                        uint64 ib = use_imm & 63
+                        uint64 ip = tmp + iw * 8
+                        uint64 iv = 0
+                        unsafe { *(ip as uint64) -> iv }
+                        iv = iv | (1 << ib)
+                        unsafe { *(ip as uint64) = iv }
+                    }
                 }
             }
 
@@ -2162,6 +2334,279 @@ fn ir_emit_x86_insn(uint64 ii) {
         // syscall
         emit_byte(0x0F)
         emit_byte(0x05)
+        return
+    }
+
+    if op == 72 {
+        // IR_MEMCPY: dst in src1, src in src2, len vreg in imm
+        // Use rep movsb: rdi=dst, rsi=src, rcx=len
+        uint64 mc_dst = ir_resolve_src(s1_v, 0)
+        uint64 mc_src = ir_resolve_src(s2_v, 1)
+        // Resolve len from imm (stored as vreg index)
+        uint64 mc_len_vreg = imm
+        uint64 mc_len = 0
+        if mc_len_vreg > 0 && mc_len_vreg < ir_vreg_next {
+            mc_len = ir_get_phys_reg(mc_len_vreg)
+            if mc_len == 0xFFFFFFFF {
+                ir_emit_load_spill(10, mc_len_vreg)
+                mc_len = 10
+            }
+        }
+        // Save dst pointer for return value
+        // push rdi; push rsi (save caller-saved if needed)
+        ir_emit_mov_r64_r64(7, mc_dst)   // rdi = dst
+        ir_emit_mov_r64_r64(6, mc_src)   // rsi = src
+        ir_emit_mov_r64_r64(1, mc_len)   // rcx = len
+        // rep movsb: F3 A4
+        emit_byte(0xF3)
+        emit_byte(0xA4)
+        // Result: return original dst (it was moved to rdi, but rdi was incremented)
+        // We need original dst; re-resolve or compute rdi - len
+        // Simplest: sub rdi, rcx wouldn't work since rcx is 0 now
+        // Re-resolve dst from its vreg
+        uint64 mc_dst2 = ir_resolve_src(s1_v, 0)
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, mc_dst2)
+        } else {
+            ir_emit_mov_r64_r64(0, mc_dst2)
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 73 {
+        // IR_STRLEN: str in src1
+        // Inline byte scan: save ptr, loop until null byte, compute length
+        uint64 sl_str = ir_resolve_src(s1_v, 0)
+        ir_emit_mov_r64_r64(7, sl_str)          // rdi = str (start)
+        ir_emit_mov_r64_r64(1, sl_str)          // rcx = str (save start)
+        // .loop: movzx eax, byte [rdi] (0F B6 07)
+        uint64 sl_loop_off = out_len
+        emit_byte(0x0F)
+        emit_byte(0xB6)
+        emit_byte(0x07)
+        // test al, al (84 C0)
+        emit_byte(0x84)
+        emit_byte(0xC0)
+        // jz .done (skip inc+jmp = 3+2 = 5 bytes)
+        emit_byte(0x74)
+        emit_byte(0x05)
+        // inc rdi (48 FF C7)
+        emit_byte(0x48)
+        emit_byte(0xFF)
+        emit_byte(0xC7)
+        // jmp .loop (short backward jump)
+        emit_byte(0xEB)
+        uint64 sl_disp = sl_loop_off - out_len - 1
+        uint8 sl_d8 = sl_disp
+        emit_byte(sl_d8)
+        // .done: rdi points to null byte. sub rdi, rcx = length
+        // mov rax, rdi (48 89 F8)
+        emit_byte(0x48)
+        emit_byte(0x89)
+        emit_byte(0xF8)
+        // sub rax, rcx (48 29 C8)
+        emit_byte(0x48)
+        emit_byte(0x29)
+        emit_byte(0xC8)
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, 0)
+        } else {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 74 {
+        // IR_FMT_UINT: buf in src1, val in src2
+        // Inline digit extraction: divide by 10, push remainders, then pop in order
+        uint64 fu_buf = ir_resolve_src(s1_v, 0)
+        uint64 fu_val = ir_resolve_src(s2_v, 1)
+        ir_emit_mov_r64_r64(7, fu_buf)   // rdi = buf
+        ir_emit_mov_r64_r64(0, fu_val)    // rax = val
+        // xor rcx, rcx (digit count = 0)
+        emit_byte(0x48)
+        emit_byte(0x31)
+        emit_byte(0xC9)
+        // mov r10, 10 (divisor)
+        ir_emit_mov_r64_imm64(10, 10)
+        // .digit_loop:
+        uint64 fu_loop = out_len
+        // xor rdx, rdx (48 31 D2)
+        emit_byte(0x48)
+        emit_byte(0x31)
+        emit_byte(0xD2)
+        // div r10 (49 F7 F2) — rax = quotient, rdx = remainder
+        emit_byte(0x49)
+        emit_byte(0xF7)
+        emit_byte(0xF2)
+        // add dl, '0' (80 C2 30)
+        emit_byte(0x80)
+        emit_byte(0xC2)
+        emit_byte(0x30)
+        // push rdx (52)
+        emit_byte(0x52)
+        // inc rcx (48 FF C1)
+        emit_byte(0x48)
+        emit_byte(0xFF)
+        emit_byte(0xC1)
+        // test rax, rax (48 85 C0)
+        emit_byte(0x48)
+        emit_byte(0x85)
+        emit_byte(0xC0)
+        // jnz .digit_loop
+        emit_byte(0x75)
+        uint64 fu_back = fu_loop - out_len - 1
+        uint8 fu_b8 = fu_back
+        emit_byte(fu_b8)
+        // rcx = digit count, save for return
+        // mov rax, rcx (48 89 C8) — save count
+        emit_byte(0x48)
+        emit_byte(0x89)
+        emit_byte(0xC8)
+        // .pop_loop:
+        uint64 fu_pop = out_len
+        // pop rdx (5A)
+        emit_byte(0x5A)
+        // mov [rdi], dl (88 17)
+        emit_byte(0x88)
+        emit_byte(0x17)
+        // inc rdi (48 FF C7)
+        emit_byte(0x48)
+        emit_byte(0xFF)
+        emit_byte(0xC7)
+        // dec rcx (48 FF C9)
+        emit_byte(0x48)
+        emit_byte(0xFF)
+        emit_byte(0xC9)
+        // jnz .pop_loop
+        emit_byte(0x75)
+        uint64 fu_pop_back = fu_pop - out_len - 1
+        uint8 fu_pb = fu_pop_back
+        emit_byte(fu_pb)
+        // rax = digit count (return value)
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, 0)
+        } else {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 75 {
+        // IR_STR_EQ: a in src1, b in src2 → 1 if equal, 0 if not
+        uint64 se_a = ir_resolve_src(s1_v, 0)
+        uint64 se_b = ir_resolve_src(s2_v, 1)
+        ir_emit_mov_r64_r64(6, se_a)    // rsi = a
+        ir_emit_mov_r64_r64(7, se_b)    // rdi = b
+        // .loop:
+        uint64 se_loop = out_len
+        // movzx ecx, byte [rsi] (0F B6 0E)
+        emit_byte(0x0F)
+        emit_byte(0xB6)
+        emit_byte(0x0E)
+        // movzx edx, byte [rdi] (0F B6 17)
+        emit_byte(0x0F)
+        emit_byte(0xB6)
+        emit_byte(0x17)
+        // cmp ecx, edx (39 D1)
+        emit_byte(0x39)
+        emit_byte(0xD1)
+        // jne .not_equal
+        emit_byte(0x75)
+        uint64 se_jne_off = out_len
+        emit_byte(0)  // placeholder
+        // test ecx, ecx (85 C9)
+        emit_byte(0x85)
+        emit_byte(0xC9)
+        // jz .equal (both hit null → equal)
+        emit_byte(0x74)
+        uint64 se_jz_off = out_len
+        emit_byte(0)  // placeholder
+        // inc rsi (48 FF C6)
+        emit_byte(0x48)
+        emit_byte(0xFF)
+        emit_byte(0xC6)
+        // inc rdi (48 FF C7)
+        emit_byte(0x48)
+        emit_byte(0xFF)
+        emit_byte(0xC7)
+        // jmp .loop
+        emit_byte(0xEB)
+        uint64 se_jmp_back = se_loop - out_len - 1
+        uint8 se_jb = se_jmp_back
+        emit_byte(se_jb)
+        // .not_equal: xor eax, eax (result = 0)
+        uint64 se_ne_off = out_len
+        // Patch jne target
+        uint64 se_ne_disp = se_ne_off - se_jne_off - 1
+        uint8 se_ned = se_ne_disp
+        uint64 se_patch_p = out_buf + se_jne_off
+        unsafe { *(se_patch_p as uint8) = se_ned }
+        emit_byte(0x31)
+        emit_byte(0xC0)
+        // jmp .done
+        emit_byte(0xEB)
+        uint64 se_done_jmp = out_len
+        emit_byte(0)  // placeholder
+        // .equal: mov eax, 1 (result = 1)
+        uint64 se_eq_off = out_len
+        // Patch jz target
+        uint64 se_eq_disp = se_eq_off - se_jz_off - 1
+        uint8 se_eqd = se_eq_disp
+        uint64 se_patch_p2 = out_buf + se_jz_off
+        unsafe { *(se_patch_p2 as uint8) = se_eqd }
+        // mov eax, 1 (B8 01 00 00 00)
+        emit_byte(0xB8)
+        emit_byte(0x01)
+        emit_byte(0x00)
+        emit_byte(0x00)
+        emit_byte(0x00)
+        // .done:
+        uint64 se_done_off = out_len
+        // Patch done jmp
+        uint64 se_done_disp = se_done_off - se_done_jmp - 1
+        uint8 se_dd = se_done_disp
+        uint64 se_patch_p3 = out_buf + se_done_jmp
+        unsafe { *(se_patch_p3 as uint8) = se_dd }
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, 0)
+        } else {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 76 {
+        // IR_MEMSET: dst in src1, val in src2, len vreg in imm
+        // Use rep stosb: rdi=dst, al=val, rcx=len
+        uint64 ms_dst = ir_resolve_src(s1_v, 0)
+        uint64 ms_val = ir_resolve_src(s2_v, 1)
+        // Resolve len from imm (stored as vreg index)
+        uint64 ms_len_vreg = imm
+        uint64 ms_len = 0
+        if ms_len_vreg > 0 && ms_len_vreg < ir_vreg_next {
+            ms_len = ir_get_phys_reg(ms_len_vreg)
+            if ms_len == 0xFFFFFFFF {
+                ir_emit_load_spill(10, ms_len_vreg)
+                ms_len = 10
+            }
+        }
+        // Save dst for return value
+        ir_emit_mov_r64_r64(7, ms_dst)   // rdi = dst
+        ir_emit_mov_r64_r64(0, ms_val)   // rax = val (al used by stosb)
+        ir_emit_mov_r64_r64(1, ms_len)   // rcx = len
+        // rep stosb: F3 AA
+        emit_byte(0xF3)
+        emit_byte(0xAA)
+        // Return original dst
+        uint64 ms_dst2 = ir_resolve_src(s1_v, 0)
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, ms_dst2)
+        } else {
+            ir_emit_mov_r64_r64(0, ms_dst2)
+            ir_emit_store_spill(0, dest_v)
+        }
         return
     }
 
