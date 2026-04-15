@@ -78,6 +78,11 @@ static uint64 IR_MEMSET = 76
 static uint64 IR_STATIC_LOAD = 77     // dest = load from static data offset (imm64)
 static uint64 IR_STATIC_STORE = 78    // store src1 to static data offset (imm64)
 static uint64 IR_STR_CONST = 79       // dest = lea string data (imm = str_offset)
+static uint64 IR_EXTRACT_RDX = 80    // dest = rdx after a call (2-tuple second value)
+static uint64 IR_EXTRACT_R8 = 81     // dest = r8 after a call (3-tuple third value)
+static uint64 IR_RET2 = 82           // return (src1, src2) — first in rax, second in rdx
+static uint64 IR_RET3 = 83           // return (src1, src2, imm-vreg) — rax, rdx, r8
+static uint64 IR_STATIC_ADDR = 84    // dest = lea static data address (imm = offset)
 
 // ---------------------------------------------------------------------------
 // Instruction arena
@@ -1113,6 +1118,105 @@ fn ir_lower_expr(uint64 node) -> uint64 {
         return dest
     }
 
+    // Index (37): arr[i] — array element read
+    if kind == 37 {
+        uint32 arr_tok = ast_data1(node)
+        uint64 warrt = arr_tok
+        // Get base address: check local var first, then static
+        uint64 base_v = ir_var_get(arr_tok)
+        if base_v == 0xFFFFFFFF {
+            // Check if it's a static array
+            uint64 st_off = static_lookup(warrt)
+            if st_off != 0xFFFFFFFF {
+                base_v = ir_new_vreg()
+                ir_emit(IR_STATIC_ADDR, base_v, 0, 0, st_off, ir_current_bb)
+            } else {
+                base_v = ir_new_vreg()
+                ir_emit(IR_CONST, base_v, 0, 0, 0, ir_current_bb)
+            }
+        }
+        // Evaluate index expression
+        uint32 idx_child = ast_child(node)
+        uint64 idx_v = ir_lower_expr(idx_child)
+        // Get element size
+        uint64 elem_sz = arr_elem_lookup(warrt)
+        // addr = base + idx * elem_sz
+        uint64 addr_v = base_v
+        if elem_sz != 1 {
+            uint64 esz_v = ir_new_vreg()
+            ir_emit(IR_CONST, esz_v, 0, 0, elem_sz, ir_current_bb)
+            uint64 scaled_v = ir_new_vreg()
+            ir_emit(IR_MUL, scaled_v, idx_v, esz_v, 0, ir_current_bb)
+            addr_v = ir_new_vreg()
+            ir_emit(IR_ADD, addr_v, base_v, scaled_v, 0, ir_current_bb)
+        } else {
+            addr_v = ir_new_vreg()
+            ir_emit(IR_ADD, addr_v, base_v, idx_v, 0, ir_current_bb)
+        }
+        // Load element
+        uint64 dest = ir_new_vreg()
+        ir_emit(IR_LOAD, dest, addr_v, 0, elem_sz, ir_current_bb)
+        return dest
+    }
+
+    // StructLit (48): struct literal expression
+    if kind == 48 {
+        uint32 sname_tok = ast_data1(node)
+        uint64 wsn = sname_tok
+        uint64 si = struct_lookup(wsn)
+        uint64 ssize = struct_total_size(si)
+        // Allocate struct on heap
+        uint64 buf_v = ir_new_vreg()
+        ir_emit(IR_ALLOC, buf_v, 0, 0, ssize, ir_current_bb)
+        // Zero-initialize
+        uint64 zero_v = ir_new_vreg()
+        ir_emit(IR_CONST, zero_v, 0, 0, 0, ir_current_bb)
+        ir_emit(IR_MEMSET, 0, buf_v, zero_v, ssize, ir_current_bb)
+        // Walk field expressions and store each
+        uint32 is_named = ast_data2(node)
+        uint64 wnamed = is_named
+        uint32 fchild = ast_child(node)
+        uint64 wfchild = fchild
+        uint64 fidx = 0
+        while wfchild != 0 {
+            uint64 fval_v = ir_lower_expr(wfchild)
+            // Determine field offset and size
+            uint64 foff = 0
+            uint64 fsize = 8
+            if wnamed != 0 {
+                // Named: field name stored in tok_idx of the child expression
+                uint32 fname = ast_tok(wfchild)
+                uint64 wfn = fname
+                foff = struct_field_offset(si, wfn)
+                fsize = struct_field_size(si, wfn)
+            } else {
+                // Positional: use field index to get offset/size from struct table
+                uint64 fbase = struct_table + si * 272 + 16 + fidx * 16
+                uint64 foff_addr = fbase + 4
+                uint32 fo32 = 0
+                unsafe { *(foff_addr as uint32) -> fo32 }
+                foff = fo32
+                uint64 fs_addr = fbase + 8
+                uint32 fs32 = 0
+                unsafe { *(fs_addr as uint32) -> fs32 }
+                fsize = fs32
+            }
+            // Store field value at base + offset
+            uint64 field_addr_v = buf_v
+            if foff != 0 {
+                uint64 off_v = ir_new_vreg()
+                ir_emit(IR_CONST, off_v, 0, 0, foff, ir_current_bb)
+                field_addr_v = ir_new_vreg()
+                ir_emit(IR_ADD, field_addr_v, buf_v, off_v, 0, ir_current_bb)
+            }
+            ir_emit(IR_STORE, fsize, field_addr_v, fval_v, 0, ir_current_bb)
+            fidx = fidx + 1
+            uint32 fnxt = ast_next(wfchild)
+            wfchild = fnxt
+        }
+        return buf_v
+    }
+
     // Default: const 0
     uint64 dest = ir_new_vreg()
     ir_emit(IR_CONST, dest, 0, 0, 0, ir_current_bb)
@@ -1150,21 +1254,39 @@ fn ir_lower_stmt(uint64 node) {
             ir_emit(IR_CONST, sz_v, 0, 0, total_bytes, ir_current_bb)
             ir_emit(IR_MEMSET, 0, buf_v, zero_v, total_bytes, ir_current_bb)
             ir_var_set(name_tok, buf_v)
+            // Register element size so array indexing can scale correctly
+            arr_elem_register(name_tok, elem_size_v)
             return
         }
         // Check for struct variable declaration
         if wsm != 0 {
-            // Struct: allocate struct_total_size bytes on heap
             uint64 struct_idx = wsm - 1
             uint64 struct_size = struct_total_size(struct_idx)
+            // Check if there's an init expression (e.g. P p = P { 10, 20 })
+            uint32 struct_init = ast_child(node)
+            uint64 wstruct_init = struct_init
+            uint32 sarr_check = ast_data3(node)
+            uint64 wsarr_check = sarr_check
+            if wstruct_init != 0 && wsarr_check == 0 {
+                // Evaluate init expression (returns ptr to struct data)
+                uint64 src_v = ir_lower_expr(wstruct_init)
+                // Allocate our own copy and memcpy
+                uint64 buf_v = ir_new_vreg()
+                ir_emit(IR_ALLOC, buf_v, 0, 0, struct_size, ir_current_bb)
+                uint64 sz_v = ir_new_vreg()
+                ir_emit(IR_CONST, sz_v, 0, 0, struct_size, ir_current_bb)
+                ir_emit(IR_MEMCPY, 0, buf_v, src_v, sz_v, ir_current_bb)
+                ir_var_set(name_tok, buf_v)
+                struct_var_register(name_tok, struct_idx)
+                return
+            }
+            // No init: allocate and zero-initialize
             uint64 buf_v = ir_new_vreg()
             ir_emit(IR_ALLOC, buf_v, 0, 0, struct_size, ir_current_bb)
-            // Zero-initialize
             uint64 zero_v = ir_new_vreg()
             ir_emit(IR_CONST, zero_v, 0, 0, 0, ir_current_bb)
             ir_emit(IR_MEMSET, 0, buf_v, zero_v, struct_size, ir_current_bb)
             ir_var_set(name_tok, buf_v)
-            // Register struct variable so field access can look it up
             struct_var_register(name_tok, struct_idx)
             return
         }
@@ -1201,7 +1323,22 @@ fn ir_lower_stmt(uint64 node) {
     if kind == 12 {
         uint32 expr = ast_child(node)
         uint64 wexpr = expr
-        if wexpr != 0 {
+        uint32 second_expr = ast_data3(node)
+        uint64 wsecond = second_expr
+        uint32 third_expr = ast_data4(node)
+        uint64 wthird = third_expr
+        if wthird != 0 && wsecond != 0 {
+            // 3-tuple return: first -> rax, second -> rdx, third -> r8
+            uint64 v1 = ir_lower_expr(wexpr)
+            uint64 v2 = ir_lower_expr(wsecond)
+            uint64 v3 = ir_lower_expr(wthird)
+            ir_emit(IR_RET3, 0, v1, v2, v3, ir_current_bb)
+        } else if wsecond != 0 {
+            // 2-tuple return: first -> rax, second -> rdx
+            uint64 v1 = ir_lower_expr(wexpr)
+            uint64 v2 = ir_lower_expr(wsecond)
+            ir_emit(IR_RET2, 0, v1, v2, 0, ir_current_bb)
+        } else if wexpr != 0 {
             uint64 val = ir_lower_expr(wexpr)
             ir_emit(IR_RET, 0, val, 0, 0, ir_current_bb)
         } else {
@@ -1522,7 +1659,97 @@ fn ir_lower_stmt(uint64 node) {
         return
     }
 
-    // TupleDestruct (44), TupleDestruct3 (47) — defer
+    // Indexed assignment: arr[i] = val (kind 37 with data3=1)
+    if kind == 37 {
+        uint32 idx_d3 = ast_data3(node)
+        uint64 wd3 = idx_d3
+        if wd3 == 1 {
+            // Evaluate value expression
+            uint32 rhs_child = ast_data2(node)
+            uint64 wrhs = rhs_child
+            uint64 val_v = ir_lower_expr(wrhs)
+            // Evaluate index expression
+            uint32 idx_child = ast_child(node)
+            uint64 idx_v = ir_lower_expr(idx_child)
+            // Load array base
+            uint32 arr_tok = ast_data1(node)
+            uint64 warrt = arr_tok
+            uint64 base_v = ir_var_get(arr_tok)
+            if base_v == 0xFFFFFFFF {
+                // Check static array
+                uint64 st_off = static_lookup(warrt)
+                if st_off != 0xFFFFFFFF {
+                    base_v = ir_new_vreg()
+                    ir_emit(IR_STATIC_ADDR, base_v, 0, 0, st_off, ir_current_bb)
+                } else {
+                    base_v = ir_new_vreg()
+                    ir_emit(IR_CONST, base_v, 0, 0, 0, ir_current_bb)
+                }
+            }
+            // Get element size
+            uint64 elem_sz = arr_elem_lookup(warrt)
+            // addr = base + idx * elem_sz
+            uint64 addr_v = base_v
+            if elem_sz != 1 {
+                uint64 esz_v = ir_new_vreg()
+                ir_emit(IR_CONST, esz_v, 0, 0, elem_sz, ir_current_bb)
+                uint64 scaled_v = ir_new_vreg()
+                ir_emit(IR_MUL, scaled_v, idx_v, esz_v, 0, ir_current_bb)
+                addr_v = ir_new_vreg()
+                ir_emit(IR_ADD, addr_v, base_v, scaled_v, 0, ir_current_bb)
+            } else {
+                addr_v = ir_new_vreg()
+                ir_emit(IR_ADD, addr_v, base_v, idx_v, 0, ir_current_bb)
+            }
+            // Store element with correct width
+            ir_emit(IR_STORE, elem_sz, addr_v, val_v, 0, ir_current_bb)
+            return
+        }
+    }
+
+    // TupleDestruct (44): (T1 a, T2 b) = rhs_expr
+    // data2=name1_tok, data4=name2_tok, child=rhs (Call expr)
+    if kind == 44 {
+        uint32 name1_tok = ast_data2(node)
+        uint32 name2_tok = ast_data4(node)
+        uint32 rhs = ast_child(node)
+        uint64 wrhs = rhs
+        if wrhs != 0 {
+            uint64 call_v = ir_lower_expr(wrhs)
+            // call_v holds rax (first return value)
+            ir_var_set(name1_tok, call_v)
+            // Extract rdx (second return value)
+            uint64 rdx_v = ir_new_vreg()
+            ir_emit(IR_EXTRACT_RDX, rdx_v, 0, 0, 0, ir_current_bb)
+            ir_var_set(name2_tok, rdx_v)
+        }
+        return
+    }
+
+    // TupleDestruct3 (47): (T1 a, T2 b, T3 c) = rhs_expr
+    // data2=name1_tok, data4=name2_tok, tok=name3_tok, child=rhs (Call expr)
+    if kind == 47 {
+        uint32 name1_tok = ast_data2(node)
+        uint32 name2_tok = ast_data4(node)
+        uint32 name3_tok = ast_tok(node)
+        uint32 rhs = ast_child(node)
+        uint64 wrhs = rhs
+        if wrhs != 0 {
+            uint64 call_v = ir_lower_expr(wrhs)
+            // call_v holds rax (first return value)
+            ir_var_set(name1_tok, call_v)
+            // Extract rdx (second return value)
+            uint64 rdx_v = ir_new_vreg()
+            ir_emit(IR_EXTRACT_RDX, rdx_v, 0, 0, 0, ir_current_bb)
+            ir_var_set(name2_tok, rdx_v)
+            // Extract r8 (third return value)
+            uint64 r8_v = ir_new_vreg()
+            ir_emit(IR_EXTRACT_R8, r8_v, 0, 0, 0, ir_current_bb)
+            ir_var_set(name3_tok, r8_v)
+        }
+        return
+    }
+
     // FieldAccess (36) as statement — field assignment: p.x = val
     if kind == 36 {
         uint32 fa_d4 = ast_data4(node)
@@ -1614,6 +1841,12 @@ fn ir_opcode_name(uint64 op) -> uint64 {
     if op == 76 { return "memset" }
     if op == 77 { return "static_load" }
     if op == 78 { return "static_store" }
+    if op == 79 { return "str_const" }
+    if op == 80 { return "extract_rdx" }
+    if op == 81 { return "extract_r8" }
+    if op == 82 { return "ret2" }
+    if op == 83 { return "ret3" }
+    if op == 84 { return "static_addr" }
     return "???"
 }
 
@@ -1760,6 +1993,13 @@ fn ir_lower_function(uint64 fn_node) {
             ir_emit(IR_COPY, pvreg, 0, 0, param_idx, ir_current_bb)
             ir_var_set(pname, pvreg)
             param_idx = param_idx + 1
+            // If param type is a struct, register it so field access works
+            uint32 param_type = ast_data1(wparam)
+            uint64 wpt = param_type
+            uint64 psi = struct_lookup(wpt)
+            if psi != 0xFFFFFFFF {
+                struct_var_register(pname, psi)
+            }
         }
         uint32 pnxt = ast_next(wparam)
         wparam = pnxt
@@ -1841,6 +2081,8 @@ fn ir_insn_has_def(uint64 ii) -> uint64 {
     if op == 71 { return 0 }   // dealloc (no value produced)
     if op == 76 { return 0 }   // memset (no value produced — returns void)
     if op == 78 { return 0 }   // static_store (no value produced)
+    if op == 82 { return 0 }   // ret2 (no value produced)
+    if op == 83 { return 0 }   // ret3 (no value produced)
     return 1
 }
 
@@ -1949,8 +2191,8 @@ fn ir_compute_liveness() {
                     unsafe { *(up as uint64) = uv }
                 }
 
-                // Add imm-as-vreg use for MEMCPY(72) and MEMSET(76)
-                if op == 72 || op == 76 {
+                // Add imm-as-vreg use for MEMCPY(72), MEMSET(76), RET3(83)
+                if op == 72 || op == 76 || op == 83 {
                     uint64 use_imm = ir_insn_imm(cur_ii)
                     if use_imm < ir_vreg_next && use_imm > 0 {
                         uint64 iw = use_imm / 64
@@ -2546,8 +2788,10 @@ fn ir_emit_x86_insn(uint64 ii) {
     }
 
     if op == 30 {
-        // IR_LOAD: dest = *(src1), width in imm (1, 4, or 8)
+        // IR_LOAD: dest = *(src1), width in imm or src2 (1, 2, 4, or 8)
         uint64 addr_reg = ir_resolve_src(s1_v, 1)
+        // Width can be in imm or src2 (for struct field loads)
+        if imm == 0 && s2_v != 0 { imm = s2_v }
         uint64 dr = dst_r
         if dr == 0xFFFFFFFF { dr = 0 }
         if imm == 8 {
@@ -2578,6 +2822,27 @@ fn ir_emit_x86_insn(uint64 ii) {
             if addr_reg >= 8 { ld_rex = ld_rex | 1 }
             if ld_rex != 0x40 { emit_byte(ld_rex) }
             emit_byte(0x8B)
+            uint64 ld_modrm = ((dr & 7) << 3) | (addr_reg & 7)
+            if (addr_reg & 7) == 4 {
+                uint8 ldm = ld_modrm
+                emit_byte(ldm)
+                emit_byte(0x24)
+            } else if (addr_reg & 7) == 5 {
+                uint8 ldm = ld_modrm | 0x40
+                emit_byte(ldm)
+                emit_byte(0)
+            } else {
+                uint8 ldm = ld_modrm
+                emit_byte(ldm)
+            }
+        } else if imm == 2 {
+            // 2-byte load: movzx r32, word [addr_reg]: 66? 0F B7 modrm
+            uint8 ld_rex = 0x40
+            if dr >= 8 { ld_rex = ld_rex | 4 }
+            if addr_reg >= 8 { ld_rex = ld_rex | 1 }
+            if ld_rex != 0x40 { emit_byte(ld_rex) }
+            emit_byte(0x0F)
+            emit_byte(0xB7)
             uint64 ld_modrm = ((dr & 7) << 3) | (addr_reg & 7)
             if (addr_reg & 7) == 4 {
                 uint8 ldm = ld_modrm
@@ -2664,6 +2929,27 @@ fn ir_emit_x86_insn(uint64 ii) {
                 uint8 stm = st_modrm
                 emit_byte(stm)
             }
+        } else if width == 2 {
+            // 2-byte store: mov [addr_reg], val_reg16: 66 REX? 89 modrm
+            emit_byte(0x66)
+            uint8 st_rex = 0x40
+            if val_reg >= 8 { st_rex = st_rex | 4 }
+            if addr_reg >= 8 { st_rex = st_rex | 1 }
+            if st_rex != 0x40 { emit_byte(st_rex) }
+            emit_byte(0x89)
+            uint64 st_modrm = ((val_reg & 7) << 3) | (addr_reg & 7)
+            if (addr_reg & 7) == 4 {
+                uint8 stm = st_modrm
+                emit_byte(stm)
+                emit_byte(0x24)
+            } else if (addr_reg & 7) == 5 {
+                uint8 stm = st_modrm | 0x40
+                emit_byte(stm)
+                emit_byte(0)
+            } else {
+                uint8 stm = st_modrm
+                emit_byte(stm)
+            }
         } else {
             // 1-byte store: mov [addr_reg], val_reg8: REX? 88 modrm
             // Need REX if using sil/dil/spl/bpl or high regs
@@ -2692,12 +2978,19 @@ fn ir_emit_x86_insn(uint64 ii) {
 
     if op == 70 {
         // IR_ALLOC: inline mmap(0, size+8, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON, -1, 0)
-        // src1 = size vreg, result = pointer (past 8-byte size header)
+        // src1 = size vreg (if != 0), or imm = constant size (if src1 == 0)
         //
         // Strategy: push original size on stack, set up syscall args (all caller-saved
         // or syscall-specific regs), do syscall, pop size, store header, return ptr+8.
         // This avoids clobbering any callee-saved registers.
-        uint64 size_reg = ir_resolve_src(s1_v, 0)
+        uint64 size_reg = 0
+        if s1_v != 0 {
+            size_reg = ir_resolve_src(s1_v, 0)
+        } else {
+            // Constant size in imm — load into rax
+            ir_emit_mov_r64_imm64(0, imm)
+            size_reg = 0
+        }
         // push original size onto stack for later
         if size_reg >= 8 {
             // push r8..r15: 41 5x
@@ -3076,6 +3369,86 @@ fn ir_emit_x86_insn(uint64 ii) {
         uint64 ss_r = ir_resolve_src(s1_v, 0)
         ir_emit_mov_r64_r64(0, ss_r)
         emit_static_store(imm)
+        return
+    }
+
+    if op == 80 {
+        // IR_EXTRACT_RDX: dest = rdx (second return value after call)
+        // rdx is register 2
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, 2)
+        } else {
+            ir_emit_mov_r64_r64(0, 2)
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 81 {
+        // IR_EXTRACT_R8: dest = r8 (third return value after call)
+        // r8 is register 8
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, 8)
+        } else {
+            ir_emit_mov_r64_r64(0, 8)
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 82 {
+        // IR_RET2: return (src1, src2) — first in rax, second in rdx
+        // Put src2 in rdx first (to avoid clobbering if src1 is in rdx)
+        uint64 r2_src = ir_resolve_src(s2_v, 1)
+        ir_emit_mov_r64_r64(2, r2_src)   // rdx = second value
+        uint64 r1_src = ir_resolve_src(s1_v, 0)
+        if r1_src != 0 { ir_emit_mov_r64_r64(0, r1_src) }   // rax = first value
+        // jmp to epilogue
+        emit_byte(0xE9)
+        uint64 rfp82 = ir_ret_fixups + ir_ret_fixup_count * 4
+        uint32 rpo82 = out_len
+        unsafe { *(rfp82 as uint32) = rpo82 }
+        ir_ret_fixup_count = ir_ret_fixup_count + 1
+        emit_u32_le(0)
+        return
+    }
+
+    if op == 83 {
+        // IR_RET3: return (src1, src2, imm-vreg) — rax, rdx, r8
+        // Resolve third value from imm (vreg index)
+        uint64 r3_vreg = imm
+        uint64 r3_src = 0
+        if r3_vreg > 0 && r3_vreg < ir_vreg_next {
+            r3_src = ir_get_phys_reg(r3_vreg)
+            if r3_src == 0xFFFFFFFF {
+                ir_emit_load_spill(10, r3_vreg)
+                r3_src = 10
+            }
+        }
+        ir_emit_mov_r64_r64(8, r3_src)    // r8 = third value
+        uint64 r2_src83 = ir_resolve_src(s2_v, 1)
+        ir_emit_mov_r64_r64(2, r2_src83)  // rdx = second value
+        uint64 r1_src83 = ir_resolve_src(s1_v, 0)
+        if r1_src83 != 0 { ir_emit_mov_r64_r64(0, r1_src83) }  // rax = first value
+        // jmp to epilogue
+        emit_byte(0xE9)
+        uint64 rfp83 = ir_ret_fixups + ir_ret_fixup_count * 4
+        uint32 rpo83 = out_len
+        unsafe { *(rfp83 as uint32) = rpo83 }
+        ir_ret_fixup_count = ir_ret_fixup_count + 1
+        emit_u32_le(0)
+        return
+    }
+
+    if op == 84 {
+        // IR_STATIC_ADDR: dest = lea of static data at offset (imm64)
+        // emit_static_lea puts the address in rax
+        emit_static_lea(imm)
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, 0)
+        } else {
+            ir_emit_store_spill(0, dest_v)
+        }
         return
     }
 
