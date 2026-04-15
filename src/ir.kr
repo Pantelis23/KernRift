@@ -120,8 +120,14 @@ static uint64 IR_ATOMIC_XOR = 112    // atomic_xor(ptr, val): CAS-loop with XOR
 static uint64 IR_EXEC = 113         // exec_process(path): execve with auto-argv
 static uint64 IR_EXEC_ARGV = 114    // exec_process_argv(path, argv): execve
 static uint64 IR_SET_EXEC = 115     // set_executable(path): chmod +x
-static uint64 IR_FSQRT32 = 116      // dest = sqrtss(src1) f32
-static uint64 IR_TIME_NS = 117      // dest = monotonic nanosecond counter
+static uint64 IR_FSQRT32 = 118      // dest = sqrtss(src1) f32
+static uint64 IR_TIME_NS = 119      // dest = monotonic nanosecond counter
+
+// Signed comparisons (dedicated opcodes, no collision with CMP_xx+100 hack)
+static uint64 IR_SCMP_LT = 120      // dest = (src1 < src2) signed
+static uint64 IR_SCMP_LE = 121      // dest = (src1 <= src2) signed
+static uint64 IR_SCMP_GT = 122      // dest = (src1 > src2) signed
+static uint64 IR_SCMP_GE = 123      // dest = (src1 >= src2) signed
 
 // ---------------------------------------------------------------------------
 // Instruction arena
@@ -1452,7 +1458,7 @@ fn ir_lower_expr(uint64 node) -> uint64 {
             uint32 arg2 = ast_next(arg1)
             uint64 b_v = ir_lower_expr(arg2)
             uint64 dest = ir_new_vreg()
-            ir_emit(IR_CMP_LT + 100, dest, a_v, b_v, 0, ir_current_bb)
+            ir_emit(IR_SCMP_LT, dest, a_v, b_v, 0, ir_current_bb)
             return dest
         }
         if tok_matches(wct, "signed_gt", 9) != 0 {
@@ -1461,7 +1467,7 @@ fn ir_lower_expr(uint64 node) -> uint64 {
             uint32 arg2 = ast_next(arg1)
             uint64 b_v = ir_lower_expr(arg2)
             uint64 dest = ir_new_vreg()
-            ir_emit(IR_CMP_GT + 100, dest, a_v, b_v, 0, ir_current_bb)
+            ir_emit(IR_SCMP_GT, dest, a_v, b_v, 0, ir_current_bb)
             return dest
         }
         if tok_matches(wct, "signed_le", 9) != 0 {
@@ -1470,7 +1476,7 @@ fn ir_lower_expr(uint64 node) -> uint64 {
             uint32 arg2 = ast_next(arg1)
             uint64 b_v = ir_lower_expr(arg2)
             uint64 dest = ir_new_vreg()
-            ir_emit(IR_CMP_LE + 100, dest, a_v, b_v, 0, ir_current_bb)
+            ir_emit(IR_SCMP_LE, dest, a_v, b_v, 0, ir_current_bb)
             return dest
         }
         if tok_matches(wct, "signed_ge", 9) != 0 {
@@ -1479,7 +1485,7 @@ fn ir_lower_expr(uint64 node) -> uint64 {
             uint32 arg2 = ast_next(arg1)
             uint64 b_v = ir_lower_expr(arg2)
             uint64 dest = ir_new_vreg()
-            ir_emit(IR_CMP_GE + 100, dest, a_v, b_v, 0, ir_current_bb)
+            ir_emit(IR_SCMP_GE, dest, a_v, b_v, 0, ir_current_bb)
             return dest
         }
 
@@ -3189,8 +3195,12 @@ fn ir_opcode_name(uint64 op) -> uint64 {
     if op == 113 { return "exec" }
     if op == 114 { return "exec_argv" }
     if op == 115 { return "set_exec" }
-    if op == 116 { return "fsqrt32" }
-    if op == 117 { return "time_ns" }
+    if op == 118 { return "fsqrt32" }
+    if op == 119 { return "time_ns" }
+    if op == 120 { return "scmp_lt" }
+    if op == 121 { return "scmp_le" }
+    if op == 122 { return "scmp_gt" }
+    if op == 123 { return "scmp_ge" }
     return "???"
 }
 
@@ -3366,6 +3376,16 @@ fn ir_lower_function(uint64 fn_node) {
     uint32 body = ast_data3(fn_node)
     uint64 wbody = body
     if wbody != 0 { ir_lower_block(wbody) }
+
+    // Ensure the function ends with a return instruction.
+    // If the last block doesn't end with IR_RET/IR_RET_VOID/IR_RET2/IR_RET3,
+    // add an implicit IR_RET_VOID so the epilogue is always reached.
+    if ir_insn_count > 0 {
+        uint64 last_op = ir_insn_opcode(ir_insn_count - 1)
+        if last_op != 42 && last_op != 43 && last_op != 82 && last_op != 83 {
+            ir_emit(IR_RET_VOID, 0, 0, 0, 0, ir_current_bb)
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3540,7 +3560,7 @@ fn ir_compute_liveness() {
 
                 // Add src2 use
                 uint64 use2 = ir_insn_src2(cur_ii)
-                if use2 < ir_vreg_next && op != 1 && op != 12 && op != 13 && op != 42 && op != 61 {
+                if use2 < ir_vreg_next && op != 1 && op != 12 && op != 13 && op != 30 && op != 31 && op != 42 && op != 61 {
                     uint64 uw = use2 / 64
                     uint64 ub = use2 & 63
                     uint64 up = tmp + uw * 8
@@ -4126,16 +4146,16 @@ fn ir_emit_x86_insn(uint64 ii) {
         return
     }
 
-    // Signed comparisons (op = IR_CMP_xx + 100)
-    if op >= 116 && op <= 119 {
+    // Signed comparisons (IR_SCMP_LT=120 through IR_SCMP_GE=123)
+    if op >= 120 && op <= 123 {
         uint64 a_reg = ir_resolve_src(s1_v, 0)
         uint64 b_reg = ir_resolve_src(s2_v, 1)
         ir_emit_cmp_r64_r64(a_reg, b_reg)
         emit_byte(0x0F)
-        if op == 116 { emit_byte(0x9C) }  // setl  (signed <)
-        if op == 117 { emit_byte(0x9E) }  // setle (signed <=)
-        if op == 118 { emit_byte(0x9F) }  // setg  (signed >)
-        if op == 119 { emit_byte(0x9D) }  // setge (signed >=)
+        if op == 120 { emit_byte(0x9C) }  // setl  (signed <)
+        if op == 121 { emit_byte(0x9E) }  // setle (signed <=)
+        if op == 122 { emit_byte(0x9F) }  // setg  (signed >)
+        if op == 123 { emit_byte(0x9D) }  // setge (signed >=)
         emit_byte(0xC0)
         emit_byte(0x48); emit_byte(0x0F); emit_byte(0xB6); emit_byte(0xC0)
         if dst_r != 0xFFFFFFFF {
@@ -5675,7 +5695,7 @@ fn ir_emit_x86_insn(uint64 ii) {
         return
     }
 
-    if op == 116 {
+    if op == 118 {
         // IR_FSQRT32: movd xmm0, eax; sqrtss xmm0, xmm0; movd eax, xmm0
         uint64 a_reg = ir_resolve_src(s1_v, 0)
         ir_emit_mov_r64_r64(0, a_reg)
@@ -5693,7 +5713,7 @@ fn ir_emit_x86_insn(uint64 ii) {
         return
     }
 
-    if op == 117 {
+    if op == 119 {
         // IR_TIME_NS: clock_gettime(CLOCK_MONOTONIC=1, &ts) via syscall 228
         // sub rsp, 16
         emit_byte(0x48); emit_byte(0x83); emit_byte(0xEC); emit_byte(16)
@@ -6078,6 +6098,23 @@ fn ir_emit_x86_function(uint64 fn_node) {
     ir_spill_count = 0
     if ir_vreg_next > IR_NUM_REGS + 1 {
         ir_spill_count = ir_vreg_next - IR_NUM_REGS - 1
+    }
+
+    // 5a. For main(): read argc/argv from stack BEFORE prologue modifies RSP
+    uint32 fn_name_tok = ast_data1(fn_node)
+    if tok_matches(fn_name_tok, "main", 4) != 0 && freestanding == 0 {
+        // mov rax, [rsp]  ; rax = argc
+        emit_byte(0x48); emit_byte(0x8B); emit_byte(0x04); emit_byte(0x24)
+        uint64 argc_off = static_lookup_by_name("cli_argc", 8)
+        if argc_off != 0xFFFFFFFF {
+            emit_static_store(argc_off)
+        }
+        // lea rax, [rsp+8]  ; rax = &argv[0]
+        emit_byte(0x48); emit_byte(0x8D); emit_byte(0x44); emit_byte(0x24); emit_byte(0x08)
+        uint64 argv_off = static_lookup_by_name("cli_argv", 8)
+        if argv_off != 0xFFFFFFFF {
+            emit_static_store(argv_off)
+        }
     }
 
     // 5. Emit prologue (skip for @naked functions)
