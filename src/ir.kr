@@ -963,7 +963,7 @@ fn ir_lower_expr(uint64 node) -> uint64 {
         return result
     }
 
-    // FieldAccess (36) — enum constant lookup
+    // FieldAccess (36) — struct field read or enum constant lookup
     if kind == 36 {
         uint32 field_tok = ast_data2(node)
         uint32 child_idx = ast_child(node)
@@ -975,7 +975,26 @@ fn ir_lower_expr(uint64 node) -> uint64 {
                 obj_tok = ast_data1(wchild_fa)
             }
         }
+        // Check if obj_tok is a struct variable
         uint64 wobj = obj_tok
+        uint64 si = struct_var_lookup(wobj)
+        if si != 0xFFFFFFFF {
+            // Struct field read: base + offset, load
+            uint64 base_v = ir_var_get(obj_tok)
+            uint64 foff = struct_field_offset(si, field_tok)
+            uint64 fsz = struct_field_size(si, field_tok)
+            uint64 addr_v = base_v
+            if foff != 0 {
+                uint64 off_v = ir_new_vreg()
+                ir_emit(IR_CONST, off_v, 0, 0, foff, ir_current_bb)
+                addr_v = ir_new_vreg()
+                ir_emit(IR_ADD, addr_v, base_v, off_v, 0, ir_current_bb)
+            }
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_LOAD, dest, addr_v, fsz, 0, ir_current_bb)
+            return dest
+        }
+        // Enum constant lookup
         uint64 wfield = field_tok
         uint64 val = enum_lookup(wobj, wfield)
         uint64 dest = ir_new_vreg()
@@ -1000,6 +1019,44 @@ fn ir_lower_stmt(uint64 node) {
     // VarDecl (10)
     if kind == 10 {
         uint32 name_tok = ast_data2(node)
+        // Check for array declaration (data3 != 0 means array size token)
+        uint32 arr_size_tok = ast_data3(node)
+        uint64 was = arr_size_tok
+        uint32 struct_marker = ast_data4(node)
+        uint64 wsm = struct_marker
+        if was != 0 && wsm == 0 {
+            // Array: allocate N bytes on heap, bind pointer to name
+            uint64 arr_size = parse_int_token(was)
+            uint32 type_tok_v = ast_data1(node)
+            uint64 elem_size_v = type_tok_elem_size(type_tok_v)
+            uint64 total_bytes = arr_size * elem_size_v
+            uint64 buf_v = ir_new_vreg()
+            ir_emit(IR_ALLOC, buf_v, 0, 0, total_bytes, ir_current_bb)
+            // Zero-initialize the buffer
+            uint64 zero_v = ir_new_vreg()
+            ir_emit(IR_CONST, zero_v, 0, 0, 0, ir_current_bb)
+            uint64 sz_v = ir_new_vreg()
+            ir_emit(IR_CONST, sz_v, 0, 0, total_bytes, ir_current_bb)
+            ir_emit(IR_MEMSET, 0, buf_v, zero_v, total_bytes, ir_current_bb)
+            ir_var_set(name_tok, buf_v)
+            return
+        }
+        // Check for struct variable declaration
+        if wsm != 0 {
+            // Struct: allocate struct_total_size bytes on heap
+            uint64 struct_idx = wsm - 1
+            uint64 struct_size = struct_total_size(struct_idx)
+            uint64 buf_v = ir_new_vreg()
+            ir_emit(IR_ALLOC, buf_v, 0, 0, struct_size, ir_current_bb)
+            // Zero-initialize
+            uint64 zero_v = ir_new_vreg()
+            ir_emit(IR_CONST, zero_v, 0, 0, 0, ir_current_bb)
+            ir_emit(IR_MEMSET, 0, buf_v, zero_v, struct_size, ir_current_bb)
+            ir_var_set(name_tok, buf_v)
+            // Register struct variable so field access can look it up
+            struct_var_register(name_tok, struct_idx)
+            return
+        }
         uint32 init = ast_child(node)
         uint64 winit = init
         if winit != 0 {
@@ -1321,8 +1378,69 @@ fn ir_lower_stmt(uint64 node) {
         return
     }
 
+    // PtrLoad (41): unsafe { *(addr as TYPE) -> dest }
+    if kind == 41 {
+        uint32 ts = ast_data1(node)
+        uint64 type_size = ts
+        uint32 addr_expr = ast_child(node)
+        uint64 addr_v = ir_lower_expr(addr_expr)
+        uint64 dest_v = ir_new_vreg()
+        ir_emit(IR_LOAD, dest_v, addr_v, type_size, 0, ir_current_bb)
+        // Bind dest variable
+        uint32 dest_tok = ast_data2(node)
+        ir_var_set(dest_tok, dest_v)
+        return
+    }
+
+    // PtrStore (42): unsafe { *(addr as TYPE) = val }
+    if kind == 42 {
+        uint32 ts = ast_data1(node)
+        uint64 type_size = ts
+        uint32 addr_expr = ast_child(node)
+        uint64 addr_v = ir_lower_expr(addr_expr)
+        uint32 val_node = ast_data2(node)
+        uint64 val_v = ir_lower_expr(val_node)
+        ir_emit(IR_STORE, type_size, addr_v, val_v, 0, ir_current_bb)
+        return
+    }
+
     // TupleDestruct (44), TupleDestruct3 (47) — defer
-    // FieldAccess (36) as statement — defer
+    // FieldAccess (36) as statement — field assignment: p.x = val
+    if kind == 36 {
+        uint32 fa_d4 = ast_data4(node)
+        uint64 wfad4 = fa_d4
+        if wfad4 == 1 {
+            // Field assignment: data1=obj_tok (via child Ident), data2=field_tok, data3=val_node
+            uint32 field_tok = ast_data2(node)
+            uint32 val_node = ast_data3(node)
+            uint32 child_idx = ast_child(node)
+            uint64 wchild_fa = child_idx
+            uint32 obj_tok = 0
+            if wchild_fa != 0 {
+                uint32 ck_fa = ast_kind(wchild_fa)
+                if ck_fa == 32 {
+                    obj_tok = ast_data1(wchild_fa)
+                }
+            }
+            uint64 wobj = obj_tok
+            uint64 si = struct_var_lookup(wobj)
+            if si != 0xFFFFFFFF {
+                uint64 base_v = ir_var_get(obj_tok)
+                uint64 foff = struct_field_offset(si, field_tok)
+                uint64 fsz = struct_field_size(si, field_tok)
+                uint64 addr_v = base_v
+                if foff != 0 {
+                    uint64 off_v = ir_new_vreg()
+                    ir_emit(IR_CONST, off_v, 0, 0, foff, ir_current_bb)
+                    addr_v = ir_new_vreg()
+                    ir_emit(IR_ADD, addr_v, base_v, off_v, 0, ir_current_bb)
+                }
+                uint64 val_v = ir_lower_expr(val_node)
+                ir_emit(IR_STORE, fsz, addr_v, val_v, 0, ir_current_bb)
+            }
+        }
+        return
+    }
 }
 
 // ---------------------------------------------------------------------------
