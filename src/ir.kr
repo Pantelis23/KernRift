@@ -786,6 +786,94 @@ fn ir_lower_expr(uint64 node) -> uint64 {
             return dest
         }
         // str_eq(a, b) → IR_STR_EQ
+        // print(arg) — write string or integer to stdout
+        if tok_matches(wct, "print", 5) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            uint32 arg_kind = ast_kind(wfa)
+            if arg_kind == 31 {
+                // String literal: write(1, s, str_len(s))
+                uint64 s_v = ir_lower_expr(wfa)
+                uint64 len_v = ir_new_vreg()
+                ir_emit(IR_STRLEN, len_v, s_v, 0, 0, ir_current_bb)
+                uint64 fd_v = ir_new_vreg()
+                ir_emit(IR_CONST, fd_v, 0, 0, 1, ir_current_bb)
+                ir_emit(IR_ARG, 0, fd_v, 0, 0, ir_current_bb)
+                ir_emit(IR_ARG, 0, s_v, 0, 1, ir_current_bb)
+                ir_emit(IR_ARG, 0, len_v, 0, 2, ir_current_bb)
+                uint64 wr = ir_new_vreg()
+                ir_emit(IR_SYSCALL, wr, 0, 0, 1, ir_current_bb)
+            } else {
+                // Integer: fmt_uint to stack buffer, then write
+                uint64 val_v = ir_lower_expr(wfa)
+                uint64 buf_v = ir_new_vreg()
+                ir_emit(IR_ALLOC, buf_v, 0, 0, 32, ir_current_bb)
+                uint64 len_v = ir_new_vreg()
+                ir_emit(IR_FMT_UINT, len_v, buf_v, val_v, 0, ir_current_bb)
+                uint64 fd_v = ir_new_vreg()
+                ir_emit(IR_CONST, fd_v, 0, 0, 1, ir_current_bb)
+                ir_emit(IR_ARG, 0, fd_v, 0, 0, ir_current_bb)
+                ir_emit(IR_ARG, 0, buf_v, 0, 1, ir_current_bb)
+                ir_emit(IR_ARG, 0, len_v, 0, 2, ir_current_bb)
+                uint64 wr = ir_new_vreg()
+                ir_emit(IR_SYSCALL, wr, 0, 0, 1, ir_current_bb)
+                ir_emit(IR_DEALLOC, 0, buf_v, 0, 0, ir_current_bb)
+            }
+            uint64 zero = ir_new_vreg()
+            ir_emit(IR_CONST, zero, 0, 0, 0, ir_current_bb)
+            return zero
+        }
+
+        // println(arg) — print then newline
+        if tok_matches(wct, "println", 7) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 wfa = first_arg
+            uint32 arg_kind = ast_kind(wfa)
+            if arg_kind == 31 {
+                uint64 s_v = ir_lower_expr(wfa)
+                uint64 len_v = ir_new_vreg()
+                ir_emit(IR_STRLEN, len_v, s_v, 0, 0, ir_current_bb)
+                uint64 fd_v = ir_new_vreg()
+                ir_emit(IR_CONST, fd_v, 0, 0, 1, ir_current_bb)
+                ir_emit(IR_ARG, 0, fd_v, 0, 0, ir_current_bb)
+                ir_emit(IR_ARG, 0, s_v, 0, 1, ir_current_bb)
+                ir_emit(IR_ARG, 0, len_v, 0, 2, ir_current_bb)
+                uint64 wr = ir_new_vreg()
+                ir_emit(IR_SYSCALL, wr, 0, 0, 1, ir_current_bb)
+            } else {
+                uint64 val_v = ir_lower_expr(wfa)
+                uint64 buf_v = ir_new_vreg()
+                ir_emit(IR_ALLOC, buf_v, 0, 0, 32, ir_current_bb)
+                uint64 len_v = ir_new_vreg()
+                ir_emit(IR_FMT_UINT, len_v, buf_v, val_v, 0, ir_current_bb)
+                uint64 fd_v = ir_new_vreg()
+                ir_emit(IR_CONST, fd_v, 0, 0, 1, ir_current_bb)
+                ir_emit(IR_ARG, 0, fd_v, 0, 0, ir_current_bb)
+                ir_emit(IR_ARG, 0, buf_v, 0, 1, ir_current_bb)
+                ir_emit(IR_ARG, 0, len_v, 0, 2, ir_current_bb)
+                uint64 wr = ir_new_vreg()
+                ir_emit(IR_SYSCALL, wr, 0, 0, 1, ir_current_bb)
+                ir_emit(IR_DEALLOC, 0, buf_v, 0, 0, ir_current_bb)
+            }
+            // Write newline
+            uint64 nl_v = ir_new_vreg()
+            ir_emit(IR_CONST, nl_v, 0, 0, 10, ir_current_bb)
+            uint64 nlbuf = ir_new_vreg()
+            ir_emit(IR_ALLOC, nlbuf, 0, 0, 1, ir_current_bb)
+            ir_emit(IR_STORE, 0, nlbuf, nl_v, 1, ir_current_bb)
+            uint64 one_v = ir_new_vreg()
+            ir_emit(IR_CONST, one_v, 0, 0, 1, ir_current_bb)
+            ir_emit(IR_ARG, 0, one_v, 0, 0, ir_current_bb)
+            ir_emit(IR_ARG, 0, nlbuf, 0, 1, ir_current_bb)
+            ir_emit(IR_ARG, 0, one_v, 0, 2, ir_current_bb)
+            uint64 wr2 = ir_new_vreg()
+            ir_emit(IR_SYSCALL, wr2, 0, 0, 1, ir_current_bb)
+            ir_emit(IR_DEALLOC, 0, nlbuf, 0, 0, ir_current_bb)
+            uint64 zero = ir_new_vreg()
+            ir_emit(IR_CONST, zero, 0, 0, 0, ir_current_bb)
+            return zero
+        }
+
         if tok_matches(wct, "str_eq", 6) != 0 {
             uint32 arg1 = ast_child(node)
             uint64 a_v = ir_lower_expr(arg1)
