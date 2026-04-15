@@ -88,6 +88,14 @@ static uint64 IR_FN_ADDR = 86        // dest = lea function address; imm = strin
 static uint64 IR_CALL_IND = 87       // dest = indirect call result; src1 = fn pointer vreg
 static uint64 IR_MEMCMP = 88         // dest = (memcmp(src1, src2, imm) == 0) ? 1 : 0
 
+static uint64 IR_ATOMIC_STORE = 90   // atomic_store(ptr, val): lock xchg [ptr], val
+static uint64 IR_ATOMIC_LOAD = 91    // atomic_load(ptr): mov + mfence
+static uint64 IR_ATOMIC_ADD = 92     // atomic_add(ptr, val): lock xadd [ptr], val → old value
+static uint64 IR_ATOMIC_CAS = 93     // atomic_cas(ptr, expected, desired): lock cmpxchg
+static uint64 IR_VSTORE = 94         // volatile store: mfence + store
+static uint64 IR_VLOAD = 95          // volatile load: load + mfence
+static uint64 IR_ASM_BLOCK = 96      // inline asm block passthrough
+
 // ---------------------------------------------------------------------------
 // Instruction arena
 // ---------------------------------------------------------------------------
@@ -133,6 +141,10 @@ fn ir_init() {
     ir_loop_hdr_buf_stack = alloc(32 * 8)
     ir_loop_hdr_count_stack = alloc(32 * 8)
     ir_loop_depth = 0
+
+    // Overflow arg buffer (16 args max beyond the first 6)
+    ir_overflow_args = alloc(16 * 8)
+    ir_overflow_arg_count = 0
 }
 
 // Reset all counters to zero so the arenas can be reused.
@@ -434,9 +446,44 @@ fn ir_bb_append_insn(uint64 bb, uint64 insn_idx) {
 static uint64 ir_var_map = 0       // [name_tok(4), vreg(4)] × 1024
 static uint64 ir_var_map_count = 0
 
+// Slice length vreg table: [name_tok(4), len_vreg(4)] × 32
+static uint64 ir_slice_len_map = 0
+static uint64 ir_slice_len_count = 0
+
+fn ir_slice_len_set(uint64 name_tok, uint64 len_vreg) {
+    if ir_slice_len_map == 0 { ir_slice_len_map = alloc(32 * 8) }
+    if ir_slice_len_count >= 32 { return }
+    uint64 entry = ir_slice_len_map + ir_slice_len_count * 8
+    uint32 nt = name_tok
+    unsafe { *(entry as uint32) = nt }
+    uint64 e4 = entry + 4
+    uint32 vr = len_vreg
+    unsafe { *(e4 as uint32) = vr }
+    ir_slice_len_count = ir_slice_len_count + 1
+}
+
+fn ir_slice_len_get(uint64 name_tok) -> uint64 {
+    uint64 i = 0
+    while i < ir_slice_len_count {
+        uint64 entry = ir_slice_len_map + i * 8
+        uint32 stored = 0
+        unsafe { *(entry as uint32) -> stored }
+        uint64 ws = stored
+        if tok_text_eq(ws, name_tok) != 0 {
+            uint64 e4 = entry + 4
+            uint32 vr = 0
+            unsafe { *(e4 as uint32) -> vr }
+            return vr
+        }
+        i = i + 1
+    }
+    return 0xFFFFFFFF
+}
+
 fn ir_var_map_init() {
     if ir_var_map == 0 { ir_var_map = alloc(1024 * 8) }
     ir_var_map_count = 0
+    ir_slice_len_count = 0
 }
 
 fn ir_var_set(uint64 name_tok, uint64 vreg) {
@@ -858,6 +905,209 @@ fn ir_lower_expr(uint64 node) -> uint64 {
             ir_emit(IR_LOAD, dest, ptr_v, 0, 1, ir_current_bb)
             return dest
         }
+        // store16(ptr, val) → IR_STORE width 2
+        if tok_matches(wct, "store16", 7) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 ptr_v = ir_lower_expr(arg1)
+            uint32 arg2 = ast_next(arg1)
+            uint64 val_v = ir_lower_expr(arg2)
+            ir_emit(IR_STORE, 2, ptr_v, val_v, 0, ir_current_bb)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_CONST, dest, 0, 0, 0, ir_current_bb)
+            return dest
+        }
+        // load16(ptr) → IR_LOAD width 2
+        if tok_matches(wct, "load16", 6) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 ptr_v = ir_lower_expr(arg1)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_LOAD, dest, ptr_v, 0, 2, ir_current_bb)
+            return dest
+        }
+        // vstore32(ptr, val) → IR_VSTORE width 4
+        if tok_matches(wct, "vstore32", 8) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 ptr_v = ir_lower_expr(arg1)
+            uint32 arg2 = ast_next(arg1)
+            uint64 val_v = ir_lower_expr(arg2)
+            ir_emit(IR_VSTORE, 4, ptr_v, val_v, 0, ir_current_bb)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_CONST, dest, 0, 0, 0, ir_current_bb)
+            return dest
+        }
+        // vstore64(ptr, val) → IR_VSTORE width 8
+        if tok_matches(wct, "vstore64", 8) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 ptr_v = ir_lower_expr(arg1)
+            uint32 arg2 = ast_next(arg1)
+            uint64 val_v = ir_lower_expr(arg2)
+            ir_emit(IR_VSTORE, 8, ptr_v, val_v, 0, ir_current_bb)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_CONST, dest, 0, 0, 0, ir_current_bb)
+            return dest
+        }
+        // vload32(ptr) → IR_VLOAD width 4
+        if tok_matches(wct, "vload32", 7) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 ptr_v = ir_lower_expr(arg1)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_VLOAD, dest, ptr_v, 0, 4, ir_current_bb)
+            return dest
+        }
+        // vload64(ptr) → IR_VLOAD width 8
+        if tok_matches(wct, "vload64", 7) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 ptr_v = ir_lower_expr(arg1)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_VLOAD, dest, ptr_v, 0, 8, ir_current_bb)
+            return dest
+        }
+        // atomic_store(ptr, val) → IR_ATOMIC_STORE
+        if tok_matches(wct, "atomic_store", 12) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 ptr_v = ir_lower_expr(arg1)
+            uint32 arg2 = ast_next(arg1)
+            uint64 val_v = ir_lower_expr(arg2)
+            ir_emit(IR_ATOMIC_STORE, 0, ptr_v, val_v, 0, ir_current_bb)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_CONST, dest, 0, 0, 0, ir_current_bb)
+            return dest
+        }
+        // atomic_load(ptr) → IR_ATOMIC_LOAD
+        if tok_matches(wct, "atomic_load", 11) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 ptr_v = ir_lower_expr(arg1)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_ATOMIC_LOAD, dest, ptr_v, 0, 0, ir_current_bb)
+            return dest
+        }
+        // atomic_add(ptr, val) → IR_ATOMIC_ADD (returns old value)
+        if tok_matches(wct, "atomic_add", 10) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 ptr_v = ir_lower_expr(arg1)
+            uint32 arg2 = ast_next(arg1)
+            uint64 val_v = ir_lower_expr(arg2)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_ATOMIC_ADD, dest, ptr_v, val_v, 0, ir_current_bb)
+            return dest
+        }
+        // atomic_cas(ptr, expected, desired) → IR_ATOMIC_CAS (returns 1 if swapped, 0 if not)
+        if tok_matches(wct, "atomic_cas", 10) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 ptr_v = ir_lower_expr(arg1)
+            uint32 arg2 = ast_next(arg1)
+            uint64 exp_v = ir_lower_expr(arg2)
+            uint32 arg3 = ast_next(arg2)
+            uint64 des_v = ir_lower_expr(arg3)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_ATOMIC_CAS, dest, ptr_v, exp_v, des_v, ir_current_bb)
+            return dest
+        }
+        // bit_range(val, start, width) → (val >> start) & ((1 << width) - 1)
+        if tok_matches(wct, "bit_range", 9) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 val_v = ir_lower_expr(arg1)
+            uint32 arg2 = ast_next(arg1)
+            uint64 start_v = ir_lower_expr(arg2)
+            uint32 arg3 = ast_next(arg2)
+            uint64 width_v = ir_lower_expr(arg3)
+            // mask = (1 << width) - 1
+            uint64 one_v = ir_new_vreg()
+            ir_emit(IR_CONST, one_v, 0, 0, 1, ir_current_bb)
+            uint64 shifted_one = ir_new_vreg()
+            ir_emit(IR_SHL, shifted_one, one_v, width_v, 0, ir_current_bb)
+            uint64 mask_v = ir_new_vreg()
+            ir_emit(IR_SUB, mask_v, shifted_one, one_v, 0, ir_current_bb)
+            // result = (val >> start) & mask
+            uint64 shifted_val = ir_new_vreg()
+            ir_emit(IR_SHR, shifted_val, val_v, start_v, 0, ir_current_bb)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_AND, dest, shifted_val, mask_v, 0, ir_current_bb)
+            return dest
+        }
+        // bit_insert(val, start, width, bits) → (val & ~(mask << start)) | ((bits & mask) << start)
+        if tok_matches(wct, "bit_insert", 10) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 val_v = ir_lower_expr(arg1)
+            uint32 arg2 = ast_next(arg1)
+            uint64 start_v = ir_lower_expr(arg2)
+            uint32 arg3 = ast_next(arg2)
+            uint64 width_v = ir_lower_expr(arg3)
+            uint32 arg4 = ast_next(arg3)
+            uint64 bits_v = ir_lower_expr(arg4)
+            // mask = (1 << width) - 1
+            uint64 one_v = ir_new_vreg()
+            ir_emit(IR_CONST, one_v, 0, 0, 1, ir_current_bb)
+            uint64 shifted_one = ir_new_vreg()
+            ir_emit(IR_SHL, shifted_one, one_v, width_v, 0, ir_current_bb)
+            uint64 mask_v = ir_new_vreg()
+            ir_emit(IR_SUB, mask_v, shifted_one, one_v, 0, ir_current_bb)
+            // (bits & mask) << start
+            uint64 masked_bits = ir_new_vreg()
+            ir_emit(IR_AND, masked_bits, bits_v, mask_v, 0, ir_current_bb)
+            uint64 shifted_bits = ir_new_vreg()
+            ir_emit(IR_SHL, shifted_bits, masked_bits, start_v, 0, ir_current_bb)
+            // ~(mask << start)
+            uint64 shifted_mask = ir_new_vreg()
+            ir_emit(IR_SHL, shifted_mask, mask_v, start_v, 0, ir_current_bb)
+            uint64 inv_mask = ir_new_vreg()
+            ir_emit(IR_NOT, inv_mask, shifted_mask, 0, 0, ir_current_bb)
+            // val & ~(mask << start)
+            uint64 cleared = ir_new_vreg()
+            ir_emit(IR_AND, cleared, val_v, inv_mask, 0, ir_current_bb)
+            // result = cleared | shifted_bits
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_OR, dest, cleared, shifted_bits, 0, ir_current_bb)
+            return dest
+        }
+        // print_str(s) → write strlen, write the string
+        if tok_matches(wct, "print_str", 9) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 s_v = ir_lower_expr(first_arg)
+            uint64 len_v = ir_new_vreg()
+            ir_emit(IR_STRLEN, len_v, s_v, 0, 0, ir_current_bb)
+            uint64 fd_v = ir_new_vreg()
+            ir_emit(IR_CONST, fd_v, 0, 0, 1, ir_current_bb)
+            ir_emit(IR_ARG, 0, fd_v, 0, 0, ir_current_bb)
+            ir_emit(IR_ARG, 0, s_v, 0, 1, ir_current_bb)
+            ir_emit(IR_ARG, 0, len_v, 0, 2, ir_current_bb)
+            uint64 wr = ir_new_vreg()
+            ir_emit(IR_SYSCALL, wr, 0, 0, 1, ir_current_bb)
+            uint64 zero = ir_new_vreg()
+            ir_emit(IR_CONST, zero, 0, 0, 0, ir_current_bb)
+            return zero
+        }
+        // println_str(s) → print_str + newline
+        if tok_matches(wct, "println_str", 11) != 0 {
+            uint32 first_arg = ast_child(node)
+            uint64 s_v = ir_lower_expr(first_arg)
+            uint64 len_v = ir_new_vreg()
+            ir_emit(IR_STRLEN, len_v, s_v, 0, 0, ir_current_bb)
+            uint64 fd_v = ir_new_vreg()
+            ir_emit(IR_CONST, fd_v, 0, 0, 1, ir_current_bb)
+            ir_emit(IR_ARG, 0, fd_v, 0, 0, ir_current_bb)
+            ir_emit(IR_ARG, 0, s_v, 0, 1, ir_current_bb)
+            ir_emit(IR_ARG, 0, len_v, 0, 2, ir_current_bb)
+            uint64 wr = ir_new_vreg()
+            ir_emit(IR_SYSCALL, wr, 0, 0, 1, ir_current_bb)
+            // Write newline
+            uint64 nl_v = ir_new_vreg()
+            ir_emit(IR_CONST, nl_v, 0, 0, 10, ir_current_bb)
+            uint64 nlbuf = ir_new_vreg()
+            ir_emit(IR_ALLOC, nlbuf, 0, 0, 1, ir_current_bb)
+            ir_emit(IR_STORE, 0, nlbuf, nl_v, 1, ir_current_bb)
+            uint64 one_v = ir_new_vreg()
+            ir_emit(IR_CONST, one_v, 0, 0, 1, ir_current_bb)
+            ir_emit(IR_ARG, 0, one_v, 0, 0, ir_current_bb)
+            ir_emit(IR_ARG, 0, nlbuf, 0, 1, ir_current_bb)
+            ir_emit(IR_ARG, 0, one_v, 0, 2, ir_current_bb)
+            uint64 wr2 = ir_new_vreg()
+            ir_emit(IR_SYSCALL, wr2, 0, 0, 1, ir_current_bb)
+            ir_emit(IR_DEALLOC, 0, nlbuf, 0, 0, ir_current_bb)
+            uint64 zero = ir_new_vreg()
+            ir_emit(IR_CONST, zero, 0, 0, 0, ir_current_bb)
+            return zero
+        }
         // read(fd, buf, len) → syscall 0
         if tok_matches(wct, "read", 4) != 0 {
             uint32 arg1 = ast_child(node)
@@ -1275,12 +1525,27 @@ fn ir_lower_expr(uint64 node) -> uint64 {
 
         // General call: evaluate all arg exprs first, then emit ARGs + CALL
         // This prevents nested calls from clobbering arg registers.
-        uint64[6] call_arg_vregs
+        uint64[16] call_arg_vregs
         uint32 arg = ast_child(node)
         uint64 warg = arg
         uint64 arg_count = 0
-        while warg != 0 && arg_count < 6 {
+        while warg != 0 && arg_count < 16 {
             uint64 av = ir_lower_expr(warg)
+            // Check if this is a struct variable — copy to avoid aliasing
+            uint32 ak = ast_kind(warg)
+            if ak == 32 {
+                uint32 atk = ast_data1(warg)
+                uint64 s_si = struct_var_lookup(atk)
+                if s_si != 0xFFFFFFFF {
+                    uint64 ssize = struct_total_size(s_si)
+                    uint64 copy_v = ir_new_vreg()
+                    ir_emit(IR_ALLOC, copy_v, 0, 0, ssize, ir_current_bb)
+                    uint64 sz_v = ir_new_vreg()
+                    ir_emit(IR_CONST, sz_v, 0, 0, ssize, ir_current_bb)
+                    ir_emit(IR_MEMCPY, 0, copy_v, av, sz_v, ir_current_bb)
+                    av = copy_v
+                }
+            }
             uint64 avp = call_arg_vregs + arg_count * 8
             unsafe { *(avp as uint64) = av }
             arg_count = arg_count + 1
@@ -1297,7 +1562,7 @@ fn ir_lower_expr(uint64 node) -> uint64 {
             ai = ai + 1
         }
         uint64 dest = ir_new_vreg()
-        ir_emit(IR_CALL, dest, 0, 0, callee_tok, ir_current_bb)
+        ir_emit(IR_CALL, dest, arg_count, 0, callee_tok, ir_current_bb)
         // Check if callee returns a struct (small, <=16 bytes, via rax/rdx)
         uint64 ret_si = fn_ret_struct_lookup(callee_tok)
         if ret_si != 0xFFFFFFFF {
@@ -1417,6 +1682,38 @@ fn ir_lower_expr(uint64 node) -> uint64 {
                     return dest
                 }
             }
+            // Struct array element field read: child is Index(37)
+            if ck_nested == 37 {
+                uint32 ai_tok = ast_data1(wchild_fa)
+                uint64 wait = ai_tok
+                uint64 sia = struct_var_lookup(ai_tok)
+                if sia != 0xFFFFFFFF {
+                    uint64 stride = struct_total_size(sia)
+                    uint64 foff_i = struct_field_offset(sia, field_tok)
+                    uint64 fsz_i = struct_field_size(sia, field_tok)
+                    // Evaluate index
+                    uint32 idx_ch = ast_child(wchild_fa)
+                    uint64 idx_v = ir_lower_expr(idx_ch)
+                    // addr = base + idx * stride + foff
+                    uint64 base_v = ir_var_get(ai_tok)
+                    uint64 stride_v = ir_new_vreg()
+                    ir_emit(IR_CONST, stride_v, 0, 0, stride, ir_current_bb)
+                    uint64 scaled_v = ir_new_vreg()
+                    ir_emit(IR_MUL, scaled_v, idx_v, stride_v, 0, ir_current_bb)
+                    uint64 elem_v = ir_new_vreg()
+                    ir_emit(IR_ADD, elem_v, base_v, scaled_v, 0, ir_current_bb)
+                    uint64 addr_v = elem_v
+                    if foff_i != 0 {
+                        uint64 foff_v = ir_new_vreg()
+                        ir_emit(IR_CONST, foff_v, 0, 0, foff_i, ir_current_bb)
+                        addr_v = ir_new_vreg()
+                        ir_emit(IR_ADD, addr_v, elem_v, foff_v, 0, ir_current_bb)
+                    }
+                    uint64 dest = ir_new_vreg()
+                    ir_emit(IR_LOAD, dest, addr_v, fsz_i, 0, ir_current_bb)
+                    return dest
+                }
+            }
         }
 
         uint32 obj_tok = 0
@@ -1424,6 +1721,31 @@ fn ir_lower_expr(uint64 node) -> uint64 {
             uint32 ck_fa = ast_kind(wchild_fa)
             if ck_fa == 32 {
                 obj_tok = ast_data1(wchild_fa)
+            }
+        }
+        // Check for slice.len access
+        if obj_tok != 0 && tok_matches(field_tok, "len", 3) != 0 {
+            uint64 len_v = ir_slice_len_get(obj_tok)
+            if len_v != 0xFFFFFFFF {
+                return len_v
+            }
+        }
+        // Check for device field read: Device.Field
+        if obj_tok != 0 {
+            uint64 wdt = obj_tok
+            uint64 dev_idx = device_lookup(wdt)
+            if dev_idx != 0xFFFFFFFF {
+                uint64 wft_d = field_tok
+                uint64 dev_off = device_field_offset_of(dev_idx, wft_d)
+                if dev_off != 0xFFFFFFFF {
+                    uint64 dev_sz = device_field_size_of(dev_idx, wft_d)
+                    uint64 dev_addr = device_base(dev_idx) + dev_off
+                    uint64 addr_v = ir_new_vreg()
+                    ir_emit(IR_CONST, addr_v, 0, 0, dev_addr, ir_current_bb)
+                    uint64 dest = ir_new_vreg()
+                    ir_emit(IR_VLOAD, dest, addr_v, 0, dev_sz, ir_current_bb)
+                    return dest
+                }
             }
         }
         // Check if obj_tok is a struct variable
@@ -1624,13 +1946,24 @@ fn ir_lower_stmt(uint64 node) {
                 return
             }
             // No init: allocate and zero-initialize
+            // Check if this is a struct array (data3 = array size token)
+            uint64 alloc_size = struct_size
+            uint64 arr_count = 1
+            if wsarr_check != 0 {
+                arr_count = parse_int_token(wsarr_check)
+                alloc_size = struct_size * arr_count
+            }
             uint64 buf_v = ir_new_vreg()
-            ir_emit(IR_ALLOC, buf_v, 0, 0, struct_size, ir_current_bb)
+            ir_emit(IR_ALLOC, buf_v, 0, 0, alloc_size, ir_current_bb)
             uint64 zero_v = ir_new_vreg()
             ir_emit(IR_CONST, zero_v, 0, 0, 0, ir_current_bb)
-            ir_emit(IR_MEMSET, 0, buf_v, zero_v, struct_size, ir_current_bb)
+            ir_emit(IR_MEMSET, 0, buf_v, zero_v, alloc_size, ir_current_bb)
             ir_var_set(name_tok, buf_v)
             struct_var_register(name_tok, struct_idx)
+            // Register element size for struct array indexing
+            if arr_count > 1 {
+                arr_elem_register(name_tok, struct_size)
+            }
             return
         }
         uint32 init = ast_child(node)
@@ -1710,13 +2043,52 @@ fn ir_lower_stmt(uint64 node) {
         if welse != 0 { bb_else = ir_new_bb() }
         ir_emit(IR_BR_COND, 0, cond, 0, bb_then, ir_current_bb)
         ir_bb_set_succ(ir_current_bb, bb_else, bb_then)
+        // Snapshot variable map before then-body
+        uint64 if_snap_count = ir_var_map_count
+        uint64 if_snap = alloc(if_snap_count * 8)
+        uint64 ifi = 0
+        while ifi < if_snap_count {
+            uint64 ifs = ir_var_map + ifi * 8
+            uint64 ifd = if_snap + ifi * 8
+            uint64 ifv = 0
+            unsafe { *(ifs as uint64) -> ifv }
+            unsafe { *(ifd as uint64) = ifv }
+            ifi = ifi + 1
+        }
         // Then
         ir_current_bb = bb_then
         uint32 then_body = ast_data1(node)
         uint64 wthen = then_body
         if wthen != 0 { ir_lower_block(wthen) }
+        // Emit COPY for changed variables (then → merge)
+        ifi = 0
+        while ifi < if_snap_count {
+            uint64 sp = if_snap + ifi * 8 + 4
+            uint32 snap_vreg = 0
+            unsafe { *(sp as uint32) -> snap_vreg }
+            uint64 cp = ir_var_map + ifi * 8 + 4
+            uint32 cur_vreg = 0
+            unsafe { *(cp as uint32) -> cur_vreg }
+            uint64 wsv = snap_vreg
+            uint64 wcv = cur_vreg
+            if wsv != wcv && wsv != 0xFFFFFFFF {
+                ir_emit(IR_COPY, wsv, wcv, 0, 0, ir_current_bb)
+            }
+            ifi = ifi + 1
+        }
         ir_emit(IR_BR, 0, 0, 0, bb_merge, ir_current_bb)
         ir_bb_set_succ(ir_current_bb, bb_merge, 0xFFFFFFFF)
+        // Restore var map for else/merge
+        ifi = 0
+        while ifi < if_snap_count {
+            uint64 ifs = if_snap + ifi * 8
+            uint64 ifd = ir_var_map + ifi * 8
+            uint64 ifv = 0
+            unsafe { *(ifs as uint64) -> ifv }
+            unsafe { *(ifd as uint64) = ifv }
+            ifi = ifi + 1
+        }
+        ir_var_map_count = if_snap_count
         // Else
         if welse != 0 {
             ir_current_bb = bb_else
@@ -1726,8 +2098,35 @@ fn ir_lower_stmt(uint64 node) {
             } else {
                 ir_lower_stmt(welse)
             }
+            // Emit COPY for changed variables (else → merge)
+            ifi = 0
+            while ifi < if_snap_count {
+                uint64 sp = if_snap + ifi * 8 + 4
+                uint32 snap_vreg = 0
+                unsafe { *(sp as uint32) -> snap_vreg }
+                uint64 cp = ir_var_map + ifi * 8 + 4
+                uint32 cur_vreg = 0
+                unsafe { *(cp as uint32) -> cur_vreg }
+                uint64 wsv = snap_vreg
+                uint64 wcv = cur_vreg
+                if wsv != wcv && wsv != 0xFFFFFFFF {
+                    ir_emit(IR_COPY, wsv, wcv, 0, 0, ir_current_bb)
+                }
+                ifi = ifi + 1
+            }
             ir_emit(IR_BR, 0, 0, 0, bb_merge, ir_current_bb)
             ir_bb_set_succ(ir_current_bb, bb_merge, 0xFFFFFFFF)
+            // Restore var map for merge
+            ifi = 0
+            while ifi < if_snap_count {
+                uint64 ifs = if_snap + ifi * 8
+                uint64 ifd = ir_var_map + ifi * 8
+                uint64 ifv = 0
+                unsafe { *(ifs as uint64) -> ifv }
+                unsafe { *(ifd as uint64) = ifv }
+                ifi = ifi + 1
+            }
+            ir_var_map_count = if_snap_count
         }
         ir_current_bb = bb_merge
         return
@@ -2093,6 +2492,69 @@ fn ir_lower_stmt(uint64 node) {
         return
     }
 
+    // Inline assembly (43): asm block with optional I/O constraints
+    if kind == 43 {
+        // For ASM blocks, we emit the instructions directly during x86 emission.
+        // The IR_ASM_BLOCK carries the AST node index for the x86 emitter.
+        // Handle I/O constraints:
+        // - in(var -> reg): we need to ensure the var's value is available
+        // - out(reg -> var): we need to capture the output
+        uint32 cons_head = ast_data3(node)
+        uint64 wch = cons_head
+
+        // Collect input constraint vregs
+        uint64 wci = wch
+        uint64 in_count = 0
+        while wci != 0 {
+            uint32 ck = ast_data1(wci)
+            if ck == 0 {
+                // in constraint: load the variable value
+                uint32 vtok = ast_data3(wci)
+                uint64 var_v = ir_var_get(vtok)
+                if var_v == 0xFFFFFFFF {
+                    var_v = ir_new_vreg()
+                    ir_emit(IR_CONST, var_v, 0, 0, 0, ir_current_bb)
+                }
+                // Store the vreg as src in the instruction imm (via IR_ARG)
+                uint32 rtok = ast_data2(wci)
+                uint64 rcode = x86_reg_code(rtok)
+                if rcode != 0xFFFF {
+                    // Move var value to the target physical register
+                    ir_emit(IR_ARG, 0, var_v, 0, rcode + 100, ir_current_bb)
+                }
+                in_count = in_count + 1
+            }
+            uint32 nxti = ast_next(wci)
+            wci = nxti
+        }
+
+        // Emit the ASM block as a passthrough node
+        uint64 wnode = node
+        ir_emit(IR_ASM_BLOCK, 0, wnode, 0, 0, ir_current_bb)
+
+        // Handle output constraints: create new vregs and bind them
+        uint64 wco = wch
+        while wco != 0 {
+            uint32 ck2 = ast_data1(wco)
+            if ck2 == 1 {
+                // out constraint: capture register value into variable
+                uint32 rtok2 = ast_data2(wco)
+                uint32 vtok2 = ast_data3(wco)
+                uint64 rcode2 = x86_reg_code(rtok2)
+                if rcode2 != 0xFFFF {
+                    uint64 out_v = ir_new_vreg()
+                    // Use IR_COPY with a special marker: src1=0, imm=rcode+100
+                    // to indicate "read from physical register rcode"
+                    ir_emit(IR_COPY, out_v, 0, 0, rcode2 + 100, ir_current_bb)
+                    ir_var_set(vtok2, out_v)
+                }
+            }
+            uint32 nxto = ast_next(wco)
+            wco = nxto
+        }
+        return
+    }
+
     // FieldAccess (36) as statement — field assignment: p.x = val
     if kind == 36 {
         uint32 fa_d4 = ast_data4(node)
@@ -2125,6 +2587,38 @@ fn ir_lower_stmt(uint64 node) {
                     }
                     return
                 }
+                // Struct array field write: child is Index (e.g. pts[i].x = val)
+                if ck_nw == 37 {
+                    uint32 ai_tok = ast_data1(wchild_fa)
+                    uint64 wait = ai_tok
+                    uint64 sia = struct_var_lookup(ai_tok)
+                    if sia != 0xFFFFFFFF {
+                        uint64 stride = struct_total_size(sia)
+                        uint64 foff_i = struct_field_offset(sia, field_tok)
+                        uint64 fsz_i = struct_field_size(sia, field_tok)
+                        // Evaluate index
+                        uint32 idx_ch = ast_child(wchild_fa)
+                        uint64 idx_v = ir_lower_expr(idx_ch)
+                        // addr = base + idx * stride + foff
+                        uint64 base_v = ir_var_get(ai_tok)
+                        uint64 stride_v = ir_new_vreg()
+                        ir_emit(IR_CONST, stride_v, 0, 0, stride, ir_current_bb)
+                        uint64 scaled_v = ir_new_vreg()
+                        ir_emit(IR_MUL, scaled_v, idx_v, stride_v, 0, ir_current_bb)
+                        uint64 elem_v = ir_new_vreg()
+                        ir_emit(IR_ADD, elem_v, base_v, scaled_v, 0, ir_current_bb)
+                        uint64 addr_v = elem_v
+                        if foff_i != 0 {
+                            uint64 foff_v = ir_new_vreg()
+                            ir_emit(IR_CONST, foff_v, 0, 0, foff_i, ir_current_bb)
+                            addr_v = ir_new_vreg()
+                            ir_emit(IR_ADD, addr_v, elem_v, foff_v, 0, ir_current_bb)
+                        }
+                        uint64 val_v = ir_lower_expr(val_node)
+                        ir_emit(IR_STORE, fsz_i, addr_v, val_v, 0, ir_current_bb)
+                    }
+                    return
+                }
             }
 
             uint32 obj_tok = 0
@@ -2132,6 +2626,24 @@ fn ir_lower_stmt(uint64 node) {
                 uint32 ck_fa = ast_kind(wchild_fa)
                 if ck_fa == 32 {
                     obj_tok = ast_data1(wchild_fa)
+                }
+            }
+            // Device field write: Device.Field = val
+            if obj_tok != 0 {
+                uint64 wdtw = obj_tok
+                uint64 dev_idx_w = device_lookup(wdtw)
+                if dev_idx_w != 0xFFFFFFFF {
+                    uint64 wftw_d = field_tok
+                    uint64 dev_off_w = device_field_offset_of(dev_idx_w, wftw_d)
+                    if dev_off_w != 0xFFFFFFFF {
+                        uint64 dev_sz_w = device_field_size_of(dev_idx_w, wftw_d)
+                        uint64 dev_addr_w = device_base(dev_idx_w) + dev_off_w
+                        uint64 addr_v = ir_new_vreg()
+                        ir_emit(IR_CONST, addr_v, 0, 0, dev_addr_w, ir_current_bb)
+                        uint64 val_v = ir_lower_expr(val_node)
+                        ir_emit(IR_VSTORE, dev_sz_w, addr_v, val_v, 0, ir_current_bb)
+                        return
+                    }
                 }
             }
             uint64 wobj = obj_tok
@@ -2218,6 +2730,12 @@ fn ir_opcode_name(uint64 op) -> uint64 {
     if op == 86 { return "fn_addr" }
     if op == 87 { return "call_ind" }
     if op == 88 { return "memcmp" }
+    if op == 90 { return "atomic_store" }
+    if op == 91 { return "atomic_load" }
+    if op == 92 { return "atomic_add" }
+    if op == 93 { return "atomic_cas" }
+    if op == 94 { return "vstore" }
+    if op == 95 { return "vload" }
     return "???"
 }
 
@@ -2371,6 +2889,15 @@ fn ir_lower_function(uint64 fn_node) {
             if psi != 0xFFFFFFFF {
                 struct_var_register(pname, psi)
             }
+            // Slice parameter: also register the length from next register
+            uint32 pflag = ast_data4(wparam)
+            uint64 wpflag = pflag
+            if wpflag == 1 {
+                uint64 len_vreg = ir_new_vreg()
+                ir_emit(IR_COPY, len_vreg, 0, 0, param_idx, ir_current_bb)
+                ir_slice_len_set(pname, len_vreg)
+                param_idx = param_idx + 1
+            }
         }
         uint32 pnxt = ast_next(wparam)
         wparam = pnxt
@@ -2454,6 +2981,8 @@ fn ir_insn_has_def(uint64 ii) -> uint64 {
     if op == 78 { return 0 }   // static_store (no value produced)
     if op == 82 { return 0 }   // ret2 (no value produced)
     if op == 83 { return 0 }   // ret3 (no value produced)
+    if op == 90 { return 0 }   // atomic_store (no value produced)
+    if op == 94 { return 0 }   // vstore (no value produced)
     return 1
 }
 
@@ -2562,8 +3091,8 @@ fn ir_compute_liveness() {
                     unsafe { *(up as uint64) = uv }
                 }
 
-                // Add imm-as-vreg use for MEMCPY(72), MEMSET(76), RET3(83)
-                if op == 72 || op == 76 || op == 83 {
+                // Add imm-as-vreg use for MEMCPY(72), MEMSET(76), RET3(83), ATOMIC_CAS(93)
+                if op == 72 || op == 76 || op == 83 || op == 93 {
                     uint64 use_imm = ir_insn_imm(cur_ii)
                     if use_imm < ir_vreg_next && use_imm > 0 {
                         uint64 iw = use_imm / 64
@@ -3876,6 +4405,42 @@ fn ir_emit_x86_insn(uint64 ii) {
                     ir_emit_store_spill(0, dest_v)
                 }
             }
+            if imm >= 100 {
+                // ASM output: read from physical register (imm - 100)
+                uint64 phys_src = imm - 100
+                if dst_r != 0xFFFFFFFF {
+                    ir_emit_mov_r64_r64(dst_r, phys_src)
+                } else {
+                    ir_emit_mov_r64_r64(0, phys_src)
+                    ir_emit_store_spill(0, dest_v)
+                }
+            } else if imm >= 6 {
+                // Overflow parameter: load from caller's stack
+                // Stack layout: [rsp + frame_size + 40(pushes) + 8(ret_addr) + (imm-6)*8]
+                uint64 overflow_off = ir_frame_size + 48 + (imm - 6) * 8
+                uint64 tgt = 0
+                if dst_r != 0xFFFFFFFF { tgt = dst_r }
+                // mov tgt, [rsp + overflow_off]
+                uint8 ov_rex = 0x48
+                if tgt >= 8 { ov_rex = ov_rex | 4 }
+                emit_byte(ov_rex)
+                emit_byte(0x8B)
+                if overflow_off < 128 {
+                    uint8 ovm = 0x44 | ((tgt & 7) << 3)
+                    emit_byte(ovm)
+                    emit_byte(0x24)
+                    uint8 ovo = overflow_off
+                    emit_byte(ovo)
+                } else {
+                    uint8 ovm = 0x84 | ((tgt & 7) << 3)
+                    emit_byte(ovm)
+                    emit_byte(0x24)
+                    emit_u32_le(overflow_off)
+                }
+                if dst_r == 0xFFFFFFFF {
+                    ir_emit_store_spill(0, dest_v)
+                }
+            }
         }
         return
     }
@@ -3892,6 +4457,21 @@ fn ir_emit_x86_insn(uint64 ii) {
         if imm < 6 {
             uint64 src_reg = ir_resolve_src(s1_v, 0)
             ir_emit_mov_r64_r64(target, src_reg)
+        }
+        if imm >= 100 {
+            // Direct register target (used by ASM I/O constraints)
+            uint64 phys_target = imm - 100
+            uint64 src_reg = ir_resolve_src(s1_v, 0)
+            ir_emit_mov_r64_r64(phys_target, src_reg)
+        } else if imm >= 6 {
+            // Overflow arg: save vreg to overflow buffer for IR_CALL to handle
+            uint64 oi = imm - 6
+            if oi < 16 {
+                uint64 op_ptr = ir_overflow_args + oi * 8
+                uint64 sv = s1_v
+                unsafe { *(op_ptr as uint64) = sv }
+                if oi >= ir_overflow_arg_count { ir_overflow_arg_count = oi + 1 }
+            }
         }
         return
     }
@@ -3913,6 +4493,96 @@ fn ir_emit_x86_insn(uint64 ii) {
 
     if op == 50 {
         // IR_CALL: call rel32 (will be resolved by fixup system)
+        // src1 = arg_count (0 for old-style calls with <=6 args)
+        uint64 call_arg_count = s1_v
+        uint64 stack_args = 0
+        if call_arg_count > 6 {
+            stack_args = call_arg_count - 6
+            // Resolve all overflow arg values BEFORE modifying rsp
+            // Use sub rsp + mov [rsp+N] approach instead of push to avoid
+            // spill offset issues (push changes rsp, making subsequent resolves wrong)
+            uint64 aligned_stack = stack_args
+            if (aligned_stack & 1) != 0 { aligned_stack = aligned_stack + 1 }
+            uint64 stack_bytes = aligned_stack * 8
+            // First, resolve all overflow args into a temp buffer (physical values)
+            uint64[16] ov_vals
+            uint64 oi = 0
+            while oi < ir_overflow_arg_count {
+                uint64 op_ptr = ir_overflow_args + oi * 8
+                uint64 arg_vreg = 0
+                unsafe { *(op_ptr as uint64) -> arg_vreg }
+                uint64 arg_r = ir_resolve_src(arg_vreg, 0)
+                ir_emit_mov_r64_r64(0, arg_r)
+                // Store rax value to the temp buf position on the current (unmodified) stack
+                // Actually we can't use a temp buffer easily. Use a different approach:
+                // resolve to rax and push immediately. The key insight: spill offsets are
+                // relative to current rsp. After each push, rsp decreases by 8, so subsequent
+                // resolves need adjusted offsets. Instead, let's just resolve all to rax and
+                // push in one pass, going from LAST to FIRST. But each push changes rsp...
+
+                // Better approach: sub rsp first, then use mov [rsp+N] with adjusted offsets
+                oi = oi + 1
+            }
+            // Simpler approach: sub rsp, then store. Adjust resolve offsets manually.
+            // sub rsp, stack_bytes
+            emit_byte(0x48); emit_byte(0x83); emit_byte(0xEC)
+            uint8 sb8 = stack_bytes
+            emit_byte(sb8)
+            // Now rsp has shifted down. Spill slots are now at rsp + stack_bytes + original_offset
+            // We need to re-resolve each overflow arg with the shifted rsp
+            oi = 0
+            while oi < ir_overflow_arg_count {
+                uint64 op_ptr = ir_overflow_args + oi * 8
+                uint64 arg_vreg = 0
+                unsafe { *(op_ptr as uint64) -> arg_vreg }
+                // The vreg might be in a register (fine) or spilled.
+                // If spilled, the spill is at [old_rsp + spill_off] = [new_rsp + stack_bytes + spill_off]
+                // We need to adjust the spill load. Let's just check the physical reg:
+                uint64 arg_r = ir_get_phys_reg(arg_vreg)
+                if arg_r != 0xFFFFFFFF {
+                    // Value is in a register — just mov to [rsp + oi*8]
+                    uint64 soff = oi * 8
+                    uint8 st_rex = 0x48
+                    if arg_r >= 8 { st_rex = st_rex | 4 }
+                    emit_byte(st_rex); emit_byte(0x89)
+                    if soff == 0 {
+                        uint8 stm = ((arg_r & 7) << 3) | 4
+                        emit_byte(stm); emit_byte(0x24)
+                    } else {
+                        uint8 stm = 0x44 | ((arg_r & 7) << 3)
+                        emit_byte(stm); emit_byte(0x24)
+                        uint8 so8 = soff
+                        emit_byte(so8)
+                    }
+                } else {
+                    // Value is spilled — need to load from adjusted offset
+                    // Original spill at [rsp + spill_off], now at [rsp + stack_bytes + spill_off]
+                    uint64 spill_off = (arg_vreg - IR_NUM_REGS - 1) * 8
+                    uint64 adj_off = stack_bytes + spill_off
+                    // mov rax, [rsp + adj_off]
+                    emit_byte(0x48); emit_byte(0x8B)
+                    if adj_off < 128 {
+                        emit_byte(0x44); emit_byte(0x24)
+                        uint8 ao8 = adj_off
+                        emit_byte(ao8)
+                    } else {
+                        emit_byte(0x84); emit_byte(0x24)
+                        emit_u32_le(adj_off)
+                    }
+                    // mov [rsp + oi*8], rax
+                    uint64 soff = oi * 8
+                    emit_byte(0x48); emit_byte(0x89)
+                    if soff == 0 {
+                        emit_byte(0x04); emit_byte(0x24)
+                    } else {
+                        emit_byte(0x44); emit_byte(0x24)
+                        uint8 so8 = soff
+                        emit_byte(so8)
+                    }
+                }
+                oi = oi + 1
+            }
+        }
         emit_byte(0xE8)
         uint64 call_patch = out_len
         emit_u32_le(0)
@@ -3924,6 +4594,22 @@ fn ir_emit_x86_insn(uint64 ii) {
         uint32 ct = imm
         unsafe { *(fe4 as uint32) = ct }
         fixup_count = fixup_count + 1
+        // Clean up overflow args from stack
+        if stack_args > 0 {
+            uint64 aligned_stack = stack_args
+            if (aligned_stack & 1) != 0 { aligned_stack = aligned_stack + 1 }
+            uint64 cleanup = aligned_stack * 8
+            if cleanup < 128 {
+                emit_byte(0x48); emit_byte(0x83); emit_byte(0xC4)
+                uint8 cl8 = cleanup
+                emit_byte(cl8)
+            } else {
+                emit_byte(0x48); emit_byte(0x81); emit_byte(0xC4)
+                emit_u32_le(cleanup)
+            }
+        }
+        // Reset overflow arg count
+        ir_overflow_arg_count = 0
         // Result in rax
         if dst_r != 0xFFFFFFFF && dst_r != 0 {
             ir_emit_mov_r64_r64(dst_r, 0)
@@ -4094,6 +4780,250 @@ fn ir_emit_x86_insn(uint64 ii) {
         return
     }
 
+    if op == 96 {
+        // IR_ASM_BLOCK: emit inline assembly from AST node
+        // src1 = AST node index
+        uint64 asm_node = s1_v
+        uint32 single_tok = ast_data1(asm_node)
+        uint64 ws = single_tok
+        if ws != 0 {
+            asm_emit_x86(ws)
+        }
+        uint32 child_str = ast_child(asm_node)
+        uint64 wcs = child_str
+        while wcs != 0 {
+            uint32 stk = ast_data1(wcs)
+            uint64 wstk = stk
+            asm_emit_x86(wstk)
+            uint32 nxt = ast_next(wcs)
+            wcs = nxt
+        }
+        return
+    }
+
+    if op == 90 {
+        // IR_ATOMIC_STORE: lock xchg [ptr], val
+        uint64 ptr_r = ir_resolve_src(s1_v, 0)
+        uint64 val_r = ir_resolve_src(s2_v, 1)
+        // lock xchg [ptr_r], val_r: F0 REX.W 87 modrm
+        emit_byte(0xF0)
+        uint8 as_rex = 0x48
+        if val_r >= 8 { as_rex = as_rex | 4 }
+        if ptr_r >= 8 { as_rex = as_rex | 1 }
+        emit_byte(as_rex)
+        emit_byte(0x87)
+        uint8 as_modrm = ((val_r & 7) << 3) | (ptr_r & 7)
+        if (ptr_r & 7) == 4 {
+            emit_byte(as_modrm); emit_byte(0x24)
+        } else if (ptr_r & 7) == 5 {
+            uint8 asm5 = as_modrm | 0x40
+            emit_byte(asm5); emit_byte(0)
+        } else {
+            emit_byte(as_modrm)
+        }
+        return
+    }
+
+    if op == 91 {
+        // IR_ATOMIC_LOAD: mov dest, [ptr] + mfence
+        uint64 ptr_r = ir_resolve_src(s1_v, 0)
+        uint64 dr = dst_r
+        if dr == 0xFFFFFFFF { dr = 0 }
+        // mov dr, [ptr_r]
+        uint8 al_rex = 0x48
+        if dr >= 8 { al_rex = al_rex | 4 }
+        if ptr_r >= 8 { al_rex = al_rex | 1 }
+        emit_byte(al_rex)
+        emit_byte(0x8B)
+        uint8 al_modrm = ((dr & 7) << 3) | (ptr_r & 7)
+        if (ptr_r & 7) == 4 {
+            emit_byte(al_modrm); emit_byte(0x24)
+        } else if (ptr_r & 7) == 5 {
+            uint8 alm5 = al_modrm | 0x40
+            emit_byte(alm5); emit_byte(0)
+        } else {
+            emit_byte(al_modrm)
+        }
+        // mfence: 0F AE F0
+        emit_byte(0x0F); emit_byte(0xAE); emit_byte(0xF0)
+        if dst_r == 0xFFFFFFFF {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 92 {
+        // IR_ATOMIC_ADD: lock xadd [ptr], val → old value in val_r
+        uint64 ptr_r = ir_resolve_src(s1_v, 0)
+        uint64 val_r = ir_resolve_src(s2_v, 1)
+        // lock xadd [ptr_r], val_r: F0 REX.W 0F C1 modrm
+        emit_byte(0xF0)
+        uint8 aa_rex = 0x48
+        if val_r >= 8 { aa_rex = aa_rex | 4 }
+        if ptr_r >= 8 { aa_rex = aa_rex | 1 }
+        emit_byte(aa_rex)
+        emit_byte(0x0F); emit_byte(0xC1)
+        uint8 aa_modrm = ((val_r & 7) << 3) | (ptr_r & 7)
+        if (ptr_r & 7) == 4 {
+            emit_byte(aa_modrm); emit_byte(0x24)
+        } else if (ptr_r & 7) == 5 {
+            uint8 aam5 = aa_modrm | 0x40
+            emit_byte(aam5); emit_byte(0)
+        } else {
+            emit_byte(aa_modrm)
+        }
+        // After xadd, val_r contains old value; move to dest
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, val_r)
+        } else {
+            ir_emit_mov_r64_r64(0, val_r)
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 93 {
+        // IR_ATOMIC_CAS: lock cmpxchg [ptr], desired
+        // ptr = s1_v, expected = s2_v, desired = imm (vreg)
+        uint64 ptr_r = ir_resolve_src(s1_v, 0)
+        uint64 exp_r = ir_resolve_src(s2_v, 1)
+        uint64 des_r = ir_resolve_src(imm, 2)
+        // rax = expected (cmpxchg compares [ptr] with rax)
+        ir_emit_mov_r64_r64(0, exp_r)
+        // lock cmpxchg [ptr_r], des_r: F0 REX.W 0F B1 modrm
+        emit_byte(0xF0)
+        uint8 ac_rex = 0x48
+        if des_r >= 8 { ac_rex = ac_rex | 4 }
+        if ptr_r >= 8 { ac_rex = ac_rex | 1 }
+        emit_byte(ac_rex)
+        emit_byte(0x0F); emit_byte(0xB1)
+        uint8 ac_modrm = ((des_r & 7) << 3) | (ptr_r & 7)
+        if (ptr_r & 7) == 4 {
+            emit_byte(ac_modrm); emit_byte(0x24)
+        } else if (ptr_r & 7) == 5 {
+            uint8 acm5 = ac_modrm | 0x40
+            emit_byte(acm5); emit_byte(0)
+        } else {
+            emit_byte(ac_modrm)
+        }
+        // sete al; movzx eax, al → rax = 1 if swapped, 0 if not
+        emit_byte(0x0F); emit_byte(0x94); emit_byte(0xC0)
+        emit_byte(0x0F); emit_byte(0xB6); emit_byte(0xC0)
+        if dst_r != 0xFFFFFFFF && dst_r != 0 {
+            ir_emit_mov_r64_r64(dst_r, 0)
+        }
+        if dst_r == 0xFFFFFFFF {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 94 {
+        // IR_VSTORE: mfence + store (volatile), width in dest_v
+        uint64 addr_reg = ir_resolve_src(s1_v, 0)
+        uint64 val_reg = ir_resolve_src(s2_v, 1)
+        uint64 width = dest_v
+        // mfence
+        emit_byte(0x0F); emit_byte(0xAE); emit_byte(0xF0)
+        if width == 8 {
+            uint8 st_rex = 0x48
+            if val_reg >= 8 { st_rex = st_rex | 4 }
+            if addr_reg >= 8 { st_rex = st_rex | 1 }
+            emit_byte(st_rex); emit_byte(0x89)
+            uint64 st_modrm = ((val_reg & 7) << 3) | (addr_reg & 7)
+            if (addr_reg & 7) == 4 { uint8 stm = st_modrm; emit_byte(stm); emit_byte(0x24) }
+            else if (addr_reg & 7) == 5 { uint8 stm = st_modrm | 0x40; emit_byte(stm); emit_byte(0) }
+            else { uint8 stm = st_modrm; emit_byte(stm) }
+        } else if width == 4 {
+            uint8 st_rex = 0x40
+            if val_reg >= 8 { st_rex = st_rex | 4 }
+            if addr_reg >= 8 { st_rex = st_rex | 1 }
+            if st_rex != 0x40 { emit_byte(st_rex) }
+            emit_byte(0x89)
+            uint64 st_modrm = ((val_reg & 7) << 3) | (addr_reg & 7)
+            if (addr_reg & 7) == 4 { uint8 stm = st_modrm; emit_byte(stm); emit_byte(0x24) }
+            else if (addr_reg & 7) == 5 { uint8 stm = st_modrm | 0x40; emit_byte(stm); emit_byte(0) }
+            else { uint8 stm = st_modrm; emit_byte(stm) }
+        } else if width == 2 {
+            emit_byte(0x66)
+            uint8 st_rex = 0x40
+            if val_reg >= 8 { st_rex = st_rex | 4 }
+            if addr_reg >= 8 { st_rex = st_rex | 1 }
+            if st_rex != 0x40 { emit_byte(st_rex) }
+            emit_byte(0x89)
+            uint64 st_modrm = ((val_reg & 7) << 3) | (addr_reg & 7)
+            if (addr_reg & 7) == 4 { uint8 stm = st_modrm; emit_byte(stm); emit_byte(0x24) }
+            else if (addr_reg & 7) == 5 { uint8 stm = st_modrm | 0x40; emit_byte(stm); emit_byte(0) }
+            else { uint8 stm = st_modrm; emit_byte(stm) }
+        } else {
+            // 1-byte store
+            uint8 st_rex = 0x40
+            if val_reg >= 8 { st_rex = st_rex | 4 }
+            if addr_reg >= 8 { st_rex = st_rex | 1 }
+            emit_byte(st_rex); emit_byte(0x88)
+            uint64 st_modrm = ((val_reg & 7) << 3) | (addr_reg & 7)
+            if (addr_reg & 7) == 4 { uint8 stm = st_modrm; emit_byte(stm); emit_byte(0x24) }
+            else if (addr_reg & 7) == 5 { uint8 stm = st_modrm | 0x40; emit_byte(stm); emit_byte(0) }
+            else { uint8 stm = st_modrm; emit_byte(stm) }
+        }
+        return
+    }
+
+    if op == 95 {
+        // IR_VLOAD: load + mfence (volatile), width in imm
+        uint64 addr_reg = ir_resolve_src(s1_v, 0)
+        uint64 dr = dst_r
+        if dr == 0xFFFFFFFF { dr = 0 }
+        if imm == 8 {
+            uint8 ld_rex = 0x48
+            if dr >= 8 { ld_rex = ld_rex | 4 }
+            if addr_reg >= 8 { ld_rex = ld_rex | 1 }
+            emit_byte(ld_rex); emit_byte(0x8B)
+            uint64 ld_modrm = ((dr & 7) << 3) | (addr_reg & 7)
+            if (addr_reg & 7) == 4 { uint8 ldm = ld_modrm; emit_byte(ldm); emit_byte(0x24) }
+            else if (addr_reg & 7) == 5 { uint8 ldm = ld_modrm | 0x40; emit_byte(ldm); emit_byte(0) }
+            else { uint8 ldm = ld_modrm; emit_byte(ldm) }
+        } else if imm == 4 {
+            uint8 ld_rex = 0x40
+            if dr >= 8 { ld_rex = ld_rex | 4 }
+            if addr_reg >= 8 { ld_rex = ld_rex | 1 }
+            if ld_rex != 0x40 { emit_byte(ld_rex) }
+            emit_byte(0x8B)
+            uint64 ld_modrm = ((dr & 7) << 3) | (addr_reg & 7)
+            if (addr_reg & 7) == 4 { uint8 ldm = ld_modrm; emit_byte(ldm); emit_byte(0x24) }
+            else if (addr_reg & 7) == 5 { uint8 ldm = ld_modrm | 0x40; emit_byte(ldm); emit_byte(0) }
+            else { uint8 ldm = ld_modrm; emit_byte(ldm) }
+        } else if imm == 2 {
+            // movzx r32, word [addr_reg]
+            uint8 ld_rex = 0x40
+            if dr >= 8 { ld_rex = ld_rex | 4 }
+            if addr_reg >= 8 { ld_rex = ld_rex | 1 }
+            if ld_rex != 0x40 { emit_byte(ld_rex) }
+            emit_byte(0x0F); emit_byte(0xB7)
+            uint64 ld_modrm = ((dr & 7) << 3) | (addr_reg & 7)
+            if (addr_reg & 7) == 4 { uint8 ldm = ld_modrm; emit_byte(ldm); emit_byte(0x24) }
+            else if (addr_reg & 7) == 5 { uint8 ldm = ld_modrm | 0x40; emit_byte(ldm); emit_byte(0) }
+            else { uint8 ldm = ld_modrm; emit_byte(ldm) }
+        } else {
+            // movzx r32, byte [addr_reg]
+            uint8 ld_rex = 0x40
+            if dr >= 8 { ld_rex = ld_rex | 4 }
+            if addr_reg >= 8 { ld_rex = ld_rex | 1 }
+            if ld_rex != 0x40 { emit_byte(ld_rex) }
+            emit_byte(0x0F); emit_byte(0xB6)
+            uint64 ld_modrm = ((dr & 7) << 3) | (addr_reg & 7)
+            if (addr_reg & 7) == 4 { uint8 ldm = ld_modrm; emit_byte(ldm); emit_byte(0x24) }
+            else if (addr_reg & 7) == 5 { uint8 ldm = ld_modrm | 0x40; emit_byte(ldm); emit_byte(0) }
+            else { uint8 ldm = ld_modrm; emit_byte(ldm) }
+        }
+        // mfence
+        emit_byte(0x0F); emit_byte(0xAE); emit_byte(0xF0)
+        if dst_r == 0xFFFFFFFF {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
     if op == 40 {
         // IR_BR: handled in block emission
         return
@@ -4119,8 +5049,19 @@ static uint64 ir_br_fixup_count = 0
 static uint64 ir_ret_fixups = 0
 static uint64 ir_ret_fixup_count = 0
 
+// Overflow argument buffer for calls with 7+ args (SysV ABI)
+static uint64 ir_overflow_args = 0
+static uint64 ir_overflow_arg_count = 0
+
+// Frame size for current function (used by overflow param loads)
+static uint64 ir_frame_size = 0
+
 @export
 fn ir_emit_x86_function(uint64 fn_node) {
+    // Check for @naked attribute: bit 1 of annotation flags
+    uint32 ann_flags = ast_data4(fn_node)
+    uint64 is_naked = ann_flags & 2
+
     // 1. Lower AST to IR
     ir_lower_function(fn_node)
 
@@ -4137,7 +5078,8 @@ fn ir_emit_x86_function(uint64 fn_node) {
         ir_spill_count = ir_vreg_next - IR_NUM_REGS - 1
     }
 
-    // 5. Emit prologue
+    // 5. Emit prologue (skip for @naked functions)
+    if is_naked == 0 {
     // push rbx
     emit_byte(0x53)
     // push r12..r15
@@ -4149,13 +5091,16 @@ fn ir_emit_x86_function(uint64 fn_node) {
     emit_byte(0x56)
     emit_byte(0x41)
     emit_byte(0x57)
+    }
 
     // sub rsp, frame_size
     uint64 frame_size = ir_spill_count * 8
     // Alignment: 5 pushes = 40 bytes + 8 (ret addr) = 48. 48 mod 16 = 0.
     // If frame_size mod 16 != 0, add 8 for alignment.
     if frame_size > 0 && (frame_size & 15) != 0 { frame_size = frame_size + 8 }
+    if is_naked != 0 { frame_size = 0 }
     ir_spill_base = 0
+    ir_frame_size = frame_size
 
     if frame_size > 0 {
         emit_byte(0x48)
@@ -4279,21 +5224,23 @@ fn ir_emit_x86_function(uint64 fn_node) {
         ri2 = ri2 + 1
     }
 
-    // 10. Epilogue
-    if frame_size > 0 {
-        emit_byte(0x48)
-        emit_byte(0x81)
-        emit_byte(0xC4)
-        emit_u32_le(frame_size)
+    // 10. Epilogue (skip for @naked functions)
+    if is_naked == 0 {
+        if frame_size > 0 {
+            emit_byte(0x48)
+            emit_byte(0x81)
+            emit_byte(0xC4)
+            emit_u32_le(frame_size)
+        }
+        emit_byte(0x41)
+        emit_byte(0x5F)
+        emit_byte(0x41)
+        emit_byte(0x5E)
+        emit_byte(0x41)
+        emit_byte(0x5D)
+        emit_byte(0x41)
+        emit_byte(0x5C)
+        emit_byte(0x5B)
+        emit_byte(0xC3)
     }
-    emit_byte(0x41)
-    emit_byte(0x5F)
-    emit_byte(0x41)
-    emit_byte(0x5E)
-    emit_byte(0x41)
-    emit_byte(0x5D)
-    emit_byte(0x41)
-    emit_byte(0x5C)
-    emit_byte(0x5B)
-    emit_byte(0xC3)
 }
