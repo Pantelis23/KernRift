@@ -2643,8 +2643,19 @@ fn ir_lower_stmt(uint64 node) {
         }
         ir_emit(IR_BR, 0, 0, 0, bb_header, ir_current_bb)
         ir_bb_set_succ(ir_current_bb, bb_header, 0xFFFFFFFF)
-        // Restore variable map to post-body state for exit block
-        // (variables should have their latest values for code after the loop)
+        // Restore variable map to header vregs for code after the loop.
+        // The header vregs are the merge points — they receive values via
+        // COPY from the body and hold the correct values on loop exit.
+        si = 0
+        while si < hdr_count {
+            uint64 hs = hdr_buf + si * 8
+            uint64 hd = ir_var_map + si * 8
+            uint64 hv = 0
+            unsafe { *(hs as uint64) -> hv }
+            unsafe { *(hd as uint64) = hv }
+            si = si + 1
+        }
+        ir_var_map_count = hdr_count
         ir_current_bb = bb_exit
         return
     }
