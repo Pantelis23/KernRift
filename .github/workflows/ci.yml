@@ -19,9 +19,9 @@ jobs:
       - name: Download self-hosted compiler
         run: |
           mkdir -p build
-          # Download krc from latest release — no Rust needed
+          # Download krc from pinned release — avoids CDN caching issues with /latest
           curl -sL -o build/krc-bootstrap \
-            https://github.com/Pantelis23/KernRift/releases/latest/download/krc-linux-x86_64
+            https://github.com/Pantelis23/KernRift/releases/download/v2.7.1/krc-linux-x86_64
           chmod +x build/krc-bootstrap
 
       - name: Build (self-compile)
@@ -29,44 +29,9 @@ jobs:
           cat src/lexer.kr src/ast.kr src/parser.kr src/codegen.kr src/codegen_aarch64.kr \
               src/format_macho.kr src/format_pe.kr src/format_archive.kr src/format_android.kr \
               src/bcj.kr src/analysis.kr src/living.kr src/runtime.kr src/formatter.kr src/main.kr > build/krc.kr
-          # The released krc-bootstrap ships the fixup_table=8192 limit
-          # which the current compiler source overruns non-deterministically
-          # ("undefined function 'lexer_parse_lang_directive'", occasional
-          # segfault). The in-tree fix bumps it to 32768, but until we cut
-          # a new release, retry self-compile until one attempt succeeds
-          # or we've burned the budget.
-          # Retry bootstrap until we get a valid ELF that actually runs.
-          # The released bootstrap non-deterministically produces corrupt
-          # output ("Exec format error") or segfaults outright.
-          attempt=0
-          max=40
-          while [ $attempt -lt $max ]; do
-            attempt=$((attempt+1))
-            rm -f build/krc2 build/krc2.probe
-            if timeout 60 ./build/krc-bootstrap --arch=x86_64 build/krc.kr -o build/krc2 2>/dev/null; then
-              if [ -s build/krc2 ]; then
-                chmod +x build/krc2
-                # Verify it's a real ELF AND runs on a trivial input
-                if file build/krc2 | grep -q 'ELF 64-bit'; then
-                  echo 'fn main() { exit(0) }' > /tmp/probe.kr
-                  if timeout 10 ./build/krc2 --arch=x86_64 /tmp/probe.kr -o build/krc2.probe 2>/dev/null; then
-                    if [ -s build/krc2.probe ]; then
-                      chmod +x build/krc2.probe
-                      if ./build/krc2.probe; then
-                        echo "self-compile OK on attempt $attempt"
-                        break
-                      fi
-                    fi
-                  fi
-                fi
-              fi
-            fi
-            echo "attempt $attempt: bootstrap output was broken, retrying..."
-          done
-          [ -x build/krc2 ] || { echo "self-compile failed after $max attempts"; exit 1; }
-          rm -f build/krc2.probe /tmp/probe.kr
-          # Re-bootstrap once with the new krc (bumped fixup_table=32768)
-          # to get a deterministic binary for downstream steps.
+          # Bootstrap: compile source with released krc, then re-compile with itself
+          ./build/krc-bootstrap --arch=x86_64 build/krc.kr -o build/krc2
+          chmod +x build/krc2
           ./build/krc2 --arch=x86_64 build/krc.kr -o build/krc2.stable
           mv build/krc2.stable build/krc2
           chmod +x build/krc2

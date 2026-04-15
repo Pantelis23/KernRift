@@ -16,44 +16,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Bootstrap build/krc2 (with retry for nondeterministic releases)
+      - name: Bootstrap build/krc2
         run: |
           mkdir -p build
           curl -sL -o build/krc-bootstrap \
-            https://github.com/Pantelis23/KernRift/releases/latest/download/krc-linux-x86_64
+            https://github.com/Pantelis23/KernRift/releases/download/v2.7.1/krc-linux-x86_64
           chmod +x build/krc-bootstrap
           cat src/lexer.kr src/ast.kr src/parser.kr src/codegen.kr \
               src/codegen_aarch64.kr src/format_macho.kr src/format_pe.kr \
               src/format_archive.kr src/format_android.kr src/bcj.kr \
               src/analysis.kr src/living.kr src/runtime.kr src/formatter.kr src/main.kr > build/krc.kr
-          # Retry until we get a valid ELF that can compile a probe.
-          # Pre-2.6.2 releases non-deterministically corrupt output on
-          # larger sources (fixup_table overflow).
-          attempt=0
-          max=40
-          while [ $attempt -lt $max ]; do
-            attempt=$((attempt+1))
-            rm -f build/krc2 build/krc2.probe
-            if timeout 60 ./build/krc-bootstrap --arch=x86_64 build/krc.kr -o build/krc2 2>/dev/null; then
-              if [ -s build/krc2 ]; then
-                chmod +x build/krc2
-                if file build/krc2 | grep -q 'ELF 64-bit'; then
-                  echo 'fn main(){exit(0)}' > /tmp/probe.kr
-                  if timeout 10 ./build/krc2 --arch=x86_64 /tmp/probe.kr -o build/krc2.probe 2>/dev/null; then
-                    chmod +x build/krc2.probe 2>/dev/null
-                    if [ -s build/krc2.probe ] && ./build/krc2.probe; then
-                      echo "bootstrap OK on attempt $attempt"
-                      break
-                    fi
-                  fi
-                fi
-              fi
-            fi
-            echo "attempt $attempt: broken, retrying..."
-          done
-          [ -x build/krc2 ] || { echo "bootstrap failed after $max attempts"; exit 1; }
-          rm -f build/krc2.probe /tmp/probe.kr
-          # Re-bootstrap once with the fresh compiler (fixup_table bumped)
+          # Bootstrap: compile source with released krc, then re-compile with itself
+          ./build/krc-bootstrap --arch=x86_64 build/krc.kr -o build/krc2
+          chmod +x build/krc2
           ./build/krc2 --arch=x86_64 build/krc.kr -o build/krc2.stable
           mv build/krc2.stable build/krc2
           chmod +x build/krc2
