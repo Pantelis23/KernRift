@@ -3560,7 +3560,7 @@ fn ir_compute_liveness() {
 
                 // Add src2 use
                 uint64 use2 = ir_insn_src2(cur_ii)
-                if use2 < ir_vreg_next && op != 1 && op != 12 && op != 13 && op != 30 && op != 31 && op != 42 && op != 61 {
+                if use2 < ir_vreg_next && op != 1 && op != 12 && op != 13 && op != 30 && op != 42 && op != 61 {
                     uint64 uw = use2 / 64
                     uint64 ub = use2 & 63
                     uint64 up = tmp + uw * 8
@@ -3752,7 +3752,7 @@ fn ir_graph_color() {
                     unsafe { *(up as uint64) = uv }
                 }
                 uint64 u2 = ir_insn_src2(ii)
-                if u2 > 0 && u2 < vcount && op != 1 && op != 12 && op != 13 && op != 30 && op != 31 && op != 42 && op != 61 {
+                if u2 > 0 && u2 < vcount && op != 1 && op != 12 && op != 13 && op != 30 && op != 42 && op != 61 {
                     uint64 uw = u2 / 64
                     uint64 ub = u2 & 63
                     uint64 up = tmp + uw * 8
