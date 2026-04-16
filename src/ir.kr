@@ -594,6 +594,47 @@ fn ir_var_get(uint64 name_tok) -> uint64 {
     return 0xFFFFFFFF
 }
 
+// Emit COPY instructions from current var map vregs to snapshot vregs,
+// using a two-phase approach to avoid read-after-write hazards.
+// Phase 1: snapshot all changed values into fresh vregs (reads before writes).
+// Phase 2: copy from fresh vregs to target vregs.
+fn ir_emit_copy_to_snapshot(uint64 snap_buf, uint64 snap_count, uint64 bb) {
+    uint64 pairs = alloc(snap_count * 16)
+    uint64 pcnt = 0
+    uint64 ci = 0
+    while ci < snap_count {
+        uint64 sp = snap_buf + ci * 8 + 4
+        uint32 snap_vreg = 0
+        unsafe { *(sp as uint32) -> snap_vreg }
+        uint64 cp = ir_var_map + ci * 8 + 4
+        uint32 cur_vreg = 0
+        unsafe { *(cp as uint32) -> cur_vreg }
+        uint64 wsv = snap_vreg
+        uint64 wcv = cur_vreg
+        if wsv != wcv && wsv != 0xFFFFFFFF {
+            uint64 fresh = ir_new_vreg()
+            ir_emit(IR_COPY, fresh, wcv, 0, 0, bb)
+            uint64 pp = pairs + pcnt * 16
+            unsafe { *(pp as uint64) = wsv }
+            uint64 pp8 = pp + 8
+            unsafe { *(pp8 as uint64) = fresh }
+            pcnt = pcnt + 1
+        }
+        ci = ci + 1
+    }
+    ci = 0
+    while ci < pcnt {
+        uint64 pp = pairs + ci * 16
+        uint64 target = 0
+        unsafe { *(pp as uint64) -> target }
+        uint64 pp8 = pp + 8
+        uint64 source = 0
+        unsafe { *(pp8 as uint64) -> source }
+        ir_emit(IR_COPY, target, source, 0, 0, bb)
+        ci = ci + 1
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Current basic block tracking
 // ---------------------------------------------------------------------------
@@ -1992,7 +2033,9 @@ fn ir_lower_expr(uint64 node) -> uint64 {
             // Zero-initialize
             uint64 zero_v = ir_new_vreg()
             ir_emit(IR_CONST, zero_v, 0, 0, 0, ir_current_bb)
-            ir_emit(IR_MEMSET, 0, buf_v, zero_v, ret_ssize, ir_current_bb)
+            uint64 ret_sz_v = ir_new_vreg()
+            ir_emit(IR_CONST, ret_sz_v, 0, 0, ret_ssize, ir_current_bb)
+            ir_emit(IR_MEMSET, 0, buf_v, zero_v, ret_sz_v, ir_current_bb)
             // Store first 8 bytes (rax)
             ir_emit(IR_STORE, 8, buf_v, dest, 0, ir_current_bb)
             if ret_ssize > 8 {
@@ -2264,7 +2307,9 @@ fn ir_lower_expr(uint64 node) -> uint64 {
         // Zero-initialize
         uint64 zero_v = ir_new_vreg()
         ir_emit(IR_CONST, zero_v, 0, 0, 0, ir_current_bb)
-        ir_emit(IR_MEMSET, 0, buf_v, zero_v, ssize, ir_current_bb)
+        uint64 ssz_v = ir_new_vreg()
+        ir_emit(IR_CONST, ssz_v, 0, 0, ssize, ir_current_bb)
+        ir_emit(IR_MEMSET, 0, buf_v, zero_v, ssz_v, ir_current_bb)
         // Walk field expressions and store each
         uint32 is_named = ast_data2(node)
         uint64 wnamed = is_named
@@ -2345,7 +2390,7 @@ fn ir_lower_stmt(uint64 node) {
             ir_emit(IR_CONST, zero_v, 0, 0, 0, ir_current_bb)
             uint64 sz_v = ir_new_vreg()
             ir_emit(IR_CONST, sz_v, 0, 0, total_bytes, ir_current_bb)
-            ir_emit(IR_MEMSET, 0, buf_v, zero_v, total_bytes, ir_current_bb)
+            ir_emit(IR_MEMSET, 0, buf_v, zero_v, sz_v, ir_current_bb)
             ir_var_set(name_tok, buf_v)
             // Register element size so array indexing can scale correctly
             arr_elem_register(name_tok, elem_size_v)
@@ -2385,7 +2430,9 @@ fn ir_lower_stmt(uint64 node) {
             ir_emit(IR_ALLOC, buf_v, 0, 0, alloc_size, ir_current_bb)
             uint64 zero_v = ir_new_vreg()
             ir_emit(IR_CONST, zero_v, 0, 0, 0, ir_current_bb)
-            ir_emit(IR_MEMSET, 0, buf_v, zero_v, alloc_size, ir_current_bb)
+            uint64 asz_v = ir_new_vreg()
+            ir_emit(IR_CONST, asz_v, 0, 0, alloc_size, ir_current_bb)
+            ir_emit(IR_MEMSET, 0, buf_v, zero_v, asz_v, ir_current_bb)
             ir_var_set(name_tok, buf_v)
             struct_var_register(name_tok, struct_idx)
             // Register element size for struct array indexing
@@ -2423,8 +2470,14 @@ fn ir_lower_stmt(uint64 node) {
         uint32 name_tok = ast_data1(node)
         uint32 val_node = ast_child(node)
         uint64 val = ir_lower_expr(val_node)
-        // Check if this is a static variable
+        // Check if the variable exists as a local first (locals shadow statics)
         uint64 wnt = name_tok
+        uint64 local_vreg = ir_var_get(wnt)
+        if local_vreg != 0xFFFFFFFF {
+            ir_var_set(name_tok, val)
+            return
+        }
+        // Check if this is a static variable
         uint64 st_off = static_lookup(wnt)
         if st_off != 0xFFFFFFFF {
             ir_emit(IR_STATIC_STORE, 0, val, 0, st_off, ir_current_bb)
@@ -2500,21 +2553,7 @@ fn ir_lower_stmt(uint64 node) {
         uint64 wthen = then_body
         if wthen != 0 { ir_lower_block(wthen) }
         // Emit COPY for changed variables (then → merge)
-        ifi = 0
-        while ifi < if_snap_count {
-            uint64 sp = if_snap + ifi * 8 + 4
-            uint32 snap_vreg = 0
-            unsafe { *(sp as uint32) -> snap_vreg }
-            uint64 cp = ir_var_map + ifi * 8 + 4
-            uint32 cur_vreg = 0
-            unsafe { *(cp as uint32) -> cur_vreg }
-            uint64 wsv = snap_vreg
-            uint64 wcv = cur_vreg
-            if wsv != wcv && wsv != 0xFFFFFFFF {
-                ir_emit(IR_COPY, wsv, wcv, 0, 0, ir_current_bb)
-            }
-            ifi = ifi + 1
-        }
+        ir_emit_copy_to_snapshot(if_snap, if_snap_count, ir_current_bb)
         ir_emit(IR_BR, 0, 0, 0, bb_merge, ir_current_bb)
         ir_bb_set_succ(ir_current_bb, bb_merge, 0xFFFFFFFF)
         // Restore var map for else/merge
@@ -2538,21 +2577,7 @@ fn ir_lower_stmt(uint64 node) {
                 ir_lower_stmt(welse)
             }
             // Emit COPY for changed variables (else → merge)
-            ifi = 0
-            while ifi < if_snap_count {
-                uint64 sp = if_snap + ifi * 8 + 4
-                uint32 snap_vreg = 0
-                unsafe { *(sp as uint32) -> snap_vreg }
-                uint64 cp = ir_var_map + ifi * 8 + 4
-                uint32 cur_vreg = 0
-                unsafe { *(cp as uint32) -> cur_vreg }
-                uint64 wsv = snap_vreg
-                uint64 wcv = cur_vreg
-                if wsv != wcv && wsv != 0xFFFFFFFF {
-                    ir_emit(IR_COPY, wsv, wcv, 0, 0, ir_current_bb)
-                }
-                ifi = ifi + 1
-            }
+            ir_emit_copy_to_snapshot(if_snap, if_snap_count, ir_current_bb)
             ir_emit(IR_BR, 0, 0, 0, bb_merge, ir_current_bb)
             ir_bb_set_succ(ir_current_bb, bb_merge, 0xFFFFFFFF)
             // Restore var map for merge
@@ -2625,22 +2650,8 @@ fn ir_lower_stmt(uint64 node) {
 
         ir_loop_depth = ir_loop_depth - 1
 
-        // After body, emit COPY for any variables that changed since header
-        si = 0
-        while si < hdr_count {
-            uint64 hp = hdr_buf + si * 8 + 4
-            uint32 hdr_vreg = 0
-            unsafe { *(hp as uint32) -> hdr_vreg }
-            uint64 cp = ir_var_map + si * 8 + 4
-            uint32 cur_vreg = 0
-            unsafe { *(cp as uint32) -> cur_vreg }
-            uint64 wh = hdr_vreg
-            uint64 wc = cur_vreg
-            if wh != wc && wh != 0xFFFFFFFF {
-                ir_emit(IR_COPY, wh, wc, 0, 0, ir_current_bb)
-            }
-            si = si + 1
-        }
+        // After body, emit COPY for any variables that changed since header.
+        ir_emit_copy_to_snapshot(hdr_buf, hdr_count, ir_current_bb)
         ir_emit(IR_BR, 0, 0, 0, bb_header, ir_current_bb)
         ir_bb_set_succ(ir_current_bb, bb_header, 0xFFFFFFFF)
         // Restore variable map to header vregs for code after the loop.
@@ -2712,21 +2723,7 @@ fn ir_lower_stmt(uint64 node) {
                 uint64 wbody = body_block
                 if wbody != 0 { ir_lower_block(wbody) }
                 // Emit COPY for any changed variables back to pre-match vregs
-                mi = 0
-                while mi < match_snap_count {
-                    uint64 sp_match = match_snap + mi * 8 + 4
-                    uint32 snap_vreg = 0
-                    unsafe { *(sp_match as uint32) -> snap_vreg }
-                    uint64 cp_match = ir_var_map + mi * 8 + 4
-                    uint32 cur_vreg = 0
-                    unsafe { *(cp_match as uint32) -> cur_vreg }
-                    uint64 wsv = snap_vreg
-                    uint64 wcv = cur_vreg
-                    if wsv != wcv && wsv != 0xFFFFFFFF {
-                        ir_emit(IR_COPY, wsv, wcv, 0, 0, ir_current_bb)
-                    }
-                    mi = mi + 1
-                }
+                ir_emit_copy_to_snapshot(match_snap, match_snap_count, ir_current_bb)
                 ir_emit(IR_BR, 0, 0, 0, bb_exit, ir_current_bb)
                 ir_bb_set_succ(ir_current_bb, bb_exit, 0xFFFFFFFF)
                 ir_current_bb = bb_next
@@ -2762,21 +2759,7 @@ fn ir_lower_stmt(uint64 node) {
             uint64 lcp = ir_loop_hdr_count_stack + ld * 8
             uint64 hc = 0
             unsafe { *(lcp as uint64) -> hc }
-            uint64 bi = 0
-            while bi < hc {
-                uint64 hp = hb + bi * 8 + 4
-                uint32 hdr_vreg = 0
-                unsafe { *(hp as uint32) -> hdr_vreg }
-                uint64 cp = ir_var_map + bi * 8 + 4
-                uint32 cur_vreg = 0
-                unsafe { *(cp as uint32) -> cur_vreg }
-                uint64 wh = hdr_vreg
-                uint64 wc = cur_vreg
-                if wh != wc && wh != 0xFFFFFFFF {
-                    ir_emit(IR_COPY, wh, wc, 0, 0, ir_current_bb)
-                }
-                bi = bi + 1
-            }
+            ir_emit_copy_to_snapshot(hb, hc, ir_current_bb)
             uint64 lep = ir_loop_exit_stack + ld * 8
             uint64 exit_bb = 0
             unsafe { *(lep as uint64) -> exit_bb }
@@ -2799,21 +2782,7 @@ fn ir_lower_stmt(uint64 node) {
             uint64 lcp = ir_loop_hdr_count_stack + ld * 8
             uint64 hc = 0
             unsafe { *(lcp as uint64) -> hc }
-            uint64 bi = 0
-            while bi < hc {
-                uint64 hp = hb + bi * 8 + 4
-                uint32 hdr_vreg = 0
-                unsafe { *(hp as uint32) -> hdr_vreg }
-                uint64 cp = ir_var_map + bi * 8 + 4
-                uint32 cur_vreg = 0
-                unsafe { *(cp as uint32) -> cur_vreg }
-                uint64 wh = hdr_vreg
-                uint64 wc = cur_vreg
-                if wh != wc && wh != 0xFFFFFFFF {
-                    ir_emit(IR_COPY, wh, wc, 0, 0, ir_current_bb)
-                }
-                bi = bi + 1
-            }
+            ir_emit_copy_to_snapshot(hb, hc, ir_current_bb)
             uint64 lhp = ir_loop_header_stack + ld * 8
             uint64 header_bb = 0
             unsafe { *(lhp as uint64) -> header_bb }
@@ -3524,23 +3493,16 @@ fn ir_compute_liveness() {
                 ci = ci + 1
             }
 
-            // Collect instructions into an array for reverse traversal
-            uint64[256] insn_list
-            uint64 insn_count_local = 0
-            uint64 ii = ir_bb_first_insn(bi)
-            while ii != 0xFFFFFFFF && insn_count_local < 256 {
-                uint64 ilp = insn_list + insn_count_local * 8
-                unsafe { *(ilp as uint64) = ii }
-                insn_count_local = insn_count_local + 1
-                ii = ir_insn_next(ii)
-            }
-            // Walk in reverse
-            uint64 ri = insn_count_local
-            while ri > 0 {
+            // Walk instructions in reverse order within this block.
+            // Instructions within a block have consecutive indices
+            // (first_insn .. last_insn), so we walk from last down to first.
+            uint64 blk_first = ir_bb_first_insn(bi)
+            uint64 blk_last = ir_bb_last_insn(bi)
+            uint64 ri = blk_last + 1
+            if blk_last == 0xFFFFFFFF { ri = 0 }
+            while ri > blk_first && blk_last != 0xFFFFFFFF {
                 ri = ri - 1
-                uint64 rlp = insn_list + ri * 8
-                uint64 cur_ii = 0
-                unsafe { *(rlp as uint64) -> cur_ii }
+                uint64 cur_ii = ri
 
                 // Remove def
                 if ir_insn_has_def(cur_ii) != 0 {
@@ -3771,6 +3733,20 @@ fn ir_graph_color() {
                     unsafe { *(up as uint64) -> uv }
                     uv = uv | (1 << ub)
                     unsafe { *(up as uint64) = uv }
+                }
+
+                // Add imm-as-vreg use for MEMCPY(72), MEMSET(76), RET3(83), ATOMIC_CAS(93), FFMA(98)
+                if op == 72 || op == 76 || op == 83 || op == 93 || op == 98 {
+                    uint64 uimm = ir_insn_imm(ii)
+                    if uimm > 0 && uimm < vcount {
+                        uint64 uw = uimm / 64
+                        uint64 ub = uimm & 63
+                        uint64 up = tmp + uw * 8
+                        uint64 uv = 0
+                        unsafe { *(up as uint64) -> uv }
+                        uv = uv | (1 << ub)
+                        unsafe { *(up as uint64) = uv }
+                    }
                 }
             }
         }
@@ -6360,8 +6336,13 @@ fn ir_emit_x86_function(uint64 fn_node) {
     }
 
     // 6. Allocate block offset tracking and branch/return fixup lists
-    if ir_block_offsets == 0 { ir_block_offsets = alloc(4096 * 8) }
-    if ir_br_fixups == 0 { ir_br_fixups = alloc(1024 * 8) }
+    //    Size based on ir_bb_count to support very large functions.
+    uint64 bo_need = ir_bb_count
+    if bo_need < 4096 { bo_need = 4096 }
+    ir_block_offsets = alloc(bo_need * 8)
+    uint64 br_need = ir_bb_count * 2
+    if br_need < 1024 { br_need = 1024 }
+    ir_br_fixups = alloc(br_need * 8)
     if ir_ret_fixups == 0 { ir_ret_fixups = alloc(1024 * 4) }
     ir_br_fixup_count = 0
     ir_ret_fixup_count = 0
