@@ -26,8 +26,9 @@ jobs:
               src/codegen_aarch64.kr src/ir.kr src/format_macho.kr src/format_pe.kr \
               src/format_archive.kr src/format_android.kr src/bcj.kr \
               src/analysis.kr src/living.kr src/runtime.kr src/formatter.kr src/main.kr > build/krc.kr
-          # Bootstrap: compile source with released krc, then re-compile with itself
-          ./build/krc-bootstrap --arch=x86_64 build/krc.kr -o build/krc2
+          # Bootstrap: compile source with released krc (use --legacy for speed),
+          # then re-compile with itself (which uses IR by default)
+          ./build/krc-bootstrap --legacy --arch=x86_64 build/krc.kr -o build/krc2
           chmod +x build/krc2
           ./build/krc2 --arch=x86_64 build/krc.kr -o build/krc2.stable
           mv build/krc2.stable build/krc2
