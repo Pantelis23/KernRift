@@ -115,6 +115,129 @@ fn ir_a64_syscall_nr(uint64 abstract_nr) -> uint64 {
 }
 
 // ---------------------------------------------------------------------------
+// ARM64 Windows syscall emitter (IAT-based)
+// ---------------------------------------------------------------------------
+
+fn ir_emit_arm64_win_syscall(uint64 abstract_nr, uint64 dest_v, uint64 dst_r) {
+    if abstract_nr == 231 {
+        // exit(code): ExitProcess(x0=exit_code)
+        // IR_ARG already placed exit code in x0, no shuffling needed
+        emit_a64_win_call_iat(0)
+        return
+    }
+
+    if abstract_nr == 1 {
+        // write(fd, buf, len): IR_ARG placed fd=x0, buf=x1, len=x2
+        // If fd <= 2, convert via GetStdHandle; otherwise fd is already a handle.
+        // Save buf and len across GetStdHandle call
+        emit_a64_mov(11, 1)               // x11 = buf (save)
+        emit_a64_mov(12, 2)               // x12 = len (save)
+        // Check if fd <= 2: CMP x0, #2; B.HI skip_getstdhandle
+        emit_a64_mov_imm(9, 2)
+        emit_a64_cmp(0, 9)
+        // B.HI +8 insns: skip NEG(1)+MOVZ(1)+SUB(1)+IAT(3)+B(1) = 7 insns, land on NOP at +8
+        emit_a64(0x54000108)              // B.HI +8 insns (32 bytes)
+        // GetStdHandle: x0 = -(fd + 10)
+        emit_a64_neg(0, 0)
+        emit_a64_mov_imm(9, 10)
+        emit_a64_sub(0, 0, 9)
+        emit_a64_win_call_iat(1)          // GetStdHandle -> x0 = handle
+        emit_a64(0x14000002)              // B +2 (skip NOP, land on common path)
+        // skip_getstdhandle: fd > 2, x0 already holds the native handle
+        emit_a64(0xD503201F)              // NOP (landing pad for B.HI)
+        // WriteFile(handle=x0, buf=x1, len=x2, &written=x3=NULL, overlapped=x4=NULL)
+        emit_a64_mov_imm(4, 0)
+        emit_a64_mov_imm(3, 0)
+        emit_a64_mov(2, 12)               // x2 = len
+        emit_a64_mov(1, 11)               // x1 = buf
+        emit_a64_win_call_iat(2)          // WriteFile
+    }
+
+    if abstract_nr == 0 {
+        // read(fd, buf, len): IR_ARG placed fd=x0, buf=x1, len=x2
+        // If fd <= 2, convert via GetStdHandle.
+        emit_a64_mov(11, 1)               // x11 = buf (save)
+        emit_a64_mov(12, 2)               // x12 = len (save)
+        emit_a64_mov_imm(9, 2)
+        emit_a64_cmp(0, 9)
+        // B.HI +8 insns: skip NEG(1)+MOVZ(1)+SUB(1)+IAT(3)+B(1) = 7 insns, land on NOP at +8
+        emit_a64(0x54000108)              // B.HI +8 insns (32 bytes)
+        // GetStdHandle: x0 = -(fd + 10)
+        emit_a64_neg(0, 0)
+        emit_a64_mov_imm(9, 10)
+        emit_a64_sub(0, 0, 9)
+        emit_a64_win_call_iat(1)          // GetStdHandle -> x0 = handle
+        emit_a64(0x14000002)              // B +2 (skip NOP, land on common path)
+        emit_a64(0xD503201F)              // NOP (landing pad for B.HI)
+        // ReadFile(handle=x0, buf=x1, len=x2, &bytesRead=x3=NULL, overlapped=x4=NULL)
+        emit_a64_mov_imm(4, 0)
+        emit_a64_mov_imm(3, 0)
+        emit_a64_mov(2, 12)               // x2 = len
+        emit_a64_mov(1, 11)               // x1 = buf
+        emit_a64_win_call_iat(4)          // ReadFile
+    }
+
+    if abstract_nr == 2 {
+        // open(path, flags): IR_ARG placed path=x0, flags=x1
+        // CreateFileA(path, access, share, security, disposition, flags, template)
+        // Save path and flags
+        emit_a64_mov(11, 0)               // x11 = path
+        emit_a64_mov(12, 1)               // x12 = flags (0=read, nonzero=write)
+        // Compute access: if flags==0 -> GENERIC_READ (0x80000000), else GENERIC_WRITE (0x40000000)
+        emit_a64_mov_imm(1, 0x80000000)   // default: GENERIC_READ (2 insns: MOVZ+MOVK)
+        emit_a64_cbz(12, 12)              // if flags==0, skip GENERIC_WRITE (2 insns = 8 bytes)
+        emit_a64_mov_imm(1, 0x40000000)   // GENERIC_WRITE (2 insns: MOVZ+MOVK)
+        // x2 = FILE_SHARE_READ = 1
+        emit_a64_mov_imm(2, 1)
+        // x3 = NULL (security)
+        emit_a64_mov_imm(3, 0)
+        // x4 = disposition: if flags==0 -> OPEN_EXISTING(3), else CREATE_ALWAYS(2)
+        emit_a64_mov_imm(4, 3)            // default: OPEN_EXISTING (1 insn)
+        emit_a64_cbz(12, 8)               // if flags==0, skip CREATE_ALWAYS (1 insn = 4 bytes)
+        emit_a64_mov_imm(4, 2)            // CREATE_ALWAYS (1 insn)
+        // x5 = FILE_ATTRIBUTE_NORMAL = 0x80
+        emit_a64_mov_imm(5, 0x80)
+        // x6 = NULL (template)
+        emit_a64_mov_imm(6, 0)
+        // x0 = path
+        emit_a64_mov(0, 11)
+        emit_a64_win_call_iat(3)          // CreateFileA
+    }
+
+    if abstract_nr == 3 {
+        // close(fd): CloseHandle(x0=handle)
+        // IR_ARG already placed handle in x0
+        emit_a64_win_call_iat(5)          // CloseHandle
+    }
+
+    if abstract_nr == 8 {
+        // lseek(fd, offset, whence): GetFileSizeEx(handle, &size)
+        // Used by file_size() builtin. SEEK_SET rewind return is unused, so this is safe.
+        // IR_ARG: x0=handle, x1=offset, x2=whence
+        // Allocate 16 bytes on stack for output
+        emit_a64_sub_sp_imm(16)
+        // Zero the output area
+        emit_a64_mov_imm(9, 0)
+        emit_a64_str(9, 31, 0)
+        // x1 = &output (SP)
+        emit_a64_mov(1, 31)
+        // x0 = handle (already in place)
+        emit_a64_win_call_iat(8)          // GetFileSizeEx
+        // Load size from [SP]
+        emit_a64_ldr(0, 31, 0)
+        emit_a64_add_sp_imm(16)
+    }
+
+    // Move result to dest
+    if dst_r != 0xFFFFFFFF && dst_r != 0 {
+        emit_a64_mov(dst_r, 0)
+    }
+    if dst_r == 0xFFFFFFFF {
+        ir_a64_emit_store_spill(0, dest_v)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Per-instruction emitter
 // ---------------------------------------------------------------------------
 
@@ -536,6 +659,10 @@ fn ir_emit_arm64_insn(uint64 ii) {
 
     // ----- IR_SYSCALL (52) -----
     if op == 52 {
+        if target_os == 2 {
+            ir_emit_arm64_win_syscall(imm, dest_v, dst_r)
+            return
+        }
         // Map abstract syscall number to ARM64 number
         uint64 real_nr = ir_a64_syscall_nr(imm)
         emit_a64_syscall_nr(real_nr)
@@ -550,7 +677,7 @@ fn ir_emit_arm64_insn(uint64 ii) {
         return
     }
 
-    // ----- IR_ALLOC (70): inline mmap syscall -----
+    // ----- IR_ALLOC (70): inline mmap / VirtualAlloc -----
     if op == 70 {
         // src1 = size vreg (if != 0), or imm = constant size
         uint64 size_reg = 0
@@ -562,27 +689,40 @@ fn ir_emit_arm64_insn(uint64 ii) {
         }
         // Save original size in x11 (scratch)
         emit_a64_mov(11, size_reg)
-        // AAPCS64 mmap: x0=addr, x1=len, x2=prot, x3=flags, x4=fd, x5=offset
-        // x0 = 0 (addr)
-        emit_a64_mov_imm(0, 0)
-        // x1 = size + 8
-        emit_a64_add_imm(1, size_reg, 8)
-        // x2 = PROT_READ|PROT_WRITE = 3
-        emit_a64_mov_imm(2, 3)
-        // x3 = MAP_PRIVATE|MAP_ANON = 0x22
-        emit_a64_mov_imm(3, 0x22)
-        // x4 = -1 (fd)
-        emit_a64_mov_imm(4, 0xFFFFFFFFFFFFFFFF)
-        // x5 = 0 (offset)
-        emit_a64_mov_imm(5, 0)
-        // syscall (mmap)
-        uint64 mmap_nr = ir_a64_syscall_nr(9)
-        emit_a64_syscall_nr(mmap_nr)
-        emit_a64_svc()
-        // x0 = raw ptr. Store header: [x0] = original size (x11)
-        emit_a64_str(11, 0, 0)
-        // x0 = x0 + 8 (return ptr past header)
-        emit_a64_add_imm(0, 0, 8)
+        if target_os == 2 {
+            // Windows ARM64: VirtualAlloc(NULL, size+8, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE)
+            emit_a64_mov_imm(0, 0)
+            emit_a64_add_imm(1, size_reg, 8)
+            emit_a64_mov_imm(2, 0x3000)
+            emit_a64_mov_imm(3, 4)
+            emit_a64_win_call_iat(6)
+            // x0 = raw ptr. Store header: [x0] = original size (x11)
+            emit_a64_str(11, 0, 0)
+            // x0 = x0 + 8 (return ptr past header)
+            emit_a64_add_imm(0, 0, 8)
+        } else {
+            // AAPCS64 mmap: x0=addr, x1=len, x2=prot, x3=flags, x4=fd, x5=offset
+            // x0 = 0 (addr)
+            emit_a64_mov_imm(0, 0)
+            // x1 = size + 8
+            emit_a64_add_imm(1, size_reg, 8)
+            // x2 = PROT_READ|PROT_WRITE = 3
+            emit_a64_mov_imm(2, 3)
+            // x3 = MAP_PRIVATE|MAP_ANON = 0x22
+            emit_a64_mov_imm(3, 0x22)
+            // x4 = -1 (fd)
+            emit_a64_mov_imm(4, 0xFFFFFFFFFFFFFFFF)
+            // x5 = 0 (offset)
+            emit_a64_mov_imm(5, 0)
+            // syscall (mmap)
+            uint64 mmap_nr = ir_a64_syscall_nr(9)
+            emit_a64_syscall_nr(mmap_nr)
+            emit_a64_svc()
+            // x0 = raw ptr. Store header: [x0] = original size (x11)
+            emit_a64_str(11, 0, 0)
+            // x0 = x0 + 8 (return ptr past header)
+            emit_a64_add_imm(0, 0, 8)
+        }
         if dst_r != 0xFFFFFFFF && dst_r != 0 {
             emit_a64_mov(dst_r, 0)
         }
@@ -592,20 +732,28 @@ fn ir_emit_arm64_insn(uint64 ii) {
         return
     }
 
-    // ----- IR_DEALLOC (71): inline munmap syscall -----
+    // ----- IR_DEALLOC (71): inline munmap / VirtualFree -----
     if op == 71 {
         uint64 ptr_reg = ir_a64_resolve_src(s1_v, 9)
-        // x0 = ptr - 8 (real base)
-        emit_a64_sub(0, ptr_reg, 31)
-        emit_a64_mov_imm(10, 8)
-        emit_a64_sub(0, ptr_reg, 10)
-        // x1 = *(x0) + 8 (total length)
-        emit_a64_ldr(1, 0, 0)
-        emit_a64_add_imm(1, 1, 8)
-        // munmap syscall
-        uint64 munmap_nr = ir_a64_syscall_nr(11)
-        emit_a64_syscall_nr(munmap_nr)
-        emit_a64_svc()
+        if target_os == 2 {
+            // Windows ARM64: VirtualFree(ptr-8, 0, MEM_RELEASE=0x8000)
+            emit_a64_mov_imm(10, 8)
+            emit_a64_sub(0, ptr_reg, 10)
+            emit_a64_mov_imm(1, 0)
+            emit_a64_mov_imm(2, 0x8000)
+            emit_a64_win_call_iat(13)
+        } else {
+            // x0 = ptr - 8 (real base)
+            emit_a64_mov_imm(10, 8)
+            emit_a64_sub(0, ptr_reg, 10)
+            // x1 = *(x0) + 8 (total length)
+            emit_a64_ldr(1, 0, 0)
+            emit_a64_add_imm(1, 1, 8)
+            // munmap syscall
+            uint64 munmap_nr = ir_a64_syscall_nr(11)
+            emit_a64_syscall_nr(munmap_nr)
+            emit_a64_svc()
+        }
         return
     }
 
