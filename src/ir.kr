@@ -3989,6 +3989,32 @@ fn ir_resolve_src(uint64 vreg, uint64 scratch) -> uint64 {
 }
 
 // ---------------------------------------------------------------------------
+// OS-aware syscall number mapping (x86_64)
+// ---------------------------------------------------------------------------
+
+fn ir_x86_syscall_nr(uint64 abstract_nr) -> uint64 {
+    if target_os == 1 {
+        // macOS x86_64: prefix 0x2000000
+        if abstract_nr == 231 { return 0x2000001 }  // exit → 1
+        if abstract_nr == 1 { return 0x2000004 }    // write → 4
+        if abstract_nr == 0 { return 0x2000003 }    // read → 3
+        if abstract_nr == 2 { return 0x2000005 }    // open → 5
+        if abstract_nr == 3 { return 0x2000006 }    // close → 6
+        if abstract_nr == 8 { return 0x20000C7 }    // lseek → 199
+        if abstract_nr == 9 { return 0x20000C5 }    // mmap → 197
+        if abstract_nr == 11 { return 0x2000049 }   // munmap → 73
+        if abstract_nr == 59 { return 0x200003B }   // execve → 59
+        if abstract_nr == 228 { return 0x20000E4 }  // clock_gettime → 228
+        if abstract_nr == 15 { return 0x200000F }   // chmod → 15
+        if abstract_nr == 90 { return 0x200000F }   // fchmod(Linux 90) → chmod(macOS 15)
+        if abstract_nr == 257 { return 0x2000005 }  // openat → open (macOS uses open, not openat)
+        return 0x2000000 | abstract_nr               // fallback
+    }
+    // Linux (0) and Android (3) use the same x86_64 syscall numbers
+    return abstract_nr
+}
+
+// ---------------------------------------------------------------------------
 // Per-instruction emitter
 // ---------------------------------------------------------------------------
 
@@ -4608,8 +4634,9 @@ fn ir_emit_x86_insn(uint64 ii) {
         emit_byte(0x4D)
         emit_byte(0x31)
         emit_byte(0xC9)
-        // mov rax, 9 (mmap syscall)
-        ir_emit_mov_r64_imm64(0, 9)
+        // mov rax, 9 (mmap syscall) — OS-aware
+        uint64 mmap_nr = ir_x86_syscall_nr(9)
+        ir_emit_mov_r64_imm64(0, mmap_nr)
         // syscall
         emit_byte(0x0F)
         emit_byte(0x05)
@@ -4655,8 +4682,9 @@ fn ir_emit_x86_insn(uint64 ii) {
         emit_byte(0x83)
         emit_byte(0xC6)
         emit_byte(0x08)
-        // mov rax, 11 (munmap syscall)
-        ir_emit_mov_r64_imm64(0, 11)
+        // mov rax, 11 (munmap syscall) — OS-aware
+        uint64 munmap_nr = ir_x86_syscall_nr(11)
+        ir_emit_mov_r64_imm64(0, munmap_nr)
         // syscall
         emit_byte(0x0F)
         emit_byte(0x05)
@@ -5161,11 +5189,18 @@ fn ir_emit_x86_insn(uint64 ii) {
     }
 
     if op == 52 {
-        // IR_SYSCALL: rax = imm, syscall
-        ir_emit_mov_r64_imm64(0, imm)
+        // IR_SYSCALL: dispatch by target_os
+        if target_os == 2 {
+            // Windows PE: stub — will be implemented in Task 2
+            // For now, emit exit(0) as a safe fallback
+            ir_emit_mov_r64_imm64(0, 0)
+            return
+        }
+        // Linux (0), macOS (1), Android (3): raw syscall with OS-specific numbers
+        uint64 real_nr = ir_x86_syscall_nr(imm)
+        ir_emit_mov_r64_imm64(0, real_nr)
         emit_byte(0x0F)
         emit_byte(0x05)
-        // Result in rax -> move to dst if needed
         if dst_r != 0xFFFFFFFF && dst_r != 0 {
             ir_emit_mov_r64_r64(dst_r, 0)
         }
@@ -5830,8 +5865,9 @@ fn ir_emit_x86_insn(uint64 ii) {
             // xor rdx, rdx: 48 31 D2
             emit_byte(0x48); emit_byte(0x31); emit_byte(0xD2)
         }
-        // mov rax, 59 (execve): 48 C7 C0 3B 00 00 00
-        ir_emit_mov_r64_imm64(0, 59)
+        // mov rax, 59 (execve) — OS-aware
+        uint64 execve_nr = ir_x86_syscall_nr(59)
+        ir_emit_mov_r64_imm64(0, execve_nr)
         // syscall: 0F 05
         emit_byte(0x0F); emit_byte(0x05)
         // If execve fails, restore stack: add rsp, 16
@@ -5868,8 +5904,9 @@ fn ir_emit_x86_insn(uint64 ii) {
             // xor rdx, rdx: 48 31 D2
             emit_byte(0x48); emit_byte(0x31); emit_byte(0xD2)
         }
-        // mov rax, 59 (execve)
-        ir_emit_mov_r64_imm64(0, 59)
+        // mov rax, 59 (execve) — OS-aware
+        uint64 execve_nr_a = ir_x86_syscall_nr(59)
+        ir_emit_mov_r64_imm64(0, execve_nr_a)
         // syscall: 0F 05
         emit_byte(0x0F); emit_byte(0x05)
         // Save errno to exec_errno if defined
@@ -5893,8 +5930,9 @@ fn ir_emit_x86_insn(uint64 ii) {
         ir_emit_mov_r64_r64(7, path_r)
         // rsi = 0x1ED (0755 octal)
         ir_emit_mov_r64_imm64(6, 0x1ED)
-        // rax = 90 (chmod)
-        ir_emit_mov_r64_imm64(0, 90)
+        // rax = 90 (chmod) — OS-aware
+        uint64 chmod_nr = ir_x86_syscall_nr(90)
+        ir_emit_mov_r64_imm64(0, chmod_nr)
         // syscall: 0F 05
         emit_byte(0x0F); emit_byte(0x05)
         return
@@ -5926,8 +5964,9 @@ fn ir_emit_x86_insn(uint64 ii) {
         emit_byte(0xBF); emit_byte(1); emit_byte(0); emit_byte(0); emit_byte(0)
         // mov rsi, rsp
         emit_byte(0x48); emit_byte(0x89); emit_byte(0xE6)
-        // mov eax, 228
-        ir_emit_mov_r64_imm64(0, 228)
+        // mov eax, 228 (clock_gettime) — OS-aware
+        uint64 cgt_nr = ir_x86_syscall_nr(228)
+        ir_emit_mov_r64_imm64(0, cgt_nr)
         // syscall
         emit_byte(0x0F); emit_byte(0x05)
         // mov rax, [rsp] (seconds)
