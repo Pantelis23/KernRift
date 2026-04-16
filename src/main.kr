@@ -4016,7 +4016,7 @@ fn main() {
             write(2, "  check <file.kr>   safety analysis\n", 36)
             write(2, "  lc <file.kr>      living compiler\n", 36)
             write(2, "  fmt <file.kr>     auto-format source\n", 39)
-            exit(1)
+            exit(0)
         }
         input_path = "test_input.kr"
     }
