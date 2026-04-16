@@ -3498,10 +3498,11 @@ fn ir_compute_liveness() {
             // (first_insn .. last_insn), so we walk from last down to first.
             uint64 blk_first = ir_bb_first_insn(bi)
             uint64 blk_last = ir_bb_last_insn(bi)
-            uint64 ri = blk_last + 1
-            if blk_last == 0xFFFFFFFF { ri = 0 }
-            while ri > blk_first && blk_last != 0xFFFFFFFF {
-                ri = ri - 1
+            uint64 ri = blk_last
+            uint64 lv_done = 0
+            if blk_last == 0xFFFFFFFF { lv_done = 1 }
+            while lv_done == 0 {
+                if ri == blk_first { lv_done = 1 }
                 uint64 cur_ii = ri
 
                 // Remove def
@@ -3556,6 +3557,8 @@ fn ir_compute_liveness() {
                         unsafe { *(ip as uint64) = iv }
                     }
                 }
+
+                if ri > blk_first { ri = ri - 1 }
             }
 
             // Check if live_in changed
@@ -3657,9 +3660,10 @@ fn ir_graph_color() {
         uint64 first = ir_bb_first_insn(bi)
         uint64 last = ir_bb_last_insn(bi)
         if last != 0xFFFFFFFF {
-            uint64 ii = last + 1
-            while ii > first {
-                ii = ii - 1
+            uint64 ii = last
+            uint64 ig_done = 0
+            while ig_done == 0 {
+                if ii == first { ig_done = 1 }
 
                 // At this instruction, the dest vreg interferes with
                 // everything currently live (except itself and copy sources)
@@ -3748,6 +3752,8 @@ fn ir_graph_color() {
                         unsafe { *(up as uint64) = uv }
                     }
                 }
+
+                if ii > first { ii = ii - 1 }
             }
         }
         bi = bi + 1
