@@ -2451,11 +2451,20 @@ fn ir_lower_stmt(uint64 node) {
         if vd_type_kind == 95 { vd_fk = 2 }
         if winit != 0 {
             uint64 val = ir_lower_expr(winit)
+            // Always create a fresh vreg for the new variable so it doesn't
+            // alias the source. This is critical when the init is a variable
+            // reference (e.g., uint64 test = bits) — without the copy, both
+            // names share a vreg and modifications to one affect the other.
+            uint64 fresh_val = ir_new_vreg()
+            ir_emit(IR_COPY, fresh_val, val, 0, 0, ir_current_bb)
             // If type is float but init expr didn't set float kind, set it now
             if vd_fk != 0 && ir_vreg_fkind_get(val) == 0 {
-                ir_vreg_fkind_set(val, vd_fk)
+                ir_vreg_fkind_set(fresh_val, vd_fk)
             }
-            ir_var_set(name_tok, val)
+            if vd_fk == 0 && ir_vreg_fkind_get(val) != 0 {
+                ir_vreg_fkind_set(fresh_val, ir_vreg_fkind_get(val))
+            }
+            ir_var_set(name_tok, fresh_val)
         } else {
             uint64 zero = ir_new_vreg()
             ir_emit(IR_CONST, zero, 0, 0, 0, ir_current_bb)
