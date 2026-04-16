@@ -159,3 +159,82 @@ chmod +x /tmp/krc_s2
 ## Key Insight
 
 The bug manifests as a **phase-ordering** issue: the IR codegen in the legacy-compiled binary works correctly, but the IR codegen in the IR-compiled binary (same source code, different compilation) produces wrong code. This means the bug is in how the IR backend compiles ITS OWN functions — specifically the register allocator and code emission functions in ir.kr itself. When these functions are compiled by a correct IR backend, they work. When compiled by themselves (bootstrap), the result has subtle arithmetic errors.
+
+## Update (2026-04-16 later)
+
+### Off-by-one found and fixed (commit 0e734d8)
+
+Both `ir_compute_liveness` and `ir_graph_color`'s interference builder had:
+```
+uint64 ii = last + 1
+while ii > first { ii = ii - 1; ... }
+```
+This skips instruction `first`. Fixed with do-while pattern. Changed output size (+165 bytes) but the 3-variable addition STILL returns 34.
+
+### New reproducer: bit-counting pattern (INFINITE LOOP from s1)
+
+```kernrift
+fn count_bits(uint64 val) -> uint64 {
+    uint64 count = 0
+    uint64 bits = val
+    while bits != 0 {
+        uint64 bp = 0
+        uint64 test = bits
+        while (test & 1) == 0 {
+            test = test >> 1
+            bp = bp + 1
+        }
+        count = count + 1
+        bits = bits & ~(1 << bp)
+    }
+    return count
+}
+fn main() { exit(count_bits(7)) }
+```
+
+- krc2 (legacy-compiled) with `--ir`: returns 3 (correct)
+- s1 (IR-compiled) with `--ir`: **INFINITE LOOP**
+
+This is the EXACT pattern used by `ir_graph_color`'s inner bit iteration loop.
+
+### X86 disassembly proof
+
+s1's output assigns both the AND mask and the zero constant to r12:
+```
+mov r12, 1           ; mask = 1
+and r12, rbx         ; mask = bits & 1
+mov r12, 0           ; OVERWRITES mask! zero constant clobbers it
+```
+
+krc2's output uses different registers (r14 for mask, r15 for zero):
+```
+mov r14, 1           ; mask = 1
+and r14, rbx         ; mask = bits & 1
+mov r15, 0           ; separate register for zero
+```
+
+### Root cause chain
+
+1. The dist binary (v2.7.1) compiles the source with legacy codegen → krc2 (correct)
+2. krc2 compiles the source with IR codegen → s1 (the IR codegen functions in s1 are compiled correctly by krc2)
+3. s1 runs its IR codegen to compile programs → the IR codegen in s1 has correct SOURCE but was compiled by krc2's IR emitter
+4. krc2's IR emitter has the off-by-one bug (fixed in source but krc2 was compiled by dist which predates the fix)
+5. The off-by-one causes krc2's IR emitter to skip the first instruction of every basic block during interference computation
+6. This produces slightly wrong register assignments in s1's machine code
+7. For simple programs, the wrong assignments happen to still be correct (luck)
+8. For the bit-counting pattern (used by ir_graph_color), the wrong assignment causes r12 reuse → infinite loop
+9. Since ir_graph_color itself is broken in s1, ALL register allocation in s1 is wrong → s2 crashes
+
+### Fix strategy
+
+The fix is to rebuild the dist binary AFTER the off-by-one fix, then re-bootstrap:
+1. Current krc2 has the fix in source
+2. `make dist` → new dist binary with fix
+3. Rebuild from new dist → krc2 with correct IR emitter
+4. krc2 --ir → s1 with correct interference builder
+5. s1 --ir → s2 should now work
+
+OR: do a triple bootstrap using legacy as intermediate:
+1. krc2 (legacy) → krc_stage1 (has fix in source, compiled by legacy)
+2. krc_stage1 --ir → krc_stage2 (IR code compiled by correct IR emitter)
+3. krc_stage2 --ir → krc_stage3 (should converge with krc_stage2)
