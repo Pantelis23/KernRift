@@ -663,6 +663,15 @@ fn ir_emit_arm64_insn(uint64 ii) {
             ir_emit_arm64_win_syscall(imm, dest_v, dst_r)
             return
         }
+        // ARM64 Linux/Android: open(2) → openat(56) needs arg shift
+        // IR_ARG sets x0=path, x1=flags, x2=mode
+        // openat needs x0=AT_FDCWD(-100), x1=path, x2=flags, x3=mode
+        if imm == 2 && target_os != 1 {
+            emit_a64_mov(3, 2)          // x3 = mode (was x2)
+            emit_a64_mov(2, 1)          // x2 = flags (was x1)
+            emit_a64_mov(1, 0)          // x1 = path (was x0)
+            emit_a64_mov_imm(0, 0xFFFFFFFFFFFFFF9C)  // x0 = AT_FDCWD (-100)
+        }
         // Map abstract syscall number to ARM64 number
         uint64 real_nr = ir_a64_syscall_nr(imm)
         emit_a64_syscall_nr(real_nr)
