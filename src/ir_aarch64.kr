@@ -1,0 +1,1237 @@
+// KernRift self-hosted compiler -- AArch64 IR backend
+//
+// Emits ARM64 machine code from the shared SSA IR infrastructure (ir.kr).
+// Uses the graph-colouring register allocator with 10 callee-saved registers
+// (x19-x28) and the emit_a64_* instruction helpers from codegen_aarch64.kr.
+//
+// Frame layout (growing downward):
+//   [old SP]
+//     x29, x30          (STP, 16 bytes)
+//     x19-x28           (5 STP pairs, 80 bytes)
+//     spill slots        (ir_spill_count * 8 bytes, 16-aligned)
+//   [new SP]
+
+// ---------------------------------------------------------------------------
+// Register allocator setup for ARM64
+// ---------------------------------------------------------------------------
+
+fn ir_regalloc_init_arm64() {
+    // Allocate or reuse the phys_regs table (needs 10 entries for ARM64)
+    // We always alloc a fresh buffer since the x86 path uses the same pointer
+    ir_phys_regs = alloc(10 * 8)
+    uint64 p0 = ir_phys_regs
+    unsafe { *(p0 as uint64) = 19 }       // color 0 -> x19
+    uint64 p1 = ir_phys_regs + 8
+    unsafe { *(p1 as uint64) = 20 }       // color 1 -> x20
+    uint64 p2 = ir_phys_regs + 16
+    unsafe { *(p2 as uint64) = 21 }       // color 2 -> x21
+    uint64 p3 = ir_phys_regs + 24
+    unsafe { *(p3 as uint64) = 22 }       // color 3 -> x22
+    uint64 p4 = ir_phys_regs + 32
+    unsafe { *(p4 as uint64) = 23 }       // color 4 -> x23
+    uint64 p5 = ir_phys_regs + 40
+    unsafe { *(p5 as uint64) = 24 }       // color 5 -> x24
+    uint64 p6 = ir_phys_regs + 48
+    unsafe { *(p6 as uint64) = 25 }       // color 6 -> x25
+    uint64 p7 = ir_phys_regs + 56
+    unsafe { *(p7 as uint64) = 26 }       // color 7 -> x26
+    uint64 p8 = ir_phys_regs + 64
+    unsafe { *(p8 as uint64) = 27 }       // color 8 -> x27
+    uint64 p9 = ir_phys_regs + 72
+    unsafe { *(p9 as uint64) = 28 }       // color 9 -> x28
+}
+
+// ---------------------------------------------------------------------------
+// ARM64 spill helpers
+// ---------------------------------------------------------------------------
+
+// Compute the spill slot offset for a spilled vreg.
+// Spill slots start at SP (after prologue), each 8 bytes.
+fn ir_a64_spill_offset(uint64 vreg) -> uint64 {
+    uint64 slot = vreg - IR_NUM_REGS - 1
+    return slot * 8
+}
+
+// Load a spilled vreg into scratch register (x9 or x10).
+fn ir_a64_load_spill(uint64 scratch, uint64 vreg) {
+    uint64 off = ir_a64_spill_offset(vreg)
+    emit_a64_ldr(scratch, 31, off)
+}
+
+// Store a register to the spill slot for vreg.
+fn ir_a64_emit_store_spill(uint64 reg, uint64 vreg) {
+    uint64 off = ir_a64_spill_offset(vreg)
+    emit_a64_str(reg, 31, off)
+}
+
+// Resolve a vreg to a physical register. If spilled, load into scratch (9 or 10).
+fn ir_a64_resolve_src(uint64 vreg, uint64 scratch) -> uint64 {
+    if vreg == 0 { return scratch }
+    uint64 phys = ir_get_phys_reg(vreg)
+    if phys != 0xFFFFFFFF { return phys }
+    ir_a64_load_spill(scratch, vreg)
+    return scratch
+}
+
+// ---------------------------------------------------------------------------
+// ARM64 syscall number mapping
+// ---------------------------------------------------------------------------
+// The IR uses x86_64 Linux abstract syscall numbers. Map to ARM64 Linux.
+
+fn ir_a64_syscall_nr(uint64 abstract_nr) -> uint64 {
+    if target_os == 1 {
+        // macOS ARM64: same numbers as macOS x86_64 (with 0x2000000 prefix removed,
+        // macOS ARM64 uses the raw Darwin numbers directly)
+        if abstract_nr == 231 { return 1 }    // exit_group -> exit(1)
+        if abstract_nr == 1 { return 4 }      // write -> 4
+        if abstract_nr == 0 { return 3 }      // read -> 3
+        if abstract_nr == 2 { return 5 }      // open -> 5
+        if abstract_nr == 3 { return 6 }      // close -> 6
+        if abstract_nr == 8 { return 199 }    // lseek -> 199
+        if abstract_nr == 9 { return 197 }    // mmap -> 197
+        if abstract_nr == 11 { return 73 }    // munmap -> 73
+        if abstract_nr == 59 { return 59 }    // execve -> 59
+        if abstract_nr == 228 { return 228 }  // clock_gettime
+        if abstract_nr == 15 { return 15 }    // chmod
+        if abstract_nr == 90 { return 15 }    // fchmod -> chmod
+        if abstract_nr == 257 { return 5 }    // openat -> open
+        return abstract_nr
+    }
+    // Linux (0) and Android (3): ARM64 Linux syscall numbers
+    if abstract_nr == 231 { return 93 }    // exit_group -> exit (93)
+    if abstract_nr == 1 { return 64 }      // write -> 64
+    if abstract_nr == 0 { return 63 }      // read -> 63
+    if abstract_nr == 2 { return 56 }      // open -> openat (56)
+    if abstract_nr == 3 { return 57 }      // close -> 57
+    if abstract_nr == 8 { return 62 }      // lseek -> 62
+    if abstract_nr == 9 { return 222 }     // mmap -> 222
+    if abstract_nr == 11 { return 215 }    // munmap -> 215
+    if abstract_nr == 59 { return 221 }    // execve -> 221
+    if abstract_nr == 228 { return 113 }   // clock_gettime -> 113
+    if abstract_nr == 15 { return 52 }     // chmod -> fchmodat (52)
+    if abstract_nr == 90 { return 52 }     // fchmod -> fchmodat (52)
+    if abstract_nr == 257 { return 56 }    // openat -> 56
+    return abstract_nr
+}
+
+// ---------------------------------------------------------------------------
+// Per-instruction emitter
+// ---------------------------------------------------------------------------
+
+fn ir_emit_arm64_insn(uint64 ii) {
+    uint64 op = ir_insn_opcode(ii)
+    uint64 dest_v = ir_insn_dest(ii)
+    uint64 s1_v = ir_insn_src1(ii)
+    uint64 s2_v = ir_insn_src2(ii)
+    uint64 imm = ir_insn_imm(ii)
+
+    uint64 dst_r = ir_get_phys_reg(dest_v)
+
+    // ----- IR_STR_CONST (79): dst = lea string data -----
+    if op == 79 {
+        uint64 str_offset = imm
+        // emit_a64_static_lea puts address in x0
+        // Record string fixup
+        if str_fixup_count >= 4096 {
+            write(2, "error: str_fixups overflow (max 4096)\n", 38)
+            exit(1)
+        }
+        uint64 fentry = str_fixups + str_fixup_count * 8
+        uint32 cp = out_len
+        unsafe { *(fentry as uint32) = cp }
+        uint64 fe4 = fentry + 4
+        uint32 so = str_offset
+        unsafe { *(fe4 as uint32) = so }
+        str_fixup_count = str_fixup_count + 1
+        // ADRP + ADD sequence (patched by static fixup resolver)
+        emit_a64(0x90000010)    // ADRP X16, #0
+        emit_a64(0x91000200)    // ADD X0, X16, #0
+        if dst_r != 0xFFFFFFFF {
+            emit_a64_mov(dst_r, 0)
+        } else {
+            ir_a64_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_CONST (1): dst = imm64 -----
+    if op == 1 {
+        if dst_r != 0xFFFFFFFF {
+            emit_a64_mov_imm(dst_r, imm)
+        } else {
+            emit_a64_mov_imm(9, imm)
+            ir_a64_emit_store_spill(9, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_ADD (2) -----
+    if op == 2 {
+        uint64 a_reg = ir_a64_resolve_src(s1_v, 9)
+        uint64 b_reg = ir_a64_resolve_src(s2_v, 10)
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        emit_a64_add(d, a_reg, b_reg)
+        if dst_r == 0xFFFFFFFF {
+            ir_a64_emit_store_spill(9, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_SUB (3) -----
+    if op == 3 {
+        uint64 a_reg = ir_a64_resolve_src(s1_v, 9)
+        uint64 b_reg = ir_a64_resolve_src(s2_v, 10)
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        emit_a64_sub(d, a_reg, b_reg)
+        if dst_r == 0xFFFFFFFF {
+            ir_a64_emit_store_spill(9, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_MUL (4) -----
+    if op == 4 {
+        uint64 a_reg = ir_a64_resolve_src(s1_v, 9)
+        uint64 b_reg = ir_a64_resolve_src(s2_v, 10)
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        emit_a64_mul(d, a_reg, b_reg)
+        if dst_r == 0xFFFFFFFF {
+            ir_a64_emit_store_spill(9, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_DIV (5) -----
+    if op == 5 {
+        uint64 a_reg = ir_a64_resolve_src(s1_v, 9)
+        uint64 b_reg = ir_a64_resolve_src(s2_v, 10)
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        emit_a64_udiv(d, a_reg, b_reg)
+        if dst_r == 0xFFFFFFFF {
+            ir_a64_emit_store_spill(9, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_MOD (6): dst = src1 % src2 = src1 - (src1/src2)*src2 -----
+    if op == 6 {
+        uint64 a_reg = ir_a64_resolve_src(s1_v, 9)
+        uint64 b_reg = ir_a64_resolve_src(s2_v, 10)
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        // x11 = a / b
+        emit_a64_udiv(11, a_reg, b_reg)
+        // d = a - x11 * b (MSUB d, x11, b, a)
+        emit_a64_msub(d, 11, b_reg, a_reg)
+        if dst_r == 0xFFFFFFFF {
+            ir_a64_emit_store_spill(9, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_AND (7) -----
+    if op == 7 {
+        uint64 a_reg = ir_a64_resolve_src(s1_v, 9)
+        uint64 b_reg = ir_a64_resolve_src(s2_v, 10)
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        emit_a64_and(d, a_reg, b_reg)
+        if dst_r == 0xFFFFFFFF {
+            ir_a64_emit_store_spill(9, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_OR (8) -----
+    if op == 8 {
+        uint64 a_reg = ir_a64_resolve_src(s1_v, 9)
+        uint64 b_reg = ir_a64_resolve_src(s2_v, 10)
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        emit_a64_orr(d, a_reg, b_reg)
+        if dst_r == 0xFFFFFFFF {
+            ir_a64_emit_store_spill(9, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_XOR (9) -----
+    if op == 9 {
+        uint64 a_reg = ir_a64_resolve_src(s1_v, 9)
+        uint64 b_reg = ir_a64_resolve_src(s2_v, 10)
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        emit_a64_eor(d, a_reg, b_reg)
+        if dst_r == 0xFFFFFFFF {
+            ir_a64_emit_store_spill(9, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_SHL (10) -----
+    if op == 10 {
+        uint64 a_reg = ir_a64_resolve_src(s1_v, 9)
+        uint64 b_reg = ir_a64_resolve_src(s2_v, 10)
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        emit_a64_lsl(d, a_reg, b_reg)
+        if dst_r == 0xFFFFFFFF {
+            ir_a64_emit_store_spill(9, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_SHR (11) -----
+    if op == 11 {
+        uint64 a_reg = ir_a64_resolve_src(s1_v, 9)
+        uint64 b_reg = ir_a64_resolve_src(s2_v, 10)
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        emit_a64_lsr(d, a_reg, b_reg)
+        if dst_r == 0xFFFFFFFF {
+            ir_a64_emit_store_spill(9, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_NEG (12) -----
+    if op == 12 {
+        uint64 a_reg = ir_a64_resolve_src(s1_v, 9)
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        emit_a64_neg(d, a_reg)
+        if dst_r == 0xFFFFFFFF {
+            ir_a64_emit_store_spill(9, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_NOT (13) -----
+    if op == 13 {
+        uint64 a_reg = ir_a64_resolve_src(s1_v, 9)
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        emit_a64_mvn(d, a_reg)
+        if dst_r == 0xFFFFFFFF {
+            ir_a64_emit_store_spill(9, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_CMP_EQ (14) through IR_CMP_GE (19) -----
+    if op >= 14 && op <= 19 {
+        uint64 a_reg = ir_a64_resolve_src(s1_v, 9)
+        uint64 b_reg = ir_a64_resolve_src(s2_v, 10)
+        emit_a64_cmp(a_reg, b_reg)
+        // ARM64 condition codes for unsigned comparisons:
+        // EQ=0, NE=1, LO(CC)=3, LS=9, HI=8, HS(CS)=2
+        uint64 cond = 0
+        if op == 14 { cond = 0 }   // EQ
+        if op == 15 { cond = 1 }   // NE
+        if op == 16 { cond = 3 }   // LO (unsigned <)
+        if op == 17 { cond = 9 }   // LS (unsigned <=)
+        if op == 18 { cond = 8 }   // HI (unsigned >)
+        if op == 19 { cond = 2 }   // HS (unsigned >=)
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        emit_a64_cset(d, cond)
+        if dst_r == 0xFFFFFFFF {
+            ir_a64_emit_store_spill(9, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_SCMP_LT (120) through IR_SCMP_GE (123) -----
+    if op >= 120 && op <= 123 {
+        uint64 a_reg = ir_a64_resolve_src(s1_v, 9)
+        uint64 b_reg = ir_a64_resolve_src(s2_v, 10)
+        emit_a64_cmp(a_reg, b_reg)
+        // Signed condition codes: LT=11, LE=13, GT=12, GE=10
+        uint64 cond = 0
+        if op == 120 { cond = 11 }  // LT
+        if op == 121 { cond = 13 }  // LE
+        if op == 122 { cond = 12 }  // GT
+        if op == 123 { cond = 10 }  // GE
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        emit_a64_cset(d, cond)
+        if dst_r == 0xFFFFFFFF {
+            ir_a64_emit_store_spill(9, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_LOAD (30): dest = *(src1), width in imm -----
+    if op == 30 {
+        uint64 addr_reg = ir_a64_resolve_src(s1_v, 10)
+        if imm == 0 && s2_v != 0 { imm = s2_v }
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        if imm == 8 {
+            emit_a64_ldr(d, addr_reg, 0)
+        } else if imm == 4 {
+            emit_a64_ldr32(d, addr_reg, 0)
+        } else if imm == 2 {
+            emit_a64_ldrh(d, addr_reg, 0)
+        } else {
+            emit_a64_ldrb(d, addr_reg, 0)
+        }
+        if dst_r == 0xFFFFFFFF {
+            ir_a64_emit_store_spill(9, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_STORE (31): *(src1) = src2, width in dest_v -----
+    if op == 31 {
+        uint64 addr_reg = ir_a64_resolve_src(s1_v, 9)
+        uint64 val_reg = ir_a64_resolve_src(s2_v, 10)
+        uint64 width = dest_v
+        if width == 8 {
+            emit_a64_str(val_reg, addr_reg, 0)
+        } else if width == 4 {
+            emit_a64_str32(val_reg, addr_reg, 0)
+        } else if width == 2 {
+            emit_a64_strh(val_reg, addr_reg, 0)
+        } else {
+            emit_a64_strb(val_reg, addr_reg, 0)
+        }
+        return
+    }
+
+    // ----- IR_STACK_ADDR (32): compute address of stack slot -----
+    if op == 32 {
+        // imm = offset from frame base (spill area start)
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        emit_a64_add_imm(d, 31, imm)
+        if dst_r == 0xFFFFFFFF {
+            ir_a64_emit_store_spill(9, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_COPY (61) -----
+    if op == 61 {
+        if s1_v != 0 {
+            uint64 src_reg = ir_a64_resolve_src(s1_v, 9)
+            if dst_r != 0xFFFFFFFF {
+                emit_a64_mov(dst_r, src_reg)
+            } else {
+                if src_reg != 9 { emit_a64_mov(9, src_reg) }
+                ir_a64_emit_store_spill(9, dest_v)
+            }
+        } else {
+            // Param init: imm = param index
+            // AAPCS64: x0-x7 for first 8 params
+            if imm < 8 {
+                uint64 pr = imm
+                if dst_r != 0xFFFFFFFF {
+                    emit_a64_mov(dst_r, pr)
+                } else {
+                    emit_a64_mov(9, pr)
+                    ir_a64_emit_store_spill(9, dest_v)
+                }
+            } else if imm >= 100 {
+                // ASM output: read from physical register (imm - 100)
+                uint64 phys_src = imm - 100
+                if dst_r != 0xFFFFFFFF {
+                    emit_a64_mov(dst_r, phys_src)
+                } else {
+                    emit_a64_mov(9, phys_src)
+                    ir_a64_emit_store_spill(9, dest_v)
+                }
+            } else {
+                // Overflow param (8+): load from caller stack frame
+                // After prologue: [SP + frame_size] = saved regs start
+                // caller stack args at [SP + frame_size + (imm-8)*8]
+                uint64 overflow_off = ir_frame_size + (imm - 8) * 8
+                uint64 d = dst_r
+                if d == 0xFFFFFFFF { d = 9 }
+                emit_a64_ldr(d, 31, overflow_off)
+                if dst_r == 0xFFFFFFFF {
+                    ir_a64_emit_store_spill(9, dest_v)
+                }
+            }
+        }
+        return
+    }
+
+    // ----- IR_RET (42): move result to x0 then branch to epilogue -----
+    if op == 42 {
+        uint64 ret_r = ir_a64_resolve_src(s1_v, 9)
+        if ret_r != 0 { emit_a64_mov(0, ret_r) }
+        // B to epilogue (patched later)
+        uint64 rfp = ir_ret_fixups + ir_ret_fixup_count * 4
+        uint32 rpo = out_len
+        unsafe { *(rfp as uint32) = rpo }
+        ir_ret_fixup_count = ir_ret_fixup_count + 1
+        emit_a64(0x14000000)    // B #0 (placeholder)
+        return
+    }
+
+    // ----- IR_RET_VOID (43): branch to epilogue -----
+    if op == 43 {
+        uint64 rfp = ir_ret_fixups + ir_ret_fixup_count * 4
+        uint32 rpo = out_len
+        unsafe { *(rfp as uint32) = rpo }
+        ir_ret_fixup_count = ir_ret_fixup_count + 1
+        emit_a64(0x14000000)    // B #0 (placeholder)
+        return
+    }
+
+    // ----- IR_ARG (51): move value to argument register x0-x7 -----
+    if op == 51 {
+        // AAPCS64: x0-x7 for first 8 arguments
+        if imm < 8 {
+            uint64 target = imm
+            uint64 src_reg = ir_a64_resolve_src(s1_v, 9)
+            emit_a64_mov(target, src_reg)
+        } else if imm >= 100 {
+            // Direct register target (ASM I/O constraints)
+            uint64 phys_target = imm - 100
+            uint64 src_reg = ir_a64_resolve_src(s1_v, 9)
+            emit_a64_mov(phys_target, src_reg)
+        } else {
+            // Overflow arg: save vreg to overflow buffer for IR_CALL
+            uint64 oi = imm - 8
+            if oi < 16 {
+                uint64 op_ptr = ir_overflow_args + oi * 8
+                uint64 sv = s1_v
+                unsafe { *(op_ptr as uint64) = sv }
+                if oi >= ir_overflow_arg_count { ir_overflow_arg_count = oi + 1 }
+            }
+        }
+        return
+    }
+
+    // ----- IR_CALL (50): bl with fixup -----
+    if op == 50 {
+        // Overflow args (>8 args) not yet implemented for ARM64 IR
+        // Emit BL placeholder
+        uint64 call_patch = out_len
+        emit_a64(0x94000000)    // BL #0 (placeholder)
+        // Record fixup: imm holds the callee token
+        uint64 fentry = fixup_table + fixup_count * 8
+        uint32 fo = call_patch
+        unsafe { *(fentry as uint32) = fo }
+        uint64 fe4 = fentry + 4
+        uint32 ct = imm
+        unsafe { *(fe4 as uint32) = ct }
+        fixup_count = fixup_count + 1
+        ir_overflow_arg_count = 0
+        // Result in x0
+        if dst_r != 0xFFFFFFFF && dst_r != 0 {
+            emit_a64_mov(dst_r, 0)
+        }
+        if dst_r == 0xFFFFFFFF {
+            ir_a64_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_SYSCALL (52) -----
+    if op == 52 {
+        // Map abstract syscall number to ARM64 number
+        uint64 real_nr = ir_a64_syscall_nr(imm)
+        emit_a64_syscall_nr(real_nr)
+        emit_a64_svc()
+        // Result in x0
+        if dst_r != 0xFFFFFFFF && dst_r != 0 {
+            emit_a64_mov(dst_r, 0)
+        }
+        if dst_r == 0xFFFFFFFF {
+            ir_a64_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_ALLOC (70): inline mmap syscall -----
+    if op == 70 {
+        // src1 = size vreg (if != 0), or imm = constant size
+        uint64 size_reg = 0
+        if s1_v != 0 {
+            size_reg = ir_a64_resolve_src(s1_v, 9)
+        } else {
+            emit_a64_mov_imm(9, imm)
+            size_reg = 9
+        }
+        // Save original size in x11 (scratch)
+        emit_a64_mov(11, size_reg)
+        // AAPCS64 mmap: x0=addr, x1=len, x2=prot, x3=flags, x4=fd, x5=offset
+        // x0 = 0 (addr)
+        emit_a64_mov_imm(0, 0)
+        // x1 = size + 8
+        emit_a64_add_imm(1, size_reg, 8)
+        // x2 = PROT_READ|PROT_WRITE = 3
+        emit_a64_mov_imm(2, 3)
+        // x3 = MAP_PRIVATE|MAP_ANON = 0x22
+        emit_a64_mov_imm(3, 0x22)
+        // x4 = -1 (fd)
+        emit_a64_mov_imm(4, 0xFFFFFFFFFFFFFFFF)
+        // x5 = 0 (offset)
+        emit_a64_mov_imm(5, 0)
+        // syscall (mmap)
+        uint64 mmap_nr = ir_a64_syscall_nr(9)
+        emit_a64_syscall_nr(mmap_nr)
+        emit_a64_svc()
+        // x0 = raw ptr. Store header: [x0] = original size (x11)
+        emit_a64_str(11, 0, 0)
+        // x0 = x0 + 8 (return ptr past header)
+        emit_a64_add_imm(0, 0, 8)
+        if dst_r != 0xFFFFFFFF && dst_r != 0 {
+            emit_a64_mov(dst_r, 0)
+        }
+        if dst_r == 0xFFFFFFFF {
+            ir_a64_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_DEALLOC (71): inline munmap syscall -----
+    if op == 71 {
+        uint64 ptr_reg = ir_a64_resolve_src(s1_v, 9)
+        // x0 = ptr - 8 (real base)
+        emit_a64_sub(0, ptr_reg, 31)
+        emit_a64_mov_imm(10, 8)
+        emit_a64_sub(0, ptr_reg, 10)
+        // x1 = *(x0) + 8 (total length)
+        emit_a64_ldr(1, 0, 0)
+        emit_a64_add_imm(1, 1, 8)
+        // munmap syscall
+        uint64 munmap_nr = ir_a64_syscall_nr(11)
+        emit_a64_syscall_nr(munmap_nr)
+        emit_a64_svc()
+        return
+    }
+
+    // ----- IR_MEMCPY (72): byte copy loop -----
+    if op == 72 {
+        uint64 mc_dst = ir_a64_resolve_src(s1_v, 9)
+        uint64 mc_src = ir_a64_resolve_src(s2_v, 10)
+        // Resolve len from imm (stored as vreg index)
+        uint64 mc_len_vreg = imm
+        uint64 mc_len = 0
+        if mc_len_vreg > 0 && mc_len_vreg < ir_vreg_next {
+            mc_len = ir_get_phys_reg(mc_len_vreg)
+            if mc_len == 0xFFFFFFFF {
+                ir_a64_load_spill(11, mc_len_vreg)
+                mc_len = 11
+            }
+        }
+        // x0 = dst, x1 = src, x2 = len
+        emit_a64_mov(0, mc_dst)
+        emit_a64_mov(1, mc_src)
+        emit_a64_mov(2, mc_len)
+        // Save dst for return value
+        emit_a64_mov(11, mc_dst)
+        // Loop: CBZ x2, done; LDRB w3, [x1], #1; STRB w3, [x0], #1; SUB x2, x2, #1; B loop
+        uint64 mc_loop = out_len
+        // CBZ x2, done (skip 4 instructions = 16 bytes)
+        emit_a64_cbz(2, 20)
+        // LDRB w3, [x1], #1 (post-index byte load)
+        emit_a64(0x38401423)
+        // STRB w3, [x0], #1 (post-index byte store)
+        emit_a64(0x38001403)
+        // SUB x2, x2, #1
+        emit_a64(0xD1000442)
+        // B loop
+        uint64 mc_back = mc_loop - out_len
+        emit_a64(0x14000000 | ((mc_back / 4) & 0x3FFFFFF))
+        // Return original dst
+        if dst_r != 0xFFFFFFFF {
+            emit_a64_mov(dst_r, 11)
+        } else {
+            emit_a64_mov(9, 11)
+            ir_a64_emit_store_spill(9, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_STRLEN (73): byte scan loop -----
+    if op == 73 {
+        uint64 sl_str = ir_a64_resolve_src(s1_v, 9)
+        // x0 = str (current ptr), x1 = str (start)
+        emit_a64_mov(0, sl_str)
+        emit_a64_mov(1, sl_str)
+        // Loop: LDRB w2, [x0]; CBZ w2, done; ADD x0, x0, #1; B loop
+        uint64 sl_loop = out_len
+        emit_a64_ldrb(2, 0, 0)
+        // CBZ w2, done (skip 2 insns = 8 bytes) -- use 32-bit CBZ for byte register
+        emit_a64(0x34000062)    // CBZ w2, +3 insns (12 bytes)
+        emit_a64_add_imm(0, 0, 1)
+        uint64 sl_back = sl_loop - out_len
+        emit_a64(0x14000000 | ((sl_back / 4) & 0x3FFFFFF))
+        // done: length = x0 - x1
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        emit_a64_sub(d, 0, 1)
+        if dst_r == 0xFFFFFFFF {
+            ir_a64_emit_store_spill(9, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_FMT_UINT (74): format uint to buffer -----
+    if op == 74 {
+        uint64 fu_buf = ir_a64_resolve_src(s1_v, 9)
+        uint64 fu_val = ir_a64_resolve_src(s2_v, 10)
+        // x0 = buf, x1 = val, x2 = digit count, x3 = divisor (10)
+        emit_a64_mov(0, fu_buf)
+        emit_a64_mov(1, fu_val)
+        emit_a64_mov_imm(2, 0)
+        emit_a64_mov_imm(3, 10)
+        // Use a 32-byte stack-based digit buffer (x12 = digit area)
+        // We store digits in reverse on the stack, then copy forward
+        emit_a64_sub_sp_imm(32)
+        emit_a64_mov(12, 31)    // x12 = digit area base
+
+        // Digit extraction loop: divide by 10, store remainder + '0'
+        uint64 fu_loop = out_len
+        emit_a64_udiv(4, 1, 3)       // x4 = val / 10
+        emit_a64_msub(5, 4, 3, 1)    // x5 = val - (val/10)*10 = remainder
+        emit_a64_add_imm(5, 5, 48)   // x5 += '0'
+        // Store digit byte at [x12 + x2]
+        // STRB w5, [x12, x2]
+        emit_a64(0x38226985)
+        // x2++
+        emit_a64_add_imm(2, 2, 1)
+        // val = quotient
+        emit_a64_mov(1, 4)
+        // CBNZ x1, loop
+        uint64 fu_back = fu_loop - out_len
+        emit_a64(0xB5000000 | (((fu_back / 4) & 0x7FFFF) << 5) | 1)
+
+        // Copy digits in reverse order to output buffer
+        // x6 = digit count (save)
+        emit_a64_mov(6, 2)
+        // Copy loop: x2 = remaining, x0 = output ptr
+        uint64 fu_copy = out_len
+        // CBZ x2, done
+        emit_a64_cbz(2, 20)
+        // x2--
+        emit_a64(0xD1000442)    // SUB x2, x2, #1
+        // LDRB w5, [x12, x2]
+        emit_a64(0x38626985)
+        // STRB w5, [x0], #1
+        emit_a64(0x38001405)
+        // B copy_loop
+        uint64 fu_copy_back = fu_copy - out_len
+        emit_a64(0x14000000 | ((fu_copy_back / 4) & 0x3FFFFFF))
+
+        // Restore stack
+        emit_a64_add_sp_imm(32)
+
+        // Return digit count (x6)
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        emit_a64_mov(d, 6)
+        if dst_r == 0xFFFFFFFF {
+            ir_a64_emit_store_spill(9, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_STR_EQ (75): byte-by-byte string compare -----
+    if op == 75 {
+        uint64 se_a = ir_a64_resolve_src(s1_v, 9)
+        uint64 se_b = ir_a64_resolve_src(s2_v, 10)
+        emit_a64_mov(0, se_a)
+        emit_a64_mov(1, se_b)
+        // Loop: LDRB w2, [x0]; LDRB w3, [x1]; CMP w2, w3; B.NE not_equal;
+        //       CBZ w2, equal; ADD x0,x0,1; ADD x1,x1,1; B loop
+        uint64 se_loop = out_len
+        emit_a64_ldrb(2, 0, 0)
+        emit_a64_ldrb(3, 1, 0)
+        // CMP w2, w3 (32-bit)
+        emit_a64(0x6B030042)
+        // B.NE not_equal (+5 insns = 20 bytes)
+        emit_a64(0x54000141)    // B.NE +5
+        // CBZ w2, equal (+4 insns = 16 bytes)
+        emit_a64(0x34000102)    // CBZ w2, +4
+        emit_a64_add_imm(0, 0, 1)
+        emit_a64_add_imm(1, 1, 1)
+        uint64 se_back = se_loop - out_len
+        emit_a64(0x14000000 | ((se_back / 4) & 0x3FFFFFF))
+        // not_equal: result = 0
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        emit_a64_mov_imm(d, 0)
+        // B done (+2 insns = 8 bytes)
+        emit_a64(0x14000002)
+        // equal: result = 1
+        emit_a64_mov_imm(d, 1)
+        // done:
+        if dst_r == 0xFFFFFFFF {
+            ir_a64_emit_store_spill(9, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_MEMSET (76): byte fill loop -----
+    if op == 76 {
+        uint64 ms_dst = ir_a64_resolve_src(s1_v, 9)
+        uint64 ms_val = ir_a64_resolve_src(s2_v, 10)
+        uint64 ms_len_vreg = imm
+        uint64 ms_len = 0
+        if ms_len_vreg > 0 && ms_len_vreg < ir_vreg_next {
+            ms_len = ir_get_phys_reg(ms_len_vreg)
+            if ms_len == 0xFFFFFFFF {
+                ir_a64_load_spill(11, ms_len_vreg)
+                ms_len = 11
+            }
+        }
+        // x0 = dst, x1 = val, x2 = len
+        emit_a64_mov(0, ms_dst)
+        emit_a64_mov(1, ms_val)
+        emit_a64_mov(2, ms_len)
+        // Save dst for return
+        emit_a64_mov(11, ms_dst)
+        // Loop: CBZ x2, done; STRB w1, [x0], #1; SUB x2, x2, #1; B loop
+        uint64 ms_loop = out_len
+        emit_a64_cbz(2, 16)
+        // STRB w1, [x0], #1 (post-index)
+        emit_a64(0x38001401)
+        emit_a64(0xD1000442)    // SUB x2, x2, #1
+        uint64 ms_back = ms_loop - out_len
+        emit_a64(0x14000000 | ((ms_back / 4) & 0x3FFFFFF))
+        // Return original dst
+        if dst_r != 0xFFFFFFFF {
+            emit_a64_mov(dst_r, 11)
+        } else {
+            emit_a64_mov(9, 11)
+            ir_a64_emit_store_spill(9, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_STATIC_LOAD (77) -----
+    if op == 77 {
+        emit_a64_static_load(imm)
+        if dst_r != 0xFFFFFFFF {
+            emit_a64_mov(dst_r, 0)
+        } else {
+            ir_a64_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_STATIC_STORE (78) -----
+    if op == 78 {
+        uint64 ss_r = ir_a64_resolve_src(s1_v, 9)
+        emit_a64_mov(0, ss_r)
+        emit_a64_static_store(imm)
+        return
+    }
+
+    // ----- IR_STATIC_ADDR (84) -----
+    if op == 84 {
+        emit_a64_static_lea(imm)
+        if dst_r != 0xFFFFFFFF {
+            emit_a64_mov(dst_r, 0)
+        } else {
+            ir_a64_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_EXTRACT_RDX (80) / IR_EXTRACT_R8 (81) -----
+    // ARM64: second/third return values in x1/x2 (AAPCS64)
+    if op == 80 {
+        if dst_r != 0xFFFFFFFF {
+            emit_a64_mov(dst_r, 1)
+        } else {
+            ir_a64_emit_store_spill(1, dest_v)
+        }
+        return
+    }
+    if op == 81 {
+        if dst_r != 0xFFFFFFFF {
+            emit_a64_mov(dst_r, 2)
+        } else {
+            ir_a64_emit_store_spill(2, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_RET2 (82): return (src1, src2) in x0, x1 -----
+    if op == 82 {
+        uint64 r2_src = ir_a64_resolve_src(s2_v, 10)
+        emit_a64_mov(1, r2_src)
+        uint64 r1_src = ir_a64_resolve_src(s1_v, 9)
+        if r1_src != 0 { emit_a64_mov(0, r1_src) }
+        uint64 rfp82 = ir_ret_fixups + ir_ret_fixup_count * 4
+        uint32 rpo82 = out_len
+        unsafe { *(rfp82 as uint32) = rpo82 }
+        ir_ret_fixup_count = ir_ret_fixup_count + 1
+        emit_a64(0x14000000)
+        return
+    }
+
+    // ----- IR_RET3 (83): return (src1, src2, imm-vreg) in x0, x1, x2 -----
+    if op == 83 {
+        uint64 r3_vreg = imm
+        uint64 r3_src = 0
+        if r3_vreg > 0 && r3_vreg < ir_vreg_next {
+            r3_src = ir_get_phys_reg(r3_vreg)
+            if r3_src == 0xFFFFFFFF {
+                ir_a64_load_spill(11, r3_vreg)
+                r3_src = 11
+            }
+        }
+        emit_a64_mov(2, r3_src)
+        uint64 r2_src83 = ir_a64_resolve_src(s2_v, 10)
+        emit_a64_mov(1, r2_src83)
+        uint64 r1_src83 = ir_a64_resolve_src(s1_v, 9)
+        if r1_src83 != 0 { emit_a64_mov(0, r1_src83) }
+        uint64 rfp83 = ir_ret_fixups + ir_ret_fixup_count * 4
+        uint32 rpo83 = out_len
+        unsafe { *(rfp83 as uint32) = rpo83 }
+        ir_ret_fixup_count = ir_ret_fixup_count + 1
+        emit_a64(0x14000000)
+        return
+    }
+
+    // ----- IR_SYSCALL_RAW (85) -----
+    if op == 85 {
+        // src1 = nr vreg, args already in x0-x5
+        uint64 nr_r = ir_a64_resolve_src(s1_v, 9)
+        emit_a64_mov(8, nr_r)
+        emit_a64_svc()
+        if dst_r != 0xFFFFFFFF && dst_r != 0 {
+            emit_a64_mov(dst_r, 0)
+        }
+        if dst_r == 0xFFFFFFFF {
+            ir_a64_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_FN_ADDR (86) -----
+    if op == 86 {
+        // ADRP + ADD, patched by fnaddr fixup resolver
+        if fnaddr_fixup_count < 1024 {
+            uint64 fentry_fa = fnaddr_fixup_table + fnaddr_fixup_count * 8
+            uint32 fa_off = out_len
+            unsafe { *(fentry_fa as uint32) = fa_off }
+            uint64 fe4_fa = fentry_fa + 4
+            uint32 fa_tok = imm
+            unsafe { *(fe4_fa as uint32) = fa_tok }
+            fnaddr_fixup_count = fnaddr_fixup_count + 1
+        }
+        emit_a64(0x90000010)    // ADRP X16, #0
+        emit_a64(0x91000200)    // ADD X0, X16, #0
+        if dst_r != 0xFFFFFFFF {
+            emit_a64_mov(dst_r, 0)
+        } else {
+            ir_a64_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_CALL_IND (87): indirect call through function pointer -----
+    if op == 87 {
+        uint64 ptr_r = ir_a64_resolve_src(s1_v, 9)
+        emit_a64_blr(ptr_r)
+        if dst_r != 0xFFFFFFFF && dst_r != 0 {
+            emit_a64_mov(dst_r, 0)
+        }
+        if dst_r == 0xFFFFFFFF {
+            ir_a64_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_MEMCMP (88) -----
+    if op == 88 {
+        uint64 mc_a = ir_a64_resolve_src(s1_v, 9)
+        uint64 mc_b = ir_a64_resolve_src(s2_v, 10)
+        emit_a64_mov(0, mc_a)
+        emit_a64_mov(1, mc_b)
+        emit_a64_mov_imm(2, imm)
+        // Result = 1 (assume equal)
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        emit_a64_mov_imm(d, 1)
+        // Loop: CBZ x2, done; LDRB w3,[x0],#1; LDRB w4,[x1],#1; CMP w3,w4; B.NE ne; SUB x2,x2,#1; B loop
+        uint64 mc_loop = out_len
+        emit_a64_cbz(2, 28)
+        emit_a64(0x38401403)    // LDRB w3, [x0], #1
+        emit_a64(0x38401424)    // LDRB w4, [x1], #1
+        emit_a64(0x6B040063)    // CMP w3, w4
+        // B.NE not_equal (+3 insns = 12 bytes)
+        emit_a64(0x54000061)    // B.NE +3
+        emit_a64(0xD1000442)    // SUB x2, x2, #1
+        uint64 mc_back = mc_loop - out_len
+        emit_a64(0x14000000 | ((mc_back / 4) & 0x3FFFFFF))
+        // B done (+2)
+        emit_a64(0x14000002)
+        // not_equal:
+        emit_a64_mov_imm(d, 0)
+        // done:
+        if dst_r == 0xFFFFFFFF {
+            ir_a64_emit_store_spill(9, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_PHI (60): no-op (handled by regalloc) -----
+    // ----- IR_ASM_BLOCK (96): skip for now -----
+}
+
+// ---------------------------------------------------------------------------
+// Function-level emitter
+// ---------------------------------------------------------------------------
+
+@export
+fn ir_emit_arm64_function(uint64 fn_node) {
+    // Check for @naked attribute
+    uint32 ann_flags = ast_data4(fn_node)
+    uint64 is_naked = ann_flags & 2
+
+    // 1. Lower AST to IR
+    ir_lower_function(fn_node)
+
+    // 2. Compute liveness
+    ir_compute_liveness()
+
+    // 3. Set up ARM64 register allocator (10 regs)
+    uint64 saved_num_regs = IR_NUM_REGS
+    IR_NUM_REGS = 10
+    ir_regalloc_init_arm64()
+    ir_graph_color()
+
+    // 4. Compute spill count
+    ir_spill_count = 0
+    if ir_vreg_next > IR_NUM_REGS + 1 {
+        ir_spill_count = ir_vreg_next - IR_NUM_REGS - 1
+    }
+
+    // Restore IR_NUM_REGS for x86_64 functions compiled later
+    IR_NUM_REGS = saved_num_regs
+
+    // 5. Compute frame size
+    // Callee-saved area: x29/x30 (16) + x19-x28 (80) = 96 bytes
+    uint64 callee_save_size = 96
+    uint64 spill_size = ir_spill_count * 8
+    // Total frame = callee save + spill, must be 16-aligned
+    uint64 total_frame = callee_save_size + spill_size
+    if (total_frame & 15) != 0 { total_frame = total_frame + 16 - (total_frame & 15) }
+    if is_naked != 0 { total_frame = 0 }
+
+    ir_frame_size = total_frame
+
+    // 5a. For main(): set up argc/argv BEFORE prologue
+    uint32 fn_name_tok = ast_data1(fn_node)
+    if tok_matches(fn_name_tok, "main", 4) != 0 && freestanding == 0 && target_os != 2 {
+        // Linux/macOS/Android: argc/argv on stack. [SP]=argc, [SP+8]=&argv[0]
+        emit_a64_ldr(0, 31, 0)
+        uint64 argc_off = static_lookup_by_name("cli_argc", 8)
+        if argc_off != 0xFFFFFFFF {
+            emit_a64_static_store(argc_off)
+        }
+        emit_a64_add_imm(0, 31, 8)
+        uint64 argv_off = static_lookup_by_name("cli_argv", 8)
+        if argv_off != 0xFFFFFFFF {
+            emit_a64_static_store(argv_off)
+        }
+    }
+    if tok_matches(fn_name_tok, "main", 4) != 0 && freestanding == 0 && target_os == 2 {
+        // Windows ARM64: GetCommandLineA via IAT
+        emit_a64_win_call_iat(7)
+        uint64 argv_off_w = static_lookup_by_name("cli_argv", 8)
+        if argv_off_w != 0xFFFFFFFF {
+            emit_a64_static_store(argv_off_w)
+        }
+        emit_a64_mov_imm(0, 0xFFFFFFFF)
+        uint64 argc_off_w = static_lookup_by_name("cli_argc", 8)
+        if argc_off_w != 0xFFFFFFFF {
+            emit_a64_static_store(argc_off_w)
+        }
+    }
+
+    // 6. Emit prologue (skip for @naked)
+    if is_naked == 0 {
+        // SUB SP, SP, #total_frame
+        emit_a64_sub_sp_imm(total_frame)
+        // STP x29, x30, [sp, #spill_size + 80]
+        uint64 fp_off = spill_size + 80
+        emit_a64_str(29, 31, fp_off)
+        emit_a64_str(30, 31, fp_off + 8)
+        // Save callee-saved registers x19-x28 (5 pairs)
+        emit_a64_str(19, 31, spill_size)
+        emit_a64_str(20, 31, spill_size + 8)
+        emit_a64_str(21, 31, spill_size + 16)
+        emit_a64_str(22, 31, spill_size + 24)
+        emit_a64_str(23, 31, spill_size + 32)
+        emit_a64_str(24, 31, spill_size + 40)
+        emit_a64_str(25, 31, spill_size + 48)
+        emit_a64_str(26, 31, spill_size + 56)
+        emit_a64_str(27, 31, spill_size + 64)
+        emit_a64_str(28, 31, spill_size + 72)
+        // Set FP = SP + fp_off (optional, but good for debugging)
+        emit_a64_add_imm(29, 31, fp_off)
+    }
+
+    // 7. Allocate branch/return fixup tracking
+    uint64 bo_need = ir_bb_count
+    if bo_need < 4096 { bo_need = 4096 }
+    ir_block_offsets = alloc(bo_need * 8)
+    uint64 br_need = ir_bb_count * 4
+    if br_need < 2048 { br_need = 2048 }
+    ir_br_fixups = alloc(br_need * 8)
+    uint64 ret_need = ir_bb_count
+    if ret_need < 1024 { ret_need = 1024 }
+    ir_ret_fixups = alloc(ret_need * 4)
+    ir_br_fixup_count = 0
+    ir_ret_fixup_count = 0
+
+    // 8. Emit all basic blocks
+    uint64 bi = 0
+    while bi < ir_bb_count {
+        // Record this block's code offset
+        uint64 bop = ir_block_offsets + bi * 8
+        unsafe { *(bop as uint64) = out_len }
+
+        // Emit non-terminator instructions
+        uint64 ii = ir_bb_first_insn(bi)
+        while ii != 0xFFFFFFFF {
+            uint64 iop = ir_insn_opcode(ii)
+            if iop != 40 && iop != 41 {
+                ir_emit_arm64_insn(ii)
+            }
+            ii = ir_insn_next(ii)
+        }
+
+        // Emit block terminator
+        uint64 last = ir_bb_last_insn(bi)
+        if last != 0xFFFFFFFF {
+            uint64 last_op = ir_insn_opcode(last)
+            if last_op == 40 {
+                // IR_BR: unconditional branch to target_bb
+                uint64 target = ir_insn_imm(last)
+                if target != bi + 1 {
+                    // Record fixup [patch_offset, target_bb]
+                    uint64 fp = ir_br_fixups + ir_br_fixup_count * 8
+                    uint32 po = out_len
+                    unsafe { *(fp as uint32) = po }
+                    uint64 fp4 = fp + 4
+                    uint32 tb = target
+                    unsafe { *(fp4 as uint32) = tb }
+                    ir_br_fixup_count = ir_br_fixup_count + 1
+                    emit_a64(0x14000000)    // B #0 (placeholder)
+                }
+            }
+            if last_op == 41 {
+                // IR_BR_COND: cbnz cond_vreg, true_target; fallthrough or B false_target
+                uint64 cond_v = ir_insn_src1(last)
+                uint64 cond_r = ir_a64_resolve_src(cond_v, 9)
+                uint64 target_true = ir_insn_imm(last)
+                // Record fixup for CBNZ -> true target
+                // We encode type=1 (CBNZ) in high bit of target_bb
+                uint64 fp = ir_br_fixups + ir_br_fixup_count * 8
+                uint32 po = out_len
+                unsafe { *(fp as uint32) = po }
+                uint64 fp4 = fp + 4
+                // Encode: bit 31 = 1 for CBNZ, bits 0-30 = target_bb, store cond_r in the insn
+                uint32 tb = target_true | 0x80000000
+                unsafe { *(fp4 as uint32) = tb }
+                ir_br_fixup_count = ir_br_fixup_count + 1
+                // CBNZ cond_r, #0 (placeholder)
+                emit_a64(0xB5000000 | cond_r)
+                // Emit B to false target if not fall-through
+                uint64 target_false = ir_bb_succ0(bi)
+                if target_false != 0xFFFFFFFF && target_false != bi + 1 {
+                    uint64 fp2 = ir_br_fixups + ir_br_fixup_count * 8
+                    uint32 po2 = out_len
+                    unsafe { *(fp2 as uint32) = po2 }
+                    uint64 fp24 = fp2 + 4
+                    uint32 tb2 = target_false
+                    unsafe { *(fp24 as uint32) = tb2 }
+                    ir_br_fixup_count = ir_br_fixup_count + 1
+                    emit_a64(0x14000000)    // B #0 (placeholder)
+                }
+            }
+        }
+
+        bi = bi + 1
+    }
+
+    // 9. Patch branch fixups
+    uint64 fi = 0
+    while fi < ir_br_fixup_count {
+        uint64 fp = ir_br_fixups + fi * 8
+        uint32 patch_off = 0
+        unsafe { *(fp as uint32) -> patch_off }
+        uint64 fp4 = fp + 4
+        uint32 target_bb_raw = 0
+        unsafe { *(fp4 as uint32) -> target_bb_raw }
+        uint64 wraw = target_bb_raw
+        uint64 is_cbnz = wraw & 0x80000000
+        uint64 wtb = wraw & 0x7FFFFFFF
+        // Get target block offset
+        uint64 tbp = ir_block_offsets + wtb * 8
+        uint64 target_off = 0
+        unsafe { *(tbp as uint64) -> target_off }
+        uint64 wpo = patch_off
+        uint64 disp = target_off - wpo
+        uint64 rel = disp / 4
+        if is_cbnz != 0 {
+            // Patch CBNZ: read existing instruction to get Rt
+            uint64 insn_addr = out_buf + wpo
+            uint32 old_insn = 0
+            unsafe { *(insn_addr as uint32) -> old_insn }
+            uint64 wo = old_insn
+            uint64 rt = wo & 0x1F
+            uint64 new_insn = 0xB5000000 | ((rel & 0x7FFFF) << 5) | rt
+            patch_u32(wpo, new_insn)
+        } else {
+            // Patch B
+            uint64 new_insn = 0x14000000 | (rel & 0x3FFFFFF)
+            patch_u32(wpo, new_insn)
+        }
+        fi = fi + 1
+    }
+
+    // 10. Patch return fixups — all point to epilogue
+    uint64 epilogue_off = out_len
+    uint64 ri2 = 0
+    while ri2 < ir_ret_fixup_count {
+        uint64 rfp = ir_ret_fixups + ri2 * 4
+        uint32 rpatch = 0
+        unsafe { *(rfp as uint32) -> rpatch }
+        uint64 wrp = rpatch
+        uint64 rdisp = epilogue_off - wrp
+        uint64 rrel = rdisp / 4
+        uint64 new_insn = 0x14000000 | (rrel & 0x3FFFFFF)
+        patch_u32(wrp, new_insn)
+        ri2 = ri2 + 1
+    }
+
+    // 11. Epilogue (skip for @naked)
+    if is_naked == 0 {
+        // Restore callee-saved registers
+        emit_a64_ldr(19, 31, spill_size)
+        emit_a64_ldr(20, 31, spill_size + 8)
+        emit_a64_ldr(21, 31, spill_size + 16)
+        emit_a64_ldr(22, 31, spill_size + 24)
+        emit_a64_ldr(23, 31, spill_size + 32)
+        emit_a64_ldr(24, 31, spill_size + 40)
+        emit_a64_ldr(25, 31, spill_size + 48)
+        emit_a64_ldr(26, 31, spill_size + 56)
+        emit_a64_ldr(27, 31, spill_size + 64)
+        emit_a64_ldr(28, 31, spill_size + 72)
+        // Restore FP and LR
+        uint64 fp_off_e = spill_size + 80
+        emit_a64_ldr(29, 31, fp_off_e)
+        emit_a64_ldr(30, 31, fp_off_e + 8)
+        // ADD SP, SP, #total_frame
+        emit_a64_add_sp_imm(total_frame)
+        // RET
+        emit_a64_ret()
+    }
+}
