@@ -55,15 +55,40 @@ fn ir_a64_spill_offset(uint64 vreg) -> uint64 {
 }
 
 // Load a spilled vreg into scratch register (x9 or x10).
+// ARM64 LDR Xt,[Xn,#imm] uses a 12-bit scaled field: max offset = 4095*8 = 32760.
+// For larger offsets, use a scratch register to form the address.
 fn ir_a64_load_spill(uint64 scratch, uint64 vreg) {
     uint64 off = ir_a64_spill_offset(vreg)
-    emit_a64_ldr(scratch, 31, off)
+    ir_a64_ldr_sp(scratch, off)
 }
 
 // Store a register to the spill slot for vreg.
 fn ir_a64_emit_store_spill(uint64 reg, uint64 vreg) {
     uint64 off = ir_a64_spill_offset(vreg)
-    emit_a64_str(reg, 31, off)
+    ir_a64_str_sp(reg, off)
+}
+
+// Large-offset-safe LDR/STR from SP.
+// ARM64 LDR Xt,[Xn,#imm] max offset = 4095*8 = 32760 bytes.
+// For larger offsets, compute address in x11 first.
+fn ir_a64_ldr_sp(uint64 rt, uint64 off) {
+    if off <= 32760 {
+        emit_a64_ldr(rt, 31, off)
+    } else {
+        emit_a64_mov_imm(11, off)
+        emit_a64_add(11, 31, 11)
+        emit_a64_ldr(rt, 11, 0)
+    }
+}
+
+fn ir_a64_str_sp(uint64 rt, uint64 off) {
+    if off <= 32760 {
+        emit_a64_str(rt, 31, off)
+    } else {
+        emit_a64_mov_imm(11, off)
+        emit_a64_add(11, 31, 11)
+        emit_a64_str(rt, 11, 0)
+    }
 }
 
 // Resolve a vreg to a physical register. If spilled, load into scratch (9 or 10).
@@ -577,7 +602,7 @@ fn ir_emit_arm64_insn(uint64 ii) {
                 uint64 overflow_off = ir_frame_size + (imm - 8) * 8
                 uint64 d = dst_r
                 if d == 0xFFFFFFFF { d = 9 }
-                emit_a64_ldr(d, 31, overflow_off)
+                ir_a64_ldr_sp(d, overflow_off)
                 if dst_r == 0xFFFFFFFF {
                     ir_a64_emit_store_spill(9, dest_v)
                 }
@@ -1818,21 +1843,19 @@ fn ir_emit_arm64_function(uint64 fn_node) {
         emit_a64_sub_sp_imm(total_frame)
         // STP x29, x30, [sp, #spill_size + 80]
         uint64 fp_off = spill_size + 80
-        emit_a64_str(29, 31, fp_off)
-        emit_a64_str(30, 31, fp_off + 8)
+        ir_a64_str_sp(29, fp_off)
+        ir_a64_str_sp(30, fp_off + 8)
         // Save callee-saved registers x19-x28 (5 pairs)
-        emit_a64_str(19, 31, spill_size)
-        emit_a64_str(20, 31, spill_size + 8)
-        emit_a64_str(21, 31, spill_size + 16)
-        emit_a64_str(22, 31, spill_size + 24)
-        emit_a64_str(23, 31, spill_size + 32)
-        emit_a64_str(24, 31, spill_size + 40)
-        emit_a64_str(25, 31, spill_size + 48)
-        emit_a64_str(26, 31, spill_size + 56)
-        emit_a64_str(27, 31, spill_size + 64)
-        emit_a64_str(28, 31, spill_size + 72)
-        // Set FP = SP + fp_off (optional, but good for debugging)
-        emit_a64_add_imm(29, 31, fp_off)
+        ir_a64_str_sp(19, spill_size)
+        ir_a64_str_sp(20, spill_size + 8)
+        ir_a64_str_sp(21, spill_size + 16)
+        ir_a64_str_sp(22, spill_size + 24)
+        ir_a64_str_sp(23, spill_size + 32)
+        ir_a64_str_sp(24, spill_size + 40)
+        ir_a64_str_sp(25, spill_size + 48)
+        ir_a64_str_sp(26, spill_size + 56)
+        ir_a64_str_sp(27, spill_size + 64)
+        ir_a64_str_sp(28, spill_size + 72)
     }
 
     // 7. Allocate branch/return fixup tracking
@@ -1972,21 +1995,21 @@ fn ir_emit_arm64_function(uint64 fn_node) {
 
     // 11. Epilogue (skip for @naked)
     if is_naked == 0 {
-        // Restore callee-saved registers
-        emit_a64_ldr(19, 31, spill_size)
-        emit_a64_ldr(20, 31, spill_size + 8)
-        emit_a64_ldr(21, 31, spill_size + 16)
-        emit_a64_ldr(22, 31, spill_size + 24)
-        emit_a64_ldr(23, 31, spill_size + 32)
-        emit_a64_ldr(24, 31, spill_size + 40)
-        emit_a64_ldr(25, 31, spill_size + 48)
-        emit_a64_ldr(26, 31, spill_size + 56)
-        emit_a64_ldr(27, 31, spill_size + 64)
-        emit_a64_ldr(28, 31, spill_size + 72)
+        // Restore callee-saved registers (large-offset safe)
+        ir_a64_ldr_sp(19, spill_size)
+        ir_a64_ldr_sp(20, spill_size + 8)
+        ir_a64_ldr_sp(21, spill_size + 16)
+        ir_a64_ldr_sp(22, spill_size + 24)
+        ir_a64_ldr_sp(23, spill_size + 32)
+        ir_a64_ldr_sp(24, spill_size + 40)
+        ir_a64_ldr_sp(25, spill_size + 48)
+        ir_a64_ldr_sp(26, spill_size + 56)
+        ir_a64_ldr_sp(27, spill_size + 64)
+        ir_a64_ldr_sp(28, spill_size + 72)
         // Restore FP and LR
         uint64 fp_off_e = spill_size + 80
-        emit_a64_ldr(29, 31, fp_off_e)
-        emit_a64_ldr(30, 31, fp_off_e + 8)
+        ir_a64_ldr_sp(29, fp_off_e)
+        ir_a64_ldr_sp(30, fp_off_e + 8)
         // ADD SP, SP, #total_frame
         emit_a64_add_sp_imm(total_frame)
         // RET
