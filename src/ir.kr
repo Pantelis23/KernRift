@@ -4015,6 +4015,181 @@ fn ir_x86_syscall_nr(uint64 abstract_nr) -> uint64 {
 }
 
 // ---------------------------------------------------------------------------
+// Windows PE syscall emitter — translates abstract syscall numbers to IAT calls
+// ---------------------------------------------------------------------------
+
+fn ir_emit_x86_win_syscall(uint64 abstract_nr, uint64 dest_v, uint64 dst_r) {
+    if abstract_nr == 231 {
+        // exit(code): IR_ARG placed code in rdi (SysV slot 0).
+        // Windows: ExitProcess(UINT uExitCode) — rcx = exit code
+        ir_emit_mov_r64_r64(1, 7)   // mov rcx, rdi
+        emit_win_alloc_stack(0x20)    // sub rsp, 32 (shadow space)
+        emit_win_call_iat(0)          // call ExitProcess
+        emit_win_free_stack(0x20)     // add rsp, 32
+        return
+    }
+
+    if abstract_nr == 1 {
+        // write(fd, buf, len): SysV args in rdi=fd, rsi=buf, rdx=len
+        // Windows: if fd <= 2, call GetStdHandle to convert fd to a handle;
+        // otherwise fd is already a native Windows HANDLE (from CreateFileA/file_open).
+        // Then call WriteFile(handle, buf, len, NULL, NULL).
+
+        // Save buf(rsi) and len(rdx) — two pushes keep stack aligned
+        emit_byte(0x56)  // push rsi (buf)
+        emit_byte(0x52)  // push rdx (len)
+
+        // Check if fd <= 2 (stdin/stdout/stderr need GetStdHandle)
+        // cmp rdi, 2
+        emit_byte(0x48); emit_byte(0x83); emit_byte(0xFF); emit_byte(0x02)
+        // ja skip_getstdhandle (fd > 2 means it's a file handle)
+        emit_byte(0x77)
+        // The GetStdHandle block is: mov rcx,rdi(3) + add rcx,10(4) + neg rcx(3) +
+        //   sub rsp,0x20(4) + call[rip+disp32](6) + add rsp,0x20(4) + mov rdi,rax(3) = 27 bytes
+        emit_byte(0x1B)  // ja +27
+
+        // GetStdHandle path: rcx = -(fd + 10) -> -11 for stdout, -12 for stderr
+        ir_emit_mov_r64_r64(1, 7)   // mov rcx, rdi (fd)
+        // add rcx, 10
+        emit_byte(0x48); emit_byte(0x83); emit_byte(0xC1); emit_byte(0x0A)
+        // neg rcx
+        emit_byte(0x48); emit_byte(0xF7); emit_byte(0xD9)
+        emit_win_alloc_stack(0x20)
+        emit_win_call_iat(1)          // call GetStdHandle -> rax = handle
+        emit_win_free_stack(0x20)
+        // Move handle to rdi so the rest of the code uses it uniformly
+        ir_emit_mov_r64_r64(7, 0)    // mov rdi, rax (handle)
+        // skip_getstdhandle:
+
+        // Pop len and buf (reverse order)
+        emit_byte(0x5A)  // pop rdx (len)
+        emit_byte(0x5E)  // pop rsi (buf)
+
+        // WriteFile(handle=rcx, buf=rdx, len=r8, lpBytesWritten=r9=0, lpOverlapped=[rsp+32]=0)
+        // Save len from rdx into r8 BEFORE overwriting rdx
+        emit_byte(0x49); emit_byte(0x89); emit_byte(0xD0)  // mov r8, rdx (len)
+        ir_emit_mov_r64_r64(1, 7)    // mov rcx, rdi (handle — either GetStdHandle result or original fd)
+        ir_emit_mov_r64_r64(2, 6)    // mov rdx, rsi (buf)
+        // r8 already has len
+        ir_emit_mov_r64_imm64(9, 0)  // r9 = NULL (lpNumberOfBytesWritten)
+
+        // sub rsp, 48 (32 shadow + 8 for 5th arg, 16-aligned)
+        emit_win_alloc_stack(0x30)
+        // mov qword [rsp+32], 0 (lpOverlapped = NULL, 5th arg on stack)
+        emit_byte(0x48); emit_byte(0xC7); emit_byte(0x44); emit_byte(0x24); emit_byte(0x20)
+        emit_u32_le(0)
+        emit_win_call_iat(2)          // call WriteFile
+        emit_win_free_stack(0x30)
+    }
+
+    if abstract_nr == 0 {
+        // read(fd, buf, len): SysV rdi=fd, rsi=buf, rdx=len
+        // Windows: ReadFile(handle, buf, len, &bytesRead, NULL)
+        // If fd <= 2, convert via GetStdHandle; otherwise fd is already a handle.
+        emit_byte(0x56)  // push rsi (buf)
+        emit_byte(0x52)  // push rdx (len)
+
+        // cmp rdi, 2
+        emit_byte(0x48); emit_byte(0x83); emit_byte(0xFF); emit_byte(0x02)
+        // ja +27 (skip GetStdHandle)
+        emit_byte(0x77); emit_byte(0x1B)
+        // GetStdHandle: rcx = -(fd + 10) -> -10 for stdin
+        ir_emit_mov_r64_r64(1, 7)
+        emit_byte(0x48); emit_byte(0x83); emit_byte(0xC1); emit_byte(0x0A)
+        emit_byte(0x48); emit_byte(0xF7); emit_byte(0xD9)
+        emit_win_alloc_stack(0x20)
+        emit_win_call_iat(1)          // GetStdHandle
+        emit_win_free_stack(0x20)
+        ir_emit_mov_r64_r64(7, 0)    // mov rdi, rax (handle)
+
+        emit_byte(0x5A)              // pop rdx -> len
+        emit_byte(0x5E)              // pop rsi -> buf
+        emit_byte(0x49); emit_byte(0x89); emit_byte(0xD0)  // mov r8, rdx (len)
+        ir_emit_mov_r64_r64(1, 7)    // rcx = handle
+        ir_emit_mov_r64_r64(2, 6)    // rdx = buf
+        ir_emit_mov_r64_imm64(9, 0)  // r9 = NULL (lpBytesRead)
+        emit_win_alloc_stack(0x30)
+        // [rsp+32] = NULL (lpOverlapped)
+        emit_byte(0x48); emit_byte(0xC7); emit_byte(0x44); emit_byte(0x24); emit_byte(0x20)
+        emit_u32_le(0)
+        emit_win_call_iat(4)          // ReadFile (IAT slot 4)
+        emit_win_free_stack(0x30)
+    }
+
+    if abstract_nr == 2 {
+        // open(path, flags): SysV rdi=path, rsi=flags
+        // Windows: CreateFileA(path, access, share, NULL, disposition, flags, NULL)
+        // flags: 0=read(O_RDONLY), nonzero=write(O_WRONLY/O_CREAT)
+        emit_byte(0x56)  // push rsi (flags)
+        ir_emit_mov_r64_r64(1, 7)    // rcx = path
+        emit_byte(0x5E)              // pop rsi (flags)
+        // rdx = GENERIC_READ (0x80000000) or GENERIC_WRITE (0x40000000)
+        ir_emit_mov_r64_imm64(2, 0x80000000)  // default: GENERIC_READ
+        // test rsi, rsi; if nonzero, use GENERIC_WRITE
+        emit_byte(0x48); emit_byte(0x85); emit_byte(0xF6)  // test rsi, rsi
+        emit_byte(0x74); emit_byte(0x0A)  // jz +10 (skip mov r64 imm64)
+        ir_emit_mov_r64_imm64(2, 0x40000000)  // GENERIC_WRITE
+        // r8 = FILE_SHARE_READ (1)
+        ir_emit_mov_r64_imm64(8, 1)
+        // r9 = NULL (security attrs)
+        ir_emit_mov_r64_imm64(9, 0)
+        // Stack args: [rsp+32]=disposition, [rsp+40]=FILE_ATTRIBUTE_NORMAL, [rsp+48]=NULL
+        // Need 32 shadow + 3*8=24 stack args = 56, round up to 64 (0x40) for 16-byte alignment
+        emit_win_alloc_stack(0x40)
+        // Default OPEN_EXISTING
+        emit_byte(0x48); emit_byte(0xC7); emit_byte(0x44); emit_byte(0x24); emit_byte(0x20)
+        emit_u32_le(3)  // OPEN_EXISTING
+        // if write mode, patch to CREATE_ALWAYS
+        emit_byte(0x48); emit_byte(0x85); emit_byte(0xF6)  // test rsi, rsi
+        emit_byte(0x74); emit_byte(0x09)  // jz +9 (skip 9-byte mov qword [rsp+0x20])
+        emit_byte(0x48); emit_byte(0xC7); emit_byte(0x44); emit_byte(0x24); emit_byte(0x20)
+        emit_u32_le(2)  // CREATE_ALWAYS
+        // [rsp+40] = FILE_ATTRIBUTE_NORMAL (0x80)
+        emit_byte(0x48); emit_byte(0xC7); emit_byte(0x44); emit_byte(0x24); emit_byte(0x28)
+        emit_u32_le(0x80)
+        // [rsp+48] = NULL (template)
+        emit_byte(0x48); emit_byte(0xC7); emit_byte(0x44); emit_byte(0x24); emit_byte(0x30)
+        emit_u32_le(0)
+        emit_win_call_iat(3)  // CreateFileA (IAT slot 3)
+        emit_win_free_stack(0x40)
+        // rax = handle (or INVALID_HANDLE_VALUE on error)
+    }
+
+    if abstract_nr == 3 {
+        // close(fd): SysV rdi=fd
+        // Windows: CloseHandle(handle)
+        ir_emit_mov_r64_r64(1, 7)    // rcx = handle
+        emit_win_alloc_stack(0x20)
+        emit_win_call_iat(5)          // CloseHandle (IAT slot 5)
+        emit_win_free_stack(0x20)
+    }
+
+    if abstract_nr == 8 {
+        // lseek(fd, offset, whence): SysV rdi=fd, rsi=offset, rdx=whence
+        // Windows: GetFileSizeEx(handle, &size) — used by file_size() builtin
+        // This returns the file size regardless of whence. For the SEEK_SET rewind
+        // call, the return value is unused so this is safe.
+        ir_emit_mov_r64_r64(1, 7)    // rcx = handle
+        // sub rsp, 0x30 (shadow + space for output)
+        emit_win_alloc_stack(0x30)
+        // lea rdx, [rsp+32] (&size output)
+        emit_byte(0x48); emit_byte(0x8D); emit_byte(0x54); emit_byte(0x24); emit_byte(0x20)
+        emit_win_call_iat(8)          // GetFileSizeEx (IAT slot 8)
+        // Load the size from [rsp+32]
+        emit_byte(0x48); emit_byte(0x8B); emit_byte(0x44); emit_byte(0x24); emit_byte(0x20)
+        emit_win_free_stack(0x30)
+    }
+
+    // Move result to dest
+    if dst_r != 0xFFFFFFFF && dst_r != 0 {
+        ir_emit_mov_r64_r64(dst_r, 0)
+    }
+    if dst_r == 0xFFFFFFFF {
+        ir_emit_store_spill(0, dest_v)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Per-instruction emitter
 // ---------------------------------------------------------------------------
 
@@ -4587,12 +4762,8 @@ fn ir_emit_x86_insn(uint64 ii) {
     }
 
     if op == 70 {
-        // IR_ALLOC: inline mmap(0, size+8, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON, -1, 0)
+        // IR_ALLOC: allocate memory with size header
         // src1 = size vreg (if != 0), or imm = constant size (if src1 == 0)
-        //
-        // Strategy: push original size on stack, set up syscall args (all caller-saved
-        // or syscall-specific regs), do syscall, pop size, store header, return ptr+8.
-        // This avoids clobbering any callee-saved registers.
         uint64 size_reg = 0
         if s1_v != 0 {
             size_reg = ir_resolve_src(s1_v, 0)
@@ -4613,6 +4784,33 @@ fn ir_emit_x86_insn(uint64 ii) {
             uint8 po = push_opc
             emit_byte(po)
         }
+        if target_os == 2 {
+            // Windows: VirtualAlloc(NULL, size+8, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE)
+            // xor rcx, rcx (NULL)
+            emit_byte(0x48); emit_byte(0x31); emit_byte(0xC9)
+            ir_emit_mov_r64_r64(2, size_reg)    // rdx = size
+            // add rdx, 8
+            emit_byte(0x48); emit_byte(0x83); emit_byte(0xC2); emit_byte(0x08)
+            ir_emit_mov_r64_imm64(8, 0x3000)    // r8 = MEM_COMMIT|MEM_RESERVE
+            ir_emit_mov_r64_imm64(9, 4)          // r9 = PAGE_READWRITE
+            emit_win_alloc_stack(0x20)
+            emit_win_call_iat(6)                  // VirtualAlloc (IAT slot 6)
+            emit_win_free_stack(0x20)
+            // pop original size into rcx
+            emit_byte(0x59)  // pop rcx
+            // Store header: mov [rax], rcx
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0x08)
+            // lea rax, [rax+8]
+            emit_byte(0x48); emit_byte(0x8D); emit_byte(0x40); emit_byte(0x08)
+            if dst_r != 0xFFFFFFFF && dst_r != 0 {
+                ir_emit_mov_r64_r64(dst_r, 0)
+            }
+            if dst_r == 0xFFFFFFFF {
+                ir_emit_store_spill(0, dest_v)
+            }
+            return
+        }
+        // Linux/macOS/Android: inline mmap(0, size+8, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON, -1, 0)
         // rsi = size + 8 (length)
         ir_emit_mov_r64_r64(6, size_reg)  // rsi = size
         // add rsi, 8
@@ -4662,9 +4860,23 @@ fn ir_emit_x86_insn(uint64 ii) {
     }
 
     if op == 71 {
-        // IR_DEALLOC: munmap(ptr-8, *(ptr-8)+8)
+        // IR_DEALLOC: free memory allocated by IR_ALLOC
         // src1 = user ptr vreg
         uint64 ptr_reg = ir_resolve_src(s1_v, 0)
+        if target_os == 2 {
+            // Windows: VirtualFree(ptr-8, 0, MEM_RELEASE)
+            ir_emit_mov_r64_r64(1, ptr_reg)  // rcx = ptr
+            // sub rcx, 8
+            emit_byte(0x48); emit_byte(0x83); emit_byte(0xE9); emit_byte(0x08)
+            // xor rdx, rdx (0)
+            emit_byte(0x48); emit_byte(0x31); emit_byte(0xD2)
+            ir_emit_mov_r64_imm64(8, 0x8000)  // r8 = MEM_RELEASE
+            emit_win_alloc_stack(0x20)
+            emit_win_call_iat(13)              // VirtualFree (IAT slot 13)
+            emit_win_free_stack(0x20)
+            return
+        }
+        // Linux/macOS/Android: munmap(ptr-8, *(ptr-8)+8)
         // rdi = ptr - 8 (real base)
         ir_emit_mov_r64_r64(7, ptr_reg)
         // sub rdi, 8
@@ -5191,9 +5403,7 @@ fn ir_emit_x86_insn(uint64 ii) {
     if op == 52 {
         // IR_SYSCALL: dispatch by target_os
         if target_os == 2 {
-            // Windows PE: stub — will be implemented in Task 2
-            // For now, emit exit(0) as a safe fallback
-            ir_emit_mov_r64_imm64(0, 0)
+            ir_emit_x86_win_syscall(imm, dest_v, dst_r)
             return
         }
         // Linux (0), macOS (1), Android (3): raw syscall with OS-specific numbers
@@ -6344,9 +6554,29 @@ fn ir_emit_x86_function(uint64 fn_node) {
         ir_spill_count = ir_vreg_next - IR_NUM_REGS - 1
     }
 
-    // 5a. For main(): read argc/argv from stack BEFORE prologue modifies RSP
+    // 5a. For main(): set up argc/argv BEFORE prologue modifies RSP
     uint32 fn_name_tok = ast_data1(fn_node)
-    if tok_matches(fn_name_tok, "main", 4) != 0 && freestanding == 0 {
+    if tok_matches(fn_name_tok, "main", 4) != 0 && freestanding == 0 && target_os == 2 {
+        // Windows: call GetCommandLineA -> rax = raw command line string
+        // PE entry: loader calls us, RSP = 8 mod 16.
+        // Use 0x28 shadow (0x20 + 8 alignment) so RSP is 16-aligned before CALL.
+        emit_win_alloc_stack(0x28)
+        emit_win_call_iat(7)          // GetCommandLineA (IAT slot 7) -> rax = cmdline
+        emit_win_free_stack(0x28)
+        // Store raw cmdline pointer as cli_argv (will be parsed by win_init_args)
+        uint64 argv_off_w = static_lookup_by_name("cli_argv", 8)
+        if argv_off_w != 0xFFFFFFFF {
+            emit_static_store(argv_off_w)
+        }
+        // Set cli_argc = 0xFFFFFFFF as "needs parsing" sentinel
+        ir_emit_mov_r64_imm64(0, 0xFFFFFFFF)
+        uint64 argc_off_w = static_lookup_by_name("cli_argc", 8)
+        if argc_off_w != 0xFFFFFFFF {
+            emit_static_store(argc_off_w)
+        }
+    }
+    if tok_matches(fn_name_tok, "main", 4) != 0 && freestanding == 0 && target_os != 2 {
+        // Linux/macOS/Android: argc/argv on stack. [RSP]=argc, [RSP+8]=&argv[0]
         // mov rax, [rsp]  ; rax = argc
         emit_byte(0x48); emit_byte(0x8B); emit_byte(0x04); emit_byte(0x24)
         uint64 argc_off = static_lookup_by_name("cli_argc", 8)
