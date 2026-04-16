@@ -2216,8 +2216,8 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
         if ck == 2 {
             uint32 fn_name = ast_data1(wchild)
             if dce_is_live(fn_name) != 0 {
-                if emit_ir_mode != 0 && arch == 0 && emit_mode != 3 {
-                    // IR codegen (skip for --emit=obj which needs legacy for extern relocations)
+                if emit_ir_mode != 0 && arch == 0 && emit_mode != 3 && emit_mode != 2 {
+                    // IR codegen (skip for --emit=obj and --emit=pe which need legacy codegen)
                     fn_register(fn_name, out_len)
                     ir_init()
                     ir_emit_x86_function(wchild)
