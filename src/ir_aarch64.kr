@@ -1476,6 +1476,258 @@ fn ir_emit_arm64_insn(uint64 ii) {
         }
         return
     }
+
+    // ----- IR_FADD (20), IR_FSUB (21), IR_FMUL (22), IR_FDIV (23) -----
+    if op >= 20 && op <= 23 {
+        uint64 a = ir_a64_resolve_src(s1_v, 9)
+        uint64 b = ir_a64_resolve_src(s2_v, 10)
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        uint64 fk = imm
+        if fk == 2 {
+            // f32: fmov s0, wA; fmov s1, wB; op s0, s0, s1; fmov wDst, s0
+            emit_a64(0x1E270000 | (a << 5) | 0)       // fmov s0, wA
+            emit_a64(0x1E270000 | (b << 5) | 1)       // fmov s1, wB
+            if op == 20 { emit_a64(0x1E202800 | (1 << 16) | (0 << 5) | 0) }  // fadd s0, s0, s1
+            if op == 21 { emit_a64(0x1E203800 | (1 << 16) | (0 << 5) | 0) }  // fsub s0, s0, s1
+            if op == 22 { emit_a64(0x1E200800 | (1 << 16) | (0 << 5) | 0) }  // fmul s0, s0, s1
+            if op == 23 { emit_a64(0x1E201800 | (1 << 16) | (0 << 5) | 0) }  // fdiv s0, s0, s1
+            emit_a64(0x1E260000 | (0 << 5) | d)       // fmov wDst, s0
+        } else {
+            // f64: fmov d0, xA; fmov d1, xB; op d0, d0, d1; fmov xDst, d0
+            emit_a64(0x9E670000 | (a << 5) | 0)       // fmov d0, xA
+            emit_a64(0x9E670000 | (b << 5) | 1)       // fmov d1, xB
+            if op == 20 { emit_a64(0x1E602800 | (1 << 16) | (0 << 5) | 0) }  // fadd d0, d0, d1
+            if op == 21 { emit_a64(0x1E603800 | (1 << 16) | (0 << 5) | 0) }  // fsub d0, d0, d1
+            if op == 22 { emit_a64(0x1E600800 | (1 << 16) | (0 << 5) | 0) }  // fmul d0, d0, d1
+            if op == 23 { emit_a64(0x1E601800 | (1 << 16) | (0 << 5) | 0) }  // fdiv d0, d0, d1
+            emit_a64(0x9E660000 | (0 << 5) | d)       // fmov xDst, d0
+        }
+        if dst_r == 0xFFFFFFFF { ir_a64_emit_store_spill(9, dest_v) }
+        return
+    }
+
+    // ----- Float comparisons: IR_FCMP_EQ (24), IR_FCMP_LT (25), IR_FCMP_NE (99),
+    //       IR_FCMP_LE (100), IR_FCMP_GT (101), IR_FCMP_GE (102) -----
+    if op == 24 || op == 25 || op == 99 || op == 100 || op == 101 || op == 102 {
+        uint64 a = ir_a64_resolve_src(s1_v, 9)
+        uint64 b = ir_a64_resolve_src(s2_v, 10)
+        uint64 fk = imm
+        if fk == 2 {
+            emit_a64(0x1E270000 | (a << 5) | 0)       // fmov s0, wA
+            emit_a64(0x1E270000 | (b << 5) | 1)       // fmov s1, wB
+            emit_a64(0x1E202000 | (1 << 16) | (0 << 5))  // fcmp s0, s1
+        } else {
+            emit_a64(0x9E670000 | (a << 5) | 0)       // fmov d0, xA
+            emit_a64(0x9E670000 | (b << 5) | 1)       // fmov d1, xB
+            emit_a64(0x1E602000 | (1 << 16) | (0 << 5))  // fcmp d0, d1
+        }
+        // ARM64 float condition codes after fcmp:
+        // EQ: cond=0, NE: cond=1, LT: cond=11, LE: cond=13, GT: cond=12, GE: cond=10
+        uint64 cond = 0
+        if op == 24 { cond = 0 }   // EQ
+        if op == 99 { cond = 1 }   // NE
+        if op == 25 { cond = 11 }  // LT
+        if op == 100 { cond = 13 } // LE
+        if op == 101 { cond = 12 } // GT
+        if op == 102 { cond = 10 } // GE
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        emit_a64_cset(d, cond)
+        if dst_r == 0xFFFFFFFF { ir_a64_emit_store_spill(9, dest_v) }
+        return
+    }
+
+    // ----- IR_ITOF (26): int64 to f64 -----
+    if op == 26 {
+        uint64 a = ir_a64_resolve_src(s1_v, 9)
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        emit_a64(0x9E620000 | (a << 5) | 0)           // scvtf d0, xA
+        emit_a64(0x9E660000 | (0 << 5) | d)           // fmov xDst, d0
+        if dst_r == 0xFFFFFFFF { ir_a64_emit_store_spill(9, dest_v) }
+        return
+    }
+
+    // ----- IR_FTOI (27): f64 to int64 (truncating) -----
+    if op == 27 {
+        uint64 a = ir_a64_resolve_src(s1_v, 9)
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        emit_a64(0x9E670000 | (a << 5) | 0)           // fmov d0, xA
+        emit_a64(0x9E780000 | (0 << 5) | d)           // fcvtzs xDst, d0
+        if dst_r == 0xFFFFFFFF { ir_a64_emit_store_spill(9, dest_v) }
+        return
+    }
+
+    // ----- IR_FSQRT (97): f64 square root -----
+    if op == 97 {
+        uint64 a = ir_a64_resolve_src(s1_v, 9)
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        emit_a64(0x9E670000 | (a << 5) | 0)           // fmov d0, xA
+        emit_a64(0x1E61C000 | (0 << 5) | 0)           // fsqrt d0, d0
+        emit_a64(0x9E660000 | (0 << 5) | d)           // fmov xDst, d0
+        if dst_r == 0xFFFFFFFF { ir_a64_emit_store_spill(9, dest_v) }
+        return
+    }
+
+    // ----- IR_FFMA (98): fused multiply-add: a*b + c -----
+    if op == 98 {
+        uint64 a = ir_a64_resolve_src(s1_v, 9)
+        uint64 b = ir_a64_resolve_src(s2_v, 10)
+        uint64 c_vreg = imm
+        uint64 c = 9
+        if c_vreg > 0 && c_vreg < ir_vreg_next {
+            c = ir_a64_resolve_src(c_vreg, 11)
+        }
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        // fmov d0, xA; fmov d1, xB; fmul d0, d0, d1
+        emit_a64(0x9E670000 | (a << 5) | 0)
+        emit_a64(0x9E670000 | (b << 5) | 1)
+        emit_a64(0x1E600800 | (1 << 16) | (0 << 5) | 0)  // fmul d0, d0, d1
+        // fmov d1, xC; fadd d0, d0, d1
+        emit_a64(0x9E670000 | (c << 5) | 1)
+        emit_a64(0x1E602800 | (1 << 16) | (0 << 5) | 0)  // fadd d0, d0, d1
+        emit_a64(0x9E660000 | (0 << 5) | d)               // fmov xDst, d0
+        if dst_r == 0xFFFFFFFF { ir_a64_emit_store_spill(9, dest_v) }
+        return
+    }
+
+    // ----- IR_F32TOF64 (103): f32 to f64 -----
+    if op == 103 {
+        uint64 a = ir_a64_resolve_src(s1_v, 9)
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        emit_a64(0x1E270000 | (a << 5) | 0)           // fmov s0, wA
+        emit_a64(0x1E22C000 | (0 << 5) | 0)           // fcvt d0, s0
+        emit_a64(0x9E660000 | (0 << 5) | d)           // fmov xDst, d0
+        if dst_r == 0xFFFFFFFF { ir_a64_emit_store_spill(9, dest_v) }
+        return
+    }
+
+    // ----- IR_F64TOF32 (104): f64 to f32 -----
+    if op == 104 {
+        uint64 a = ir_a64_resolve_src(s1_v, 9)
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        emit_a64(0x9E670000 | (a << 5) | 0)           // fmov d0, xA
+        emit_a64(0x1E624000 | (0 << 5) | 0)           // fcvt s0, d0
+        emit_a64(0x1E260000 | (0 << 5) | d)           // fmov wDst, s0
+        if dst_r == 0xFFFFFFFF { ir_a64_emit_store_spill(9, dest_v) }
+        return
+    }
+
+    // ----- IR_F32TOF16 (105): software f32-to-f16 bit conversion -----
+    if op == 105 {
+        uint64 a = ir_a64_resolve_src(s1_v, 9)
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        // f32 bits in GPR, extract sign/exp/mantissa using integer ops
+        // x10 = a (save f32 bits)
+        emit_a64_mov(10, a)
+        // sign: x11 = a >> 16; x11 = x11 & 0x8000
+        emit_a64_mov(11, a)
+        emit_a64_mov_imm(12, 16)
+        emit_a64_lsr(11, 11, 12)
+        emit_a64_mov_imm(12, 0x8000)
+        emit_a64_and(11, 11, 12)
+        // exp: x12 = a >> 23; x12 = x12 & 0xFF; x12 = x12 - 112; x12 = x12 & 0x1F; x12 = x12 << 10
+        emit_a64_mov(12, 10)
+        emit_a64_mov_imm(13, 23)
+        emit_a64_lsr(12, 12, 13)
+        emit_a64_mov_imm(13, 0xFF)
+        emit_a64_and(12, 12, 13)
+        emit_a64_mov_imm(13, 112)
+        emit_a64_sub(12, 12, 13)
+        emit_a64_mov_imm(13, 0x1F)
+        emit_a64_and(12, 12, 13)
+        emit_a64_mov_imm(13, 10)
+        emit_a64_lsl(12, 12, 13)
+        // sign | exp
+        emit_a64_orr(11, 11, 12)
+        // mantissa: x12 = a >> 13; x12 = x12 & 0x3FF
+        emit_a64_mov(12, 10)
+        emit_a64_mov_imm(13, 13)
+        emit_a64_lsr(12, 12, 13)
+        emit_a64_mov_imm(13, 0x3FF)
+        emit_a64_and(12, 12, 13)
+        // result = sign | exp | mantissa
+        emit_a64_orr(d, 11, 12)
+        if dst_r == 0xFFFFFFFF { ir_a64_emit_store_spill(9, dest_v) }
+        return
+    }
+
+    // ----- IR_F16TOF32 (106): software f16-to-f32 bit conversion -----
+    if op == 106 {
+        uint64 a = ir_a64_resolve_src(s1_v, 9)
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        // f16 bits in GPR (lower 16 bits), expand to f32 bit pattern
+        // x10 = a (save f16 bits)
+        emit_a64_mov(10, a)
+        // sign: x11 = a << 16; x11 = x11 & 0x80000000
+        emit_a64_mov(11, a)
+        emit_a64_mov_imm(12, 16)
+        emit_a64_lsl(11, 11, 12)
+        emit_a64_mov_imm(12, 0x80000000)
+        emit_a64_and(11, 11, 12)
+        // exp: x12 = a >> 10; x12 = x12 & 0x1F; x12 = x12 + 112; x12 = x12 << 23
+        emit_a64_mov(12, 10)
+        emit_a64_mov_imm(13, 10)
+        emit_a64_lsr(12, 12, 13)
+        emit_a64_mov_imm(13, 0x1F)
+        emit_a64_and(12, 12, 13)
+        emit_a64_add_imm(12, 12, 112)
+        emit_a64_mov_imm(13, 23)
+        emit_a64_lsl(12, 12, 13)
+        // sign | exp
+        emit_a64_orr(11, 11, 12)
+        // mantissa: x12 = a & 0x3FF; x12 = x12 << 13
+        emit_a64_mov_imm(12, 0x3FF)
+        emit_a64_and(12, 10, 12)
+        emit_a64_mov_imm(13, 13)
+        emit_a64_lsl(12, 12, 13)
+        // result = sign | exp | mantissa
+        emit_a64_orr(d, 11, 12)
+        if dst_r == 0xFFFFFFFF { ir_a64_emit_store_spill(9, dest_v) }
+        return
+    }
+
+    // ----- IR_ITOF32 (107): int64 to f32 -----
+    if op == 107 {
+        uint64 a = ir_a64_resolve_src(s1_v, 9)
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        emit_a64(0x1E620000 | (a << 5) | 0)           // scvtf s0, xA
+        emit_a64(0x1E260000 | (0 << 5) | d)           // fmov wDst, s0
+        if dst_r == 0xFFFFFFFF { ir_a64_emit_store_spill(9, dest_v) }
+        return
+    }
+
+    // ----- IR_FTOI32 (108): f32 to int64 (truncating) -----
+    if op == 108 {
+        uint64 a = ir_a64_resolve_src(s1_v, 9)
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        emit_a64(0x1E270000 | (a << 5) | 0)           // fmov s0, wA
+        emit_a64(0x1E380000 | (0 << 5) | d)           // fcvtzs xDst, s0
+        if dst_r == 0xFFFFFFFF { ir_a64_emit_store_spill(9, dest_v) }
+        return
+    }
+
+    // ----- IR_FSQRT32 (118): f32 square root -----
+    if op == 118 {
+        uint64 a = ir_a64_resolve_src(s1_v, 9)
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        emit_a64(0x1E270000 | (a << 5) | 0)           // fmov s0, wA
+        emit_a64(0x1E21C000 | (0 << 5) | 0)           // fsqrt s0, s0
+        emit_a64(0x1E260000 | (0 << 5) | d)           // fmov wDst, s0
+        if dst_r == 0xFFFFFFFF { ir_a64_emit_store_spill(9, dest_v) }
+        return
+    }
 }
 
 // ---------------------------------------------------------------------------
