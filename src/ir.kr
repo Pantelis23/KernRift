@@ -6340,10 +6340,12 @@ fn ir_emit_x86_function(uint64 fn_node) {
     uint64 bo_need = ir_bb_count
     if bo_need < 4096 { bo_need = 4096 }
     ir_block_offsets = alloc(bo_need * 8)
-    uint64 br_need = ir_bb_count * 2
-    if br_need < 1024 { br_need = 1024 }
+    uint64 br_need = ir_bb_count * 4
+    if br_need < 2048 { br_need = 2048 }
     ir_br_fixups = alloc(br_need * 8)
-    if ir_ret_fixups == 0 { ir_ret_fixups = alloc(1024 * 4) }
+    uint64 ret_need = ir_bb_count
+    if ret_need < 1024 { ret_need = 1024 }
+    ir_ret_fixups = alloc(ret_need * 4)
     ir_br_fixup_count = 0
     ir_ret_fixup_count = 0
 
