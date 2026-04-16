@@ -1128,7 +1128,354 @@ fn ir_emit_arm64_insn(uint64 ii) {
     }
 
     // ----- IR_PHI (60): no-op (handled by regalloc) -----
-    // ----- IR_ASM_BLOCK (96): skip for now -----
+
+    // ----- IR_ATOMIC_STORE (90): stlr Xt, [Xn] (store-release) -----
+    if op == 90 {
+        uint64 ptr_r = ir_a64_resolve_src(s1_v, 9)
+        uint64 val_r = ir_a64_resolve_src(s2_v, 10)
+        // STLR Xt, [Xn]: 0xC89FFC00 | (Xn << 5) | Xt
+        uint64 stlr = 0xC89FFC00 | (ptr_r << 5) | val_r
+        emit_a64(stlr)
+        return
+    }
+
+    // ----- IR_ATOMIC_LOAD (91): ldar Xt, [Xn] (load-acquire) -----
+    if op == 91 {
+        uint64 ptr_r = ir_a64_resolve_src(s1_v, 9)
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        // LDAR Xt, [Xn]: 0xC8DFFC00 | (Xn << 5) | Xt
+        uint64 ldar = 0xC8DFFC00 | (ptr_r << 5) | d
+        emit_a64(ldar)
+        if dst_r == 0xFFFFFFFF {
+            ir_a64_emit_store_spill(9, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_ATOMIC_ADD (92): ldaxr/add/stlxr retry loop -----
+    if op == 92 {
+        uint64 ptr_r = ir_a64_resolve_src(s1_v, 10)
+        uint64 val_r = ir_a64_resolve_src(s2_v, 11)
+        // retry:
+        uint64 aa_retry = out_len
+        // LDAXR x9, [ptr_r]: 0xC85FFC00 | (ptr_r << 5) | 9
+        emit_a64(0xC85FFC00 | (ptr_r << 5) | 9)
+        // ADD x9, x9, val_r
+        emit_a64_add(9, 9, val_r)
+        // STLXR w12, x9, [ptr_r]: 0xC800FC00 | (12 << 16) | (ptr_r << 5) | 9
+        emit_a64(0xC800FC00 | (12 << 16) | (ptr_r << 5) | 9)
+        // CBNZ w12, retry (32-bit CBNZ for status register)
+        uint64 aa_back = aa_retry - out_len
+        emit_a64(0x35000000 | (((aa_back / 4) & 0x7FFFF) << 5) | 12)
+        // x9 = new value
+        if dst_r != 0xFFFFFFFF {
+            emit_a64_mov(dst_r, 9)
+        } else {
+            ir_a64_emit_store_spill(9, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_ATOMIC_CAS (93): ldaxr/cmp/b.ne/stlxr retry loop -----
+    if op == 93 {
+        uint64 ptr_r = ir_a64_resolve_src(s1_v, 10)
+        uint64 exp_r = ir_a64_resolve_src(s2_v, 11)
+        // desired is in imm (vreg index)
+        uint64 des_r = 0
+        if imm > 0 && imm < ir_vreg_next {
+            des_r = ir_get_phys_reg(imm)
+            if des_r == 0xFFFFFFFF {
+                ir_a64_load_spill(13, imm)
+                des_r = 13
+            }
+        }
+        // retry:
+        uint64 cas_retry = out_len
+        // LDAXR x9, [ptr_r]
+        emit_a64(0xC85FFC00 | (ptr_r << 5) | 9)
+        // CMP x9, exp_r (SUBS xzr, x9, exp_r)
+        emit_a64_cmp(9, exp_r)
+        // B.NE fail (+3 insns = 12 bytes)
+        emit_a64(0x54000061)
+        // STLXR w12, des_r, [ptr_r]
+        emit_a64(0xC800FC00 | (12 << 16) | (ptr_r << 5) | des_r)
+        // CBNZ w12, retry
+        uint64 cas_back = cas_retry - out_len
+        emit_a64(0x35000000 | (((cas_back / 4) & 0x7FFFF) << 5) | 12)
+        // Success: result = 1
+        uint64 cas_d = dst_r
+        if cas_d == 0xFFFFFFFF { cas_d = 9 }
+        emit_a64_mov_imm(cas_d, 1)
+        // B done (+2 insns = 8 bytes)
+        emit_a64(0x14000002)
+        // fail: result = 0
+        emit_a64_mov_imm(cas_d, 0)
+        // done:
+        if dst_r == 0xFFFFFFFF {
+            ir_a64_emit_store_spill(9, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_VSTORE (94): volatile store — stlr on ARM64 -----
+    if op == 94 {
+        uint64 addr_reg = ir_a64_resolve_src(s1_v, 9)
+        uint64 val_reg = ir_a64_resolve_src(s2_v, 10)
+        // STLR Xt, [Xn]: 0xC89FFC00 | (Xn << 5) | Xt
+        uint64 vs = 0xC89FFC00 | (addr_reg << 5) | val_reg
+        emit_a64(vs)
+        return
+    }
+
+    // ----- IR_VLOAD (95): volatile load — ldar on ARM64 -----
+    if op == 95 {
+        uint64 addr_reg = ir_a64_resolve_src(s1_v, 9)
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        // LDAR Xt, [Xn]: 0xC8DFFC00 | (Xn << 5) | Xt
+        uint64 vl = 0xC8DFFC00 | (addr_reg << 5) | d
+        emit_a64(vl)
+        if dst_r == 0xFFFFFFFF {
+            ir_a64_emit_store_spill(9, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_ASM_BLOCK (96): inline asm passthrough -----
+    if op == 96 {
+        uint64 asm_node = s1_v
+        uint32 single_tok = ast_data1(asm_node)
+        uint64 ws = single_tok
+        if ws != 0 {
+            asm_emit_a64(ws)
+        }
+        uint32 child_str = ast_child(asm_node)
+        uint64 wcs = child_str
+        while wcs != 0 {
+            uint32 stk = ast_data1(wcs)
+            uint64 wstk = stk
+            asm_emit_a64(wstk)
+            uint32 nxt = ast_next(wcs)
+            wcs = nxt
+        }
+        return
+    }
+
+    // ----- IR_ATOMIC_SUB (109): ldaxr/sub/stlxr retry loop -----
+    if op == 109 {
+        uint64 ptr_r = ir_a64_resolve_src(s1_v, 10)
+        uint64 val_r = ir_a64_resolve_src(s2_v, 11)
+        // retry:
+        uint64 as_retry = out_len
+        // LDAXR x9, [ptr_r]
+        emit_a64(0xC85FFC00 | (ptr_r << 5) | 9)
+        // SUB x9, x9, val_r
+        emit_a64_sub(9, 9, val_r)
+        // STLXR w12, x9, [ptr_r]
+        emit_a64(0xC800FC00 | (12 << 16) | (ptr_r << 5) | 9)
+        // CBNZ w12, retry
+        uint64 as_back = as_retry - out_len
+        emit_a64(0x35000000 | (((as_back / 4) & 0x7FFFF) << 5) | 12)
+        // x9 = new value
+        if dst_r != 0xFFFFFFFF {
+            emit_a64_mov(dst_r, 9)
+        } else {
+            ir_a64_emit_store_spill(9, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_ATOMIC_AND (110): ldaxr/and/stlxr retry loop -----
+    if op == 110 {
+        uint64 ptr_r = ir_a64_resolve_src(s1_v, 10)
+        uint64 val_r = ir_a64_resolve_src(s2_v, 11)
+        uint64 aand_retry = out_len
+        emit_a64(0xC85FFC00 | (ptr_r << 5) | 9)
+        emit_a64_and(9, 9, val_r)
+        emit_a64(0xC800FC00 | (12 << 16) | (ptr_r << 5) | 9)
+        uint64 aand_back = aand_retry - out_len
+        emit_a64(0x35000000 | (((aand_back / 4) & 0x7FFFF) << 5) | 12)
+        if dst_r != 0xFFFFFFFF {
+            emit_a64_mov(dst_r, 9)
+        } else {
+            ir_a64_emit_store_spill(9, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_ATOMIC_OR (111): ldaxr/orr/stlxr retry loop -----
+    if op == 111 {
+        uint64 ptr_r = ir_a64_resolve_src(s1_v, 10)
+        uint64 val_r = ir_a64_resolve_src(s2_v, 11)
+        uint64 aor_retry = out_len
+        emit_a64(0xC85FFC00 | (ptr_r << 5) | 9)
+        emit_a64_orr(9, 9, val_r)
+        emit_a64(0xC800FC00 | (12 << 16) | (ptr_r << 5) | 9)
+        uint64 aor_back = aor_retry - out_len
+        emit_a64(0x35000000 | (((aor_back / 4) & 0x7FFFF) << 5) | 12)
+        if dst_r != 0xFFFFFFFF {
+            emit_a64_mov(dst_r, 9)
+        } else {
+            ir_a64_emit_store_spill(9, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_ATOMIC_XOR (112): ldaxr/eor/stlxr retry loop -----
+    if op == 112 {
+        uint64 ptr_r = ir_a64_resolve_src(s1_v, 10)
+        uint64 val_r = ir_a64_resolve_src(s2_v, 11)
+        uint64 axor_retry = out_len
+        emit_a64(0xC85FFC00 | (ptr_r << 5) | 9)
+        emit_a64_eor(9, 9, val_r)
+        emit_a64(0xC800FC00 | (12 << 16) | (ptr_r << 5) | 9)
+        uint64 axor_back = axor_retry - out_len
+        emit_a64(0x35000000 | (((axor_back / 4) & 0x7FFFF) << 5) | 12)
+        if dst_r != 0xFFFFFFFF {
+            emit_a64_mov(dst_r, 9)
+        } else {
+            ir_a64_emit_store_spill(9, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_EXEC (113): execve(path, [path, NULL], envp) -----
+    if op == 113 {
+        uint64 path_r = ir_a64_resolve_src(s1_v, 9)
+        // Build argv on stack: [path, NULL] = 16 bytes
+        emit_a64_sub_sp_imm(16)
+        emit_a64_str(path_r, 31, 0)      // argv[0] = path
+        emit_a64_mov_imm(10, 0)
+        emit_a64_str(10, 31, 8)           // argv[1] = NULL
+        // x0 = path
+        emit_a64_mov(0, path_r)
+        // x1 = argv (SP)
+        emit_a64_mov(1, 31)
+        // x2 = envp: try cli_envp static, else NULL
+        uint64 envp_off = static_lookup_by_name("cli_envp", 8)
+        if envp_off != 0xFFFFFFFF {
+            emit_a64_static_load(envp_off)
+            emit_a64_mov(2, 0)
+            emit_a64_mov(0, path_r)       // restore x0 (clobbered by static_load)
+        } else {
+            emit_a64_mov_imm(2, 0)
+        }
+        // syscall execve
+        uint64 execve_nr = ir_a64_syscall_nr(59)
+        emit_a64_syscall_nr(execve_nr)
+        emit_a64_svc()
+        // If execve fails, restore stack
+        emit_a64_add_sp_imm(16)
+        // Save errno to exec_errno if defined
+        uint64 errno_off = static_lookup_by_name("exec_errno", 10)
+        if errno_off != 0xFFFFFFFF {
+            emit_a64_static_store(errno_off)
+        }
+        if dst_r != 0xFFFFFFFF && dst_r != 0 {
+            emit_a64_mov(dst_r, 0)
+        }
+        if dst_r == 0xFFFFFFFF {
+            ir_a64_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_EXEC_ARGV (114): execve(path, argv, envp) -----
+    if op == 114 {
+        uint64 path_r = ir_a64_resolve_src(s1_v, 9)
+        uint64 argv_r = ir_a64_resolve_src(s2_v, 10)
+        // x0 = path
+        emit_a64_mov(0, path_r)
+        // x1 = argv
+        emit_a64_mov(1, argv_r)
+        // x2 = envp
+        uint64 envp_off_a = static_lookup_by_name("cli_envp", 8)
+        if envp_off_a != 0xFFFFFFFF {
+            emit_a64_static_load(envp_off_a)
+            emit_a64_mov(2, 0)
+            emit_a64_mov(0, path_r)       // restore x0
+        } else {
+            emit_a64_mov_imm(2, 0)
+        }
+        // syscall execve
+        uint64 execve_nr_a = ir_a64_syscall_nr(59)
+        emit_a64_syscall_nr(execve_nr_a)
+        emit_a64_svc()
+        // Save errno
+        uint64 errno_off_a = static_lookup_by_name("exec_errno", 10)
+        if errno_off_a != 0xFFFFFFFF {
+            emit_a64_static_store(errno_off_a)
+        }
+        if dst_r != 0xFFFFFFFF && dst_r != 0 {
+            emit_a64_mov(dst_r, 0)
+        }
+        if dst_r == 0xFFFFFFFF {
+            ir_a64_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_SET_EXEC (115): chmod(path, 0755) -----
+    if op == 115 {
+        uint64 path_r = ir_a64_resolve_src(s1_v, 9)
+        if target_os == 0 || target_os == 3 {
+            // Linux/Android: fchmodat(AT_FDCWD=-100, path, 0755, 0)
+            emit_a64_mov_imm(0, 0xFFFFFFFFFFFFFF9C)  // AT_FDCWD = -100
+            emit_a64_mov(1, path_r)
+            emit_a64_mov_imm(2, 0x1ED)               // 0755 octal
+            emit_a64_mov_imm(3, 0)                    // flags = 0
+            uint64 chmod_nr = ir_a64_syscall_nr(90)
+            emit_a64_syscall_nr(chmod_nr)
+            emit_a64_svc()
+        } else if target_os == 1 {
+            // macOS: chmod(path, 0755) — syscall 15
+            emit_a64_mov(0, path_r)
+            emit_a64_mov_imm(1, 0x1ED)
+            uint64 chmod_nr_m = ir_a64_syscall_nr(15)
+            emit_a64_syscall_nr(chmod_nr_m)
+            emit_a64_svc()
+        }
+        return
+    }
+
+    // ----- IR_TIME_NS (119): clock_gettime -> nanoseconds -----
+    if op == 119 {
+        if target_os == 0 || target_os == 1 || target_os == 3 {
+            // Allocate 16 bytes on stack for timespec {tv_sec, tv_nsec}
+            emit_a64_sub_sp_imm(16)
+            // x0 = 1 (CLOCK_MONOTONIC)
+            emit_a64_mov_imm(0, 1)
+            // x1 = sp (buffer)
+            emit_a64_mov(1, 31)
+            // syscall clock_gettime
+            uint64 cgt_nr = ir_a64_syscall_nr(228)
+            emit_a64_syscall_nr(cgt_nr)
+            emit_a64_svc()
+            // x9 = tv_sec = [sp+0]
+            emit_a64_ldr(9, 31, 0)
+            // x10 = tv_nsec = [sp+8]
+            emit_a64_ldr(10, 31, 8)
+            // x11 = 1_000_000_000
+            emit_a64_mov_imm(11, 1000000000)
+            // x9 = tv_sec * 1_000_000_000
+            emit_a64_mul(9, 9, 11)
+            // x0 = x9 + x10
+            emit_a64_add(0, 9, 10)
+            // Restore stack
+            emit_a64_add_sp_imm(16)
+        } else {
+            // Non-Linux/macOS: return 0
+            emit_a64_mov_imm(0, 0)
+        }
+        if dst_r != 0xFFFFFFFF && dst_r != 0 {
+            emit_a64_mov(dst_r, 0)
+        }
+        if dst_r == 0xFFFFFFFF {
+            ir_a64_emit_store_spill(0, dest_v)
+        }
+        return
+    }
 }
 
 // ---------------------------------------------------------------------------
