@@ -2728,6 +2728,37 @@ else
 fi
 rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_ir_$$
 
+# -- IR memset liveness (memset return must not clobber live vregs) --
+TOTAL=$((TOTAL + 1))
+cat > "$REPO_ROOT/test_tmp_$$.kr" << 'IREOF'
+fn main() {
+    uint64 src = alloc(100)
+    memset(src, 0xAB, 100)
+    uint64 dst = alloc(100)
+    memset(dst, 0, 100)
+    memcpy(dst, src, 100)
+    uint64 v = 0
+    unsafe { *(dst as uint8) -> v }
+    dealloc(src)
+    dealloc(dst)
+    exit(v)
+}
+IREOF
+if $KRC $KRC_FLAGS --ir "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_ir_$$ > /dev/null 2>&1; then
+    chmod +x /tmp/krc_ir_$$
+    /tmp/krc_ir_$$ > /dev/null 2>&1
+    actual=$?
+    if [ "$actual" = "171" ]; then
+        PASS=$((PASS + 1))
+        echo "  ir_memset_liveness: PASS"
+    else
+        echo "FAIL: ir_memset_liveness (expected 171, got $actual)"; FAIL=$((FAIL + 1))
+    fi
+else
+    echo "FAIL: ir_memset_liveness (compilation failed)"; FAIL=$((FAIL + 1))
+fi
+rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_ir_$$
+
 # --- IR dump test ---
 echo ""
 echo "--- IR dump test ---"

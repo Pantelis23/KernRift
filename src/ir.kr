@@ -3448,7 +3448,7 @@ fn ir_insn_has_def(uint64 ii) -> uint64 {
     if op == 31 { return 0 }   // store
     if op == 51 { return 0 }   // arg (no value produced)
     if op == 71 { return 0 }   // dealloc (no value produced)
-    if op == 76 { return 0 }   // memset (no value produced — returns void)
+    // memset DOES produce a value (returns dst pointer); do NOT mark it as no-def
     if op == 78 { return 0 }   // static_store (no value produced)
     if op == 82 { return 0 }   // ret2 (no value produced)
     if op == 83 { return 0 }   // ret3 (no value produced)
