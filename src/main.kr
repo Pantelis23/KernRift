@@ -2620,6 +2620,81 @@ fn restore_src_and_tokens(uint64 source, uint64 size, uint64 src_snap, uint64 to
     memcpy(tokens, tok_snap, tok_bytes)
 }
 
+// --targets=<list> bitmask. 0 = unset (default: all 8, paired layout).
+// Bit i (0..7) maps to KrboFat arch_id i+1:
+//   0 linux-x64, 1 linux-arm64, 2 win-x64, 3 win-arm64,
+//   4 macos-x64, 5 macos-arm64, 6 android-arm64, 7 android-x64.
+static uint64 target_mask = 0
+
+// Compare a fixed-length string `s` of length `len` against a nul-terminated
+// literal `lit`. Return 1 iff they match exactly (including length).
+fn targets_name_eq(uint64 s, uint64 len, uint64 lit) -> uint64 {
+    uint64 llen = str_len(lit)
+    if len != llen { return 0 }
+    return str_starts_with(s, lit, len)
+}
+
+// Return the target bit (0..7) for a platform name slice, or 0xFF if
+// unrecognised. Accepts several common aliases.
+fn parse_target_name(uint64 s, uint64 len) -> uint64 {
+    if targets_name_eq(s, len, "linux-x64") != 0 { return 0 }
+    if targets_name_eq(s, len, "linux-x86_64") != 0 { return 0 }
+    if targets_name_eq(s, len, "linux-arm64") != 0 { return 1 }
+    if targets_name_eq(s, len, "linux-aarch64") != 0 { return 1 }
+    if targets_name_eq(s, len, "win-x64") != 0 { return 2 }
+    if targets_name_eq(s, len, "windows-x64") != 0 { return 2 }
+    if targets_name_eq(s, len, "win-arm64") != 0 { return 3 }
+    if targets_name_eq(s, len, "windows-arm64") != 0 { return 3 }
+    if targets_name_eq(s, len, "mac-x64") != 0 { return 4 }
+    if targets_name_eq(s, len, "macos-x64") != 0 { return 4 }
+    if targets_name_eq(s, len, "mac-arm64") != 0 { return 5 }
+    if targets_name_eq(s, len, "macos-arm64") != 0 { return 5 }
+    if targets_name_eq(s, len, "android-arm64") != 0 { return 6 }
+    if targets_name_eq(s, len, "android-x64") != 0 { return 7 }
+    if targets_name_eq(s, len, "android-x86_64") != 0 { return 7 }
+    return 0xFF
+}
+
+// Parse "a,b,c" or "all" into target_mask. Unknown names produce a warning
+// on stderr; recognised ones each flip one bit. "all" sets all 8 bits.
+fn parse_targets_arg(uint64 list) {
+    uint64 mask = 0
+    uint64 i = 0
+    uint64 c = 0
+    uint64 p0 = list + i
+    unsafe { *(p0 as uint8) -> c }
+    while c != 0 {
+        uint64 start = i
+        while c != 0 && c != 44 {
+            i = i + 1
+            uint64 pn = list + i
+            unsafe { *(pn as uint8) -> c }
+        }
+        uint64 tok_start = list + start
+        uint64 tok_len = i - start
+        if tok_len > 0 {
+            if targets_name_eq(tok_start, tok_len, "all") != 0 {
+                mask = mask | 0xFF
+            } else {
+                uint64 bit = parse_target_name(tok_start, tok_len)
+                if bit != 0xFF {
+                    mask = mask | (1 << bit)
+                } else {
+                    write(2, "warning: unknown --targets name: ", 33)
+                    write(2, tok_start, tok_len)
+                    write(2, "\n", 1)
+                }
+            }
+        }
+        if c == 44 {
+            i = i + 1
+            uint64 pc = list + i
+            unsafe { *(pc as uint8) -> c }
+        }
+    }
+    target_mask = mask
+}
+
 fn slot_load_u64(uint64 p) -> uint64 {
     uint64 v = 0
     unsafe { *(p as uint64) -> v }
@@ -3549,6 +3624,119 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     filter_aarch64_bcj(macho_a64_buf, macho_a64_len, 1)
     filter_aarch64_bcj(android_buf, android_len, 1)
 
+    // === Custom target subset: emit only the selected slices, each
+    // compressed as a standalone (non-paired) LZ4 blob. The runner treats
+    // an entry with pair_off == 0 and pair_uncomp_size == slice_uncomp_size
+    // as a single-slice blob. Full-set selection (all 8) drops into the
+    // default paired-compression path below for tighter compression.
+    if target_mask != 0 && target_mask != 0xFF {
+        uint64 comp_bufs = alloc(8 * 8)
+        uint64 comp_lens = alloc(8 * 8)
+        uint64 uncomp_lens = alloc(8 * 8)
+        uint64 zi = 0
+        while zi < 8 {
+            uint64 zp = comp_bufs + zi * 8
+            uint64 zl = comp_lens + zi * 8
+            uint64 zu = uncomp_lens + zi * 8
+            unsafe { *(zp as uint64) = 0 }
+            unsafe { *(zl as uint64) = 0 }
+            unsafe { *(zu as uint64) = 0 }
+            zi = zi + 1
+        }
+
+        uint64 sel_count = 0
+        uint64 aid = 1
+        while aid <= 8 {
+            uint64 bit = aid - 1
+            if ((target_mask >> bit) & 1) != 0 {
+                uint64 buf = 0
+                uint64 len = 0
+                if aid == 1 { buf = x86_buf; len = x86_len }
+                if aid == 2 { buf = a64_buf; len = a64_len }
+                if aid == 3 { buf = pe_x86_buf; len = pe_x86_len }
+                if aid == 4 { buf = pe_a64_buf; len = pe_a64_len }
+                if aid == 5 { buf = macho_x86_buf; len = macho_x86_len }
+                if aid == 6 { buf = macho_a64_buf; len = macho_a64_len }
+                if aid == 7 { buf = android_buf; len = android_len }
+                if aid == 8 { buf = androidx_buf; len = androidx_len }
+                uint64 cap = lz4_compress_bound(len)
+                uint64 cbuf = alloc(cap)
+                uint64 clen = lz4_compress_frame(buf, len, cbuf)
+                uint64 cp = comp_bufs + bit * 8
+                uint64 lp = comp_lens + bit * 8
+                uint64 ulp = uncomp_lens + bit * 8
+                unsafe { *(cp as uint64) = cbuf }
+                unsafe { *(lp as uint64) = clen }
+                unsafe { *(ulp as uint64) = len }
+                sel_count = sel_count + 1
+            }
+            aid = aid + 1
+        }
+
+        out_len = 0
+        emit_krbofat_v2_header(sel_count)
+        uint64 c_data_offset = 16 + sel_count * 48
+        uint64 c_pad = (16 - (c_data_offset & 15)) & 15
+        c_data_offset = c_data_offset + c_pad
+
+        uint64 cur_off = c_data_offset
+        uint64 aid2 = 1
+        while aid2 <= 8 {
+            uint64 bit2 = aid2 - 1
+            if ((target_mask >> bit2) & 1) != 0 {
+                uint64 lp2 = comp_lens + bit2 * 8
+                uint64 ulp2 = uncomp_lens + bit2 * 8
+                uint64 clen2 = 0
+                uint64 ulen2 = 0
+                unsafe { *(lp2 as uint64) -> clen2 }
+                unsafe { *(ulp2 as uint64) -> ulen2 }
+                emit_krbofat_v2_entry_hdr(aid2, 1, cur_off, clen2, ulen2)
+                emit_krbofat_v2_entry_rt(0, ulen2)
+                cur_off = cur_off + clen2
+            }
+            aid2 = aid2 + 1
+        }
+
+        uint64 cpi = 0
+        while cpi < c_pad { emit_byte(0); cpi = cpi + 1 }
+
+        uint64 aid3 = 1
+        while aid3 <= 8 {
+            uint64 bit3 = aid3 - 1
+            if ((target_mask >> bit3) & 1) != 0 {
+                uint64 cp3 = comp_bufs + bit3 * 8
+                uint64 lp3 = comp_lens + bit3 * 8
+                uint64 cbuf3 = 0
+                uint64 clen3 = 0
+                unsafe { *(cp3 as uint64) -> cbuf3 }
+                unsafe { *(lp3 as uint64) -> clen3 }
+                emit_raw_bytes(cbuf3, clen3)
+            }
+            aid3 = aid3 + 1
+        }
+
+        codegen_write_output(output_path)
+
+        uint8[64] nb3
+        uint64 msg3 = "custom fat binary: "
+        write(1, msg3, 19)
+        uint64 nl3 = fmt_uint(nb3, sel_count)
+        write(1, nb3, nl3)
+        msg3 = " slice"
+        write(1, msg3, 6)
+        if sel_count != 1 {
+            msg3 = "s"
+            write(1, msg3, 1)
+        }
+        msg3 = " -> "
+        write(1, msg3, 4)
+        uint64 olen3 = str_len(output_path)
+        write(1, output_path, olen3)
+        msg3 = "\n"
+        write(1, msg3, 1)
+        return
+    }
+
     // === LZ4 compress 4 arch-paired blobs ===
     // Best layout from experimental benchmarks (FAT_COMPRESSION_EXPERIMENTS.md):
     //   x86_64: Linux + macOS,     Windows + Android
@@ -3800,6 +3988,8 @@ fn main() {
             } else if str_eq_full(arg, "-c") != 0 {
                 emit_set = 1
                 emit_mode = 3
+            } else if str_starts_with(arg, "--targets=", 10) != 0 {
+                parse_targets_arg(arg + 10)
             } else if str_starts_with(arg, "--target=", 9) != 0 {
                 uint64 tgt_str = arg + 9
                 if str_starts_with(tgt_str, "macos", 5) != 0 {
@@ -3823,6 +4013,7 @@ fn main() {
                 write(1, "  --emit=elfexe|macho|pe|obj|android|asm\n", 41)
                 write(1, "  -c                        emit relocatable .o\n", 48)
                 write(1, "  --target=linux|macos|windows\n", 31)
+                write(1, "  --targets=<list>          custom fat binary (e.g. linux-x64,macos-arm64)\n", 75)
                 write(1, "  --freestanding            no startup code\n", 44)
                 write(1, "  --debug                   runtime safety checks\n", 51)
                 write(1, "  -g                        emit DWARF debug info\n", 50)
@@ -4120,7 +4311,8 @@ fn main() {
     // `krc hello.kr` just works without flags. The user can still
     // explicitly request a fat binary with `krc hello.kr -o hello.krbo`
     // via --emit=... if they want cross-platform output.
-    if arch_set == 0 && emit_set == 0 && cli_argc > 0 {
+    // --targets=<list> always forces fat-binary emission (custom slice set).
+    if target_mask != 0 || (arch_set == 0 && emit_set == 0 && cli_argc > 0) {
         compile_fat(input_path, output_path)
     } else {
         compile(input_path, output_path, arch, emit_mode)

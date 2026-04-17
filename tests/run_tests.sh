@@ -2882,6 +2882,57 @@ else
 fi
 rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_opt_$$
 
+# --- Custom fat binary targets ---
+echo ""
+echo "--- custom fat binary ---"
+TOTAL=$((TOTAL + 1))
+REPO_ROOT="$DIR/.."
+printf 'fn main() { exit(77) }\n' > "$REPO_ROOT/test_tmp_$$.kr"
+HOST_ARCH=$(uname -m)
+HOST_TGT="linux-x64"
+if [ "$HOST_ARCH" = "aarch64" ] || [ "$HOST_ARCH" = "arm64" ]; then
+    HOST_TGT="linux-arm64"
+fi
+if timeout 30 "$KRC" --targets="$HOST_TGT" "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_fat_$$ > /dev/null 2>&1; then
+    KR_BIN="$REPO_ROOT/dist/kr"
+    [ -x "$KR_BIN" ] || KR_BIN="$REPO_ROOT/dist/kr-android-$HOST_ARCH"
+    if [ -x "$KR_BIN" ]; then
+        timeout 5 "$KR_BIN" /tmp/krc_fat_$$ > /dev/null 2>&1
+        actual=$?
+        if [ "$actual" = "77" ]; then
+            PASS=$((PASS + 1))
+            echo "  custom_fat_single: PASS"
+        else
+            echo "FAIL: custom_fat_single (expected 77, got $actual)"; FAIL=$((FAIL + 1))
+        fi
+    else
+        PASS=$((PASS + 1))
+        echo "  custom_fat_single: SKIP (no runner)"
+    fi
+else
+    echo "FAIL: custom_fat_single (compilation failed)"; FAIL=$((FAIL + 1))
+fi
+rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_fat_$$
+
+# Custom 2-slice is smaller than custom 8-slice (same single-slice code path).
+TOTAL=$((TOTAL + 1))
+printf 'fn main() { exit(0) }\n' > "$REPO_ROOT/test_tmp_$$.kr"
+ALL="linux-x64,linux-arm64,win-x64,win-arm64,macos-x64,macos-arm64,android-x64,android-arm64"
+if timeout 30 "$KRC" --targets="$ALL" "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_fat_all_$$ > /dev/null 2>&1 && \
+   timeout 30 "$KRC" --targets=linux-x64,macos-arm64 "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_fat_two_$$ > /dev/null 2>&1; then
+    all_sz=$(wc -c < /tmp/krc_fat_all_$$)
+    two_sz=$(wc -c < /tmp/krc_fat_two_$$)
+    if [ "$two_sz" -lt "$all_sz" ]; then
+        PASS=$((PASS + 1))
+        echo "  custom_fat_smaller: PASS ($two_sz < $all_sz)"
+    else
+        echo "FAIL: custom_fat_smaller ($two_sz >= $all_sz)"; FAIL=$((FAIL + 1))
+    fi
+else
+    echo "FAIL: custom_fat_smaller (compilation failed)"; FAIL=$((FAIL + 1))
+fi
+rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_fat_all_$$ /tmp/krc_fat_two_$$
+
 # --- IR dump test ---
 echo ""
 echo "--- IR dump test ---"
