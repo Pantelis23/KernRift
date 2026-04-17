@@ -2759,6 +2759,106 @@ else
 fi
 rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_ir_$$
 
+# --- IR optimizer tests ---
+echo ""
+echo "--- IR optimizer tests ---"
+
+# Constant folding: literal arithmetic evaluated at compile time.
+TOTAL=$((TOTAL + 1))
+REPO_ROOT="$DIR/.."
+cat > "$REPO_ROOT/test_tmp_$$.kr" << 'OPTEOF'
+fn main() {
+    uint64 x = 3 + 4
+    uint64 y = x * 2
+    exit(y)
+}
+OPTEOF
+if timeout 10 "$KRC" $KRC_FLAGS "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_opt_$$ > /dev/null 2>&1; then
+    chmod +x /tmp/krc_opt_$$
+    timeout 3 /tmp/krc_opt_$$ > /dev/null 2>&1
+    actual=$?
+    if [ "$actual" = "14" ]; then
+        PASS=$((PASS + 1))
+        echo "  const_fold: PASS"
+    else
+        echo "FAIL: const_fold (expected 14, got $actual)"; FAIL=$((FAIL + 1))
+    fi
+else
+    echo "FAIL: const_fold (compilation failed)"; FAIL=$((FAIL + 1))
+fi
+rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_opt_$$
+
+# --O0 disables optimization, program still runs correctly.
+TOTAL=$((TOTAL + 1))
+printf 'fn main() { exit(6 * 7) }\n' > "$REPO_ROOT/test_tmp_$$.kr"
+if timeout 10 "$KRC" $KRC_FLAGS --O0 "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_opt_$$ > /dev/null 2>&1; then
+    chmod +x /tmp/krc_opt_$$
+    timeout 3 /tmp/krc_opt_$$ > /dev/null 2>&1
+    actual=$?
+    if [ "$actual" = "42" ]; then
+        PASS=$((PASS + 1))
+        echo "  O0_flag: PASS"
+    else
+        echo "FAIL: O0_flag (expected 42, got $actual)"; FAIL=$((FAIL + 1))
+    fi
+else
+    echo "FAIL: O0_flag (compilation failed)"; FAIL=$((FAIL + 1))
+fi
+rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_opt_$$
+
+# Loop counter: const-fold must NOT fold loop-carried vregs to their init value.
+TOTAL=$((TOTAL + 1))
+cat > "$REPO_ROOT/test_tmp_$$.kr" << 'OPTEOF'
+fn main() {
+    uint64 i = 0
+    uint64 s = 0
+    while i < 10 {
+        s = s + i
+        i = i + 1
+    }
+    exit(s)
+}
+OPTEOF
+if timeout 10 "$KRC" $KRC_FLAGS "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_opt_$$ > /dev/null 2>&1; then
+    chmod +x /tmp/krc_opt_$$
+    timeout 3 /tmp/krc_opt_$$ > /dev/null 2>&1
+    actual=$?
+    if [ "$actual" = "45" ]; then
+        PASS=$((PASS + 1))
+        echo "  loop_counter: PASS"
+    else
+        echo "FAIL: loop_counter (expected 45, got $actual)"; FAIL=$((FAIL + 1))
+    fi
+else
+    echo "FAIL: loop_counter (compilation failed)"; FAIL=$((FAIL + 1))
+fi
+rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_opt_$$
+
+# CSE: redundant expressions inside a function still produce the right value.
+TOTAL=$((TOTAL + 1))
+cat > "$REPO_ROOT/test_tmp_$$.kr" << 'OPTEOF'
+fn work(uint64 x) -> uint64 {
+    uint64 a = x + 100
+    uint64 b = x + 100
+    return a + b
+}
+fn main() { exit(work(5)) }
+OPTEOF
+if timeout 10 "$KRC" $KRC_FLAGS "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_opt_$$ > /dev/null 2>&1; then
+    chmod +x /tmp/krc_opt_$$
+    timeout 3 /tmp/krc_opt_$$ > /dev/null 2>&1
+    actual=$?
+    if [ "$actual" = "210" ]; then
+        PASS=$((PASS + 1))
+        echo "  cse_redundant: PASS"
+    else
+        echo "FAIL: cse_redundant (expected 210, got $actual)"; FAIL=$((FAIL + 1))
+    fi
+else
+    echo "FAIL: cse_redundant (compilation failed)"; FAIL=$((FAIL + 1))
+fi
+rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_opt_$$
+
 # --- IR dump test ---
 echo ""
 echo "--- IR dump test ---"
