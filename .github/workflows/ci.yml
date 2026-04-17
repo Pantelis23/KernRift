@@ -21,7 +21,7 @@ jobs:
           mkdir -p build
           # Download krc from pinned release — avoids CDN caching issues with /latest
           curl -sL -o build/krc-bootstrap \
-            https://github.com/Pantelis23/KernRift/releases/download/v2.8.1/krc-linux-x86_64
+            https://github.com/Pantelis23/KernRift/releases/download/v2.8.2/krc-linux-x86_64
           chmod +x build/krc-bootstrap
 
       - name: Build (self-compile)
