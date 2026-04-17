@@ -2,6 +2,85 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## v2.8.2 — 2026-04-17
+
+Multi-target IR backend complete. Self-compile works on all 8 platforms.
+
+### Added
+- **ARM64 IR emitter** (`src/ir_aarch64.kr`) — AArch64 machine-code backend fed by
+  the same SSA IR as x86_64. Covers regalloc, arithmetic, comparisons, memory,
+  control flow, calls, syscalls, floats, atomics, `asm{}`, and exec.
+- **Cross-OS syscall abstraction** — the IR emits Linux-, macOS-, and
+  Android-specific syscall conventions from one set of opcodes. `fchmodat`
+  (ARM64 syscall 53), `openat` arg shifts, and the macOS entry ABI all resolve at
+  emission time.
+- **x86_64 and ARM64 Windows PE support in IR** — IR calls into the PE Import
+  Address Table for Win32 APIs (`CreateProcessA`, `ReadFile`, `WaitForSingleObject`,
+  `VirtualAlloc`, etc.); no syscalls on Windows.
+- **macOS self-compile CI job** — validates stage-2 self-compile on
+  macos-14 ARM64 with an explicit `.krbo` path.
+
+### Fixed
+- **macOS ARM64 `main()` entry ABI** — Mach-O passes `argc`/`argv` in `x0`/`x1`
+  (function-call convention), not on the stack like Linux ELF. Both IR and legacy
+  codegen now branch on `target_os == 1` to read registers instead of `[SP]`.
+- **IR memset liveness** — `memset` was not recorded as defining its destination
+  vreg, so the allocator could overwrite the pointer mid-fill.
+- **ARM64 spill safety** — large-offset-safe `LDR`/`STR` sequences for spills and
+  prologues; removed mid-function `SP` shifts that clashed with spill slots;
+  disambiguated `SP` vs `XZR` in `ADD` register encoding.
+- **`VarDecl` initializer aliasing** — variable declarations now COPY the init
+  value into a fresh vreg so subsequent writes don't poison the source.
+- **Liveness off-by-one** — reverse-walk interference construction corrected.
+- Windows PE IR bugfixes — `ReadFile` lpOverlapped offset, valid `&bytesRead`
+  pointer, `CreateProcessA`/`WaitForSingleObject`/`GetExitCodeProcess`/`ExitProcess`
+  wiring for `IR_EXEC` / `IR_EXEC_ARGV`.
+
+### Verified
+- 311/311 tests pass on Linux x86_64 with IR as the default backend.
+- Bootstrap fixed point (`krc3 == krc4`) holds on all 8 platform targets:
+  Linux, macOS, Windows, Android × x86_64, ARM64.
+
+## v2.8.0–v2.8.1 — 2026-04-15
+
+IR backend promoted to default.
+
+### Added
+- **`--ir` default** — IR codegen replaces the direct AST walker for all new
+  compiles. `--legacy` still falls back to the old path for parity checks.
+- **IR coverage completed** — atomics, volatile, inline assembly with I/O
+  constraints, 7+ argument calls, struct arrays, slices, device registers,
+  static data, tuples, struct-by-value, signed comparisons, float arithmetic.
+- Graph-coloring register allocator with interference graph and clobber
+  handling on binary ops.
+
+### Fixed
+- 310 tests green on IR. Stage-2 self-compile verified.
+- Multiple regalloc and liveness fixes discovered by self-compile.
+
+## v2.7.0–v2.7.1 — 2026-04-14
+
+IR scaffolding and float support.
+
+### Added
+- **SSA IR foundation** (`src/ir.kr`) — 90+ opcodes, basic block arena,
+  AST→IR lowering, iterative liveness analysis, first x86_64 emission pipeline.
+- **`--emit=ir`** dumps IR in human-readable form for debugging.
+- **Float types `f16`/`f32`/`f64`** with arithmetic, comparisons, conversions,
+  `sqrt`/`fma` intrinsics, and a `std/math_float.kr` math library. Full SSE /
+  NEON ABI passing. FMA builtin and `f16`↔`f32` conversions on both targets.
+
+## v2.6.2–v2.6.3 — 2026-04-12
+
+Compression and 8th platform slice.
+
+### Added
+- **LZ-Rift compression** replaces LZ4 for `.krbo` payloads.
+- **BCJ (branch/call/jump) filter** before compression improves ratio on
+  machine-code slices.
+- **8th target slice**: Android x86_64 joins Android ARM64, so `.krbo` fat
+  binaries now cover all 8 OS × arch combinations.
+
 ## v2.6.1 - 2026-04-11
 
 Living compiler fully realized + cross-platform verification.

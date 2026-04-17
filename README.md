@@ -2,11 +2,12 @@
 
 **KernRift is a bare-metal systems programming language and compiler created by Pantelis Christou.**
 
-A self-hosted systems language compiler for kernel-first development. KernRift compiles itself — no Rust, no C, no external toolchain. It produces native executables for x86_64 and AArch64 on Linux, Windows, macOS, and Android, with BCJ+LZ-Rift-compressed fat binaries as the default output (8 platform slices per `.krbo`). The `kr` runner executes `.krbo` fat binaries on any supported platform. The compiler self-hosts on 5 platforms including phones (verified on Samsung Galaxy Z Fold 5 via Termux).
+A self-hosted systems language compiler for kernel-first development. KernRift compiles itself — no Rust, no C, no LLVM, no external toolchain. It produces native executables for x86_64 and AArch64 on Linux, Windows, macOS, and Android, with BCJ+LZ-Rift-compressed fat binaries as the default output (8 platform slices per `.krbo`). The `kr` runner executes `.krbo` fat binaries on any supported platform. The compiler self-hosts on all 8 targets and is verified via CI on every push. As of v2.8.2, the compiler ships with a new **SSA-based IR backend** with a graph-coloring register allocator, producing native machine code for all targets directly from the IR — no assembler in the loop.
 
 ## Features
 
-- **Self-hosting** — the compiler compiles itself to a fixed point. No Rust, no C, no external toolchain in the build.
+- **Self-hosting** — the compiler compiles itself to a fixed point. No Rust, no C, no LLVM in the build.
+- **SSA IR backend** — target-independent intermediate representation with liveness analysis and graph-coloring register allocation. Emits x86_64 and AArch64 machine code directly. `--legacy` falls back to the original direct codegen if needed.
 - **Cross-platform** — Linux, Windows, macOS, Android on x86_64 and ARM64 from a single source tree.
 - **Floating-point** — `f32` and `f64` types with full arithmetic, comparisons, conversions, and a math library (`sin`, `cos`, `exp`, `log`, `pow`, `sqrt`, `fmt_f64`). `f16` for storage. Hardware `sqrt`, software trig/exp/log.
 - **Multi-return** — `return (a, b)` and `(u64 x, u64 y) = call()` for 2-tuple destructuring.
@@ -49,17 +50,22 @@ krc check module.kr
 krc lc program.kr
 ```
 
-### Self-compilation times (v2.6.3, ~23K lines / 123K tokens)
+### Self-compilation (v2.8.2, ~192K tokens, ~120K AST nodes)
 
-| Platform | CPU | Single-arch | Fat (8 slices) |
-|----------|-----|-------------|-----------------|
-| Linux x86_64 | AMD Ryzen 9 7900X | 100ms | 790ms |
-| Linux ARM64 | ARM Cortex-A72 (Pi 400) | *~635ms (v2.5, not yet retested)* | — |
-| Windows 11 x86_64 | Intel Core Ultra 9 275HX | ~2s * | — |
-| Windows 11 ARM64 | GitHub Actions runner | bootstrap verified | — |
-| Android ARM64 | Snapdragon 8 Gen 2 (Z Fold 5) | self-compile verified | — |
+All 8 targets self-compile. CI verifies bootstrap fixed point (krc3 == krc4) and runs 311 tests on every push.
 
-\* Windows time includes Bitdefender antivirus file scanning overhead.
+| Platform | Legacy codegen | IR backend |
+|----------|----------------|------------|
+| Linux x86_64 | ~230ms / 1.05 MB | ~1.4s / 1.42 MB |
+| Linux ARM64 (native) | verified | verified |
+| macOS ARM64 | verified | verified |
+| macOS x86_64 (Rosetta) | verified | verified |
+| Windows x86_64 | verified | verified |
+| Windows ARM64 | verified | verified |
+| Android ARM64 | verified (QEMU) | verified (QEMU) |
+| Android x86_64 | verified | verified |
+
+The IR backend is slower and produces larger binaries today — optimization passes (constant folding, DCE, CSE) are the next milestone. `--legacy` remains available as a fast path.
 
 ## Install
 
@@ -264,28 +270,32 @@ See the [`examples/`](examples/) directory for runnable programs covering every 
 
 ## Architecture
 
-~23,000 lines of KernRift across 16 source files + 17 stdlib modules. Self-compiles to a ~660 KB native binary in ~100ms, or a fat binary with 8 slices (LZ-Rift arch-pair compression) in ~790ms (AMD Ryzen 9 7900X). 225+ tests, bootstrap fixed point verified on 5 platforms (Linux x86_64, Linux ARM64, Windows x86_64, Windows ARM64, Android ARM64).
+~23,000 lines of KernRift across 18 source files + 17 stdlib modules. Self-compiles to a ~660 KB native binary in ~230ms (legacy) / ~1.4s (IR), or an 8-slice fat binary (BCJ + LZ-Rift compression) in ~2s on an AMD Ryzen 9 7900X. 311 tests, bootstrap fixed point verified on all 8 targets — Linux, macOS, Windows, and Android on both x86_64 and ARM64.
 
 | File | Purpose |
 |------|---------|
 | `lexer.kr` | Tokenizer (90+ kinds) |
 | `parser.kr` | Recursive descent + Pratt precedence |
-| `codegen.kr` | x86_64 code generation |
-| `codegen_aarch64.kr` | AArch64 code generation |
+| `ir.kr` | SSA IR + x86_64 emitter (Linux / macOS / Windows / Android) |
+| `ir_aarch64.kr` | AArch64 emitter fed from the same IR |
+| `codegen.kr` | Legacy direct x86_64 codegen (`--legacy` fallback) |
+| `codegen_aarch64.kr` | Legacy direct AArch64 codegen |
 | `analysis.kr` | Safety passes (incl. undeclared identifier detection) |
 | `living.kr` | Pattern detection + fitness |
 | `bcj.kr` | BCJ filters (x86_64 + AArch64) for compression |
 | `format_*.kr` | ELF, Mach-O, PE, AR, KRBO, KrboFat |
+| `runner.kr` | `kr` — fat-binary slice extractor / launcher |
 | `std/*.kr` | Standard library (17 modules, ~2500+ lines) |
 
 ## Bootstrap
 
 ```
-kernriftc (bootstrap) → krc → krc2 → krc3 → krc4
-                               krc3 == krc4 ✓ (fixed point)
+released krc binary → krc (stage 1, from source)
+krc → krc2 → krc3 → krc4
+krc3 == krc4 ✓ (bit-identical fixed point)
 ```
 
-The [bootstrap compiler](https://github.com/Pantelis23/KernRift-bootstrap) is only needed once.
+A released `krc` binary compiles the current source into the next `krc`. No Rust, no C, no LLVM involved. CI verifies the fixed point on every push across all 8 platform targets.
 
 ## Platforms
 
@@ -293,12 +303,12 @@ The [bootstrap compiler](https://github.com/Pantelis23/KernRift-bootstrap) is on
 |----------|---------|-----|-----------|----------|-----------|
 | Linux x86_64 | ✅ | ✅ | ✅ | ✅ | ✅ fixed point |
 | Linux ARM64 | ✅ | ✅ | ✅ | ✅ | ✅ fixed point |
-| Windows x86_64 | ✅ | ✅ | ✅ | ✅ | ✅ chain verified |
+| macOS ARM64 | ✅ | ✅ | ✅ | ✅ | ✅ fixed point |
+| macOS x86_64 | ✅ | ✅ | ✅ | ✅ | ✅ (Rosetta) |
+| Windows x86_64 | ✅ | ✅ | ✅ | ✅ | ✅ fixed point |
 | Windows ARM64 | ✅ | ✅ | ✅ | ✅ | ✅ krc3==krc4 |
 | Android ARM64 | ✅ | ✅ | ✅ | ✅ | ✅ self-compiled on phone |
-| Android x86_64 | ✅ | ✅ | — | — | — |
-| macOS x86_64 | ✅ | ✅ | ✅ | ✅ | — |
-| macOS ARM64 | ✅ | WIP | — | — | — |
+| Android x86_64 | ✅ | ✅ | ✅ | ✅ | ✅ verified |
 
 ## License
 

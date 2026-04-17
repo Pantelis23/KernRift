@@ -70,9 +70,9 @@ live in [LANGUAGE.md](LANGUAGE.md).
 · `==` `!=` · `&` · `^` · `|` · `&&` · `||`
 Compound assigns: `+=` `-=` `*=` `/=` `%=` `&=` `|=` `^=` `<<=` `>>=`.
 
-**Integer only.** No floating-point types, no `float`, no `double`.
-All scalar types are `u8`/`u16`/`u32`/`u64` and their signed siblings
-`i8`/`i16`/`i32`/`i64`. `u64` is the default — use it when in doubt.
+**Scalar types** are `u8`/`u16`/`u32`/`u64` and their signed siblings
+`i8`/`i16`/`i32`/`i64`; `f16`, `f32`, and `f64` cover IEEE 754 floats.
+`u64` is the integer default — use it when in doubt.
 
 **No `bool` type.** `if` and `while` take an integer condition: `0` is
 false, any non-zero value is true. Stdlib predicates (e.g. `is_prime`,
