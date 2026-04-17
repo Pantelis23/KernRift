@@ -3423,24 +3423,28 @@ fn ir_lower_function(uint64 fn_node) {
 static uint64 ir_live_in = 0      // bitset per block: ir_live_in + bb * set_bytes
 static uint64 ir_live_out = 0     // bitset per block
 static uint64 ir_live_words = 0   // uint64 words per bitset = ceil(vreg_count / 64)
+static uint64 ir_live_cap = 0     // bytes allocated for each of live_in/out
 
 fn ir_liveness_init() {
     ir_live_words = (ir_vreg_next + 63) / 64
     if ir_live_words == 0 { ir_live_words = 1 }
     uint64 set_bytes = ir_live_words * 8
     uint64 total = ir_bb_count * set_bytes
-    ir_live_in = alloc(total)
-    ir_live_out = alloc(total)
-    // Zero both
-    uint64 i = 0
-    while i < total {
-        uint64 p1 = ir_live_in + i
-        uint64 p2 = ir_live_out + i
-        uint8 z = 0
-        unsafe { *(p1 as uint8) = z }
-        unsafe { *(p2 as uint8) = z }
-        i = i + 1
+
+    // Oversize once to worst-case: 4096 BBs * 1024 words * 8 B = 32 MB
+    // per bitset. In practice per-function peak is far smaller; this fits
+    // every krc.kr function at the time of writing.
+    if ir_live_cap == 0 {
+        ir_live_cap = 4096 * 1024 * 8
+        ir_live_in = alloc(ir_live_cap)
+        ir_live_out = alloc(ir_live_cap)
     }
+    if total > ir_live_cap {
+        write(2, "error: liveness bitset overflow\n", 32)
+        exit(1)
+    }
+    memset(ir_live_in, 0, total)
+    memset(ir_live_out, 0, total)
 }
 
 fn ir_live_set(uint64 base, uint64 bb, uint64 vreg) {
