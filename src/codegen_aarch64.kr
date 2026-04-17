@@ -4946,29 +4946,56 @@ fn gen_function_a64(uint64 fn_node) {
         }
     }
     if tok_matches(wnt_a64, "main", 4) != 0 && target_os != 2 && freestanding == 0 {
-        // Linux + macOS: argc/argv on stack. [SP]=argc, [SP+8]=&argv[0]
-        // ldr x0, [sp]        ; x0 = argc
-        emit_a64_ldr(0, 31, 0)
-        // Store to cli_argc static
-        uint64 argc_off_a64 = static_lookup_by_name("cli_argc", 8)
-        if argc_off_a64 != 0xFFFFFFFF {
-            emit_a64_static_store(argc_off_a64)
+        if target_os == 1 {
+            // macOS Mach-O: _main receives argc in x0, argv in x1
+            uint64 argc_off_mac = static_lookup_by_name("cli_argc", 8)
+            if argc_off_mac != 0xFFFFFFFF {
+                emit_a64_static_store(argc_off_mac)  // store x0 (argc)
+            }
+            emit_a64_mov(0, 1)  // x0 = argv (from x1)
+            uint64 argv_off_mac = static_lookup_by_name("cli_argv", 8)
+            if argv_off_mac != 0xFFFFFFFF {
+                emit_a64_static_store(argv_off_mac)
+            }
+        } else {
+            // Linux/Android ELF: argc/argv on stack. [SP]=argc, [SP+8]=&argv[0]
+            emit_a64_ldr(0, 31, 0)
+            uint64 argc_off_a64 = static_lookup_by_name("cli_argc", 8)
+            if argc_off_a64 != 0xFFFFFFFF {
+                emit_a64_static_store(argc_off_a64)
+            }
+            emit_a64_add_imm(0, 31, 8)
+            uint64 argv_off_a64 = static_lookup_by_name("cli_argv", 8)
+            if argv_off_a64 != 0xFFFFFFFF {
+                emit_a64_static_store(argv_off_a64)
+            }
         }
-        // add x0, sp, #8      ; x0 = &argv[0]
-        emit_a64_add_imm(0, 31, 8)
-        uint64 argv_off_a64 = static_lookup_by_name("cli_argv", 8)
-        if argv_off_a64 != 0xFFFFFFFF {
-            emit_a64_static_store(argv_off_a64)
-        }
-        // Compute envp = sp + 8 + (argc+1)*8
+        // Compute envp: on Linux/Android = sp + 8 + (argc+1)*8
+        // On macOS, envp is apple[0] which comes after argv NULL terminator
+        // but argc/argv were passed as function params, not on stack.
+        // For macOS, compute from the cli_argv static: envp = argv + (argc+1)*8
         uint64 envp_off_a64 = static_lookup_by_name("cli_envp", 8)
         if envp_off_a64 != 0xFFFFFFFF {
-            emit_a64_ldr(9, 31, 0)          // x9 = argc
-            emit_a64_add_imm(9, 9, 1)       // x9 = argc + 1
-            emit_a64_mov_imm(10, 8)          // x10 = 8
-            emit_a64_mul(9, 9, 10)           // x9 = (argc+1)*8
-            emit_a64_add_imm(0, 31, 8)      // x0 = sp + 8
-            emit_a64_add(0, 0, 9)           // x0 = sp + 8 + (argc+1)*8 = envp
+            if target_os == 1 {
+                // macOS: envp = argv + (argc+1)*8
+                uint64 argc_off_env = static_lookup_by_name("cli_argc", 8)
+                if argc_off_env != 0xFFFFFFFF { emit_a64_static_load(argc_off_env) }
+                emit_a64_mov(9, 0)               // x9 = argc
+                emit_a64_add_imm(9, 9, 1)        // x9 = argc + 1
+                emit_a64_mov_imm(10, 8)
+                emit_a64_mul(9, 9, 10)            // x9 = (argc+1)*8
+                uint64 argv_off_env = static_lookup_by_name("cli_argv", 8)
+                if argv_off_env != 0xFFFFFFFF { emit_a64_static_load(argv_off_env) }
+                emit_a64_add(0, 0, 9)             // x0 = argv + (argc+1)*8 = envp
+            } else {
+                // Linux/Android: envp = sp + 8 + (argc+1)*8
+                emit_a64_ldr(9, 31, 0)            // x9 = argc
+                emit_a64_add_imm(9, 9, 1)
+                emit_a64_mov_imm(10, 8)
+                emit_a64_mul(9, 9, 10)
+                emit_a64_add_imm(0, 31, 8)        // x0 = sp + 8
+                emit_a64_add(0, 0, 9)
+            }
             emit_a64_static_store(envp_off_a64)
         }
     }
