@@ -16,6 +16,14 @@
 // Avoids dynamic SP shifts that would invalidate spill slot addresses.
 static uint64 ir_a64_scratch_off = 0
 
+// ADD Xd, SP, Xm  (extended register form, needed because register 31
+// in the standard ADD encoding means XZR, not SP)
+fn ir_a64_add_sp_reg(uint64 rd, uint64 rm) {
+    // ADD Xd, SP, Xm, UXTX #0: 0x8B206000 | (Xm << 16) | (31 << 5) | Xd
+    uint64 insn = 0x8B206000 | (rm << 16) | (31 << 5) | rd
+    emit_a64(insn)
+}
+
 // ---------------------------------------------------------------------------
 // Register allocator setup for ARM64
 // ---------------------------------------------------------------------------
@@ -81,7 +89,7 @@ fn ir_a64_ldr_sp(uint64 rt, uint64 off) {
         emit_a64_ldr(rt, 31, off)
     } else {
         emit_a64_mov_imm(11, off)
-        emit_a64_add(11, 31, 11)
+        ir_a64_add_sp_reg(11, 11)
         emit_a64_ldr(rt, 11, 0)
     }
 }
@@ -91,7 +99,7 @@ fn ir_a64_str_sp(uint64 rt, uint64 off) {
         emit_a64_str(rt, 31, off)
     } else {
         emit_a64_mov_imm(11, off)
-        emit_a64_add(11, 31, 11)
+        ir_a64_add_sp_reg(11, 11)
         emit_a64_str(rt, 11, 0)
     }
 }
@@ -877,7 +885,7 @@ fn ir_emit_arm64_insn(uint64 ii) {
         // Use the permanent 32-byte scratchpad in the frame (no SP shift)
         // x12 = SP + ir_a64_scratch_off (digit area base)
         emit_a64_mov_imm(12, ir_a64_scratch_off)
-        emit_a64_add(12, 31, 12)
+        ir_a64_add_sp_reg(12, 12)
 
         // Digit extraction loop: divide by 10, store remainder + '0'
         uint64 fu_loop = out_len
@@ -1485,7 +1493,7 @@ fn ir_emit_arm64_insn(uint64 ii) {
             // Use scratchpad for timespec {tv_sec, tv_nsec} (16 bytes)
             // x1 = SP + ir_a64_scratch_off (buffer address)
             emit_a64_mov_imm(1, ir_a64_scratch_off)
-            emit_a64_add(1, 31, 1)
+            ir_a64_add_sp_reg(1, 1)
             // x0 = 1 (CLOCK_MONOTONIC)
             emit_a64_mov_imm(0, 1)
             // syscall clock_gettime
@@ -1495,7 +1503,7 @@ fn ir_emit_arm64_insn(uint64 ii) {
             // Load results from scratchpad
             // x9 = tv_sec
             emit_a64_mov_imm(11, ir_a64_scratch_off)
-            emit_a64_add(11, 31, 11)
+            ir_a64_add_sp_reg(11, 11)
             emit_a64_ldr(9, 11, 0)
             // x10 = tv_nsec
             emit_a64_ldr(10, 11, 8)
@@ -1799,8 +1807,8 @@ fn ir_emit_arm64_function(uint64 fn_node) {
         ir_spill_count = ir_vreg_next - IR_NUM_REGS - 1
     }
 
-    // Restore IR_NUM_REGS for x86_64 functions compiled later
-    IR_NUM_REGS = saved_num_regs
+    // NOTE: IR_NUM_REGS must stay at 10 through emission — ir_get_phys_reg()
+    // uses it to distinguish colors from spills. Restore AFTER emission completes.
 
     // 5. Compute frame size
     // Callee-saved area: x29/x30 (16) + x19-x28 (80) = 96 bytes
@@ -1866,8 +1874,8 @@ fn ir_emit_arm64_function(uint64 fn_node) {
         ir_a64_str_sp(24, cs_base + 40)
         ir_a64_str_sp(25, cs_base + 48)
         ir_a64_str_sp(26, cs_base + 56)
-        ir_a64_str_sp(27, spill_size + 64)
-        ir_a64_str_sp(28, spill_size + 72)
+        ir_a64_str_sp(27, cs_base + 64)
+        ir_a64_str_sp(28, cs_base + 72)
     }
 
     // 7. Allocate branch/return fixup tracking
@@ -2028,8 +2036,7 @@ fn ir_emit_arm64_function(uint64 fn_node) {
         // RET
         emit_a64_ret()
     }
-}
-}
 
-    }
+    // Restore IR_NUM_REGS for x86_64 functions compiled later
+    IR_NUM_REGS = saved_num_regs
 }
