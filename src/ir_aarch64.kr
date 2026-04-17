@@ -1880,6 +1880,11 @@ fn ir_emit_arm64_function(uint64 fn_node) {
     // 1. Lower AST to IR
     ir_lower_function(fn_node)
 
+    // 1a. Optimize
+    if ir_opt_level > 0 {
+        ir_optimize()
+    }
+
     // 2. Compute liveness
     ir_compute_liveness()
 

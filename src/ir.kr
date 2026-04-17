@@ -308,6 +308,33 @@ fn ir_insn_next(uint64 idx) -> uint64 {
 }
 
 // ---------------------------------------------------------------------------
+// Instruction field setters (used by optimization passes)
+// ---------------------------------------------------------------------------
+
+fn ir_insn_set_opcode(uint64 idx, uint64 op) {
+    uint64 p = ir_insn_base(idx)
+    uint32 v = op
+    unsafe { *(p as uint32) = v }
+}
+
+fn ir_insn_set_src1(uint64 idx, uint64 val) {
+    uint64 p = ir_insn_base(idx) + 8
+    uint32 v = val
+    unsafe { *(p as uint32) = v }
+}
+
+fn ir_insn_set_src2(uint64 idx, uint64 val) {
+    uint64 p = ir_insn_base(idx) + 12
+    uint32 v = val
+    unsafe { *(p as uint32) = v }
+}
+
+fn ir_insn_set_imm(uint64 idx, uint64 val) {
+    uint64 p = ir_insn_base(idx) + 16
+    unsafe { *(p as uint64) = val }
+}
+
+// ---------------------------------------------------------------------------
 // Emit an instruction
 // ---------------------------------------------------------------------------
 
@@ -6632,6 +6659,231 @@ static uint64 ir_overflow_arg_count = 0
 // Frame size for current function (used by overflow param loads)
 static uint64 ir_frame_size = 0
 
+// ---------------------------------------------------------------------------
+// IR optimization passes
+// ---------------------------------------------------------------------------
+
+@export
+static uint64 ir_opt_level = 1
+
+static uint64 ir_const_values = 0    // vreg -> constant value
+static uint64 ir_const_known = 0     // vreg -> 1 if constant is known
+
+fn ir_opt_const_fold() {
+    uint64 ii = 0
+    uint64 cur_bb = 0xFFFFFFFF
+    while ii < ir_insn_count {
+        uint64 op = ir_insn_opcode(ii)
+        if op == 0 { ii = ii + 1; continue }
+
+        // Flow-insensitive: clear constant tracking at every BB boundary.
+        // A vreg defined in one BB cannot be safely treated as constant at
+        // uses in another BB (loop-carried values, merge points, etc.).
+        uint64 bb = ir_insn_bb(ii)
+        if bb != cur_bb {
+            memset(ir_const_known, 0, 65536)
+            cur_bb = bb
+        }
+
+        uint64 dest = ir_insn_dest(ii)
+        uint64 s1 = ir_insn_src1(ii)
+        uint64 s2 = ir_insn_src2(ii)
+        uint64 imm = ir_insn_imm(ii)
+
+        // IR_CONST: record dest as a known constant
+        if op == 1 {
+            if dest > 0 && dest < 65536 {
+                uint64 p = ir_const_values + dest * 8
+                unsafe { *(p as uint64) = imm }
+                uint64 k = ir_const_known + dest
+                uint8 one = 1
+                unsafe { *(k as uint8) = one }
+            }
+            ii = ii + 1
+            continue
+        }
+
+        // Load known-ness of each source
+        uint64 s1_known = 0
+        uint64 s2_known = 0
+        uint64 v1 = 0
+        uint64 v2 = 0
+        if s1 > 0 && s1 < 65536 {
+            uint64 k1 = ir_const_known + s1
+            uint8 kv1 = 0
+            unsafe { *(k1 as uint8) -> kv1 }
+            s1_known = kv1
+            if s1_known != 0 {
+                uint64 p1 = ir_const_values + s1 * 8
+                unsafe { *(p1 as uint64) -> v1 }
+            }
+        }
+        if s2 > 0 && s2 < 65536 {
+            uint64 k2 = ir_const_known + s2
+            uint8 kv2 = 0
+            unsafe { *(k2 as uint8) -> kv2 }
+            s2_known = kv2
+            if s2_known != 0 {
+                uint64 p2 = ir_const_values + s2 * 8
+                unsafe { *(p2 as uint64) -> v2 }
+            }
+        }
+
+        // COPY propagation: if src is constant, mark dest as known too
+        if op == 61 {
+            if s1_known != 0 && dest > 0 && dest < 65536 {
+                uint64 p = ir_const_values + dest * 8
+                unsafe { *(p as uint64) = v1 }
+                uint64 k = ir_const_known + dest
+                uint8 one = 1
+                unsafe { *(k as uint8) = one }
+            }
+            ii = ii + 1
+            continue
+        }
+
+        // Fold binary op when both sources are known
+        uint64 folded = 0
+        uint64 result = 0
+        if s1_known != 0 && s2_known != 0 {
+            if op == 2 { result = v1 + v2; folded = 1 }
+            if op == 3 { result = v1 - v2; folded = 1 }
+            if op == 4 { result = v1 * v2; folded = 1 }
+            if op == 5 {
+                if v2 != 0 { result = v1 / v2; folded = 1 }
+            }
+            if op == 6 {
+                if v2 != 0 { result = v1 % v2; folded = 1 }
+            }
+            if op == 7 { result = v1 & v2; folded = 1 }
+            if op == 8 { result = v1 | v2; folded = 1 }
+            if op == 9 { result = v1 ^ v2; folded = 1 }
+            if op == 10 { result = v1 << v2; folded = 1 }
+            if op == 11 { result = v1 >> v2; folded = 1 }
+            if op == 14 {
+                if v1 == v2 { result = 1 } else { result = 0 }
+                folded = 1
+            }
+            if op == 15 {
+                if v1 != v2 { result = 1 } else { result = 0 }
+                folded = 1
+            }
+            if op == 16 {
+                if v1 < v2 { result = 1 } else { result = 0 }
+                folded = 1
+            }
+            if op == 17 {
+                if v1 <= v2 { result = 1 } else { result = 0 }
+                folded = 1
+            }
+            if op == 18 {
+                if v1 > v2 { result = 1 } else { result = 0 }
+                folded = 1
+            }
+            if op == 19 {
+                if v1 >= v2 { result = 1 } else { result = 0 }
+                folded = 1
+            }
+        }
+
+        if folded != 0 {
+            ir_insn_set_opcode(ii, 1)
+            ir_insn_set_src1(ii, 0)
+            ir_insn_set_src2(ii, 0)
+            ir_insn_set_imm(ii, result)
+            if dest > 0 && dest < 65536 {
+                uint64 p = ir_const_values + dest * 8
+                unsafe { *(p as uint64) = result }
+                uint64 k = ir_const_known + dest
+                uint8 one = 1
+                unsafe { *(k as uint8) = one }
+            }
+            ii = ii + 1
+            continue
+        }
+
+        // Fold unary NEG (op 12)
+        if op == 12 && s1_known != 0 {
+            uint64 nresult = 0 - v1
+            ir_insn_set_opcode(ii, 1)
+            ir_insn_set_src1(ii, 0)
+            ir_insn_set_imm(ii, nresult)
+            if dest > 0 && dest < 65536 {
+                uint64 p = ir_const_values + dest * 8
+                unsafe { *(p as uint64) = nresult }
+                uint64 k = ir_const_known + dest
+                uint8 one = 1
+                unsafe { *(k as uint8) = one }
+            }
+            ii = ii + 1
+            continue
+        }
+
+        // Fold unary NOT (op 13) — two's complement ~x = x XOR ~0
+        if op == 13 && s1_known != 0 {
+            uint64 all_ones = 0 - 1
+            uint64 nresult = v1 ^ all_ones
+            ir_insn_set_opcode(ii, 1)
+            ir_insn_set_src1(ii, 0)
+            ir_insn_set_imm(ii, nresult)
+            if dest > 0 && dest < 65536 {
+                uint64 p = ir_const_values + dest * 8
+                unsafe { *(p as uint64) = nresult }
+                uint64 k = ir_const_known + dest
+                uint8 one = 1
+                unsafe { *(k as uint8) = one }
+            }
+            ii = ii + 1
+            continue
+        }
+
+        // MUL(x, 0) -> CONST 0
+        if op == 4 && s2_known != 0 && v2 == 0 {
+            ir_insn_set_opcode(ii, 1)
+            ir_insn_set_src1(ii, 0)
+            ir_insn_set_src2(ii, 0)
+            ir_insn_set_imm(ii, 0)
+            if dest > 0 && dest < 65536 {
+                uint64 p = ir_const_values + dest * 8
+                unsafe { *(p as uint64) = 0 }
+                uint64 k = ir_const_known + dest
+                uint8 one = 1
+                unsafe { *(k as uint8) = one }
+            }
+            ii = ii + 1
+            continue
+        }
+
+        // ADD(x, 0) or SHL(x, 0) -> COPY x
+        if s2_known != 0 && v2 == 0 {
+            if op == 2 || op == 10 {
+                ir_insn_set_opcode(ii, 61)
+                ir_insn_set_src2(ii, 0)
+                ii = ii + 1
+                continue
+            }
+        }
+
+        // MUL(x, 1) -> COPY x
+        if op == 4 && s2_known != 0 && v2 == 1 {
+            ir_insn_set_opcode(ii, 61)
+            ir_insn_set_src2(ii, 0)
+            ii = ii + 1
+            continue
+        }
+
+        ii = ii + 1
+    }
+}
+
+@export
+fn ir_optimize() {
+    if ir_const_values == 0 { ir_const_values = alloc(65536 * 8) }
+    if ir_const_known == 0 { ir_const_known = alloc(65536) }
+    memset(ir_const_known, 0, 65536)
+    ir_opt_const_fold()
+}
+
 @export
 fn ir_emit_x86_function(uint64 fn_node) {
     // Check for @naked attribute: bit 1 of annotation flags
@@ -6640,6 +6892,11 @@ fn ir_emit_x86_function(uint64 fn_node) {
 
     // 1. Lower AST to IR
     ir_lower_function(fn_node)
+
+    // 1a. Optimize
+    if ir_opt_level > 0 {
+        ir_optimize()
+    }
 
     // 2. Compute liveness
     ir_compute_liveness()
