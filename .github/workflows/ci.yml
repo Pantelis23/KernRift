@@ -466,6 +466,31 @@ jobs:
           [ "$X64_EXIT" -eq 42 ] && echo "PASS: macOS x86_64" || { echo "FAIL: macOS x86_64 (got $X64_EXIT)"; FAIL=1; }
           exit $FAIL
 
+      - name: Self-compile on macOS (ARM64 native)
+        run: |
+          # Use kr runner to extract native krc from krc.krbo, then self-compile
+          chmod +x /tmp/fatbin/kr-runners/kr-macos-arm64
+          KRBO=/tmp/fatbin/krc.krbo
+
+          # Step 1: krc via fat binary compiles a test program
+          echo 'fn main() { println("macOS self-compile OK"); exit(42) }' > /tmp/sc_test.kr
+          /tmp/fatbin/kr-runners/kr-macos-arm64 "$KRBO" --arch=arm64 --emit=macho /tmp/sc_test.kr -o /tmp/sc_test_mac
+          chmod +x /tmp/sc_test_mac
+
+          # Step 2: Run the self-compiled binary
+          set +e
+          OUT=$(/tmp/sc_test_mac)
+          CODE=$?
+          set -e
+          echo "output: $OUT"
+          echo "exit:   $CODE"
+          if [ "$OUT" = "macOS self-compile OK" ] && [ "$CODE" -eq 42 ]; then
+            echo "PASS: macOS ARM64 self-compile"
+          else
+            echo "FAIL: macOS ARM64 self-compile (output='$OUT', exit=$CODE)"
+            exit 1
+          fi
+
   test-windows-x64:
     name: Test (Windows x86_64)
     needs: build-test
