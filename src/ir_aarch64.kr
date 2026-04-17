@@ -1389,9 +1389,61 @@ fn ir_emit_arm64_insn(uint64 ii) {
         return
     }
 
-    // ----- IR_EXEC (113): execve(path, [path, NULL], envp) -----
+    // ----- IR_EXEC (113): execve on Linux/macOS, CreateProcessA on Windows -----
     if op == 113 {
         uint64 path_r = ir_a64_resolve_src(s1_v, 9)
+        if target_os == 2 {
+            // Windows ARM64: CreateProcessA + WaitForSingleObject + ExitProcess
+            // SP shift is safe — ExitProcess never returns.
+            emit_a64_sub_sp_imm(0xD0)
+            // Zero STARTUPINFOA+PI area: memset [sp+0x40], 0, 128
+            emit_a64_mov_imm(9, 0)
+            uint64 zi = 0
+            while zi < 16 {
+                emit_a64_str(9, 31, 0x40 + zi * 8)
+                zi = zi + 1
+            }
+            // STARTUPINFOA.cb = 104 (at sp+0x40)
+            emit_a64_mov_imm(9, 104)
+            emit_a64_str32(9, 31, 0x40)
+            // CreateProcessA(path, NULL, NULL, NULL, 0, 0, NULL, NULL, &si, &pi)
+            // x0 = path (lpApplicationName)
+            emit_a64_mov(0, path_r)
+            // x1 = NULL (lpCommandLine)
+            emit_a64_mov_imm(1, 0)
+            // x2 = NULL, x3 = NULL
+            emit_a64_mov_imm(2, 0)
+            emit_a64_mov_imm(3, 0)
+            // x4 = 0 (bInheritHandles)
+            emit_a64_mov_imm(4, 0)
+            // x5 = 0 (dwCreationFlags)
+            emit_a64_mov_imm(5, 0)
+            // x6 = NULL (lpEnvironment)
+            emit_a64_mov_imm(6, 0)
+            // x7 = NULL (lpCurrentDirectory)
+            emit_a64_mov_imm(7, 0)
+            // [sp+0x00] = &si (lpStartupInfo, 9th arg on stack for ARM64)
+            emit_a64_add_imm(9, 31, 0x40)
+            emit_a64_str(9, 31, 0)
+            // [sp+0x08] = &pi (lpProcessInformation, 10th arg)
+            emit_a64_add_imm(9, 31, 0xA8)
+            emit_a64_str(9, 31, 8)
+            emit_a64_win_call_iat(9)   // CreateProcessA
+            // WaitForSingleObject(hProcess=[sp+0xA8], INFINITE=-1)
+            emit_a64_ldr(0, 31, 0xA8)
+            emit_a64_mov_imm(1, 0xFFFFFFFF)
+            emit_a64_win_call_iat(10)  // WaitForSingleObject
+            // GetExitCodeProcess(hProcess, &exitCode)
+            emit_a64_ldr(0, 31, 0xA8)
+            emit_a64_add_imm(1, 31, 0x20)
+            emit_a64_win_call_iat(11)  // GetExitCodeProcess (slot 11 on ARM64?)
+            // ExitProcess(exitCode)
+            emit_a64_ldr32(0, 31, 0x20)
+            emit_a64_add_sp_imm(0xD0)
+            emit_a64_win_call_iat(0)   // ExitProcess
+            return
+        }
+        // Linux/macOS: execve
         // Build argv on scratchpad: [path, NULL] = 16 bytes
         emit_a64_add_imm(11, 31, ir_a64_scratch_off)
         emit_a64_str(path_r, 11, 0)      // argv[0] = path
@@ -1429,10 +1481,46 @@ fn ir_emit_arm64_insn(uint64 ii) {
         return
     }
 
-    // ----- IR_EXEC_ARGV (114): execve(path, argv, envp) -----
+    // ----- IR_EXEC_ARGV (114): execve on Linux/macOS, CreateProcessA on Windows -----
     if op == 114 {
         uint64 path_r = ir_a64_resolve_src(s1_v, 9)
         uint64 argv_r = ir_a64_resolve_src(s2_v, 10)
+        if target_os == 2 {
+            // Windows ARM64: same CreateProcessA sequence as IR_EXEC (argv ignored)
+            emit_a64_sub_sp_imm(0xD0)
+            emit_a64_mov_imm(9, 0)
+            uint64 zi2 = 0
+            while zi2 < 16 {
+                emit_a64_str(9, 31, 0x40 + zi2 * 8)
+                zi2 = zi2 + 1
+            }
+            emit_a64_mov_imm(9, 104)
+            emit_a64_str32(9, 31, 0x40)
+            emit_a64_mov(0, path_r)
+            emit_a64_mov_imm(1, 0)
+            emit_a64_mov_imm(2, 0)
+            emit_a64_mov_imm(3, 0)
+            emit_a64_mov_imm(4, 0)
+            emit_a64_mov_imm(5, 0)
+            emit_a64_mov_imm(6, 0)
+            emit_a64_mov_imm(7, 0)
+            emit_a64_add_imm(9, 31, 0x40)
+            emit_a64_str(9, 31, 0)
+            emit_a64_add_imm(9, 31, 0xA8)
+            emit_a64_str(9, 31, 8)
+            emit_a64_win_call_iat(9)
+            emit_a64_ldr(0, 31, 0xA8)
+            emit_a64_mov_imm(1, 0xFFFFFFFF)
+            emit_a64_win_call_iat(10)
+            emit_a64_ldr(0, 31, 0xA8)
+            emit_a64_add_imm(1, 31, 0x20)
+            emit_a64_win_call_iat(11)
+            emit_a64_ldr32(0, 31, 0x20)
+            emit_a64_add_sp_imm(0xD0)
+            emit_a64_win_call_iat(0)
+            return
+        }
+        // Linux/macOS: execve
         // x0 = path
         emit_a64_mov(0, path_r)
         // x1 = argv

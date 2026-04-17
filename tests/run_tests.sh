@@ -2650,7 +2650,7 @@ rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_ir_$$
 cat > "$REPO_ROOT/test_tmp_$$.kr" << 'IREOF'
 fn main() { uint64 i = 0; while i < 100 { if i == 5 { break }; i = i + 1 }; exit(i) }
 IREOF
-if timeout 10 "$KRC" --ir --arch=x86_64 "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_ir_$$ 2>/dev/null; then
+if timeout 10 "$KRC" $KRC_FLAGS --ir "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_ir_$$ 2>/dev/null; then
     chmod +x /tmp/krc_ir_$$; /tmp/krc_ir_$$; actual=$?
     if [ "$actual" -eq 5 ]; then
         echo "  ir_break: PASS"
@@ -2666,7 +2666,7 @@ rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_ir_$$
 cat > "$REPO_ROOT/test_tmp_$$.kr" << 'IREOF'
 fn main() { uint64 i = 0; uint64 s = 0; while i < 10 { i = i + 1; if i == 5 { continue }; s = s + 1 }; exit(s) }
 IREOF
-if timeout 10 "$KRC" --ir --arch=x86_64 "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_ir_$$ 2>/dev/null; then
+if timeout 10 "$KRC" $KRC_FLAGS --ir "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_ir_$$ 2>/dev/null; then
     chmod +x /tmp/krc_ir_$$; /tmp/krc_ir_$$; actual=$?
     if [ "$actual" -eq 9 ]; then
         echo "  ir_continue: PASS"
@@ -2683,7 +2683,7 @@ cat > "$REPO_ROOT/test_tmp_$$.kr" << 'IREOF'
 fn add(uint64 a, uint64 b) -> uint64 { return a + b }
 fn main() { exit(add(20, 22)) }
 IREOF
-if timeout 10 "$KRC" --ir --arch=x86_64 "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_ir_$$ 2>/dev/null; then
+if timeout 10 "$KRC" $KRC_FLAGS --ir "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_ir_$$ 2>/dev/null; then
     chmod +x /tmp/krc_ir_$$; /tmp/krc_ir_$$; actual=$?
     if [ "$actual" -eq 42 ]; then
         echo "  ir_fn_call: PASS"
@@ -2700,7 +2700,7 @@ cat > "$REPO_ROOT/test_tmp_$$.kr" << 'IREOF'
 fn fib(uint64 n) -> uint64 { if n <= 1 { return n }; return fib(n - 1) + fib(n - 2) }
 fn main() { exit(fib(10)) }
 IREOF
-if timeout 10 "$KRC" --ir --arch=x86_64 "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_ir_$$ 2>/dev/null; then
+if timeout 10 "$KRC" $KRC_FLAGS --ir "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_ir_$$ 2>/dev/null; then
     chmod +x /tmp/krc_ir_$$; /tmp/krc_ir_$$; actual=$?
     if [ "$actual" -eq 55 ]; then
         echo "  ir_recursion: PASS"
@@ -2716,7 +2716,7 @@ rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_ir_$$
 cat > "$REPO_ROOT/test_tmp_$$.kr" << 'IREOF'
 fn main() { uint64 x = 2; uint64 r = 0; match x { 1 => { r = 10 } 2 => { r = 42 } 3 => { r = 30 } }; exit(r) }
 IREOF
-if timeout 10 "$KRC" --ir --arch=x86_64 "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_ir_$$ 2>/dev/null; then
+if timeout 10 "$KRC" $KRC_FLAGS --ir "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_ir_$$ 2>/dev/null; then
     chmod +x /tmp/krc_ir_$$; /tmp/krc_ir_$$; actual=$?
     if [ "$actual" -eq 42 ]; then
         echo "  ir_match: PASS"
