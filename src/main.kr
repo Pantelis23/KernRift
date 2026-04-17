@@ -2948,13 +2948,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
         if ck2 == 2 {
             uint32 fn_name2 = ast_data1(wchild2)
             if dce_is_live(fn_name2) != 0 {
-                // ARM64 slices in fat mode temporarily forced to legacy: the
-                // IR ARM64 backend mis-compiles compile_fat at this toolchain
-                // level (segfaults on real hardware even though the x86 host
-                // self-compile produces a deterministic fixed point). Revisit
-                // once the IR ARM64 codegen bug is fixed; meanwhile keep
-                // --ir as the opt-in for x86 slices only.
-                if emit_ir_mode >= 2 {
+                if emit_ir_mode != 0 {
                     fn_register(fn_name2, out_len)
                     ir_init()
                     ir_emit_arm64_function(wchild2)
@@ -3154,7 +3148,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
         if ck4 == 2 {
             uint32 fn_name4 = ast_data1(wchild4)
             if dce_is_live(fn_name4) != 0 {
-                if emit_ir_mode >= 2 {
+                if emit_ir_mode != 0 {
                     fn_register(fn_name4, out_len)
                     ir_init()
                     ir_emit_arm64_function(wchild4)
@@ -3377,7 +3371,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
         if ck6 == 2 {
             uint32 fn_name6 = ast_data1(wchild6)
             if dce_is_live(fn_name6) != 0 {
-                if emit_ir_mode >= 2 {
+                if emit_ir_mode != 0 {
                     fn_register(fn_name6, out_len)
                     ir_init()
                     ir_emit_arm64_function(wchild6)
@@ -3622,7 +3616,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
         if ck7 == 2 {
             uint32 fn_name7 = ast_data1(wchild7)
             if dce_is_live(fn_name7) != 0 {
-                if emit_ir_mode >= 2 {
+                if emit_ir_mode != 0 {
                     fn_register(fn_name7, out_len)
                     ir_init()
                     ir_emit_arm64_function(wchild7)
@@ -3636,6 +3630,9 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     }
     resolve_fixups_a64()
     resolve_fnaddr_fixups_a64()
+    // Align to 8 bytes on arm64 (matches direct compile() path) so static
+    // data LDR (imm12 scaled by 8) can encode any slot offset exactly.
+    while (codegen_output_len() & 7) != 0 { emit_byte(0) }
     uint64 data_start7 = codegen_output_len()
     emit_static_data()
     resolve_static_fixups_a64(data_start7)
