@@ -162,30 +162,39 @@ static uint64 ir_vreg_fkind_cap = 0
 // Allocate arenas for instructions and basic blocks.
 @export
 fn ir_init() {
-    ir_insn_cap = 65536
-    ir_insn_buf = alloc(ir_insn_cap * 32)
+    if ir_insn_buf == 0 {
+        ir_insn_cap = 65536
+        ir_insn_buf = alloc(ir_insn_cap * 32)
+    }
     ir_insn_count = 0
 
-    ir_bb_cap = 4096
-    ir_bb_buf = alloc(ir_bb_cap * 16)
+    if ir_bb_buf == 0 {
+        ir_bb_cap = 4096
+        ir_bb_buf = alloc(ir_bb_cap * 16)
+    }
     ir_bb_count = 0
 
     ir_vreg_next = 1
 
-    // Float-kind per vreg
-    ir_vreg_fkind_cap = 65536
-    ir_vreg_fkind_buf = alloc(ir_vreg_fkind_cap)
+    if ir_vreg_fkind_buf == 0 {
+        ir_vreg_fkind_cap = 65536
+        ir_vreg_fkind_buf = alloc(ir_vreg_fkind_cap)
+    }
+    // Float-kind buffer is indexed by vreg number without a length guard,
+    // so stale bytes from a prior function would mislabel a vreg as float.
     memset(ir_vreg_fkind_buf, 0, ir_vreg_fkind_cap)
 
-    // Loop context stacks (max 32 nesting levels)
-    ir_loop_exit_stack = alloc(32 * 8)
-    ir_loop_header_stack = alloc(32 * 8)
-    ir_loop_hdr_buf_stack = alloc(32 * 8)
-    ir_loop_hdr_count_stack = alloc(32 * 8)
+    if ir_loop_exit_stack == 0 {
+        ir_loop_exit_stack = alloc(32 * 8)
+        ir_loop_header_stack = alloc(32 * 8)
+        ir_loop_hdr_buf_stack = alloc(32 * 8)
+        ir_loop_hdr_count_stack = alloc(32 * 8)
+    }
     ir_loop_depth = 0
 
-    // Overflow arg buffer (16 args max beyond the first 6)
-    ir_overflow_args = alloc(16 * 8)
+    if ir_overflow_args == 0 {
+        ir_overflow_args = alloc(16 * 8)
+    }
     ir_overflow_arg_count = 0
 }
 
