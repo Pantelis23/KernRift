@@ -7188,6 +7188,10 @@ fn ir_optimize() {
     ir_opt_const_fold()
     ir_opt_dce()
     ir_opt_cse()
+    // CSE can leave the original computation alive only to feed a COPY that
+    // then produces the same dest. If nothing else references the original
+    // dest, a second DCE pass cleans it up.
+    ir_opt_dce()
 }
 
 @export
