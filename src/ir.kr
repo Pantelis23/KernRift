@@ -6837,26 +6837,66 @@ fn ir_opt_const_fold() {
             continue
         }
 
-        // MUL(x, 0) -> CONST 0
-        if op == 4 && s2_known != 0 && v2 == 0 {
-            ir_insn_set_opcode(ii, 1)
-            ir_insn_set_src1(ii, 0)
-            ir_insn_set_src2(ii, 0)
-            ir_insn_set_imm(ii, 0)
-            if dest > 0 && dest < 65536 {
-                uint64 p = ir_const_values + dest * 8
-                unsafe { *(p as uint64) = 0 }
-                uint64 k = ir_const_known + dest
-                uint8 one = 1
-                unsafe { *(k as uint8) = one }
+        // MUL(x, 0) or AND(x, 0) -> CONST 0
+        if s2_known != 0 && v2 == 0 {
+            if op == 4 || op == 7 {
+                ir_insn_set_opcode(ii, 1)
+                ir_insn_set_src1(ii, 0)
+                ir_insn_set_src2(ii, 0)
+                ir_insn_set_imm(ii, 0)
+                if dest > 0 && dest < 65536 {
+                    uint64 p = ir_const_values + dest * 8
+                    unsafe { *(p as uint64) = 0 }
+                    uint64 k = ir_const_known + dest
+                    uint8 one = 1
+                    unsafe { *(k as uint8) = one }
+                }
+                ii = ii + 1
+                continue
             }
-            ii = ii + 1
-            continue
+        }
+        // MUL(0, x) or AND(0, x) -> CONST 0 (commutative)
+        if s1_known != 0 && v1 == 0 {
+            if op == 4 || op == 7 {
+                ir_insn_set_opcode(ii, 1)
+                ir_insn_set_src1(ii, 0)
+                ir_insn_set_src2(ii, 0)
+                ir_insn_set_imm(ii, 0)
+                if dest > 0 && dest < 65536 {
+                    uint64 p = ir_const_values + dest * 8
+                    unsafe { *(p as uint64) = 0 }
+                    uint64 k = ir_const_known + dest
+                    uint8 one = 1
+                    unsafe { *(k as uint8) = one }
+                }
+                ii = ii + 1
+                continue
+            }
         }
 
-        // ADD(x, 0) or SHL(x, 0) -> COPY x
+        // Identities that simplify to COPY of src1:
+        //   ADD(x, 0), SUB(x, 0), OR(x, 0), XOR(x, 0), SHL(x, 0), SHR(x, 0)
         if s2_known != 0 && v2 == 0 {
-            if op == 2 || op == 10 {
+            if op == 2 || op == 3 || op == 8 || op == 9 || op == 10 || op == 11 {
+                ir_insn_set_opcode(ii, 61)
+                ir_insn_set_src2(ii, 0)
+                ii = ii + 1
+                continue
+            }
+        }
+        // MUL(x, 1) or DIV(x, 1) -> COPY x
+        if s2_known != 0 && v2 == 1 {
+            if op == 4 || op == 5 {
+                ir_insn_set_opcode(ii, 61)
+                ir_insn_set_src2(ii, 0)
+                ii = ii + 1
+                continue
+            }
+        }
+        // AND(x, ~0) -> COPY x
+        if op == 7 && s2_known != 0 {
+            uint64 all_ones = 0 - 1
+            if v2 == all_ones {
                 ir_insn_set_opcode(ii, 61)
                 ir_insn_set_src2(ii, 0)
                 ii = ii + 1
@@ -6864,12 +6904,24 @@ fn ir_opt_const_fold() {
             }
         }
 
-        // MUL(x, 1) -> COPY x
-        if op == 4 && s2_known != 0 && v2 == 1 {
-            ir_insn_set_opcode(ii, 61)
-            ir_insn_set_src2(ii, 0)
-            ii = ii + 1
-            continue
+        // Commutative forms where the constant is on the left:
+        //   ADD(0, x), OR(0, x), XOR(0, x) -> COPY x  (set src1<-src2, drop src2)
+        //   MUL(1, x), AND(~0, x)          -> COPY x
+        if s1_known != 0 {
+            uint64 as_copy = 0
+            if v1 == 0 && (op == 2 || op == 8 || op == 9) { as_copy = 1 }
+            if v1 == 1 && op == 4 { as_copy = 1 }
+            if op == 7 {
+                uint64 all_ones1 = 0 - 1
+                if v1 == all_ones1 { as_copy = 1 }
+            }
+            if as_copy != 0 {
+                ir_insn_set_opcode(ii, 61)
+                ir_insn_set_src1(ii, s2)
+                ir_insn_set_src2(ii, 0)
+                ii = ii + 1
+                continue
+            }
         }
 
         ii = ii + 1
