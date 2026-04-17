@@ -11,6 +11,11 @@
 //     spill slots        (ir_spill_count * 8 bytes, 16-aligned)
 //   [new SP]
 
+// Scratchpad offset within frame: a permanent 32-byte area reserved in the
+// prologue for mid-function temp buffers (fmt_uint digits, timespec, argv, etc).
+// Avoids dynamic SP shifts that would invalidate spill slot addresses.
+static uint64 ir_a64_scratch_off = 0
+
 // ---------------------------------------------------------------------------
 // Register allocator setup for ARM64
 // ---------------------------------------------------------------------------
@@ -241,18 +246,18 @@ fn ir_emit_arm64_win_syscall(uint64 abstract_nr, uint64 dest_v, uint64 dst_r) {
         // lseek(fd, offset, whence): GetFileSizeEx(handle, &size)
         // Used by file_size() builtin. SEEK_SET rewind return is unused, so this is safe.
         // IR_ARG: x0=handle, x1=offset, x2=whence
-        // Allocate 16 bytes on stack for output
-        emit_a64_sub_sp_imm(16)
+        // Allocate 16 bytes on scratchpad for output
+        emit_a64_add_imm(11, 31, ir_a64_scratch_off)
         // Zero the output area
         emit_a64_mov_imm(9, 0)
-        emit_a64_str(9, 31, 0)
-        // x1 = &output (SP)
-        emit_a64_mov(1, 31)
+        emit_a64_str(9, 11, 0)
+        // x1 = &output (X11)
+        emit_a64_mov(1, 11)
         // x0 = handle (already in place)
         emit_a64_win_call_iat(8)          // GetFileSizeEx
-        // Load size from [SP]
-        emit_a64_ldr(0, 31, 0)
-        emit_a64_add_sp_imm(16)
+        // Load size from [X11]
+        emit_a64_ldr(0, 11, 0)
+        // SP restore removed
     }
 
     // Move result to dest
@@ -869,10 +874,10 @@ fn ir_emit_arm64_insn(uint64 ii) {
         emit_a64_mov(1, fu_val)
         emit_a64_mov_imm(2, 0)
         emit_a64_mov_imm(3, 10)
-        // Use a 32-byte stack-based digit buffer (x12 = digit area)
-        // We store digits in reverse on the stack, then copy forward
-        emit_a64_sub_sp_imm(32)
-        emit_a64_mov(12, 31)    // x12 = digit area base
+        // Use the permanent 32-byte scratchpad in the frame (no SP shift)
+        // x12 = SP + ir_a64_scratch_off (digit area base)
+        emit_a64_mov_imm(12, ir_a64_scratch_off)
+        emit_a64_add(12, 31, 12)
 
         // Digit extraction loop: divide by 10, store remainder + '0'
         uint64 fu_loop = out_len
@@ -907,8 +912,8 @@ fn ir_emit_arm64_insn(uint64 ii) {
         uint64 fu_copy_back = fu_copy - out_len
         emit_a64(0x14000000 | ((fu_copy_back / 4) & 0x3FFFFFF))
 
-        // Restore stack
-        emit_a64_add_sp_imm(32)
+        // Restore stack (removed, using static scratchpad)
+        // emit_a64_add_sp_imm(32)
 
         // Return digit count (x6)
         uint64 d = dst_r
@@ -1379,15 +1384,15 @@ fn ir_emit_arm64_insn(uint64 ii) {
     // ----- IR_EXEC (113): execve(path, [path, NULL], envp) -----
     if op == 113 {
         uint64 path_r = ir_a64_resolve_src(s1_v, 9)
-        // Build argv on stack: [path, NULL] = 16 bytes
-        emit_a64_sub_sp_imm(16)
-        emit_a64_str(path_r, 31, 0)      // argv[0] = path
+        // Build argv on scratchpad: [path, NULL] = 16 bytes
+        emit_a64_add_imm(11, 31, ir_a64_scratch_off)
+        emit_a64_str(path_r, 11, 0)      // argv[0] = path
         emit_a64_mov_imm(10, 0)
-        emit_a64_str(10, 31, 8)           // argv[1] = NULL
+        emit_a64_str(10, 11, 8)           // argv[1] = NULL
         // x0 = path
         emit_a64_mov(0, path_r)
-        // x1 = argv (SP)
-        emit_a64_mov(1, 31)
+        // x1 = argv (X11)
+        emit_a64_mov(1, 11)
         // x2 = envp: try cli_envp static, else NULL
         uint64 envp_off = static_lookup_by_name("cli_envp", 8)
         if envp_off != 0xFFFFFFFF {
@@ -1401,8 +1406,7 @@ fn ir_emit_arm64_insn(uint64 ii) {
         uint64 execve_nr = ir_a64_syscall_nr(59)
         emit_a64_syscall_nr(execve_nr)
         emit_a64_svc()
-        // If execve fails, restore stack
-        emit_a64_add_sp_imm(16)
+        // execve failed (only reached on error) — no SP restore needed (scratchpad)
         // Save errno to exec_errno if defined
         uint64 errno_off = static_lookup_by_name("exec_errno", 10)
         if errno_off != 0xFFFFFFFF {
@@ -1478,28 +1482,29 @@ fn ir_emit_arm64_insn(uint64 ii) {
     // ----- IR_TIME_NS (119): clock_gettime -> nanoseconds -----
     if op == 119 {
         if target_os == 0 || target_os == 1 || target_os == 3 {
-            // Allocate 16 bytes on stack for timespec {tv_sec, tv_nsec}
-            emit_a64_sub_sp_imm(16)
+            // Use scratchpad for timespec {tv_sec, tv_nsec} (16 bytes)
+            // x1 = SP + ir_a64_scratch_off (buffer address)
+            emit_a64_mov_imm(1, ir_a64_scratch_off)
+            emit_a64_add(1, 31, 1)
             // x0 = 1 (CLOCK_MONOTONIC)
             emit_a64_mov_imm(0, 1)
-            // x1 = sp (buffer)
-            emit_a64_mov(1, 31)
             // syscall clock_gettime
             uint64 cgt_nr = ir_a64_syscall_nr(228)
             emit_a64_syscall_nr(cgt_nr)
             emit_a64_svc()
-            // x9 = tv_sec = [sp+0]
-            emit_a64_ldr(9, 31, 0)
-            // x10 = tv_nsec = [sp+8]
-            emit_a64_ldr(10, 31, 8)
+            // Load results from scratchpad
+            // x9 = tv_sec
+            emit_a64_mov_imm(11, ir_a64_scratch_off)
+            emit_a64_add(11, 31, 11)
+            emit_a64_ldr(9, 11, 0)
+            // x10 = tv_nsec
+            emit_a64_ldr(10, 11, 8)
             // x11 = 1_000_000_000
             emit_a64_mov_imm(11, 1000000000)
             // x9 = tv_sec * 1_000_000_000
             emit_a64_mul(9, 9, 11)
             // x0 = x9 + x10
             emit_a64_add(0, 9, 10)
-            // Restore stack
-            emit_a64_add_sp_imm(16)
         } else {
             // Non-Linux/macOS: return 0
             emit_a64_mov_imm(0, 0)
@@ -1801,12 +1806,18 @@ fn ir_emit_arm64_function(uint64 fn_node) {
     // Callee-saved area: x29/x30 (16) + x19-x28 (80) = 96 bytes
     uint64 callee_save_size = 96
     uint64 spill_size = ir_spill_count * 8
-    // Total frame = callee save + spill, must be 16-aligned
-    uint64 total_frame = callee_save_size + spill_size
+    // 32-byte scratchpad for mid-function temp buffers (fmt_uint digits,
+    // clock_gettime timespec, execve argv, etc). Using a fixed offset avoids
+    // dynamic SP shifts that invalidate spill slot addresses.
+    uint64 scratch_size = 32
+    // Total frame = spill + scratch + callee save, must be 16-aligned
+    uint64 total_frame = spill_size + scratch_size + callee_save_size
     if (total_frame & 15) != 0 { total_frame = total_frame + 16 - (total_frame & 15) }
     if is_naked != 0 { total_frame = 0 }
 
     ir_frame_size = total_frame
+    // Scratchpad sits right after spill slots
+    ir_a64_scratch_off = spill_size
 
     // 5a. For main(): set up argc/argv BEFORE prologue
     uint32 fn_name_tok = ast_data1(fn_node)
@@ -1841,19 +1852,20 @@ fn ir_emit_arm64_function(uint64 fn_node) {
     if is_naked == 0 {
         // SUB SP, SP, #total_frame
         emit_a64_sub_sp_imm(total_frame)
-        // STP x29, x30, [sp, #spill_size + 80]
-        uint64 fp_off = spill_size + 80
+        // Save FP/LR and callee-saved regs after spill+scratch area
+        uint64 cs_base = spill_size + scratch_size
+        uint64 fp_off = cs_base + 80
         ir_a64_str_sp(29, fp_off)
         ir_a64_str_sp(30, fp_off + 8)
-        // Save callee-saved registers x19-x28 (5 pairs)
-        ir_a64_str_sp(19, spill_size)
-        ir_a64_str_sp(20, spill_size + 8)
-        ir_a64_str_sp(21, spill_size + 16)
-        ir_a64_str_sp(22, spill_size + 24)
-        ir_a64_str_sp(23, spill_size + 32)
-        ir_a64_str_sp(24, spill_size + 40)
-        ir_a64_str_sp(25, spill_size + 48)
-        ir_a64_str_sp(26, spill_size + 56)
+        // Save callee-saved registers x19-x28
+        ir_a64_str_sp(19, cs_base)
+        ir_a64_str_sp(20, cs_base + 8)
+        ir_a64_str_sp(21, cs_base + 16)
+        ir_a64_str_sp(22, cs_base + 24)
+        ir_a64_str_sp(23, cs_base + 32)
+        ir_a64_str_sp(24, cs_base + 40)
+        ir_a64_str_sp(25, cs_base + 48)
+        ir_a64_str_sp(26, cs_base + 56)
         ir_a64_str_sp(27, spill_size + 64)
         ir_a64_str_sp(28, spill_size + 72)
     }
@@ -1996,23 +2008,28 @@ fn ir_emit_arm64_function(uint64 fn_node) {
     // 11. Epilogue (skip for @naked)
     if is_naked == 0 {
         // Restore callee-saved registers (large-offset safe)
-        ir_a64_ldr_sp(19, spill_size)
-        ir_a64_ldr_sp(20, spill_size + 8)
-        ir_a64_ldr_sp(21, spill_size + 16)
-        ir_a64_ldr_sp(22, spill_size + 24)
-        ir_a64_ldr_sp(23, spill_size + 32)
-        ir_a64_ldr_sp(24, spill_size + 40)
-        ir_a64_ldr_sp(25, spill_size + 48)
-        ir_a64_ldr_sp(26, spill_size + 56)
-        ir_a64_ldr_sp(27, spill_size + 64)
-        ir_a64_ldr_sp(28, spill_size + 72)
+        uint64 cs_base_e = spill_size + scratch_size
+        ir_a64_ldr_sp(19, cs_base_e)
+        ir_a64_ldr_sp(20, cs_base_e + 8)
+        ir_a64_ldr_sp(21, cs_base_e + 16)
+        ir_a64_ldr_sp(22, cs_base_e + 24)
+        ir_a64_ldr_sp(23, cs_base_e + 32)
+        ir_a64_ldr_sp(24, cs_base_e + 40)
+        ir_a64_ldr_sp(25, cs_base_e + 48)
+        ir_a64_ldr_sp(26, cs_base_e + 56)
+        ir_a64_ldr_sp(27, cs_base_e + 64)
+        ir_a64_ldr_sp(28, cs_base_e + 72)
         // Restore FP and LR
-        uint64 fp_off_e = spill_size + 80
+        uint64 fp_off_e = cs_base_e + 80
         ir_a64_ldr_sp(29, fp_off_e)
         ir_a64_ldr_sp(30, fp_off_e + 8)
         // ADD SP, SP, #total_frame
         emit_a64_add_sp_imm(total_frame)
         // RET
         emit_a64_ret()
+    }
+}
+}
+
     }
 }
