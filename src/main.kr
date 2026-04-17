@@ -2221,8 +2221,8 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
                     fn_register(fn_name, out_len)
                     ir_init()
                     ir_emit_x86_function(wchild)
-                } else if emit_ir_mode >= 2 && arch == 1 && emit_mode != 3 {
-                    // IR codegen ARM64 (explicit --ir only)
+                } else if emit_ir_mode != 0 && arch == 1 && emit_mode != 3 {
+                    // IR codegen ARM64 (default; --legacy bypasses)
                     fn_register(fn_name, out_len)
                     ir_init()
                     ir_emit_arm64_function(wchild)
