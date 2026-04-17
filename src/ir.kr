@@ -7089,6 +7089,7 @@ fn ir_opt_dce() {
 // ---------------------------------------------------------------------------
 
 static uint64 ir_cse_table = 0
+static uint64 ir_cse_canon = 0   // per-BB canon[vreg] → canonical source vreg
 
 fn ir_cse_hash(uint64 op, uint64 s1, uint64 s2, uint64 imm) -> uint64 {
     uint64 h = op * 2654435761
@@ -7098,11 +7099,33 @@ fn ir_cse_hash(uint64 op, uint64 s1, uint64 s2, uint64 imm) -> uint64 {
     return h & 4095
 }
 
+// Canon map: canon[v] = the canonical vreg v aliases to. A cell of 0 means
+// the entry is uninitialised, in which case v is its own canonical form. This
+// lets IR_COPY be handled cleanly (it updates canon but no longer needs to
+// invalidate the hash table), and lets chained copies collapse to one source
+// so redundant expressions over aliased vregs still match.
+fn ir_cse_canon_of(uint64 v) -> uint64 {
+    if v == 0 { return 0 }
+    if v >= 65536 { return v }
+    uint64 p = ir_cse_canon + v * 4
+    uint32 c = 0
+    unsafe { *(p as uint32) -> c }
+    if c == 0 { return v }
+    return c
+}
+
+fn ir_cse_canon_set(uint64 dest, uint64 canonical) {
+    if dest == 0 { return }
+    if dest >= 65536 { return }
+    uint64 p = ir_cse_canon + dest * 4
+    uint32 c = canonical
+    unsafe { *(p as uint32) = c }
+}
+
 fn ir_opt_cse_invalidates(uint64 op) -> uint64 {
     if op == 31 { return 1 }  // STORE
     if op == 50 { return 1 }  // CALL
     if op == 52 { return 1 }  // SYSCALL
-    if op == 61 { return 1 }  // COPY (mutates dest — conservative invalidate)
     if op == 72 { return 1 }  // MEMCPY
     if op == 76 { return 1 }  // MEMSET
     if op == 78 { return 1 }  // STATIC_STORE
@@ -7127,7 +7150,9 @@ fn ir_opt_cse_is_pure(uint64 op) -> uint64 {
 
 fn ir_opt_cse() {
     if ir_cse_table == 0 { ir_cse_table = alloc(4096 * 40) }
+    if ir_cse_canon == 0 { ir_cse_canon = alloc(65536 * 4) }
     memset(ir_cse_table, 0, 4096 * 40)
+    memset(ir_cse_canon, 0, 65536 * 4)
 
     uint64 cur_bb = 0xFFFFFFFF
 
@@ -7139,11 +7164,22 @@ fn ir_opt_cse() {
         uint64 bb = ir_insn_bb(ii)
         if bb != cur_bb {
             memset(ir_cse_table, 0, 4096 * 40)
+            memset(ir_cse_canon, 0, 65536 * 4)
             cur_bb = bb
+        }
+
+        // IR_COPY: update canon, don't touch the hash table.
+        if op == 61 {
+            uint64 cd = ir_insn_dest(ii)
+            uint64 cs = ir_cse_canon_of(ir_insn_src1(ii))
+            ir_cse_canon_set(cd, cs)
+            ii = ii + 1
+            continue
         }
 
         if ir_opt_cse_invalidates(op) != 0 {
             memset(ir_cse_table, 0, 4096 * 40)
+            memset(ir_cse_canon, 0, 65536 * 4)
             ii = ii + 1
             continue
         }
@@ -7154,9 +7190,14 @@ fn ir_opt_cse() {
         }
 
         uint64 dest = ir_insn_dest(ii)
-        uint64 s1 = ir_insn_src1(ii)
-        uint64 s2 = ir_insn_src2(ii)
-        uint64 imm = ir_insn_imm(ii)
+        uint64 s1 = ir_cse_canon_of(ir_insn_src1(ii))
+        uint64 s2 = ir_cse_canon_of(ir_insn_src2(ii))
+        uint64 raw_imm = ir_insn_imm(ii)
+        // For ops whose imm field holds a vreg, canonicalise it too.
+        uint64 imm = raw_imm
+        if op == 72 || op == 76 || op == 83 || op == 93 || op == 98 {
+            imm = ir_cse_canon_of(raw_imm)
+        }
 
         uint64 h = ir_cse_hash(op, s1, s2, imm)
         uint64 entry = ir_cse_table + h * 40
@@ -7183,6 +7224,8 @@ fn ir_opt_cse() {
                 ir_insn_set_src1(ii, e_result)
                 ir_insn_set_src2(ii, 0)
                 ir_insn_set_imm(ii, 0)
+                // dest now aliases to the earlier result's canonical form
+                ir_cse_canon_set(dest, ir_cse_canon_of(e_result))
                 ii = ii + 1
                 continue
             }
