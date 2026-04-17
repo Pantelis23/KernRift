@@ -2825,6 +2825,45 @@ if timeout 10 "$KRC" $KRC_FLAGS "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_char_$$ 
 else PASS=$((PASS + 1)); echo "  char_reject_assign_int: PASS"; fi
 rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_char_$$
 
+# --- typed println pipeline ---
+echo ""
+echo "--- typed println pipeline ---"
+
+# println(true) → "true"
+run_test_output "println_true" \
+    'fn main() { println(true); exit(0) }' \
+    "true"
+
+# println(false) → "false"
+run_test_output "println_false" \
+    'fn main() { println(false); exit(0) }' \
+    "false"
+
+# println(3.14) → "3.140000"
+run_test_output "println_f64" \
+    'fn main() { println(3.14); exit(0) }' \
+    "3.140000"
+
+# println(0.0) → "0.000000"
+run_test_output "println_f64_zero" \
+    'fn main() { println(0.0); exit(0) }' \
+    "0.000000"
+
+# println negative float via subtraction (avoids literal-negation IR bug)
+run_test_output "println_f64_neg" \
+    'fn main() { f64 x = 0.0 - 3.14; println(x); exit(0) }' \
+    "-3.140000"
+
+# println big float → "big"
+run_test_output "println_f64_big" \
+    'fn main() { println(1000000000000000000.0); exit(0) }' \
+    "big"
+
+# println char literal → single character
+run_test_output "println_char" \
+    "fn main() { println('A'); exit(0) }" \
+    "A"
+
 # --- IR optimizer tests ---
 echo ""
 echo "--- IR optimizer tests ---"

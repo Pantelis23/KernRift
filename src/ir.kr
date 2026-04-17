@@ -129,6 +129,10 @@ static uint64 IR_SCMP_LE = 121      // dest = (src1 <= src2) signed
 static uint64 IR_SCMP_GT = 122      // dest = (src1 > src2) signed
 static uint64 IR_SCMP_GE = 123      // dest = (src1 >= src2) signed
 
+// Typed print formatters: dest=len_vreg, src1=buf_vreg, src2=val_vreg
+static uint64 IR_FMT_BOOL = 124     // format bool as "true"/"false" into buf
+static uint64 IR_FMT_F64 = 125      // format f64 as decimal into buf
+
 // ---------------------------------------------------------------------------
 // Instruction arena
 // ---------------------------------------------------------------------------
@@ -222,6 +226,12 @@ fn ir_new_vreg() -> uint64 {
     return v
 }
 
+static uint64 FKIND_INT = 0
+static uint64 FKIND_F64 = 1
+static uint64 FKIND_F32 = 2
+static uint64 FKIND_BOOL = 3
+static uint64 FKIND_CHAR = 4
+
 fn ir_vreg_fkind_set(uint64 vreg, uint64 fk) {
     if vreg < ir_vreg_fkind_cap {
         uint64 p = ir_vreg_fkind_buf + vreg
@@ -236,6 +246,20 @@ fn ir_vreg_fkind_get(uint64 vreg) -> uint64 {
         uint64 b = 0
         unsafe { *(p as uint8) -> b }
         return b
+    }
+    return 0
+}
+
+// ---------------------------------------------------------------------------
+// Token finder: scan the token table for an identifier matching a literal name.
+// Returns token index or 0 if not found (0 is the first token, but function
+// names never appear as the first token since it's a keyword).
+// ---------------------------------------------------------------------------
+fn ir_find_fn_tok(uint64 name, uint64 nlen) -> uint64 {
+    uint64 i = 0
+    while i < p_tok_count {
+        if tok_matches(i, name, nlen) != 0 { return i }
+        i = i + 1
     }
     return 0
 }
@@ -771,6 +795,10 @@ fn ir_lower_expr(uint64 node) -> uint64 {
         uint64 val = parse_int_token(tok)
         uint64 dest = ir_new_vreg()
         ir_emit(IR_CONST, dest, 0, 0, val, ir_current_bb)
+        uint32 d4 = ast_data4(node)
+        uint64 wd4 = d4
+        if wd4 == 98 { ir_vreg_fkind_set(dest, 3) }
+        if wd4 == 99 { ir_vreg_fkind_set(dest, 4) }
         return dest
     }
 
@@ -1675,12 +1703,32 @@ fn ir_lower_expr(uint64 node) -> uint64 {
                 uint64 wr = ir_new_vreg()
                 ir_emit(IR_SYSCALL, wr, 0, 0, 1, ir_current_bb)
             } else {
-                // Integer: fmt_uint to stack buffer, then write
+                // Integer/float/bool/char: type-directed dispatch
                 uint64 val_v = ir_lower_expr(wfa)
                 uint64 buf_v = ir_new_vreg()
                 ir_emit(IR_ALLOC, buf_v, 0, 0, 32, ir_current_bb)
                 uint64 len_v = ir_new_vreg()
-                ir_emit(IR_FMT_UINT, len_v, buf_v, val_v, 0, ir_current_bb)
+                uint64 fk = ir_vreg_fkind_get(val_v)
+                if fk == 1 {
+                    // f64 -> IR_FMT_F64(len, buf, val)
+                    ir_emit(IR_FMT_F64, len_v, buf_v, val_v, 0, ir_current_bb)
+                } else if fk == 2 {
+                    // f32 -> cvt to f64 first, then IR_FMT_F64
+                    uint64 f64v = ir_new_vreg()
+                    ir_emit(IR_F32TOF64, f64v, val_v, 0, 0, ir_current_bb)
+                    ir_vreg_fkind_set(f64v, 1)
+                    ir_emit(IR_FMT_F64, len_v, buf_v, f64v, 0, ir_current_bb)
+                } else if fk == 3 {
+                    // bool -> IR_FMT_BOOL(len, buf, val)
+                    ir_emit(IR_FMT_BOOL, len_v, buf_v, val_v, 0, ir_current_bb)
+                } else if fk == 4 {
+                    // char -> store byte, len = 1
+                    ir_emit(IR_STORE, 1, buf_v, val_v, 0, ir_current_bb)
+                    ir_emit(IR_CONST, len_v, 0, 0, 1, ir_current_bb)
+                } else {
+                    // integer -> IR_FMT_UINT (unchanged)
+                    ir_emit(IR_FMT_UINT, len_v, buf_v, val_v, 0, ir_current_bb)
+                }
                 uint64 fd_v = ir_new_vreg()
                 ir_emit(IR_CONST, fd_v, 0, 0, 1, ir_current_bb)
                 ir_emit(IR_ARG, 0, fd_v, 0, 0, ir_current_bb)
@@ -1712,11 +1760,32 @@ fn ir_lower_expr(uint64 node) -> uint64 {
                 uint64 wr = ir_new_vreg()
                 ir_emit(IR_SYSCALL, wr, 0, 0, 1, ir_current_bb)
             } else {
+                // Integer/float/bool/char: type-directed dispatch
                 uint64 val_v = ir_lower_expr(wfa)
                 uint64 buf_v = ir_new_vreg()
                 ir_emit(IR_ALLOC, buf_v, 0, 0, 32, ir_current_bb)
                 uint64 len_v = ir_new_vreg()
-                ir_emit(IR_FMT_UINT, len_v, buf_v, val_v, 0, ir_current_bb)
+                uint64 fk = ir_vreg_fkind_get(val_v)
+                if fk == 1 {
+                    // f64 -> IR_FMT_F64(len, buf, val)
+                    ir_emit(IR_FMT_F64, len_v, buf_v, val_v, 0, ir_current_bb)
+                } else if fk == 2 {
+                    // f32 -> cvt to f64 first, then IR_FMT_F64
+                    uint64 f64v = ir_new_vreg()
+                    ir_emit(IR_F32TOF64, f64v, val_v, 0, 0, ir_current_bb)
+                    ir_vreg_fkind_set(f64v, 1)
+                    ir_emit(IR_FMT_F64, len_v, buf_v, f64v, 0, ir_current_bb)
+                } else if fk == 3 {
+                    // bool -> IR_FMT_BOOL(len, buf, val)
+                    ir_emit(IR_FMT_BOOL, len_v, buf_v, val_v, 0, ir_current_bb)
+                } else if fk == 4 {
+                    // char -> store byte, len = 1
+                    ir_emit(IR_STORE, 1, buf_v, val_v, 0, ir_current_bb)
+                    ir_emit(IR_CONST, len_v, 0, 0, 1, ir_current_bb)
+                } else {
+                    // integer -> IR_FMT_UINT (unchanged)
+                    ir_emit(IR_FMT_UINT, len_v, buf_v, val_v, 0, ir_current_bb)
+                }
                 uint64 fd_v = ir_new_vreg()
                 ir_emit(IR_CONST, fd_v, 0, 0, 1, ir_current_bb)
                 ir_emit(IR_ARG, 0, fd_v, 0, 0, ir_current_bb)
@@ -2488,6 +2557,8 @@ fn ir_lower_stmt(uint64 node) {
         uint64 vd_fk = 0
         if vd_type_kind == 96 { vd_fk = 1 }
         if vd_type_kind == 95 { vd_fk = 2 }
+        if vd_type_kind == 98 { vd_fk = 3 }
+        if vd_type_kind == 99 { vd_fk = 4 }
         if winit != 0 {
             uint64 val = ir_lower_expr(winit)
             // Always create a fresh vreg for the new variable so it doesn't
@@ -6659,6 +6730,501 @@ fn ir_emit_x86_insn(uint64 ii) {
         // or eax, edx
         emit_byte(0x09); emit_byte(0xD0)
         // Result is f32 bit pattern in eax (as uint64 in rax)
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, 0)
+        } else {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 124 {
+        // IR_FMT_BOOL: buf in src1, val in src2, dest = length
+        // Emits "true" (4 bytes) or "false" (5 bytes) into buf.
+        uint64 fb_buf = ir_resolve_src(s1_v, 0)
+        uint64 fb_val = ir_resolve_src(s2_v, 1)
+        // mov r10, buf (use r10 as buffer write ptr; caller-saved)
+        ir_emit_mov_r64_r64(10, fb_buf)
+        // mov rax, val
+        ir_emit_mov_r64_r64(0, fb_val)
+        // test rax, rax
+        emit_byte(0x48); emit_byte(0x85); emit_byte(0xC0)
+        // jz .false_path  (jz rel8)
+        emit_byte(0x74)
+        uint64 fb_jz_patch = out_len
+        emit_byte(0)   // placeholder
+        // .true_path:
+        // mov dword [r10], 0x65757274   ('true' LE = t=74,r=72,u=75,e=65)
+        // REX.B needed for r10: 41 C7 02 74 72 75 65
+        emit_byte(0x41); emit_byte(0xC7); emit_byte(0x02)
+        emit_byte(0x74); emit_byte(0x72); emit_byte(0x75); emit_byte(0x65)
+        // mov eax, 4
+        emit_byte(0xB8); emit_byte(0x04); emit_byte(0x00); emit_byte(0x00); emit_byte(0x00)
+        // jmp .done (rel8)
+        emit_byte(0xEB)
+        uint64 fb_jmp_patch = out_len
+        emit_byte(0)   // placeholder
+        // .false_path:
+        uint64 fb_false = out_len
+        uint8 fb_jz_disp = fb_false - fb_jz_patch - 1
+        uint64 fb_jz_p = out_buf + fb_jz_patch
+        unsafe { *(fb_jz_p as uint8) = fb_jz_disp }
+        // mov dword [r10], 0x736C6166  ('fals' LE = f=66,a=61,l=6C,s=73)
+        emit_byte(0x41); emit_byte(0xC7); emit_byte(0x02)
+        emit_byte(0x66); emit_byte(0x61); emit_byte(0x6C); emit_byte(0x73)
+        // mov byte [r10+4], 0x65  ('e')
+        // REX.B: 41 C6 42 04 65
+        emit_byte(0x41); emit_byte(0xC6); emit_byte(0x42); emit_byte(0x04); emit_byte(0x65)
+        // mov eax, 5
+        emit_byte(0xB8); emit_byte(0x05); emit_byte(0x00); emit_byte(0x00); emit_byte(0x00)
+        // .done:
+        uint64 fb_done = out_len
+        uint8 fb_jmp_disp = fb_done - fb_jmp_patch - 1
+        uint64 fb_jmp_p = out_buf + fb_jmp_patch
+        unsafe { *(fb_jmp_p as uint8) = fb_jmp_disp }
+        // rax = result length
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, 0)
+        } else {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 125 {
+        // IR_FMT_F64: buf in src1, f64 bit-pattern in src2, dest = length
+        // Formats as [sign][integer].[6 decimal digits] into buf.
+        // Special: |x| >= 1e18 => "big"; -0.0 handled via sign check.
+        uint64 ff_buf = ir_resolve_src(s1_v, 0)
+        uint64 ff_val = ir_resolve_src(s2_v, 1)
+
+        // r10 = buf (write pointer), r11 = length
+        ir_emit_mov_r64_r64(10, ff_buf)   // r10 = buf
+        // xor r11, r11 (length = 0): 4D 31 DB
+        emit_byte(0x4D); emit_byte(0x31); emit_byte(0xDB)
+
+        // Move val into rax, then load into xmm0
+        ir_emit_mov_r64_r64(0, ff_val)   // rax = val (IEEE bits)
+        // movq xmm0, rax: 66 48 0F 6E C0
+        emit_byte(0x66); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x6E); emit_byte(0xC0)
+
+        // Sign check: test rax, rax; jns .ff_pos
+        emit_byte(0x48); emit_byte(0x85); emit_byte(0xC0)
+        emit_byte(0x79)  // jns rel8
+        uint64 ff_jns_patch = out_len
+        emit_byte(0)
+
+        // Negative: write '-', negate xmm0
+        // mov byte [r10], 0x2D ('-')
+        emit_byte(0x41); emit_byte(0xC6); emit_byte(0x02); emit_byte(0x2D)
+        // inc r10: 49 FF C2
+        emit_byte(0x49); emit_byte(0xFF); emit_byte(0xC2)
+        // inc r11: 49 FF C3
+        emit_byte(0x49); emit_byte(0xFF); emit_byte(0xC3)
+        // Negate xmm0 via push sign-mask trick
+        // push sign mask = 0x8000000000000000
+        // mov rax, 0x8000000000000000; push rax
+        emit_byte(0x48); emit_byte(0xB8)
+        // 0x8000000000000000 little-endian:
+        emit_byte(0x00); emit_byte(0x00); emit_byte(0x00); emit_byte(0x00)
+        emit_byte(0x00); emit_byte(0x00); emit_byte(0x00); emit_byte(0x80)
+        emit_byte(0x50)  // push rax
+        // movq xmm1, [rsp]: F3 0F 7E 0C 24
+        emit_byte(0xF3); emit_byte(0x0F); emit_byte(0x7E); emit_byte(0x0C); emit_byte(0x24)
+        // pop rax: 58
+        emit_byte(0x58)
+        // xorpd xmm0, xmm1: 66 0F 57 C1
+        emit_byte(0x66); emit_byte(0x0F); emit_byte(0x57); emit_byte(0xC1)
+
+        // .ff_pos:
+        uint64 ff_pos = out_len
+        uint8 ff_jns_disp = ff_pos - ff_jns_patch - 1
+        uint64 ff_jns_p = out_buf + ff_jns_patch
+        unsafe { *(ff_jns_p as uint8) = ff_jns_disp }
+
+        // Check big: load 1e18 = 0x43ABC16D674EC800 into xmm1 via push/pop
+        emit_byte(0x48); emit_byte(0xB8)
+        // 1e18 LE bytes: 00 C8 4E 67 6D C1 AB 43
+        emit_byte(0x00); emit_byte(0xC8); emit_byte(0x4E); emit_byte(0x67)
+        emit_byte(0x6D); emit_byte(0xC1); emit_byte(0xAB); emit_byte(0x43)
+        emit_byte(0x50)  // push rax
+        // movq xmm1, [rsp]
+        emit_byte(0xF3); emit_byte(0x0F); emit_byte(0x7E); emit_byte(0x0C); emit_byte(0x24)
+        emit_byte(0x58)  // pop rax
+        // ucomisd xmm0, xmm1: 66 0F 2E C1
+        emit_byte(0x66); emit_byte(0x0F); emit_byte(0x2E); emit_byte(0xC1)
+        // jae .ff_big (unsigned above-or-equal = >= 1e18 or NaN) — rel32 to reach far target
+        emit_byte(0x0F); emit_byte(0x83)  // jae rel32
+        uint64 ff_jae_patch = out_len
+        emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)  // 4-byte placeholder
+
+        // Integer part: cvttsd2si rax, xmm0: F2 48 0F 2C C0
+        emit_byte(0xF2); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x2C); emit_byte(0xC0)
+        // rax = int_part. Save int_part in rcx.
+        // mov rcx, rax: 48 89 C1
+        emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
+
+        // Save xmm0 (abs val) and int_part to stack for later fraction use
+        // Push xmm0 bits: movq rax, xmm0; push rax
+        emit_byte(0x66); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x7E); emit_byte(0xC0)
+        emit_byte(0x50)  // push rax (abs val bits)
+
+        // Format int_part (in rcx) into r10 using divide-by-10 loop
+        // rdi = r10 (current write pos); rax = int_part
+        ir_emit_mov_r64_r64(7, 10)   // rdi = r10
+        ir_emit_mov_r64_r64(0, 1)    // rax = rcx (int_part)
+
+        // Inline fmt_uint: same as IR_FMT_UINT but stores result in r10+len
+        // xor rcx, rcx (digit count)
+        emit_byte(0x48); emit_byte(0x31); emit_byte(0xC9)
+        // mov r9, 10 (divisor) [use r9 as divisor since r10 is buf]
+        ir_emit_mov_r64_imm64(9, 10)
+        // Handle zero case: test rax, rax; jnz .ff_nonzero
+        emit_byte(0x48); emit_byte(0x85); emit_byte(0xC0)
+        emit_byte(0x75)  // jnz rel8
+        uint64 ff_fnz_patch = out_len
+        emit_byte(0)
+        // zero: write '0', inc rdi (to account for 1 digit written), jmp .ff_ui_done
+        emit_byte(0xC6); emit_byte(0x07); emit_byte(0x30)   // mov byte [rdi], '0'
+        emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC7)   // inc rdi
+        emit_byte(0xEB)  // jmp .ff_ui_done
+        uint64 ff_fuiz_patch = out_len
+        emit_byte(0)
+
+        // .ff_nonzero:
+        uint64 ff_fnz = out_len
+        uint8 ff_fnz_disp = ff_fnz - ff_fnz_patch - 1
+        uint64 ff_fnz_p = out_buf + ff_fnz_patch
+        unsafe { *(ff_fnz_p as uint8) = ff_fnz_disp }
+
+        // digit_loop: xor rdx, rdx; div r9
+        uint64 ff_ui_loop = out_len
+        emit_byte(0x48); emit_byte(0x31); emit_byte(0xD2)
+        emit_byte(0x49); emit_byte(0xF7); emit_byte(0xF1)   // div r9
+        // add dl, '0'
+        emit_byte(0x80); emit_byte(0xC2); emit_byte(0x30)
+        // push rdx
+        emit_byte(0x52)
+        // inc rcx
+        emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC1)
+        // test rax, rax
+        emit_byte(0x48); emit_byte(0x85); emit_byte(0xC0)
+        // jnz digit_loop
+        emit_byte(0x75)
+        uint64 ff_ui_jnz = out_len
+        uint8 ff_ui_disp = ff_ui_loop - ff_ui_jnz - 1
+        uint64 ff_ui_jnz_p = out_buf + ff_ui_jnz
+        emit_byte(0)
+        unsafe { *(ff_ui_jnz_p as uint8) = ff_ui_disp }
+        // pop digits in order: inc rdi; pop digit; dec rdi; store
+        // Actually: we pushed digits LSB first, so pop MSB first → correct order
+        // pop_loop: pop rdx; mov [rdi], dl; inc rdi; dec rcx; jnz pop_loop
+        uint64 ff_pop_loop = out_len
+        emit_byte(0x5A)  // pop rdx
+        emit_byte(0x88); emit_byte(0x17)   // mov [rdi], dl
+        emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC7)   // inc rdi
+        emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC9)   // dec rcx
+        emit_byte(0x75)  // jnz pop_loop
+        uint64 ff_pop_jnz = out_len
+        uint8 ff_pop_disp = ff_pop_loop - ff_pop_jnz - 1
+        uint64 ff_pop_p = out_buf + ff_pop_jnz
+        emit_byte(0)
+        unsafe { *(ff_pop_p as uint8) = ff_pop_disp }
+
+        // .ff_ui_done:
+        uint64 ff_ui_done = out_len
+        uint8 ff_fuiz_disp = ff_ui_done - ff_fuiz_patch - 1
+        uint64 ff_fuiz_p = out_buf + ff_fuiz_patch
+        unsafe { *(ff_fuiz_p as uint8) = ff_fuiz_disp }
+
+        // rdi now points past integer digits; rcx = digit count
+        // Update r10 and r11: r10 = rdi; r11 += rcx from int_len + 1 (for dot)
+        // Actually: rdi - r10 = int_len (number of integer digits written)
+        // r11 += rdi - old_r10; but we started rdi=old_r10 for int fmt
+        // So int_len = rdi - old_r10
+        // Save int_len as rcx (already have digit count in rcx for non-zero case)
+        // Wait: for zero case, rcx=1 (but we jumped to ff_ui_done)
+        // For non-zero: rcx=0 after pop_loop... no, after pop_loop rcx IS 0.
+        // So we need int_len = new_rdi - old_rdi_start
+        // Let's compute: sub rdi, r10; mov rcx, rdi; add r10, rcx; add r11, rcx
+        // Wait: sub rdi, r10 = int_len (rdi moved forward by int_len)
+        // Then: r10 = r10 + int_len = rdi; r11 = r11 + int_len
+        // 49 29 FF (sub r15... no)
+        // rdi - r10 = int_len; but we modified r11 based on start position
+        // Let me recompute: rdi was set to r10 (old write pointer)
+        // After fmt_uint, rdi = buf_start + int_len
+        // r10 (old buf start for int fmt) = r10 (which we set from ir_resolve_src)
+        // But r10 might have changed in the meantime... Actually we set r10 = ff_buf at start
+        // and haven't changed it since. So r10 = buf_start.
+        // int_len = rdi - r10
+        // sub rdi, r10: 4C 29 D7 (REX.R=1 for r10=10, sub rdi,r10... let me think)
+        // rdi=7, r10=10. sub rdi, r10: REX = 0x4C (REX.W=1, REX.R=1 for r10), 0x29, ModRM
+        // ModRM for /r form: reg=r10 (10→001, extended by REX.R), r/m=rdi (7)
+        // ModRM = 11 001 111 = 0xCF
+        // Actually: SUB r/m64, r64 = 0x29 /r. Destination is rdi (r/m), source is r10 (reg).
+        // REX.W + REX.R (for r10 being reg): 0x4C 0x29 0xCF? Let me check:
+        // REX.W=1(bit3), REX.R=1(bit2 for reg extension), REX.B=0: REX = 0100 1100 = 0x4C
+        // ModRM: mod=11, reg=r10&7=2, rm=rdi&7=7: 11 010 111 = 0xD7
+        // So: 4C 29 D7 = sub rdi, r10. But wait, this overwrites rdi!
+        // After this: rdi = int_len (we want this as rcx for updating r11)
+        // mov rcx, rdi; add r11, rcx; add r10, rcx
+        // Or: use separate approach
+        // Let's save r10_start in r8 first
+        // Hmm, this is getting messy. Let me simplify: use rdx for int_len
+
+        // Rewrite approach: save old r10 in r8 before the fmt_uint section
+        // ... This was already done when we set rdi=r10. So rdi at start of fmt = r10.
+        // After fmt, rdi = r10 + int_len.
+        // int_len = rdi - r10 = new_rdi - r10
+        // But we've been using r10 as the "current write pointer" which we haven't updated yet.
+        // After fmt_uint section, rdi points to buf + sign + int_len.
+        // int_len = rdi - ff_buf - sign_offset. Complex.
+        // Simplest: just update r10 = rdi after fmt, compute int_len = rcx for zero case,
+        // or use rdi-r10 for non-zero.
+
+        // Since we're writing, let's track: r10 was set to ff_buf at start (before sign).
+        // After sign char write: r10 += sign_inc.
+        // Then we set rdi = r10. After fmt_uint: rdi = r10 + int_len.
+        // r11 = sign_offset. We need to add int_len to r11.
+        // int_len = rdi - r10 = new_rdi - r10.
+        // 4C 29 D7: sub rdi, r10 → rdi = int_len
+        emit_byte(0x4C); emit_byte(0x29); emit_byte(0xD7)
+        // Now rdi = int_len.
+        // r11 += rdi: add r11, rdi = 49 01 FB (REX.B=1 for r11 as r/m, REX.R=0 for rdi)
+        emit_byte(0x49); emit_byte(0x01); emit_byte(0xFB)
+        // Restore rdi: add rdi, r10 → rdi = r10 + int_len (new write ptr)
+        emit_byte(0x4C); emit_byte(0x01); emit_byte(0xD7)
+        // r10 = rdi: mov r10, rdi = 49 89 FA
+        emit_byte(0x49); emit_byte(0x89); emit_byte(0xFA)
+
+        // Write '.': mov byte [r10], '.'  (0x2E); inc r10; inc r11
+        emit_byte(0x41); emit_byte(0xC6); emit_byte(0x02); emit_byte(0x2E)
+        emit_byte(0x49); emit_byte(0xFF); emit_byte(0xC2)   // inc r10
+        emit_byte(0x49); emit_byte(0xFF); emit_byte(0xC3)   // inc r11
+
+        // Restore xmm0 (abs val): pop rax; movq xmm0, rax
+        emit_byte(0x58)  // pop rax (abs val that we pushed earlier)
+        emit_byte(0x66); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x6E); emit_byte(0xC0)
+
+        // cvttsd2si rax, xmm0 (integer part again, to reconstruct int_f)
+        emit_byte(0xF2); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x2C); emit_byte(0xC0)
+        // cvtsi2sd xmm1, rax (int_f): F2 48 0F 2A C8 (rax→xmm1)
+        emit_byte(0xF2); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x2A); emit_byte(0xC8)
+        // subsd xmm0, xmm1 (frac = abs_val - int_f): F2 0F 5C C1
+        emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x5C); emit_byte(0xC1)
+
+        // Multiply by 1e6: load 1e6 = 0x412E848000000000 into xmm1 via push
+        emit_byte(0x48); emit_byte(0xB8)
+        // 1e6 LE bytes: 00 00 00 00 80 84 2E 41
+        emit_byte(0x00); emit_byte(0x00); emit_byte(0x00); emit_byte(0x00)
+        emit_byte(0x80); emit_byte(0x84); emit_byte(0x2E); emit_byte(0x41)
+        emit_byte(0x50)  // push rax
+        emit_byte(0xF3); emit_byte(0x0F); emit_byte(0x7E); emit_byte(0x0C); emit_byte(0x24)  // movq xmm1, [rsp]
+        emit_byte(0x58)  // pop rax
+        // mulsd xmm0, xmm1: F2 0F 59 C1
+        emit_byte(0xF2); emit_byte(0x0F); emit_byte(0x59); emit_byte(0xC1)
+
+        // cvttsd2si rax, xmm0 (frac_int): F2 48 0F 2C C0
+        emit_byte(0xF2); emit_byte(0x48); emit_byte(0x0F); emit_byte(0x2C); emit_byte(0xC0)
+        // rax = frac_int (0..999999)
+
+        // Count digits of frac_int to determine zero-padding needed
+        // We want: digits = number of decimal digits in rax
+        // Then pad = max(0, 6 - digits)
+        // For frac_int=0: digits=1 (special case), pad=5
+        // Strategy: use r8 as digit count, rax for working value, rcx saves frac_int
+        // Save frac_int in rcx (reg #1)
+        emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)   // mov rcx, rax (frac_int)
+        // xor r8, r8 (digit count = 0): 4D 31 C0
+        emit_byte(0x4D); emit_byte(0x31); emit_byte(0xC0)
+        // test rax, rax; jz .ff_frac_zero
+        emit_byte(0x48); emit_byte(0x85); emit_byte(0xC0)
+        emit_byte(0x74)  // jz rel8
+        uint64 ff_fz_patch = out_len
+        emit_byte(0)
+        // digit count loop: rax already holds frac_int; r9 = 10 (set earlier, still valid)
+        // (r9 was set before integer formatting; reset it here to be safe)
+        ir_emit_mov_r64_imm64(9, 10)   // r9 = 10
+        uint64 ff_cnt_loop = out_len
+        emit_byte(0x48); emit_byte(0x31); emit_byte(0xD2)  // xor rdx, rdx (clear for div)
+        emit_byte(0x49); emit_byte(0xF7); emit_byte(0xF1)  // div r9 (rax=quot, rdx=rem)
+        // inc r8 (digit count): 49 FF C0
+        emit_byte(0x49); emit_byte(0xFF); emit_byte(0xC0)
+        emit_byte(0x48); emit_byte(0x85); emit_byte(0xC0)  // test rax, rax
+        emit_byte(0x75)  // jnz cnt_loop
+        uint64 ff_cnt_jnz = out_len
+        uint8 ff_cnt_disp = ff_cnt_loop - ff_cnt_jnz - 1
+        uint64 ff_cnt_p = out_buf + ff_cnt_jnz
+        emit_byte(0)
+        unsafe { *(ff_cnt_p as uint8) = ff_cnt_disp }
+        // r8 = digit count of frac_int
+        emit_byte(0xEB)  // jmp .ff_have_digits
+        uint64 ff_hd_patch = out_len
+        emit_byte(0)
+
+        // .ff_frac_zero: r8 = 1 (frac_int=0 still has 1 "digit")
+        uint64 ff_fz = out_len
+        uint8 ff_fz_disp = ff_fz - ff_fz_patch - 1
+        uint64 ff_fz_p = out_buf + ff_fz_patch
+        unsafe { *(ff_fz_p as uint8) = ff_fz_disp }
+        // mov r8, 1: 49 C7 C0 01 00 00 00
+        emit_byte(0x49); emit_byte(0xC7); emit_byte(0xC0); emit_byte(0x01); emit_byte(0x00); emit_byte(0x00); emit_byte(0x00)
+
+        // .ff_have_digits:
+        uint64 ff_hd = out_len
+        uint8 ff_hd_disp = ff_hd - ff_hd_patch - 1
+        uint64 ff_hd_p = out_buf + ff_hd_patch
+        unsafe { *(ff_hd_p as uint8) = ff_hd_disp }
+
+        // r8 = digit count. pad = 6 - r8 (if r8 < 6, else 0)
+        // mov rax, 6; sub rax, r8
+        emit_byte(0x48); emit_byte(0xC7); emit_byte(0xC0); emit_byte(0x06); emit_byte(0x00); emit_byte(0x00); emit_byte(0x00)
+        // sub rax, r8: SUB r/m64, r64 = 0x29 /r; r8=reg(8&7=0,REX.R=1), rax=r/m(0,REX.B=0)
+        // REX: W=1, R=1, X=0, B=0 = 0x4C; ModRM: mod=11, reg=r8&7=0, rm=rax&7=0 = 0xC0
+        emit_byte(0x4C); emit_byte(0x29); emit_byte(0xC0)  // sub rax, r8
+        // if rax < 0, set to 0 (cmp rax, 0; cmovl to 0)
+        // Simpler: test rax, rax; jns have_pad; xor rax, rax
+        emit_byte(0x48); emit_byte(0x85); emit_byte(0xC0)
+        emit_byte(0x79)  // jns rel8
+        uint64 ff_pns_patch = out_len
+        emit_byte(0)
+        emit_byte(0x48); emit_byte(0x31); emit_byte(0xC0)  // xor rax, rax
+        uint64 ff_pns = out_len
+        uint8 ff_pns_disp = ff_pns - ff_pns_patch - 1
+        uint64 ff_pns_p = out_buf + ff_pns_patch
+        unsafe { *(ff_pns_p as uint8) = ff_pns_disp }
+
+        // rax = pad. Write pad zeros to [r10]:
+        // test rax, rax; jz .ff_no_pad
+        emit_byte(0x48); emit_byte(0x85); emit_byte(0xC0)
+        emit_byte(0x74)  // jz rel8
+        uint64 ff_np_patch = out_len
+        emit_byte(0)
+        // pad_loop: mov byte [r10], '0'; inc r10; inc r11; dec rax; jnz pad_loop
+        uint64 ff_pad_loop = out_len
+        emit_byte(0x41); emit_byte(0xC6); emit_byte(0x02); emit_byte(0x30)  // mov byte [r10], '0'
+        emit_byte(0x49); emit_byte(0xFF); emit_byte(0xC2)   // inc r10
+        emit_byte(0x49); emit_byte(0xFF); emit_byte(0xC3)   // inc r11
+        emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC8)   // dec rax
+        emit_byte(0x75)  // jnz pad_loop
+        uint64 ff_pad_jnz = out_len
+        uint8 ff_pad_disp = ff_pad_loop - ff_pad_jnz - 1
+        uint64 ff_pad_p = out_buf + ff_pad_jnz
+        emit_byte(0)
+        unsafe { *(ff_pad_p as uint8) = ff_pad_disp }
+
+        // .ff_no_pad:
+        uint64 ff_np = out_len
+        uint8 ff_np_disp = ff_np - ff_np_patch - 1
+        uint64 ff_np_p = out_buf + ff_np_patch
+        unsafe { *(ff_np_p as uint8) = ff_np_disp }
+
+        // Now format frac_int (still in rcx) via divide-by-10 loop into [r10]
+        ir_emit_mov_r64_r64(7, 10)   // rdi = r10
+        ir_emit_mov_r64_r64(0, 1)    // rax = rcx (frac_int)
+        // Handle zero: test rax, rax; jnz .ff_fi_nonzero
+        emit_byte(0x48); emit_byte(0x85); emit_byte(0xC0)
+        emit_byte(0x75)  // jnz rel8
+        uint64 ff_finz_patch = out_len
+        emit_byte(0)
+        // zero: mov byte [rdi], '0'; inc rdi; jmp .ff_fi_done
+        emit_byte(0xC6); emit_byte(0x07); emit_byte(0x30)
+        emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC7)
+        emit_byte(0xEB)
+        uint64 ff_fiz_patch = out_len
+        emit_byte(0)
+
+        // .ff_fi_nonzero:
+        uint64 ff_finz = out_len
+        uint8 ff_finz_disp = ff_finz - ff_finz_patch - 1
+        uint64 ff_finz_p = out_buf + ff_finz_patch
+        unsafe { *(ff_finz_p as uint8) = ff_finz_disp }
+
+        // xor rcx2, rcx2 (digit count for frac)
+        emit_byte(0x48); emit_byte(0x31); emit_byte(0xC9)
+        ir_emit_mov_r64_imm64(9, 10)   // r9 = 10
+        uint64 ff_fi_loop = out_len
+        emit_byte(0x48); emit_byte(0x31); emit_byte(0xD2)
+        emit_byte(0x49); emit_byte(0xF7); emit_byte(0xF1)   // div r9
+        emit_byte(0x80); emit_byte(0xC2); emit_byte(0x30)   // add dl, '0'
+        emit_byte(0x52)  // push rdx
+        emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC1)   // inc rcx
+        emit_byte(0x48); emit_byte(0x85); emit_byte(0xC0)   // test rax, rax
+        emit_byte(0x75)  // jnz ff_fi_loop
+        uint64 ff_fi_jnz = out_len
+        uint8 ff_fi_jnz_disp = ff_fi_loop - ff_fi_jnz - 1
+        uint64 ff_fi_jnz_p = out_buf + ff_fi_jnz
+        emit_byte(0)
+        unsafe { *(ff_fi_jnz_p as uint8) = ff_fi_jnz_disp }
+
+        // pop and write digits
+        uint64 ff_fi_pop_loop = out_len
+        emit_byte(0x5A)  // pop rdx
+        emit_byte(0x88); emit_byte(0x17)   // mov [rdi], dl
+        emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC7)   // inc rdi
+        emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC9)   // dec rcx
+        emit_byte(0x75)  // jnz pop
+        uint64 ff_fi_pop_jnz = out_len
+        uint8 ff_fi_pop_disp = ff_fi_pop_loop - ff_fi_pop_jnz - 1
+        uint64 ff_fi_pop_p = out_buf + ff_fi_pop_jnz
+        emit_byte(0)
+        unsafe { *(ff_fi_pop_p as uint8) = ff_fi_pop_disp }
+
+        // .ff_fi_done:
+        uint64 ff_fi_done = out_len
+        uint8 ff_fiz_disp = ff_fi_done - ff_fiz_patch - 1
+        uint64 ff_fiz_p = out_buf + ff_fiz_patch
+        unsafe { *(ff_fiz_p as uint8) = ff_fiz_disp }
+
+        // Update r11 with frac digits: frac_len = rdi - r10
+        emit_byte(0x4C); emit_byte(0x29); emit_byte(0xD7)  // sub rdi, r10
+        emit_byte(0x49); emit_byte(0x01); emit_byte(0xFB)  // add r11, rdi (REX.B=1 for r11)
+        // Update r10 = old_r10 + frac_len = original write ptr no longer needed
+
+        // Final length: r11 holds total length
+        // mov rax, r11: 4C 89 D8
+        emit_byte(0x4C); emit_byte(0x89); emit_byte(0xD8)
+
+        // Jump over big/error path (if we reach here normally):
+        emit_byte(0xEB)
+        uint64 ff_end_patch = out_len
+        emit_byte(0)
+
+        // .ff_big: write "big"
+        uint64 ff_big = out_len
+        // Patch jae rel32: 4-byte displacement from end of instruction
+        uint64 ff_jae_disp32 = ff_big - ff_jae_patch - 4
+        uint64 ff_jae_p = out_buf + ff_jae_patch
+        uint8 ff_jae_b0 = ff_jae_disp32
+        uint64 ff_jae_p1 = out_buf + ff_jae_patch + 1
+        uint8 ff_jae_b1 = ff_jae_disp32 / 256
+        uint64 ff_jae_p2 = out_buf + ff_jae_patch + 2
+        uint8 ff_jae_b2 = ff_jae_disp32 / 65536
+        uint64 ff_jae_p3 = out_buf + ff_jae_patch + 3
+        uint8 ff_jae_b3 = ff_jae_disp32 / 16777216
+        unsafe { *(ff_jae_p as uint8) = ff_jae_b0 }
+        unsafe { *(ff_jae_p1 as uint8) = ff_jae_b1 }
+        unsafe { *(ff_jae_p2 as uint8) = ff_jae_b2 }
+        unsafe { *(ff_jae_p3 as uint8) = ff_jae_b3 }
+
+        // mov byte [r10], 'b' (0x62)
+        emit_byte(0x41); emit_byte(0xC6); emit_byte(0x02); emit_byte(0x62)
+        // mov byte [r10+1], 'i' (0x69)
+        emit_byte(0x41); emit_byte(0xC6); emit_byte(0x42); emit_byte(0x01); emit_byte(0x69)
+        // mov byte [r10+2], 'g' (0x67)
+        emit_byte(0x41); emit_byte(0xC6); emit_byte(0x42); emit_byte(0x02); emit_byte(0x67)
+        // r11 += 3: add r11, 3 (49 83 C3 03)
+        emit_byte(0x49); emit_byte(0x83); emit_byte(0xC3); emit_byte(0x03)
+        // mov rax, r11
+        emit_byte(0x4C); emit_byte(0x89); emit_byte(0xD8)
+
+        // .ff_end:
+        uint64 ff_end = out_len
+        uint8 ff_end_disp = ff_end - ff_end_patch - 1
+        uint64 ff_end_p = out_buf + ff_end_patch
+        unsafe { *(ff_end_p as uint8) = ff_end_disp }
+
+        // rax = total length
         if dst_r != 0xFFFFFFFF {
             ir_emit_mov_r64_r64(dst_r, 0)
         } else {

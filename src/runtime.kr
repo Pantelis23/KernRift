@@ -25,3 +25,114 @@ fn fmt_uint(uint64 buf, uint64 val) -> uint64 {
     }
     return len
 }
+
+// Write "true" or "false" to buf, return byte length.
+@export
+fn fmt_bool(uint64 buf, uint64 val) -> uint64 {
+    if val != 0 {
+        uint8 t = 116
+        uint8 r = 114
+        uint8 u = 117
+        uint8 e = 101
+        uint64 p0 = buf
+        unsafe { *(p0 as uint8) = t }
+        uint64 p1 = buf + 1
+        unsafe { *(p1 as uint8) = r }
+        uint64 p2 = buf + 2
+        unsafe { *(p2 as uint8) = u }
+        uint64 p3 = buf + 3
+        unsafe { *(p3 as uint8) = e }
+        return 4
+    }
+    uint8 f = 102
+    uint8 a = 97
+    uint8 l = 108
+    uint8 s = 115
+    uint8 e = 101
+    uint64 p0 = buf
+    unsafe { *(p0 as uint8) = f }
+    uint64 p1 = buf + 1
+    unsafe { *(p1 as uint8) = a }
+    uint64 p2 = buf + 2
+    unsafe { *(p2 as uint8) = l }
+    uint64 p3 = buf + 3
+    unsafe { *(p3 as uint8) = s }
+    uint64 p4 = buf + 4
+    unsafe { *(p4 as uint8) = e }
+    return 5
+}
+
+// Format an f64 as "[sign][int].[6 frac]" into buf, return byte length.
+// Special cases: |x| >= 1e18 -> "big", negative zero handled via sign check.
+@export
+fn fmt_f64(uint64 buf, f64 val) -> uint64 {
+    uint64 len = 0
+
+    // Check sign by comparing val < 0.0
+    f64 zero_f = 0.0
+    if val < zero_f {
+        uint8 m = 45
+        uint64 ps = buf
+        unsafe { *(ps as uint8) = m }
+        len = 1
+        val = zero_f - val
+    }
+
+    // Check for very large values
+    f64 big = 1000000000000000000.0
+    if val >= big {
+        uint8 b = 98
+        uint8 i = 105
+        uint8 g = 103
+        uint64 pb = buf + len
+        unsafe { *(pb as uint8) = b }
+        uint64 pi = buf + len + 1
+        unsafe { *(pi as uint8) = i }
+        uint64 pg = buf + len + 2
+        unsafe { *(pg as uint8) = g }
+        return len + 3
+    }
+
+    // Integer part: truncate via f64_to_int
+    uint64 int_part = f64_to_int(val)
+    f64 int_f = int_to_f64(int_part)
+    f64 frac = val - int_f
+    uint64 int_len = fmt_uint(buf + len, int_part)
+    len = len + int_len
+
+    // Decimal point
+    uint8 dot = 46
+    uint64 pd = buf + len
+    unsafe { *(pd as uint8) = dot }
+    len = len + 1
+
+    // 6 fractional digits
+    f64 scale = 1000000.0
+    f64 frac_scaled = frac * scale
+    uint64 frac_int = f64_to_int(frac_scaled)
+
+    // Count digits in frac_int to determine padding needed
+    uint64 digits = 0
+    uint64 tmp_c = frac_int
+    if tmp_c == 0 {
+        digits = 1
+    }
+    while tmp_c > 0 {
+        digits = digits + 1
+        tmp_c = tmp_c / 10
+    }
+    uint64 pad = 0
+    if digits < 6 {
+        pad = 6 - digits
+    }
+    uint64 pi2 = 0
+    while pi2 < pad {
+        uint8 zero = 48
+        uint64 pp = buf + len + pi2
+        unsafe { *(pp as uint8) = zero }
+        pi2 = pi2 + 1
+    }
+    uint64 fl = fmt_uint(buf + len + pad, frac_int)
+    len = len + pad + fl
+    return len
+}

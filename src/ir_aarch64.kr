@@ -1864,6 +1864,211 @@ fn ir_emit_arm64_insn(uint64 ii) {
         if dst_r == 0xFFFFFFFF { ir_a64_emit_store_spill(9, dest_v) }
         return
     }
+
+    // ----- IR_FMT_BOOL (124): format bool as "true"/"false" -----
+    // src1=buf, src2=val, dest=length
+    if op == 124 {
+        uint64 fb_buf = ir_a64_resolve_src(s1_v, 9)
+        uint64 fb_val = ir_a64_resolve_src(s2_v, 10)
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        // x13 = buf write ptr, x14 = val
+        emit_a64_mov(13, fb_buf)
+        emit_a64_mov(14, fb_val)
+        // CBZ x14, false_path (5 true_path insns=20 bytes; false_path at CBZ_PC+24)
+        emit_a64_cbz(14, 24)
+        // true_path: store 'true' (0x65757274 LE) as 32-bit, then len=4, branch done
+        emit_a64_mov_imm(11, 0x65757274)   // 2 insns: MOVZ+MOVK
+        emit_a64_str32(11, 13, 0)          // STR W11, [X13]
+        emit_a64_mov_imm(d, 4)             // len = 4 (1 insn)
+        emit_a64_b(28)                     // B done (6 false_path insns=24 bytes; done at B_PC+28)
+        // false_path: store 'fals' (0x736C6166 LE) then 'e' (0x65), len=5
+        emit_a64_mov_imm(11, 0x736C6166)   // 2 insns: MOVZ+MOVK
+        emit_a64_str32(11, 13, 0)          // STR W11, [X13]
+        emit_a64_mov_imm(11, 0x65)         // 'e' = 101 (1 insn)
+        emit_a64_strb(11, 13, 4)           // STRB W11, [X13, #4]
+        emit_a64_mov_imm(d, 5)             // len = 5 (1 insn)
+        // done:
+        if dst_r == 0xFFFFFFFF { ir_a64_emit_store_spill(9, dest_v) }
+        return
+    }
+
+    // ----- IR_FMT_F64 (125): format f64 as "[sign][int].[6frac]" -----
+    // src1=buf, src2=f64-bits, dest=length
+    // Registers: x9=buf_ptr, x10=len, x11=temp/int_part, x12=digit_scratch,
+    //            x13=divisor10, x14=digit_count/pad, x15=saved_count
+    // Float: d0=working_val, d1=constant, d2=saved abs_val
+    if op == 125 {
+        uint64 ff_buf  = ir_a64_resolve_src(s1_v, 9)
+        uint64 ff_val  = ir_a64_resolve_src(s2_v, 10)
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+
+        // Set x9 = buf (safe, ff_val might be in x10 — do NOT set x10 yet)
+        emit_a64_mov(9, ff_buf)
+
+        // Load f64 bits into d0: fmov d0, ff_val (before possibly clobbering ff_val)
+        emit_a64(0x9E670000 | (ff_val << 5) | 0)   // fmov d0, ff_val
+
+        // Extract bits back to x11 for sign check: fmov x11, d0
+        emit_a64(0x9E660000 | (0 << 5) | 11)        // fmov x11, d0
+
+        // Now safe to set x10 = len = 0 (ff_val bits are in x11 and d0)
+        emit_a64_mov_imm(10, 0)
+
+        // Sign check via bit 63 of x11: TST x11, sign_mask
+        // Load sign mask 0x8000000000000000 into x13 (2 insns: MOVZ+MOVK)
+        emit_a64_mov_imm(13, 0x8000000000000000)    // 2 insns; x13 reused as divisor10 later
+        // ANDS XZR, x11, x13 — sets flags; ZR==1 means non-negative
+        emit_a64(0xEA000000 | (13 << 16) | (11 << 5) | 31)  // TST x11, x13
+        // B.EQ .ff_pos (cond=0=EQ, non-negative → skip neg path)
+        // neg path = FNEG(1)+mov_imm_minus(1)+strb(1)+add9(1)+add10(1) = 5 insns=20 bytes
+        // .ff_pos is at B_PC + 4 + 20 = B_PC + 24
+        emit_a64_bcond(0, 24)                       // B.EQ .ff_pos
+        // Negative: negate d0, write '-', update x9 and x10
+        emit_a64(0x1E614000)                        // FNEG d0, d0
+        emit_a64_mov_imm(11, 0x2D)                  // '-' = 45 (1 insn)
+        emit_a64_strb(11, 9, 0)                     // STRB W11, [X9]
+        emit_a64_add_imm(9, 9, 1)                   // x9++
+        emit_a64_add_imm(10, 10, 1)                 // x10++
+        // .ff_pos: check for big value
+        // Load 1e18 = 0x4DE0B6B3A7640000 into x11, fmov d1, x11 (4+1=5 insns)
+        emit_a64_mov_imm(11, 0x43ABC16D674EC800)    // 1e18 IEEE bits; 4 insns
+        emit_a64(0x9E670000 | (11 << 5) | 1)        // fmov d1, x11
+        // FCMP d0, d1
+        emit_a64(0x1E602000 | (1 << 16) | (0 << 5)) // fcmp d0, d1
+        // B.HS .ff_big (cond=2=HS=C set): val>=1e18 or NaN → big. PATCH LATER.
+        emit_a64_bcond(2, 0)                        // placeholder; patched below
+        uint64 ff_bhs_off = out_len - 4
+
+        // .ff_normal path starts here
+        // Integer part: FCVTZS x11, d0 (truncate to int)
+        emit_a64(0x9E780000 | (0 << 5) | 11)        // fcvtzs x11, d0
+        // Save abs_val in d2: FMOV d2, d0 (1E604002)
+        emit_a64(0x1E604000 | (0 << 5) | 2)         // fmov d2, d0
+
+        // Setup integer formatting: x12=digit_scratch, x13=10, x14=0
+        emit_a64_mov_imm(12, ir_a64_scratch_off)
+        ir_a64_add_sp_reg(12, 12)
+        emit_a64_mov_imm(13, 10)
+        emit_a64_mov_imm(14, 0)
+
+        // Digit extraction loop: divide by 10, store remainder+0x30 at [x12+x14]
+        uint64 ff_uint_loop = out_len
+        emit_a64_udiv(4, 11, 13)                    // x4 = x11 / 10
+        emit_a64_msub(5, 4, 13, 11)                 // x5 = x11 - x4*10 (digit)
+        emit_a64_add_imm(5, 5, 48)                  // x5 += '0'
+        // STRB W5, [X12, X14] — register offset (unscaled)
+        emit_a64(0x38206800 | (14 << 16) | (12 << 5) | 5)
+        emit_a64_add_imm(14, 14, 1)
+        emit_a64_mov(11, 4)
+        uint64 ff_uint_back = ff_uint_loop - out_len
+        emit_a64(0xB5000000 | (((ff_uint_back / 4) & 0x7FFFF) << 5) | 11)  // CBNZ x11, loop
+
+        // Reverse copy to [x9]: x15 = digit count
+        emit_a64_mov(15, 14)
+        uint64 ff_copy_loop = out_len
+        emit_a64_cbz(14, 20)                        // CBZ x14, copy_done (5 insns=20 bytes)
+        emit_a64(0xD1000400 | (14 << 5) | 14)       // SUB x14, x14, #1
+        emit_a64(0x38606800 | (14 << 16) | (12 << 5) | 5)  // LDRB W5, [X12, X14]
+        emit_a64(0x38001525)                        // STRB W5, [X9], #1 (post-index x9)
+        uint64 ff_copy_back = ff_copy_loop - out_len
+        emit_a64(0x14000000 | ((ff_copy_back / 4) & 0x3FFFFFF))  // B copy_loop
+        // copy_done:
+        emit_a64_add(10, 10, 15)                    // x10 += int_len (x15)
+
+        // Write '.' at [x9], then x9++, x10++
+        emit_a64_mov_imm(11, 0x2E)
+        emit_a64_strb(11, 9, 0)
+        emit_a64_add_imm(9, 9, 1)
+        emit_a64_add_imm(10, 10, 1)
+
+        // Recompute frac: fcvtzs x11, d2 → scvtf d1, x11 → fsub d0, d2, d1
+        emit_a64(0x9E780000 | (2 << 5) | 11)        // fcvtzs x11, d2
+        emit_a64(0x9E620000 | (11 << 5) | 1)        // scvtf d1, x11
+        emit_a64(0x1E603800 | (1 << 16) | (2 << 5) | 0)  // fsub d0, d2, d1
+
+        // Multiply by 1e6, truncate to int → frac_int in x11
+        emit_a64_mov_imm(11, 0x412E848000000000)    // 1e6 IEEE bits; 4 insns
+        emit_a64(0x9E670000 | (11 << 5) | 1)        // fmov d1, x11
+        emit_a64(0x1E600800 | (1 << 16) | (0 << 5) | 0)  // fmul d0, d0, d1
+        emit_a64(0x9E780000 | (0 << 5) | 11)        // fcvtzs x11, d0  → frac_int
+
+        // Count digits in x11: x4=working, x14=count
+        emit_a64_mov(4, 11)
+        emit_a64_mov_imm(14, 0)
+        emit_a64_cbz(4, 24)                         // CBZ x4, .ff_fz (5 insns+B = 24 bytes to .ff_fz)
+        uint64 ff_cnt_loop = out_len
+        emit_a64_udiv(5, 4, 13)
+        emit_a64_add_imm(14, 14, 1)
+        emit_a64_mov(4, 5)
+        uint64 ff_cnt_back = ff_cnt_loop - out_len
+        emit_a64(0xB5000000 | (((ff_cnt_back / 4) & 0x7FFFF) << 5) | 4)  // CBNZ x4, cnt_loop
+        emit_a64_b(8)                               // B .ff_have_digits (skip .ff_fz = 1 insn = 8 bytes from B)
+        // .ff_fz: frac_int=0 → digit_count=1
+        emit_a64_mov_imm(14, 1)                     // 1 insn
+        // .ff_have_digits: pad = 6 - x14 (always 0..5; no need for neg check since count ∈ 1..6)
+        emit_a64_mov_imm(15, 6)
+        emit_a64_sub(15, 15, 14)                    // x15 = pad
+        // Pad zero loop body = 6 insns (mov_imm+strb+add+add+sub+b_back): CBZ skips 7 insns = 28 bytes
+        uint64 ff_pad_loop = out_len
+        emit_a64_cbz(15, 28)                        // CBZ x15, pad_done (7 insns=28 bytes)
+        emit_a64_mov_imm(11, 0x30)                  // '0' (1 insn)
+        emit_a64_strb(11, 9, 0)
+        emit_a64_add_imm(9, 9, 1)
+        emit_a64_add_imm(10, 10, 1)
+        emit_a64(0xD1000400 | (15 << 5) | 15)       // SUB x15, x15, #1
+        uint64 ff_pad_back = ff_pad_loop - out_len
+        emit_a64(0x14000000 | ((ff_pad_back / 4) & 0x3FFFFFF))  // B pad_loop
+        // pad_done:
+
+        // Format frac_int (x11) into [x9]: digit extract + reverse copy
+        emit_a64_mov_imm(14, 0)
+        uint64 ff_fi_loop = out_len
+        emit_a64_udiv(4, 11, 13)
+        emit_a64_msub(5, 4, 13, 11)
+        emit_a64_add_imm(5, 5, 48)
+        emit_a64(0x38206800 | (14 << 16) | (12 << 5) | 5)
+        emit_a64_add_imm(14, 14, 1)
+        emit_a64_mov(11, 4)
+        uint64 ff_fi_back = ff_fi_loop - out_len
+        emit_a64(0xB5000000 | (((ff_fi_back / 4) & 0x7FFFF) << 5) | 11)  // CBNZ x11, fi_loop
+
+        uint64 ff_fi_copy = out_len
+        emit_a64_cbz(14, 20)                        // CBZ x14, fi_done (5 insns=20 bytes)
+        emit_a64(0xD1000400 | (14 << 5) | 14)       // SUB x14, x14, #1
+        emit_a64(0x38606800 | (14 << 16) | (12 << 5) | 5)  // LDRB W5, [X12, X14]
+        emit_a64(0x38001525)                        // STRB W5, [X9], #1
+        uint64 ff_fi_back2 = ff_fi_copy - out_len
+        emit_a64(0x14000000 | ((ff_fi_back2 / 4) & 0x3FFFFFF))
+        // fi_done: x10 += 6 (pad + frac digits always total 6)
+        emit_a64_add_imm(10, 10, 6)
+
+        // Jump over big path: big path = 7 insns × 4 = 28 bytes, then .ff_end
+        // B at PC, big path at PC+4 (7 insns=28 bytes), ff_end at PC+32
+        emit_a64_b(32)                              // B .ff_end
+
+        // .ff_big: patch B.HS, then write "big", add 3 to len
+        uint64 ff_big = out_len
+        uint64 ff_bhs_disp = ff_big - ff_bhs_off
+        uint64 ff_bhs_p = out_buf + ff_bhs_off
+        uint64 ff_bhs_rel19 = (ff_bhs_disp / 4) & 0x7FFFF
+        uint64 ff_bhs_insn = 0x54000002 | (ff_bhs_rel19 << 5)  // B.HS, cond=2
+        uint32 ff_bhs_insn32 = ff_bhs_insn
+        unsafe { *(ff_bhs_p as uint32) = ff_bhs_insn32 }
+        // Write 'b', 'i', 'g'
+        emit_a64_mov_imm(11, 0x62)
+        emit_a64_strb(11, 9, 0)
+        emit_a64_mov_imm(11, 0x69)
+        emit_a64_strb(11, 9, 1)
+        emit_a64_mov_imm(11, 0x67)
+        emit_a64_strb(11, 9, 2)
+        emit_a64_add_imm(10, 10, 3)
+        // .ff_end:
+        emit_a64_mov(d, 10)
+        if dst_r == 0xFFFFFFFF { ir_a64_emit_store_spill(9, dest_v) }
+        return
+    }
 }
 
 // ---------------------------------------------------------------------------
