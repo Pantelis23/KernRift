@@ -7001,6 +7001,133 @@ fn ir_opt_dce() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Pass 3: common subexpression elimination (intra-basic-block, hash-based)
+//
+// Each entry in ir_cse_table is 40 bytes: op(8), s1(8), s2(8), imm(8), dest(8).
+// When we encounter a pure instruction whose (op,s1,s2,imm) tuple matches an
+// earlier entry in the same BB, we rewrite the instruction into
+// IR_COPY<earlier_dest>. The table is cleared at BB boundaries and on any op
+// that could change memory or mutate an existing vreg's meaning (including
+// COPY itself — COPY overwrites its destination vreg, so cached expressions
+// whose operands reference that vreg may no longer be valid).
+// ---------------------------------------------------------------------------
+
+static uint64 ir_cse_table = 0
+
+fn ir_cse_hash(uint64 op, uint64 s1, uint64 s2, uint64 imm) -> uint64 {
+    uint64 h = op * 2654435761
+    h = h ^ (s1 * 2246822519)
+    h = h ^ (s2 * 3266489917)
+    h = h ^ (imm * 668265263)
+    return h & 4095
+}
+
+fn ir_opt_cse_invalidates(uint64 op) -> uint64 {
+    if op == 31 { return 1 }  // STORE
+    if op == 50 { return 1 }  // CALL
+    if op == 52 { return 1 }  // SYSCALL
+    if op == 61 { return 1 }  // COPY (mutates dest — conservative invalidate)
+    if op == 72 { return 1 }  // MEMCPY
+    if op == 76 { return 1 }  // MEMSET
+    if op == 78 { return 1 }  // STATIC_STORE
+    if op == 85 { return 1 }  // SYSCALL_RAW
+    if op == 87 { return 1 }  // CALL_IND
+    if op >= 90 && op <= 96 { return 1 }    // atomics, vstore/vload, asm
+    if op >= 109 && op <= 115 { return 1 }  // atomic RMW, exec, set_exec
+    return 0
+}
+
+fn ir_opt_cse_is_pure(uint64 op) -> uint64 {
+    if op >= 1 && op <= 19 { return 1 }    // const, arith, logic, cmp
+    if op >= 20 && op <= 27 { return 1 }   // float arith + conv
+    if op >= 97 && op <= 108 { return 1 }  // float ops
+    if op >= 120 && op <= 123 { return 1 } // signed cmp
+    if op == 77 { return 1 }  // static_load
+    if op == 79 { return 1 }  // str_const
+    if op == 84 { return 1 }  // static_addr
+    if op == 86 { return 1 }  // fn_addr
+    return 0
+}
+
+fn ir_opt_cse() {
+    if ir_cse_table == 0 { ir_cse_table = alloc(4096 * 40) }
+    memset(ir_cse_table, 0, 4096 * 40)
+
+    uint64 cur_bb = 0xFFFFFFFF
+
+    uint64 ii = 0
+    while ii < ir_insn_count {
+        uint64 op = ir_insn_opcode(ii)
+        if op == 0 { ii = ii + 1; continue }
+
+        uint64 bb = ir_insn_bb(ii)
+        if bb != cur_bb {
+            memset(ir_cse_table, 0, 4096 * 40)
+            cur_bb = bb
+        }
+
+        if ir_opt_cse_invalidates(op) != 0 {
+            memset(ir_cse_table, 0, 4096 * 40)
+            ii = ii + 1
+            continue
+        }
+
+        if ir_opt_cse_is_pure(op) == 0 {
+            ii = ii + 1
+            continue
+        }
+
+        uint64 dest = ir_insn_dest(ii)
+        uint64 s1 = ir_insn_src1(ii)
+        uint64 s2 = ir_insn_src2(ii)
+        uint64 imm = ir_insn_imm(ii)
+
+        uint64 h = ir_cse_hash(op, s1, s2, imm)
+        uint64 entry = ir_cse_table + h * 40
+
+        uint64 e_op = 0
+        unsafe { *(entry as uint64) -> e_op }
+
+        if e_op == op {
+            uint64 e_s1 = 0
+            uint64 e_s2 = 0
+            uint64 e_imm = 0
+            uint64 p_s1 = entry + 8
+            uint64 p_s2 = entry + 16
+            uint64 p_imm = entry + 24
+            unsafe { *(p_s1 as uint64) -> e_s1 }
+            unsafe { *(p_s2 as uint64) -> e_s2 }
+            unsafe { *(p_imm as uint64) -> e_imm }
+
+            if e_s1 == s1 && e_s2 == s2 && e_imm == imm {
+                uint64 e_result = 0
+                uint64 p_r = entry + 32
+                unsafe { *(p_r as uint64) -> e_result }
+                ir_insn_set_opcode(ii, 61)
+                ir_insn_set_src1(ii, e_result)
+                ir_insn_set_src2(ii, 0)
+                ir_insn_set_imm(ii, 0)
+                ii = ii + 1
+                continue
+            }
+        }
+
+        // No match — record this expression
+        uint64 p_s1w = entry + 8
+        uint64 p_s2w = entry + 16
+        uint64 p_immw = entry + 24
+        uint64 p_rw = entry + 32
+        unsafe { *(entry as uint64) = op }
+        unsafe { *(p_s1w as uint64) = s1 }
+        unsafe { *(p_s2w as uint64) = s2 }
+        unsafe { *(p_immw as uint64) = imm }
+        unsafe { *(p_rw as uint64) = dest }
+
+        ii = ii + 1
+    }
+}
+
 @export
 fn ir_optimize() {
     if ir_const_values == 0 { ir_const_values = alloc(65536 * 8) }
@@ -7008,6 +7135,7 @@ fn ir_optimize() {
     memset(ir_const_known, 0, 65536)
     ir_opt_const_fold()
     ir_opt_dce()
+    ir_opt_cse()
 }
 
 @export
