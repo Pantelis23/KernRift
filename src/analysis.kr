@@ -1158,7 +1158,33 @@ fn sema_check_stmt(uint64 node) {
     if kind == 10 {
         uint32 init = ast_child(node)
         uint64 winit = init
-        if winit != 0 { sema_check_expr(winit) }
+        if winit != 0 {
+            sema_check_expr(winit)
+            // Strict bool/int separation: check type tag of initializer
+            uint32 type_tok_idx = ast_data1(node)
+            uint64 wtype_tok = type_tok_idx
+            uint64 decl_type_kind = sema_tok_kind(wtype_tok)
+            // Get init expression type tag (data4 for IntLit bool-tagged nodes)
+            uint32 init_kind_raw = ast_kind(winit)
+            uint64 winit_kind = init_kind_raw
+            uint64 init_type_tag = 0
+            // IntLit = 30
+            if winit_kind == 30 {
+                uint32 itag = ast_data4(winit)
+                init_type_tag = itag
+            }
+            // Check if init is a BinOp/Cast (as-cast): skip (data4 == 0 means no bool tag)
+            if decl_type_kind == 98 && init_type_tag != 98 && init_type_tag != 0 {
+                // decl is bool, init is some other typed literal
+                report_error_at(wtype_tok, "type mismatch: expected bool")
+                sema_errors = sema_errors + 1
+            }
+            if decl_type_kind != 98 && init_type_tag == 98 {
+                // decl is non-bool, init is a bool literal
+                report_error_at(wtype_tok, "type mismatch: bool requires explicit cast")
+                sema_errors = sema_errors + 1
+            }
+        }
         return
     }
 

@@ -268,8 +268,8 @@ run_test "file_io" 'fn main() {
 }' 0
 
 # --- Boolean literals ---
-run_test "bool_true" 'fn main() { uint64 x = true; if x { exit(1) }; exit(0) }' 1
-run_test "bool_false" 'fn main() { uint64 x = false; if x { exit(1) }; exit(0) }' 0
+run_test "bool_true" 'fn main() { bool x = true; if x { exit(1) }; exit(0) }' 1
+run_test "bool_false" 'fn main() { bool x = false; if x { exit(1) }; exit(0) }' 0
 
 # --- Match statement ---
 run_test "match_basic" 'fn main() {
@@ -2758,6 +2758,41 @@ else
     echo "FAIL: ir_memset_liveness (compilation failed)"; FAIL=$((FAIL + 1))
 fi
 rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_ir_$$
+
+# --- bool type ---
+echo ""
+echo "--- bool type ---"
+
+TOTAL=$((TOTAL + 1))
+REPO_ROOT="$DIR/.."
+cat > "$REPO_ROOT/test_tmp_$$.kr" << 'BOOLEOF'
+fn main() {
+    bool b = true
+    if b { exit(1) }
+    exit(0)
+}
+BOOLEOF
+if timeout 10 "$KRC" $KRC_FLAGS "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_bool_$$ > /dev/null 2>&1; then
+    chmod +x /tmp/krc_bool_$$
+    timeout 3 /tmp/krc_bool_$$ > /dev/null 2>&1
+    if [ $? = 1 ]; then PASS=$((PASS + 1)); echo "  bool_true_false: PASS"
+    else echo "FAIL: bool_true_false"; FAIL=$((FAIL + 1)); fi
+else echo "FAIL: bool_true_false (compile)"; FAIL=$((FAIL + 1)); fi
+rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_bool_$$
+
+TOTAL=$((TOTAL + 1))
+cat > "$REPO_ROOT/test_tmp_$$.kr" << 'BOOLEOF'
+fn main() {
+    uint64 x = true
+    exit(0)
+}
+BOOLEOF
+if timeout 10 "$KRC" $KRC_FLAGS "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_bool_$$ > /dev/null 2>&1; then
+    echo "FAIL: bool_reject_assign_int (should have failed to compile)"; FAIL=$((FAIL + 1))
+else
+    PASS=$((PASS + 1)); echo "  bool_reject_assign_int: PASS"
+fi
+rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_bool_$$
 
 # --- IR optimizer tests ---
 echo ""

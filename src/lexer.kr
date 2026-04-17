@@ -112,6 +112,7 @@ enum TokenKind {
     KwFloat32 = 95
     KwFloat64 = 96
     KwSizeof = 97
+    KwBool = 98
 
     // Error
     Error = 255
@@ -429,6 +430,7 @@ fn classify_keyword(uint64 start, uint64 len) -> uint32 {
     if match_keyword(start, len, "f32", 3) != 0 { return TokenKind.KwFloat32 }
     if match_keyword(start, len, "f64", 3) != 0 { return TokenKind.KwFloat64 }
     if match_keyword(start, len, "sizeof", 6) != 0 { return TokenKind.KwSizeof }
+    if match_keyword(start, len, "bool", 4) != 0 { return TokenKind.KwBool }
     return TokenKind.Ident
 }
 
