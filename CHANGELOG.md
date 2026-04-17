@@ -2,6 +2,45 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## v2.8.3 — 2026-04-17
+
+Language-level polish and Android correctness.
+
+### Added
+- **Strict `bool` type** — new keyword, typed `true`/`false`, stored as 1 byte.
+  Sema rejects `uint64 x = true` / `bool b = some_int_literal` when the literal
+  is tagged with a conflicting type (partial strictness; full strictness gated
+  on a future `as` value-cast operator).
+- **Strict `char` type + `'x'` literal** — character literal syntax with
+  `\n` / `\t` / `\r` / `\0` / `\\` / `\'` / `\"` escapes.
+- **Typed `print` / `println`** — routes to a new runtime pipeline:
+  `fmt_uint` for integers, `fmt_f64` for floats, `fmt_bool` for bools,
+  single-byte write for chars. No more IEEE-bit-pattern dumps when printing f64.
+- **Variadic `print(a, b, c)` / `println(a, b, c)`** — strings and typed
+  expressions, space-separated, optional trailing `\n` for `println`.
+- **f-string interpolation** — `f"x = {expr}"`, with `{{` / `}}` escapes.
+  Each `{expr}` routes through the type-directed formatter.
+- **IR arena reuse** — `ir_init`, `ir_liveness_init`, `ir_graph_color`, and
+  the regalloc inits lazy-allocate shared arenas instead of freshly `alloc`ing
+  per function.
+
+### Fixed
+- **Android SIGBUS on programs with no static data** — PT_LOAD RW segment was
+  being emitted with `p_memsz=0`, which Bionic's dynamic linker rejects by
+  SIGBUSing the process before `main()` runs. Fix patches `p_memsz` with the
+  page-aligned size (min 64 KB) while keeping `p_filesz=0` for the empty case.
+  Applies to `--emit=android` in `compile()` and both android slices in
+  `compile_fat()`.
+- **Unary minus on floats** — `-3.14` was using integer two's-complement on
+  the IEEE 754 bit pattern, yielding garbage. Now lowered as `IR_FSUB(0.0, x)`
+  when the operand's fkind is float.
+- **Token capacity bump** (196608 → 262144) — current `krc.kr` exceeds the old
+  196608-token cap. Pre-2.8.3 bootstrap compilers SIGSEGV on this source.
+
+### Verified
+- 335/335 tests pass on Linux x86_64 with IR default.
+- Bootstrap fixed point on x86_64 (1,491,135 B) and ARM64 under qemu.
+
 ## v2.8.2 — 2026-04-17
 
 Multi-target IR backend complete. Self-compile works on all 8 platforms.
