@@ -3658,6 +3658,11 @@ fn ir_regalloc_init() {
 
 // Register assignment table: [color(4)] x vreg_count. 0xFFFFFFFF = spilled
 static uint64 ir_reg_assign = 0
+static uint64 ir_reg_assign_cap = 0
+static uint64 ir_ig_buf = 0
+static uint64 ir_ig_cap = 0
+static uint64 ir_color_tmp_buf = 0
+static uint64 ir_color_tmp_cap = 0
 
 fn ir_get_phys_reg(uint64 vreg) -> uint64 {
     if vreg == 0 { return 0xFFFFFFFF }
@@ -3678,22 +3683,47 @@ fn ir_get_phys_reg(uint64 vreg) -> uint64 {
 // graph, then greedily colors vregs. Two vregs interfere if they're both
 // live at any instruction point (def interferes with all live-out except itself).
 fn ir_graph_color() {
-    ir_reg_assign = alloc(ir_vreg_next * 4)
     uint64 vcount = ir_vreg_next
     if vcount == 0 { return }
 
-    // Build interference bitmatrix: ig[i * row_words + j/64] bit j%64
-    // Two vregs interfere if they're simultaneously live at any point.
+    // Register-assignment table — oversized to 65536 vregs once (256 KB).
+    if ir_reg_assign_cap == 0 {
+        ir_reg_assign_cap = 65536
+        ir_reg_assign = alloc(ir_reg_assign_cap * 4)
+    }
+    if vcount > ir_reg_assign_cap {
+        write(2, "error: vreg count exceeds ir_reg_assign capacity\n", 49)
+        exit(1)
+    }
+
+    // Interference bitmatrix — vreg x vreg bits. Oversized once to
+    // 65536 * 1024 words = 512 MB worst case. Per-function peak is far
+    // smaller; only zero the region actually in use.
     uint64 row_words = (vcount + 63) / 64
     uint64 row_bytes = row_words * 8
-    uint64 ig = alloc(vcount * row_bytes)
-    // Zero-init
-    memset(ig, 0, vcount * row_bytes)
+    uint64 ig_needed = vcount * row_bytes
+    if ir_ig_buf == 0 {
+        ir_ig_cap = 65536 * 1024 * 8
+        ir_ig_buf = alloc(ir_ig_cap)
+    }
+    if ig_needed > ir_ig_cap {
+        write(2, "error: interference graph overflow\n", 35)
+        exit(1)
+    }
+    uint64 ig = ir_ig_buf
+    memset(ig, 0, ig_needed)
 
-    // For each basic block, walk instructions backwards computing the live set.
-    // At each instruction's def, the def interferes with all currently-live vregs.
+    // Live-set scratch buffer — 1024 words * 8 B = 8 KB once.
     uint64 set_bytes = ir_live_words * 8
-    uint64 tmp = alloc(set_bytes)
+    if ir_color_tmp_buf == 0 {
+        ir_color_tmp_cap = 1024 * 8
+        ir_color_tmp_buf = alloc(ir_color_tmp_cap)
+    }
+    if set_bytes > ir_color_tmp_cap {
+        write(2, "error: color tmp buffer overflow\n", 33)
+        exit(1)
+    }
+    uint64 tmp = ir_color_tmp_buf
 
     uint64 bi = 0
     while bi < ir_bb_count {
@@ -3811,8 +3841,6 @@ fn ir_graph_color() {
         bi = bi + 1
     }
 
-    dealloc(tmp)
-
     // Greedy coloring: for each vreg, assign the lowest color not used
     // by any interfering neighbor.
     uint64 vi = 0
@@ -3866,7 +3894,6 @@ fn ir_graph_color() {
         vi = vi + 1
     }
 
-    dealloc(ig)
 }
 
 // ---------------------------------------------------------------------------
