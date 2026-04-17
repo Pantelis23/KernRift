@@ -6742,6 +6742,29 @@ fn ir_opt_const_fold() {
             continue
         }
 
+        // Branch simplification: if the condition of a BR_COND is a known
+        // constant, one side is unreachable. Rewrite to an unconditional BR.
+        // BR_COND encodes its true target in imm and its false target in the
+        // block's succ0 (the emitter reads it that way), so we pick the
+        // surviving target accordingly. The block's CFG successors remain
+        // as set by lowering; liveness over-approximates but stays correct.
+        if op == 41 && s1_known != 0 {
+            if v1 != 0 {
+                // True path survives: target is already in imm
+                ir_insn_set_opcode(ii, 40)
+                ir_insn_set_src1(ii, 0)
+            } else {
+                // False path survives: target is succ0 of the owning BB
+                uint64 owning_bb = ir_insn_bb(ii)
+                uint64 false_target = ir_bb_succ0(owning_bb)
+                ir_insn_set_opcode(ii, 40)
+                ir_insn_set_src1(ii, 0)
+                ir_insn_set_imm(ii, false_target)
+            }
+            ii = ii + 1
+            continue
+        }
+
         // Fold binary op when both sources are known
         uint64 folded = 0
         uint64 result = 0

@@ -2834,6 +2834,29 @@ else
 fi
 rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_opt_$$
 
+# Branch simplification: constant conditions fold to unconditional branches.
+TOTAL=$((TOTAL + 1))
+cat > "$REPO_ROOT/test_tmp_$$.kr" << 'OPTEOF'
+fn main() {
+    if 0 == 1 { exit(5) } else { exit(7) }
+    exit(9)
+}
+OPTEOF
+if timeout 10 "$KRC" $KRC_FLAGS "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_opt_$$ > /dev/null 2>&1; then
+    chmod +x /tmp/krc_opt_$$
+    timeout 3 /tmp/krc_opt_$$ > /dev/null 2>&1
+    actual=$?
+    if [ "$actual" = "7" ]; then
+        PASS=$((PASS + 1))
+        echo "  branch_fold: PASS"
+    else
+        echo "FAIL: branch_fold (expected 7, got $actual)"; FAIL=$((FAIL + 1))
+    fi
+else
+    echo "FAIL: branch_fold (compilation failed)"; FAIL=$((FAIL + 1))
+fi
+rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_opt_$$
+
 # CSE: redundant expressions inside a function still produce the right value.
 TOTAL=$((TOTAL + 1))
 cat > "$REPO_ROOT/test_tmp_$$.kr" << 'OPTEOF'
