@@ -1918,16 +1918,29 @@ fn ir_emit_arm64_function(uint64 fn_node) {
     // 5a. For main(): set up argc/argv BEFORE prologue
     uint32 fn_name_tok = ast_data1(fn_node)
     if tok_matches(fn_name_tok, "main", 4) != 0 && freestanding == 0 && target_os != 2 {
-        // Linux/macOS/Android: argc/argv on stack. [SP]=argc, [SP+8]=&argv[0]
-        emit_a64_ldr(0, 31, 0)
-        uint64 argc_off = static_lookup_by_name("cli_argc", 8)
-        if argc_off != 0xFFFFFFFF {
-            emit_a64_static_store(argc_off)
-        }
-        emit_a64_add_imm(0, 31, 8)
-        uint64 argv_off = static_lookup_by_name("cli_argv", 8)
-        if argv_off != 0xFFFFFFFF {
-            emit_a64_static_store(argv_off)
+        if target_os == 1 {
+            // macOS Mach-O: _main receives argc in x0, argv in x1 as function params
+            uint64 argc_off_m = static_lookup_by_name("cli_argc", 8)
+            if argc_off_m != 0xFFFFFFFF {
+                emit_a64_static_store(argc_off_m)  // store x0 (argc)
+            }
+            emit_a64_mov(0, 1)  // x0 = argv (x1)
+            uint64 argv_off_m = static_lookup_by_name("cli_argv", 8)
+            if argv_off_m != 0xFFFFFFFF {
+                emit_a64_static_store(argv_off_m)  // store x0 (was x1 = argv)
+            }
+        } else {
+            // Linux/Android ELF: argc/argv on stack. [SP]=argc, [SP+8]=&argv[0]
+            emit_a64_ldr(0, 31, 0)
+            uint64 argc_off = static_lookup_by_name("cli_argc", 8)
+            if argc_off != 0xFFFFFFFF {
+                emit_a64_static_store(argc_off)
+            }
+            emit_a64_add_imm(0, 31, 8)
+            uint64 argv_off = static_lookup_by_name("cli_argv", 8)
+            if argv_off != 0xFFFFFFFF {
+                emit_a64_static_store(argv_off)
+            }
         }
     }
     if tok_matches(fn_name_tok, "main", 4) != 0 && freestanding == 0 && target_os == 2 {
