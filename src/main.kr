@@ -2558,8 +2558,13 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
         patch_u32(316, (rx_aligned >> 32) & 0xFFFFFFFF)
         patch_u32(320, a_draw & 0xFFFFFFFF)
         patch_u32(324, (a_draw >> 32) & 0xFFFFFFFF)
-        patch_u32(328, a_draw & 0xFFFFFFFF)
-        patch_u32(332, (a_draw >> 32) & 0xFFFFFFFF)
+        // p_memsz uses the page-aligned size (a_dal), not the raw data size.
+        // Android's bionic linker refuses to map a LOAD segment whose p_memsz
+        // is 0 — the resulting process SIGBUSes the moment it touches the
+        // corresponding VA. Pinning p_memsz to at least one page keeps the
+        // linker happy even for programs with no declared statics.
+        patch_u32(328, a_dal & 0xFFFFFFFF)
+        patch_u32(332, (a_dal >> 32) & 0xFFFFFFFF)
     }
 
     codegen_write_output(output_path)
@@ -3544,8 +3549,9 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     patch_u32(316, (androidx_rx_aligned >> 32) & 0xFFFFFFFF)
     patch_u32(320, ax_draw & 0xFFFFFFFF)
     patch_u32(324, (ax_draw >> 32) & 0xFFFFFFFF)
-    patch_u32(328, ax_draw & 0xFFFFFFFF)
-    patch_u32(332, (ax_draw >> 32) & 0xFFFFFFFF)
+    // p_memsz = page-aligned size: bionic SIGBUSes on p_memsz=0.
+    patch_u32(328, ax_dal & 0xFFFFFFFF)
+    patch_u32(332, (ax_dal >> 32) & 0xFFFFFFFF)
 
     uint64 androidx_len = codegen_output_len()
     uint64 androidx_buf = alloc(androidx_len)
@@ -3662,8 +3668,9 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     patch_u32(316, (android_rx_aligned >> 32) & 0xFFFFFFFF)
     patch_u32(320, a7_draw & 0xFFFFFFFF)
     patch_u32(324, (a7_draw >> 32) & 0xFFFFFFFF)
-    patch_u32(328, a7_draw & 0xFFFFFFFF)
-    patch_u32(332, (a7_draw >> 32) & 0xFFFFFFFF)
+    // p_memsz = page-aligned size: bionic SIGBUSes on p_memsz=0.
+    patch_u32(328, a7_dal & 0xFFFFFFFF)
+    patch_u32(332, (a7_dal >> 32) & 0xFFFFFFFF)
 
     uint64 android_len = codegen_output_len()
     uint64 android_buf = alloc(android_len)
