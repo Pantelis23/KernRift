@@ -75,6 +75,7 @@ enum AstKind {
     TupleDestruct3 = 47
     StructLit = 48       // (reserved for struct literals)
     SizeofLit = 49       // data1=resolved_size (low 32 bits)
+    FString = 50         // f-string: child=first segment (StrLit or expr), ...
 }
 
 // ---------------------------------------------------------------------------

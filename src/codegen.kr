@@ -2618,6 +2618,248 @@ fn gen_expr(uint64 node) {
         return
     }
 
+    // FString (50) — legacy x86: build interpolated string
+    // Concatenates StrPart content (baked to str_buf at compile time) and
+    // formats expression values into a stack buffer at var_frame_size.
+    // Returns rax = pointer to null-terminated result buffer.
+    if kind == 50 {
+        uint64 fs_buf_off = var_frame_size  // scratch area above frame
+        // zero the running offset: temp_slot_1 = 0
+        emit_byte(0x48); emit_byte(0x31); emit_byte(0xC0)  // xor rax, rax
+        emit_store_rax_to_stack(temp_slot_1)
+
+        uint32 fs_child = ast_child(node)
+        uint64 wfs_child = fs_child
+        while wfs_child != 0 {
+            uint32 fs_ck = ast_kind(wfs_child)
+            if fs_ck == 31 {
+                uint32 fs_raw = ast_data2(wfs_child)
+                uint64 wfs_raw = fs_raw
+                if wfs_raw != 0 {
+                    // Raw StrPart: bake into str_buf, emit lea rsi + rep movsb
+                    uint32 fs_tok = ast_data1(wfs_child)
+                    uint64 wfs_tok = fs_tok
+                    uint64 fs_tlen = tok_text_len(wfs_tok)
+                    if fs_tlen != 0 {
+                        if str_len + fs_tlen >= 65536 {
+                            write(2, "error: str_buf overflow\n", 24)
+                            exit(1)
+                        }
+                        uint64 fs_soff = str_len
+                        uint64 fs_si = 0
+                        while fs_si < fs_tlen {
+                            uint64 fs_ch = tok_source_byte(wfs_tok, fs_si)
+                            uint64 fs_sp = str_buf + str_len
+                            uint8 fs_cb = fs_ch
+                            unsafe { *(fs_sp as uint8) = fs_cb }
+                            str_len = str_len + 1
+                            fs_si = fs_si + 1
+                        }
+                        uint64 fs_nsp = str_buf + str_len
+                        uint8 fs_nz = 0
+                        unsafe { *(fs_nsp as uint8) = fs_nz }
+                        str_len = str_len + 1
+                        if str_fixup_count >= 4096 {
+                            write(2, "error: str_fixups overflow\n", 27)
+                            exit(1)
+                        }
+                        // lea rsi, [rip + fs_soff]  (source)
+                        emit_byte(0x48); emit_byte(0x8D); emit_byte(0x35)
+                        uint64 fs_fe = str_fixups + str_fixup_count * 8
+                        uint32 fs_cp = out_len
+                        unsafe { *(fs_fe as uint32) = fs_cp }
+                        uint64 fs_fe4 = fs_fe + 4
+                        uint32 fs_so = fs_soff
+                        unsafe { *(fs_fe4 as uint32) = fs_so }
+                        str_fixup_count = str_fixup_count + 1
+                        emit_u32_le(0)
+                        // r10 = rsi (save src), rcx = strlen
+                        emit_byte(0x49); emit_byte(0x89); emit_byte(0xF2)  // mov r10, rsi
+                        emit_byte(0x48); emit_byte(0x31); emit_byte(0xC9)  // xor rcx, rcx
+                        uint64 fs_sl = out_len
+                        emit_byte(0x0F); emit_byte(0xB6); emit_byte(0x06)  // movzbl (%rsi), eax
+                        emit_byte(0x84); emit_byte(0xC0)                    // test al, al
+                        emit_byte(0x74); emit_byte(0x05)                    // jz +5
+                        emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC1)   // inc rcx
+                        emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC6)   // inc rsi
+                        uint64 fs_slb = fs_sl - out_len - 1
+                        uint8 fs_slbb = fs_slb; emit_byte(0xEB); emit_byte(fs_slbb)
+                        // rcx=len, r10=src. Compute dest = [rsp+fs_buf_off] + offset
+                        emit_byte(0x4C); emit_byte(0x89); emit_byte(0xD6)  // mov rsi, r10 (restore src)
+                        // lea rdi, [rsp + fs_buf_off]
+                        if fs_buf_off < 128 {
+                            emit_byte(0x48); emit_byte(0x8D); emit_byte(0x7C); emit_byte(0x24)
+                            uint8 fbo1 = fs_buf_off; emit_byte(fbo1)
+                        } else {
+                            emit_byte(0x48); emit_byte(0x8D); emit_byte(0xBC); emit_byte(0x24)
+                            emit_u32_le(fs_buf_off)
+                        }
+                        // rax = offset from temp_slot_1
+                        emit_byte(0x48); emit_byte(0x8B)
+                        if temp_slot_1 < 128 {
+                            emit_byte(0x44); emit_byte(0x24); uint8 ts1a = temp_slot_1; emit_byte(ts1a)
+                        } else {
+                            emit_byte(0x84); emit_byte(0x24); emit_u32_le(temp_slot_1)
+                        }
+                        emit_byte(0x48); emit_byte(0x01); emit_byte(0xC7)  // add rdi, rax
+                        // rep movsb (rcx=len, rsi=src, rdi=dest)
+                        emit_byte(0xF3); emit_byte(0xA4)
+                        // update offset: load temp_slot_1, add rcx (save in r10), store
+                        emit_byte(0x49); emit_byte(0x89); emit_byte(0xCA)  // mov r10, rcx
+                        emit_byte(0x48); emit_byte(0x8B)
+                        if temp_slot_1 < 128 {
+                            emit_byte(0x44); emit_byte(0x24); uint8 ts1b = temp_slot_1; emit_byte(ts1b)
+                        } else {
+                            emit_byte(0x84); emit_byte(0x24); emit_u32_le(temp_slot_1)
+                        }
+                        emit_byte(0x4C); emit_byte(0x01); emit_byte(0xD0)  // add rax, r10
+                        emit_store_rax_to_stack(temp_slot_1)
+                    }
+                } else {
+                    // Regular StrLit: gen_expr -> rax=str ptr
+                    gen_expr(wfs_child)
+                    emit_byte(0x48); emit_byte(0x89); emit_byte(0xC6)  // mov rsi, rax
+                    emit_byte(0x49); emit_byte(0x89); emit_byte(0xF2)  // mov r10, rsi
+                    emit_byte(0x48); emit_byte(0x31); emit_byte(0xC9)  // xor rcx, rcx
+                    uint64 fs_sl2 = out_len
+                    emit_byte(0x0F); emit_byte(0xB6); emit_byte(0x06)
+                    emit_byte(0x84); emit_byte(0xC0)
+                    emit_byte(0x74); emit_byte(0x05)
+                    emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC1)
+                    emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC6)
+                    uint64 fs_slb2 = fs_sl2 - out_len - 1
+                    uint8 fs_slbb2 = fs_slb2; emit_byte(0xEB); emit_byte(fs_slbb2)
+                    emit_byte(0x4C); emit_byte(0x89); emit_byte(0xD6)  // mov rsi, r10
+                    if fs_buf_off < 128 {
+                        emit_byte(0x48); emit_byte(0x8D); emit_byte(0x7C); emit_byte(0x24)
+                        uint8 fbo2 = fs_buf_off; emit_byte(fbo2)
+                    } else {
+                        emit_byte(0x48); emit_byte(0x8D); emit_byte(0xBC); emit_byte(0x24)
+                        emit_u32_le(fs_buf_off)
+                    }
+                    emit_byte(0x48); emit_byte(0x8B)
+                    if temp_slot_1 < 128 {
+                        emit_byte(0x44); emit_byte(0x24); uint8 ts1c = temp_slot_1; emit_byte(ts1c)
+                    } else {
+                        emit_byte(0x84); emit_byte(0x24); emit_u32_le(temp_slot_1)
+                    }
+                    emit_byte(0x48); emit_byte(0x01); emit_byte(0xC7)  // add rdi, rax
+                    emit_byte(0xF3); emit_byte(0xA4)                   // rep movsb
+                    emit_byte(0x49); emit_byte(0x89); emit_byte(0xCA)  // mov r10, rcx
+                    emit_byte(0x48); emit_byte(0x8B)
+                    if temp_slot_1 < 128 {
+                        emit_byte(0x44); emit_byte(0x24); uint8 ts1d = temp_slot_1; emit_byte(ts1d)
+                    } else {
+                        emit_byte(0x84); emit_byte(0x24); emit_u32_le(temp_slot_1)
+                    }
+                    emit_byte(0x4C); emit_byte(0x01); emit_byte(0xD0)  // add rax, r10
+                    emit_store_rax_to_stack(temp_slot_1)
+                }
+            } else {
+                // Expression: evaluate and format as decimal integer
+                gen_expr(wfs_child)
+                emit_store_rax_to_stack(temp_slot_0)
+                // dest rdi = [rsp+fs_buf_off] + offset
+                if fs_buf_off < 128 {
+                    emit_byte(0x48); emit_byte(0x8D); emit_byte(0x7C); emit_byte(0x24)
+                    uint8 fbo3 = fs_buf_off; emit_byte(fbo3)
+                } else {
+                    emit_byte(0x48); emit_byte(0x8D); emit_byte(0xBC); emit_byte(0x24)
+                    emit_u32_le(fs_buf_off)
+                }
+                emit_byte(0x48); emit_byte(0x8B)
+                if temp_slot_1 < 128 {
+                    emit_byte(0x4C); emit_byte(0x24); uint8 ts1e = temp_slot_1; emit_byte(ts1e)
+                } else {
+                    emit_byte(0x8C); emit_byte(0x24); emit_u32_le(temp_slot_1)
+                }
+                emit_byte(0x48); emit_byte(0x01); emit_byte(0xCF)  // add rdi, rcx
+                // rdi = dest. Load value.
+                emit_load_rax_from_stack(temp_slot_0)
+                // zero check
+                emit_byte(0x48); emit_byte(0x85); emit_byte(0xC0)
+                emit_byte(0x0F); emit_byte(0x85)
+                uint64 fs_jnz = out_len; emit_u32_le(0)
+                // zero: write '0', len=1
+                emit_byte(0xC6); emit_byte(0x07); emit_byte(0x30)
+                emit_byte(0x49); emit_byte(0xC7); emit_byte(0xC2); emit_u32_le(1)
+                emit_byte(0xE9)
+                uint64 fs_jfin = out_len; emit_u32_le(0)
+                uint64 fs_jnz_t = out_len - fs_jnz - 4
+                uint32 fs_jnz_t32 = fs_jnz_t
+                unsafe { *((out_buf + fs_jnz) as uint32) = fs_jnz_t32 }
+                // nonzero: push digits, then pop to dest
+                emit_byte(0x49); emit_byte(0x89); emit_byte(0xFB)   // r11 = rdi (dest start)
+                emit_byte(0x4D); emit_byte(0x31); emit_byte(0xD2)   // xor r10, r10 (count)
+                uint64 fs_dl = out_len
+                emit_byte(0x48); emit_byte(0x85); emit_byte(0xC0)   // test rax, rax
+                emit_byte(0x74); emit_byte(0x0E)                     // jz dl_done
+                emit_byte(0x48); emit_byte(0x31); emit_byte(0xD2)   // xor rdx, rdx
+                emit_byte(0x48); emit_byte(0xB9); emit_u32_le(10); emit_u32_le(0) // mov rcx, 10
+                emit_byte(0x48); emit_byte(0xF7); emit_byte(0xF1)   // div rcx
+                emit_byte(0x48); emit_byte(0x83); emit_byte(0xC2); emit_byte(0x30) // add rdx, '0'
+                emit_byte(0x52)                                       // push rdx
+                emit_byte(0x49); emit_byte(0xFF); emit_byte(0xC2)   // inc r10
+                uint64 fs_dlb = fs_dl - out_len - 1
+                uint8 fs_dlbb = fs_dlb; emit_byte(0xEB); emit_byte(fs_dlbb)
+                // pop digits to rdi in correct order
+                uint64 fs_pop = out_len
+                emit_byte(0x4D); emit_byte(0x85); emit_byte(0xD2)   // test r10, r10
+                emit_byte(0x74); emit_byte(0x07)                     // jz pop_done
+                emit_byte(0x59)                                       // pop rcx
+                emit_byte(0x88); emit_byte(0x0F)                     // mov [rdi], cl
+                emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC7)   // inc rdi
+                emit_byte(0x49); emit_byte(0xFF); emit_byte(0xCA)   // dec r10
+                uint64 fs_popb = fs_pop - out_len - 1
+                uint8 fs_popbb = fs_popb; emit_byte(0xEB); emit_byte(fs_popbb)
+                // r10=0 now. len = rdi - r11
+                emit_byte(0x4C); emit_byte(0x29); emit_byte(0xDF)   // sub rdi, r11
+                emit_byte(0x49); emit_byte(0x89); emit_byte(0xFA)   // r10 = rdi (len)
+                uint64 fs_jfin_t = out_len - fs_jfin - 4
+                uint32 fs_jfin_t32 = fs_jfin_t
+                unsafe { *((out_buf + fs_jfin) as uint32) = fs_jfin_t32 }
+                // update offset
+                emit_byte(0x48); emit_byte(0x8B)
+                if temp_slot_1 < 128 {
+                    emit_byte(0x44); emit_byte(0x24); uint8 ts1f = temp_slot_1; emit_byte(ts1f)
+                } else {
+                    emit_byte(0x84); emit_byte(0x24); emit_u32_le(temp_slot_1)
+                }
+                emit_byte(0x4C); emit_byte(0x01); emit_byte(0xD0)  // add rax, r10
+                emit_store_rax_to_stack(temp_slot_1)
+            }
+            uint32 fs_nxt = ast_next(wfs_child)
+            wfs_child = fs_nxt
+        }
+
+        // Null-terminate: buf[offset] = 0
+        if fs_buf_off < 128 {
+            emit_byte(0x48); emit_byte(0x8D); emit_byte(0x44); emit_byte(0x24)
+            uint8 fbo4 = fs_buf_off; emit_byte(fbo4)
+        } else {
+            emit_byte(0x48); emit_byte(0x8D); emit_byte(0x84); emit_byte(0x24)
+            emit_u32_le(fs_buf_off)
+        }
+        emit_byte(0x48); emit_byte(0x8B)
+        if temp_slot_1 < 128 {
+            emit_byte(0x4C); emit_byte(0x24); uint8 ts1z = temp_slot_1; emit_byte(ts1z)
+        } else {
+            emit_byte(0x8C); emit_byte(0x24); emit_u32_le(temp_slot_1)
+        }
+        emit_byte(0x48); emit_byte(0x01); emit_byte(0xC8)   // add rax, rcx
+        emit_byte(0xC6); emit_byte(0x00); emit_byte(0x00)   // mov byte[rax], 0
+        // Return pointer to buffer start
+        if fs_buf_off < 128 {
+            emit_byte(0x48); emit_byte(0x8D); emit_byte(0x44); emit_byte(0x24)
+            uint8 fbo5 = fs_buf_off; emit_byte(fbo5)
+        } else {
+            emit_byte(0x48); emit_byte(0x8D); emit_byte(0x84); emit_byte(0x24)
+            emit_u32_le(fs_buf_off)
+        }
+        rax_invalidate()
+        return
+    }
+
     // Array indexing: arr[i] → load elem_size bytes from base + i*elem_size
     if kind == 37 {
         uint32 arr_tok = ast_data1(node)
@@ -4315,8 +4557,8 @@ fn gen_expr(uint64 node) {
                 pr_first = 0
 
                 uint32 pr_arg_kind = ast_kind(pr_warg)
-                if pr_arg_kind == 31 {
-                    // String literal
+                if pr_arg_kind == 31 || pr_arg_kind == 50 {
+                    // String literal or FString
                     gen_expr(pr_warg)
                     emit_store_rax_to_stack(temp_slot_0)
                     emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)

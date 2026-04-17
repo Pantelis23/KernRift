@@ -1716,8 +1716,8 @@ fn ir_lower_expr(uint64 node) -> uint64 {
 
                 uint32 arg_kind = ast_kind(warg)
                 uint64 len_v = ir_new_vreg()
-                if arg_kind == 31 {
-                    // String literal: STRLEN + MEMCPY
+                if arg_kind == 31 || arg_kind == 50 {
+                    // String literal or FString: lower to pointer, then STRLEN + MEMCPY
                     uint64 s_v = ir_lower_expr(warg)
                     ir_emit(IR_STRLEN, len_v, s_v, 0, 0, ir_current_bb)
                     uint64 mc_dummy = ir_new_vreg()
@@ -2429,6 +2429,105 @@ fn ir_lower_expr(uint64 node) -> uint64 {
             uint32 fnxt = ast_next(wfchild)
             wfchild = fnxt
         }
+        return buf_v
+    }
+
+    // FString (50) — build interpolated string in a 4096-byte stack buffer
+    if kind == 50 {
+        uint64 buf_v = ir_new_vreg()
+        ir_emit(IR_ALLOC, buf_v, 0, 0, 4096, ir_current_bb)
+        uint64 off_v = ir_new_vreg()
+        ir_emit(IR_CONST, off_v, 0, 0, 0, ir_current_bb)
+
+        uint32 fchild = ast_child(node)
+        uint64 wfchild = fchild
+        while wfchild != 0 {
+            uint32 ck = ast_kind(wfchild)
+            uint64 slot_v = ir_new_vreg()
+            ir_emit(IR_ADD, slot_v, buf_v, off_v, 0, ir_current_bb)
+            uint64 len_v = ir_new_vreg()
+
+            if ck == 31 {
+                // StrPart (StrLit with data2=1): raw text, no quote stripping
+                uint32 fstok = ast_data1(wfchild)
+                uint64 wftok = fstok
+                uint64 ftstart = tok_text_start(wftok)
+                uint64 ftlen = tok_text_len(wftok)
+                // Check data2 to detect raw StrPart (data2=1 means no quotes)
+                uint32 fraw = ast_data2(wfchild)
+                uint64 wfraw = fraw
+                if ftlen == 0 {
+                    // Empty part: emit zero length
+                    ir_emit(IR_CONST, len_v, 0, 0, 0, ir_current_bb)
+                } else if wfraw != 0 {
+                    // Raw StrPart: copy bytes from source directly (no quote strip)
+                    if str_len + ftlen >= 65536 {
+                        write(2, "error: str_buf overflow\n", 24)
+                        exit(1)
+                    }
+                    uint64 fstr_offset = str_len
+                    uint64 fsi = 0
+                    while fsi < ftlen {
+                        uint64 fch = tok_source_byte(wftok, fsi)
+                        uint64 fsp = str_buf + str_len
+                        uint8 fcb = fch
+                        unsafe { *(fsp as uint8) = fcb }
+                        str_len = str_len + 1
+                        fsi = fsi + 1
+                    }
+                    // Null-terminate
+                    uint64 fnsp = str_buf + str_len
+                    uint8 fnz = 0
+                    unsafe { *(fnsp as uint8) = fnz }
+                    str_len = str_len + 1
+                    uint64 fstr_v = ir_new_vreg()
+                    ir_emit(IR_STR_CONST, fstr_v, 0, 0, fstr_offset, ir_current_bb)
+                    ir_emit(IR_STRLEN, len_v, fstr_v, 0, 0, ir_current_bb)
+                    uint64 fmc = ir_new_vreg()
+                    ir_emit(IR_MEMCPY, fmc, slot_v, fstr_v, len_v, ir_current_bb)
+                } else {
+                    // Regular StrLit: lower it and strlen+memcpy
+                    uint64 s_v = ir_lower_expr(wfchild)
+                    ir_emit(IR_STRLEN, len_v, s_v, 0, 0, ir_current_bb)
+                    uint64 fmc2 = ir_new_vreg()
+                    ir_emit(IR_MEMCPY, fmc2, slot_v, s_v, len_v, ir_current_bb)
+                }
+            } else {
+                // Interpolated expression: same dispatch as variadic print
+                uint64 val_v = ir_lower_expr(wfchild)
+                uint64 fk = ir_vreg_fkind_get(val_v)
+                if fk == 1 {
+                    ir_emit(IR_FMT_F64, len_v, slot_v, val_v, 0, ir_current_bb)
+                } else if fk == 2 {
+                    uint64 f64v = ir_new_vreg()
+                    ir_emit(IR_F32TOF64, f64v, val_v, 0, 0, ir_current_bb)
+                    ir_vreg_fkind_set(f64v, 1)
+                    ir_emit(IR_FMT_F64, len_v, slot_v, f64v, 0, ir_current_bb)
+                } else if fk == 3 {
+                    ir_emit(IR_FMT_BOOL, len_v, slot_v, val_v, 0, ir_current_bb)
+                } else if fk == 4 {
+                    ir_emit(IR_STORE, 1, slot_v, val_v, 0, ir_current_bb)
+                    ir_emit(IR_CONST, len_v, 0, 0, 1, ir_current_bb)
+                } else {
+                    ir_emit(IR_FMT_UINT, len_v, slot_v, val_v, 0, ir_current_bb)
+                }
+            }
+
+            uint64 new_off = ir_new_vreg()
+            ir_emit(IR_ADD, new_off, off_v, len_v, 0, ir_current_bb)
+            off_v = new_off
+
+            uint32 fnxt = ast_next(wfchild)
+            wfchild = fnxt
+        }
+
+        // Null-terminate the result
+        uint64 fzero = ir_new_vreg()
+        ir_emit(IR_CONST, fzero, 0, 0, 0, ir_current_bb)
+        uint64 fend_v = ir_new_vreg()
+        ir_emit(IR_ADD, fend_v, buf_v, off_v, 0, ir_current_bb)
+        ir_emit(IR_STORE, 1, fend_v, fzero, 0, ir_current_bb)
+
         return buf_v
     }
 

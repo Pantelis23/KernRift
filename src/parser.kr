@@ -439,6 +439,38 @@ fn parse_primary() -> uint64 {
         return node
     }
 
+    // F-string: FStrBegin(100) [StrPart(101) | expr]* FStrEnd(102)
+    if kind == 100 {
+        uint64 fstr_tok = advance_tok()  // consume FStrBegin
+        uint64 fstr_node = ast_alloc(50)  // AstKind.FString = 50
+        uint32 ft32 = fstr_tok
+        ast_set_tok(fstr_node, ft32)
+
+        uint32 cur = cur_kind()
+        uint64 wcur = cur
+        while wcur != 102 && wcur != 0 {
+            if wcur == 101 {
+                // StrPart: store as StrLit node with data1=tok_index
+                uint64 part_tok = advance_tok()
+                uint64 part_node = ast_alloc(AstKind.StrLit)
+                uint32 pt32 = part_tok
+                ast_set_data1(part_node, pt32)
+                ast_set_tok(part_node, pt32)
+                // Mark as raw (no quotes): data2 = 1
+                uint32 raw_mark = 1
+                ast_set_data2(part_node, raw_mark)
+                ast_append_child(fstr_node, part_node)
+            } else {
+                uint64 expr_node = parse_expr()
+                ast_append_child(fstr_node, expr_node)
+            }
+            cur = cur_kind()
+            wcur = cur
+        }
+        if wcur == 102 { advance_tok() }  // consume FStrEnd
+        return fstr_node
+    }
+
     // Parenthesized expression
     if kind == 10 {
         advance_tok()

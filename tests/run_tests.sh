@@ -2898,6 +2898,46 @@ if timeout 10 "$KRC" $KRC_FLAGS "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_v_$$ > /
 else echo "FAIL: println_multi_mixed (compile)"; FAIL=$((FAIL + 1)); fi
 rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_v_$$
 
+# --- f-strings ---
+echo ""
+echo "--- f-strings ---"
+
+TOTAL=$((TOTAL + 1))
+cat > "$REPO_ROOT/test_tmp_$$.kr" << 'FEOF'
+fn main() { println(f"x = {10 + 5}"); exit(0) }
+FEOF
+if timeout 10 "$KRC" $KRC_FLAGS "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_f_$$ > /dev/null 2>&1; then
+    chmod +x /tmp/krc_f_$$
+    got=$(timeout 3 /tmp/krc_f_$$)
+    if [ "$got" = "x = 15" ]; then PASS=$((PASS + 1)); echo "  fstring_int: PASS"
+    else echo "FAIL: fstring_int (got '$got')"; FAIL=$((FAIL + 1)); fi
+else echo "FAIL: fstring_int (compile)"; FAIL=$((FAIL + 1)); fi
+rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_f_$$
+
+TOTAL=$((TOTAL + 1))
+cat > "$REPO_ROOT/test_tmp_$$.kr" << 'FEOF'
+fn main() { f64 pi = 3.14; println(f"pi = {pi}"); exit(0) }
+FEOF
+if timeout 10 "$KRC" $KRC_FLAGS "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_f_$$ > /dev/null 2>&1; then
+    chmod +x /tmp/krc_f_$$
+    got=$(timeout 3 /tmp/krc_f_$$)
+    if [ "$got" = "pi = 3.140000" ]; then PASS=$((PASS + 1)); echo "  fstring_float: PASS"
+    else echo "FAIL: fstring_float (got '$got')"; FAIL=$((FAIL + 1)); fi
+else echo "FAIL: fstring_float (compile)"; FAIL=$((FAIL + 1)); fi
+rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_f_$$
+
+TOTAL=$((TOTAL + 1))
+cat > "$REPO_ROOT/test_tmp_$$.kr" << 'FEOF'
+fn main() { println(f"flag = {true}"); exit(0) }
+FEOF
+if timeout 10 "$KRC" $KRC_FLAGS "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_f_$$ > /dev/null 2>&1; then
+    chmod +x /tmp/krc_f_$$
+    got=$(timeout 3 /tmp/krc_f_$$)
+    if [ "$got" = "flag = true" ]; then PASS=$((PASS + 1)); echo "  fstring_bool: PASS"
+    else echo "FAIL: fstring_bool (got '$got')"; FAIL=$((FAIL + 1)); fi
+else echo "FAIL: fstring_bool (compile)"; FAIL=$((FAIL + 1)); fi
+rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_f_$$
+
 # --- IR optimizer tests ---
 echo ""
 echo "--- IR optimizer tests ---"

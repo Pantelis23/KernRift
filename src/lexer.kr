@@ -115,6 +115,11 @@ enum TokenKind {
     KwBool = 98
     KwChar = 99
 
+    // F-string tokens
+    FStrBegin = 100
+    StrPart = 101
+    FStrEnd = 102
+
     // Error
     Error = 255
 }
@@ -440,6 +445,79 @@ fn lex_one_token() {
     uint64 ch = peek()
     uint64 start = pos
     uint32 tok_line = line
+
+    // F-string: f"..." — prefix ASCII 'f' (102) followed by '"' (34)
+    if ch == 102 {
+        uint64 fstr_next = peek_at(1)
+        if fstr_next == 34 {
+            advance()  // consume 'f'
+            advance()  // consume '"'
+            emit_token(TokenKind.FStrBegin, start, 2, tok_line)
+
+            uint64 part_start = pos
+            uint64 fstr_running = 1
+            while pos < src_len && fstr_running != 0 {
+                uint64 fch = peek()
+                if fch == 34 {
+                    fstr_running = 0
+                } else if fch == 123 {
+                    // '{' — check for literal '{{'
+                    uint64 fch2 = peek_at(1)
+                    if fch2 == 123 {
+                        advance()
+                        advance()
+                    } else {
+                        // Flush accumulated StrPart before '{'
+                        if pos > part_start {
+                            uint64 plen = pos - part_start
+                            emit_token(TokenKind.StrPart, part_start, plen, tok_line)
+                        }
+                        advance()  // consume '{'
+                        // Lex inner expression tokens until matching '}' at depth 1
+                        // (nested braces not supported in v1 f-string expressions)
+                        uint64 depth = 1
+                        while pos < src_len && depth > 0 {
+                            skip_whitespace_and_comments()
+                            if pos < src_len {
+                                uint64 ic = peek()
+                                if ic == 125 {
+                                    advance()  // consume '}'
+                                    depth = depth - 1
+                                } else if ic == 123 {
+                                    depth = depth + 1
+                                    lex_one_token()
+                                } else {
+                                    lex_one_token()
+                                }
+                            } else {
+                                depth = 0
+                            }
+                        }
+                        part_start = pos
+                    }
+                } else if fch == 125 {
+                    // '}' — literal '}}' means one '}'
+                    uint64 fch2b = peek_at(1)
+                    if fch2b == 125 {
+                        advance()
+                        advance()
+                    } else {
+                        advance()
+                    }
+                } else {
+                    advance()
+                }
+            }
+            // Flush trailing StrPart
+            if pos > part_start {
+                uint64 plen2 = pos - part_start
+                emit_token(TokenKind.StrPart, part_start, plen2, tok_line)
+            }
+            if pos < src_len { advance() }  // consume closing '"'
+            emit_token(TokenKind.FStrEnd, pos, 0, tok_line)
+            return
+        }
+    }
 
     // Identifier or keyword
     if is_alpha(ch) != 0 {
