@@ -29,11 +29,10 @@ fn ir_a64_add_sp_reg(uint64 rd, uint64 rm) {
 // ---------------------------------------------------------------------------
 
 fn ir_regalloc_init_arm64() {
-    // Allocate or reuse the phys_regs table (needs 10 entries for ARM64)
-    // Set IR_NUM_REGS to 10 for ARM64 (graph coloring uses this for color count)
+    // Allocate or reuse the phys_regs table (10 entries for ARM64; x86's
+    // ir_regalloc_init now also allocates 10 so the buffer is reusable).
     IR_NUM_REGS = 10
-    // We always alloc a fresh buffer since the x86 path uses the same pointer
-    ir_phys_regs = alloc(10 * 8)
+    if ir_phys_regs == 0 { ir_phys_regs = alloc(10 * 8) }
     uint64 p0 = ir_phys_regs
     unsafe { *(p0 as uint64) = 19 }       // color 0 -> x19
     uint64 p1 = ir_phys_regs + 8

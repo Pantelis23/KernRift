@@ -3643,7 +3643,7 @@ static uint64 IR_NUM_REGS = 5
 static uint64 ir_phys_regs = 0
 
 fn ir_regalloc_init() {
-    if ir_phys_regs == 0 { ir_phys_regs = alloc(5 * 8) }
+    if ir_phys_regs == 0 { ir_phys_regs = alloc(10 * 8) }
     uint64 p0 = ir_phys_regs
     unsafe { *(p0 as uint64) = 3 }
     uint64 p1 = ir_phys_regs + 8
