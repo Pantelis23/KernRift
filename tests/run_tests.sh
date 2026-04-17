@@ -2898,6 +2898,22 @@ if timeout 10 "$KRC" $KRC_FLAGS "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_v_$$ > /
 else echo "FAIL: println_multi_mixed (compile)"; FAIL=$((FAIL + 1)); fi
 rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_v_$$
 
+# --- negative float literal ---
+echo ""
+echo "--- negative float ---"
+
+TOTAL=$((TOTAL + 1))
+cat > "$REPO_ROOT/test_tmp_$$.kr" << 'NFEOF'
+fn main() { f64 x = -3.14; println(x); exit(0) }
+NFEOF
+if timeout 10 "$KRC" $KRC_FLAGS "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_nf_$$ > /dev/null 2>&1; then
+    chmod +x /tmp/krc_nf_$$
+    got=$(timeout 3 /tmp/krc_nf_$$)
+    if [ "$got" = "-3.140000" ]; then PASS=$((PASS + 1)); echo "  float_print_negative: PASS"
+    else echo "FAIL: float_print_negative (got '$got')"; FAIL=$((FAIL + 1)); fi
+else echo "FAIL: float_print_negative (compile)"; FAIL=$((FAIL + 1)); fi
+rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_nf_$$
+
 # --- f-strings ---
 echo ""
 echo "--- f-strings ---"

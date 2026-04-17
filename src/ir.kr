@@ -1050,8 +1050,18 @@ fn ir_lower_expr(uint64 node) -> uint64 {
         uint64 dest = ir_new_vreg()
         uint64 op_kind = tok_kind_at_raw(op_tok)
         if op_kind == 31 {
-            // - (negate)
-            ir_emit(IR_NEG, dest, src, 0, 0, ir_current_bb)
+            // - (negate). For floats, lower as FSUB(0.0, src) — IR_NEG does
+            // integer two's-complement which corrupts IEEE 754 bits.
+            uint64 src_fk = ir_vreg_fkind_get(src)
+            if src_fk != 0 {
+                uint64 fzero = ir_new_vreg()
+                ir_emit(IR_CONST, fzero, 0, 0, 0, ir_current_bb)
+                ir_vreg_fkind_set(fzero, src_fk)
+                ir_emit(IR_FSUB, dest, fzero, src, src_fk, ir_current_bb)
+                ir_vreg_fkind_set(dest, src_fk)
+            } else {
+                ir_emit(IR_NEG, dest, src, 0, 0, ir_current_bb)
+            }
         } else if op_kind == 27 {
             // ! (logical NOT) — compare src == 0
             uint64 zero = ir_new_vreg()
