@@ -6876,12 +6876,138 @@ fn ir_opt_const_fold() {
     }
 }
 
+static uint64 ir_dce_live = 0
+
+// Returns 1 if the instruction must be kept regardless of whether its dest is
+// live — side effects, control flow, memory writes, volatile/atomic reads, and
+// anything externally observable.
+fn ir_opt_is_side_effect(uint64 op) -> uint64 {
+    if op == 31 { return 1 }   // STORE
+    if op == 40 { return 1 }   // BR
+    if op == 41 { return 1 }   // BR_COND
+    if op == 42 { return 1 }   // RET
+    if op == 43 { return 1 }   // RET_VOID
+    if op == 50 { return 1 }   // CALL
+    if op == 51 { return 1 }   // ARG
+    if op == 52 { return 1 }   // SYSCALL
+    if op == 70 { return 1 }   // ALLOC
+    if op == 71 { return 1 }   // DEALLOC
+    if op == 72 { return 1 }   // MEMCPY
+    if op == 76 { return 1 }   // MEMSET
+    if op == 78 { return 1 }   // STATIC_STORE
+    if op == 80 { return 1 }   // EXTRACT_RDX (must stay adjacent to CALL)
+    if op == 81 { return 1 }   // EXTRACT_R8
+    if op == 82 { return 1 }   // RET2
+    if op == 83 { return 1 }   // RET3
+    if op == 85 { return 1 }   // SYSCALL_RAW
+    if op == 87 { return 1 }   // CALL_IND
+    if op >= 90 && op <= 96 { return 1 }    // atomics, vstore/vload, asm
+    if op >= 109 && op <= 115 { return 1 }  // atomic RMW, exec, set_exec
+    if op == 119 { return 1 }  // TIME_NS (reads clock, not pure)
+    return 0
+}
+
+fn ir_opt_dce_mark(uint64 vreg, uint64 changed_ptr) -> uint64 {
+    uint64 c = 0
+    uint64 cp = changed_ptr
+    unsafe { *(cp as uint64) -> c }
+    if vreg > 0 && vreg < 65536 {
+        uint64 lp = ir_dce_live + vreg
+        uint8 old = 0
+        unsafe { *(lp as uint8) -> old }
+        if old == 0 {
+            uint8 one = 1
+            unsafe { *(lp as uint8) = one }
+            c = 1
+            unsafe { *(cp as uint64) = c }
+        }
+    }
+    return c
+}
+
+fn ir_opt_dce() {
+    if ir_dce_live == 0 { ir_dce_live = alloc(65536) }
+    memset(ir_dce_live, 0, 65536)
+
+    // Mark phase: iterate forward over instructions, marking live vregs.
+    // Because marks only propagate from dest-is-live to src-must-be-live, and
+    // a use may come before its def in linear order inside a loop, we iterate
+    // to a fixed point. Live set only grows — terminates in O(vregs) rounds.
+    uint64 changed = 1
+    uint64 changed_ptr = alloc(8)
+    while changed != 0 {
+        changed = 0
+        unsafe { *(changed_ptr as uint64) = changed }
+
+        uint64 ii = 0
+        while ii < ir_insn_count {
+            uint64 op = ir_insn_opcode(ii)
+            if op == 0 { ii = ii + 1; continue }
+
+            uint64 dest = ir_insn_dest(ii)
+            uint64 s1 = ir_insn_src1(ii)
+            uint64 s2 = ir_insn_src2(ii)
+            uint64 imm = ir_insn_imm(ii)
+
+            uint64 keep = ir_opt_is_side_effect(op)
+            if keep == 0 && dest > 0 && dest < 65536 {
+                uint64 lp = ir_dce_live + dest
+                uint8 lv = 0
+                unsafe { *(lp as uint8) -> lv }
+                if lv != 0 { keep = 1 }
+            }
+
+            if keep != 0 {
+                ir_opt_dce_mark(s1, changed_ptr)
+                // src2 is a vreg for all ops EXCEPT the ones below
+                if op != 1 && op != 12 && op != 13 && op != 30 && op != 42 && op != 61 {
+                    ir_opt_dce_mark(s2, changed_ptr)
+                }
+                // imm-as-vreg for MEMCPY, MEMSET, RET3, ATOMIC_CAS, FFMA
+                if op == 72 || op == 76 || op == 83 || op == 93 || op == 98 {
+                    ir_opt_dce_mark(imm, changed_ptr)
+                }
+            }
+
+            ii = ii + 1
+        }
+
+        unsafe { *(changed_ptr as uint64) -> changed }
+    }
+    dealloc(changed_ptr)
+
+    // Sweep phase: NOP-out instructions whose dest is not live and which have
+    // no side effects. We leave the BB linked list intact; the emitters treat
+    // opcode==0 as a no-op (no bytes emitted). Terminators are always kept
+    // via ir_opt_is_side_effect, so BB structure is preserved.
+    uint64 si = 0
+    while si < ir_insn_count {
+        uint64 op = ir_insn_opcode(si)
+        if op == 0 { si = si + 1; continue }
+        if ir_opt_is_side_effect(op) == 0 {
+            uint64 dest = ir_insn_dest(si)
+            uint64 is_live = 0
+            if dest > 0 && dest < 65536 {
+                uint64 lp = ir_dce_live + dest
+                uint8 lv = 0
+                unsafe { *(lp as uint8) -> lv }
+                is_live = lv
+            }
+            if is_live == 0 {
+                ir_insn_set_opcode(si, 0)
+            }
+        }
+        si = si + 1
+    }
+}
+
 @export
 fn ir_optimize() {
     if ir_const_values == 0 { ir_const_values = alloc(65536 * 8) }
     if ir_const_known == 0 { ir_const_known = alloc(65536) }
     memset(ir_const_known, 0, 65536)
     ir_opt_const_fold()
+    ir_opt_dce()
 }
 
 @export
