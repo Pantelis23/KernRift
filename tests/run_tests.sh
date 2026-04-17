@@ -2794,6 +2794,37 @@ else
 fi
 rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_bool_$$
 
+# --- char type ---
+echo ""
+echo "--- char type ---"
+
+TOTAL=$((TOTAL + 1))
+REPO_ROOT="$DIR/.."
+cat > "$REPO_ROOT/test_tmp_$$.kr" << 'CHAREOF'
+fn main() {
+    exit('A')
+}
+CHAREOF
+if timeout 10 "$KRC" $KRC_FLAGS "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_char_$$ > /dev/null 2>&1; then
+    chmod +x /tmp/krc_char_$$
+    timeout 3 /tmp/krc_char_$$ > /dev/null 2>&1
+    if [ $? = 65 ]; then PASS=$((PASS + 1)); echo "  char_literal: PASS"
+    else echo "FAIL: char_literal"; FAIL=$((FAIL + 1)); fi
+else echo "FAIL: char_literal (compile)"; FAIL=$((FAIL + 1)); fi
+rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_char_$$
+
+TOTAL=$((TOTAL + 1))
+cat > "$REPO_ROOT/test_tmp_$$.kr" << 'CHAREOF'
+fn main() {
+    uint64 x = 'A'
+    exit(0)
+}
+CHAREOF
+if timeout 10 "$KRC" $KRC_FLAGS "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_char_$$ > /dev/null 2>&1; then
+    echo "FAIL: char_reject_assign_int"; FAIL=$((FAIL + 1))
+else PASS=$((PASS + 1)); echo "  char_reject_assign_int: PASS"; fi
+rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_char_$$
+
 # --- IR optimizer tests ---
 echo ""
 echo "--- IR optimizer tests ---"

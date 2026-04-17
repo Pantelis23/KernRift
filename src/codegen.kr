@@ -1279,6 +1279,7 @@ fn type_tok_elem_size(uint64 type_tok) -> uint64 {
     uint64 wk = k
     if wk == 80 { return 1 }
     if wk == 98 { return 1 }
+    if wk == 99 { return 1 }
     if wk == 81 { return 2 }
     if wk == 82 { return 4 }
     if wk == 83 { return 8 }
