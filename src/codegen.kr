@@ -4257,330 +4257,222 @@ fn gen_expr(uint64 node) {
             return
         }
 
-        // Built-in: print(arg) — print string or integer to stdout
-        if is_extern_call == 0 && tok_matches(wct, "print", 5) != 0 {
-            uint32 first_arg = ast_child(node)
-            uint64 wfa = first_arg
-            uint32 arg_kind = ast_kind(wfa)
-            if arg_kind == 31 {
-                // String literal: evaluate to get pointer in rax
-                gen_expr(wfa)
-                // Save string pointer to temp_slot_0
-                emit_store_rax_to_stack(temp_slot_0)
-                // Inline strlen: rcx = ptr, loop until byte == 0
-                // mov rcx, rax
-                emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
-                // loop_start:
-                uint64 pr_loop = out_len
-                // movzx edx, byte [rcx] (0F B6 11)
-                emit_byte(0x0F); emit_byte(0xB6); emit_byte(0x11)
-                // test dl, dl (84 D2)
-                emit_byte(0x84); emit_byte(0xD2)
-                // jz done (skip inc+jmp = 3+2 = 5 bytes)
-                emit_byte(0x74); emit_byte(0x05)
-                // inc rcx (48 FF C1)
-                emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC1)
-                // jmp loop_start (EB XX)
-                emit_byte(0xEB)
-                uint64 pr_back = pr_loop - out_len - 1
-                uint8 pr_b = pr_back
-                emit_byte(pr_b)
-                // done: rcx points to null terminator
-                // len = rcx - ptr. Load ptr from temp_slot_0
-                emit_load_rax_from_stack(temp_slot_0)
-                // sub rcx, rax → rcx = length
-                emit_byte(0x48); emit_byte(0x29); emit_byte(0xC1)
-                // Now call write(1, buf, len)
-                if target_os == 2 {
-                    // Windows: GetStdHandle(-11) then WriteFile
-                    // Save len in temp_slot_1
-                    // mov rax, rcx
-                    emit_byte(0x48); emit_byte(0x89); emit_byte(0xC8)
-                    emit_store_rax_to_stack(temp_slot_1)
-                    // GetStdHandle(-11) for stdout
-                    emit_mov_rax_imm(0xFFFFFFFFFFFFFFF5)
-                    emit_mov_rcx_rax()
-                    emit_win_alloc_stack(0x20)
-                    emit_win_call_iat(1)
-                    emit_win_free_stack(0x20)
-                    // rax = handle
-                    emit_mov_rcx_rax()
-                    emit_load_rax_from_stack(temp_slot_0)
-                    emit_mov_rdx_rax()
-                    emit_load_rax_from_stack(temp_slot_1)
-                    emit_mov_r8_rax()
-                    emit_mov_r9_imm(0)
-                    emit_win_alloc_stack(0x30)
-                    emit_win_stack_arg5(0)
-                    emit_win_call_iat(2)
-                    emit_win_free_stack(0x30)
-                } else {
-                    // write(1, buf, len): rdi=1, rsi=buf, rdx=len
-                    // mov rdx, rcx (len)
-                    emit_byte(0x48); emit_byte(0x89); emit_byte(0xCA)
-                    emit_load_rax_from_stack(temp_slot_0)
-                    emit_mov_rsi_rax()
-                    emit_mov_rax_imm(1)
-                    emit_mov_rdi_rax()
-                    if target_os == 1 { emit_mov_rax_imm(0x2000004) } else { emit_mov_rax_imm(1) }
-                    emit_byte(0x0F); emit_byte(0x05)
+        // Built-in: print(arg,...) / println(arg,...) — variadic, space-separated
+        if is_extern_call == 0 && tok_matches(wct, "println", 7) != 0 || is_extern_call == 0 && tok_matches(wct, "print", 5) != 0 {
+            uint64 pr_is_pln = 0
+            if tok_matches(wct, "println", 7) != 0 { pr_is_pln = 1 }
+            uint64 digit_buf = var_frame_size
+            uint32 pr_warg = ast_child(node)
+            uint64 pr_first = 1
+            while pr_warg != 0 {
+                if pr_first == 0 {
+                    // Write a single space between arguments
+                    emit_byte(0xC6)
+                    if temp_slot_1 < 128 {
+                        emit_byte(0x44); emit_byte(0x24)
+                        uint8 pr_sp_off = temp_slot_1; emit_byte(pr_sp_off)
+                    } else {
+                        emit_byte(0x84); emit_byte(0x24); emit_u32_le(temp_slot_1)
+                    }
+                    emit_byte(0x20)
+                    if target_os == 2 {
+                        emit_mov_rax_imm(0xFFFFFFFFFFFFFFF5)
+                        emit_mov_rcx_rax()
+                        emit_win_alloc_stack(0x20)
+                        emit_win_call_iat(1)
+                        emit_win_free_stack(0x20)
+                        emit_mov_rcx_rax()
+                        emit_byte(0x48); emit_byte(0x8D)
+                        if temp_slot_1 < 128 {
+                            emit_byte(0x54); emit_byte(0x24)
+                            uint8 pr_sp_off2 = temp_slot_1; emit_byte(pr_sp_off2)
+                        } else {
+                            emit_byte(0x94); emit_byte(0x24); emit_u32_le(temp_slot_1)
+                        }
+                        emit_mov_rax_imm(1)
+                        emit_mov_r8_rax()
+                        emit_mov_r9_imm(0)
+                        emit_win_alloc_stack(0x30)
+                        emit_win_stack_arg5(0)
+                        emit_win_call_iat(2)
+                        emit_win_free_stack(0x30)
+                    } else {
+                        emit_mov_rax_imm(1)
+                        emit_mov_rdi_rax()
+                        emit_byte(0x48); emit_byte(0x8D)
+                        if temp_slot_1 < 128 {
+                            emit_byte(0x74); emit_byte(0x24)
+                            uint8 pr_sp_off3 = temp_slot_1; emit_byte(pr_sp_off3)
+                        } else {
+                            emit_byte(0xB4); emit_byte(0x24); emit_u32_le(temp_slot_1)
+                        }
+                        emit_mov_rax_imm(1)
+                        emit_mov_rdx_rax()
+                        if target_os == 1 { emit_mov_rax_imm(0x2000004) } else { emit_mov_rax_imm(1) }
+                        emit_byte(0x0F); emit_byte(0x05)
+                    }
                 }
-            } else {
-                // Integer: evaluate expression, format as decimal, write
-                gen_expr(wfa)
-                // Save value in temp_slot_0
-                emit_store_rax_to_stack(temp_slot_0)
-                // Use var_frame_size as digit buffer (20 bytes, past all locals)
-                uint64 digit_buf = var_frame_size
-                // Strategy: divide by 10 repeatedly, store digits in reverse
-                // Use rcx as digit count, rbx as buffer end pointer
+                pr_first = 0
 
-                // Handle zero specially: check if rax == 0
-                // test rax, rax
-                emit_byte(0x48); emit_byte(0x85); emit_byte(0xC0)
-                // jnz non_zero (near jump, 4-byte displacement)
-                emit_byte(0x0F); emit_byte(0x85)
-                uint64 pr_jnz_patch = out_len
-                emit_u32_le(0)
-
-                // Zero case: write "0"
-                // mov byte [rsp + digit_buf], '0' (0x30)
-                emit_byte(0xC6)
-                if digit_buf < 128 {
-                    emit_byte(0x44); emit_byte(0x24)
-                    uint8 ts1z = digit_buf
-                    emit_byte(ts1z)
+                uint32 pr_arg_kind = ast_kind(pr_warg)
+                if pr_arg_kind == 31 {
+                    // String literal
+                    gen_expr(pr_warg)
+                    emit_store_rax_to_stack(temp_slot_0)
+                    emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
+                    uint64 pr_sl = out_len
+                    emit_byte(0x0F); emit_byte(0xB6); emit_byte(0x11)
+                    emit_byte(0x84); emit_byte(0xD2)
+                    emit_byte(0x74); emit_byte(0x05)
+                    emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC1)
+                    emit_byte(0xEB)
+                    uint64 pr_slb = pr_sl - out_len - 1
+                    uint8 pr_slbb = pr_slb; emit_byte(pr_slbb)
+                    emit_load_rax_from_stack(temp_slot_0)
+                    emit_byte(0x48); emit_byte(0x29); emit_byte(0xC1)
+                    if target_os == 2 {
+                        emit_byte(0x48); emit_byte(0x89); emit_byte(0xC8)
+                        emit_store_rax_to_stack(temp_slot_1)
+                        emit_mov_rax_imm(0xFFFFFFFFFFFFFFF5)
+                        emit_mov_rcx_rax()
+                        emit_win_alloc_stack(0x20)
+                        emit_win_call_iat(1)
+                        emit_win_free_stack(0x20)
+                        emit_mov_rcx_rax()
+                        emit_load_rax_from_stack(temp_slot_0)
+                        emit_mov_rdx_rax()
+                        emit_load_rax_from_stack(temp_slot_1)
+                        emit_mov_r8_rax()
+                        emit_mov_r9_imm(0)
+                        emit_win_alloc_stack(0x30)
+                        emit_win_stack_arg5(0)
+                        emit_win_call_iat(2)
+                        emit_win_free_stack(0x30)
+                    } else {
+                        emit_byte(0x48); emit_byte(0x89); emit_byte(0xCA)
+                        emit_load_rax_from_stack(temp_slot_0)
+                        emit_mov_rsi_rax()
+                        emit_mov_rax_imm(1)
+                        emit_mov_rdi_rax()
+                        if target_os == 1 { emit_mov_rax_imm(0x2000004) } else { emit_mov_rax_imm(1) }
+                        emit_byte(0x0F); emit_byte(0x05)
+                    }
                 } else {
-                    emit_byte(0x84); emit_byte(0x24)
-                    emit_u32_le(digit_buf)
-                }
-                emit_byte(0x30)
-                // lea rsi, [rsp + digit_buf]
-                emit_byte(0x48); emit_byte(0x8D)
-                if digit_buf < 128 {
-                    emit_byte(0x74); emit_byte(0x24)
-                    uint8 ts1a = digit_buf
-                    emit_byte(ts1a)
-                } else {
-                    emit_byte(0xB4); emit_byte(0x24)
-                    emit_u32_le(digit_buf)
-                }
-                if target_os == 2 {
-                    // Windows WriteFile for "0"
-                    emit_mov_rax_imm(0xFFFFFFFFFFFFFFF5)
-                    emit_mov_rcx_rax()
-                    emit_win_alloc_stack(0x20)
-                    emit_win_call_iat(1)
-                    emit_win_free_stack(0x20)
-                    emit_mov_rcx_rax()
-                    // lea rdx, [rsp + digit_buf]
+                    // Integer: format as decimal string and write
+                    gen_expr(pr_warg)
+                    emit_store_rax_to_stack(temp_slot_0)
+                    emit_byte(0x48); emit_byte(0x85); emit_byte(0xC0)
+                    emit_byte(0x0F); emit_byte(0x85)
+                    uint64 pr_jnz = out_len; emit_u32_le(0)
+                    // Zero case
+                    emit_byte(0xC6)
+                    if digit_buf < 128 {
+                        emit_byte(0x44); emit_byte(0x24); uint8 pr_dz = digit_buf; emit_byte(pr_dz)
+                    } else {
+                        emit_byte(0x84); emit_byte(0x24); emit_u32_le(digit_buf)
+                    }
+                    emit_byte(0x30)
                     emit_byte(0x48); emit_byte(0x8D)
                     if digit_buf < 128 {
-                        emit_byte(0x54); emit_byte(0x24)
-                        uint8 ts1b = digit_buf
-                        emit_byte(ts1b)
+                        emit_byte(0x74); emit_byte(0x24); uint8 pr_dla = digit_buf; emit_byte(pr_dla)
                     } else {
-                        emit_byte(0x94); emit_byte(0x24)
-                        emit_u32_le(digit_buf)
+                        emit_byte(0xB4); emit_byte(0x24); emit_u32_le(digit_buf)
                     }
-                    emit_mov_rax_imm(1)
-                    emit_mov_r8_rax()
-                    emit_mov_r9_imm(0)
-                    emit_win_alloc_stack(0x30)
-                    emit_win_stack_arg5(0)
-                    emit_win_call_iat(2)
-                    emit_win_free_stack(0x30)
-                } else {
-                    emit_mov_rax_imm(1)
-                    emit_mov_rdi_rax()
-                    // rsi already set from lea above
-                    emit_mov_rax_imm(1)
-                    emit_mov_rdx_rax()
-                    if target_os == 1 { emit_mov_rax_imm(0x2000004) } else { emit_mov_rax_imm(1) }
-                    emit_byte(0x0F); emit_byte(0x05)
+                    if target_os == 2 {
+                        emit_mov_rax_imm(0xFFFFFFFFFFFFFFF5)
+                        emit_mov_rcx_rax()
+                        emit_win_alloc_stack(0x20)
+                        emit_win_call_iat(1)
+                        emit_win_free_stack(0x20)
+                        emit_mov_rcx_rax()
+                        emit_byte(0x48); emit_byte(0x8D)
+                        if digit_buf < 128 {
+                            emit_byte(0x54); emit_byte(0x24); uint8 pr_dlb = digit_buf; emit_byte(pr_dlb)
+                        } else {
+                            emit_byte(0x94); emit_byte(0x24); emit_u32_le(digit_buf)
+                        }
+                        emit_mov_rax_imm(1)
+                        emit_mov_r8_rax()
+                        emit_mov_r9_imm(0)
+                        emit_win_alloc_stack(0x30)
+                        emit_win_stack_arg5(0)
+                        emit_win_call_iat(2)
+                        emit_win_free_stack(0x30)
+                    } else {
+                        emit_mov_rax_imm(1)
+                        emit_mov_rdi_rax()
+                        emit_mov_rax_imm(1)
+                        emit_mov_rdx_rax()
+                        if target_os == 1 { emit_mov_rax_imm(0x2000004) } else { emit_mov_rax_imm(1) }
+                        emit_byte(0x0F); emit_byte(0x05)
+                    }
+                    emit_byte(0xE9)
+                    uint64 pr_jend = out_len; emit_u32_le(0)
+                    // non_zero
+                    uint64 pr_nz = out_len
+                    patch_u32(pr_jnz, pr_nz - pr_jnz - 4)
+                    emit_load_rax_from_stack(temp_slot_0)
+                    emit_byte(0x48); emit_byte(0x8D)
+                    uint64 pr_dend = digit_buf + 19
+                    if pr_dend < 128 {
+                        emit_byte(0x7C); emit_byte(0x24); uint8 pr_de = pr_dend; emit_byte(pr_de)
+                    } else {
+                        emit_byte(0xBC); emit_byte(0x24); emit_u32_le(pr_dend)
+                    }
+                    emit_byte(0x31); emit_byte(0xC9)
+                    emit_byte(0x49); emit_byte(0xC7); emit_byte(0xC0); emit_u32_le(10)
+                    uint64 pr_dloop = out_len
+                    emit_byte(0x31); emit_byte(0xD2)
+                    emit_byte(0x49); emit_byte(0xF7); emit_byte(0xF0)
+                    emit_byte(0x80); emit_byte(0xC2); emit_byte(0x30)
+                    emit_byte(0x88); emit_byte(0x17)
+                    emit_byte(0x48); emit_byte(0xFF); emit_byte(0xCF)
+                    emit_byte(0xFF); emit_byte(0xC1)
+                    emit_byte(0x48); emit_byte(0x85); emit_byte(0xC0)
+                    emit_byte(0x75)
+                    uint64 pr_dlb2 = pr_dloop - out_len - 1
+                    uint8 pr_dlbb2 = pr_dlb2; emit_byte(pr_dlbb2)
+                    emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC7)
+                    if target_os == 2 {
+                        emit_byte(0x57); emit_byte(0x51)
+                        emit_mov_rax_imm(0xFFFFFFFFFFFFFFF5)
+                        emit_mov_rcx_rax()
+                        emit_win_alloc_stack(0x20)
+                        emit_win_call_iat(1)
+                        emit_win_free_stack(0x20)
+                        emit_mov_rcx_rax()
+                        emit_byte(0x41); emit_byte(0x58)
+                        emit_byte(0x5A)
+                        emit_mov_r9_imm(0)
+                        emit_win_alloc_stack(0x30)
+                        emit_win_stack_arg5(0)
+                        emit_win_call_iat(2)
+                        emit_win_free_stack(0x30)
+                    } else {
+                        emit_byte(0x48); emit_byte(0x89); emit_byte(0xFE)
+                        emit_byte(0x48); emit_byte(0x89); emit_byte(0xCA)
+                        emit_mov_rax_imm(1)
+                        emit_mov_rdi_rax()
+                        if target_os == 1 { emit_mov_rax_imm(0x2000004) } else { emit_mov_rax_imm(1) }
+                        emit_byte(0x0F); emit_byte(0x05)
+                    }
+                    uint64 pr_eend = out_len
+                    patch_u32(pr_jend, pr_eend - pr_jend - 4)
                 }
-                // jmp to end (near, 4-byte displacement)
-                emit_byte(0xE9)
-                uint64 pr_jmp_end_patch = out_len
-                emit_u32_le(0)
-
-                // Patch jnz to here (non_zero label)
-                uint64 pr_nz = out_len
-                uint64 pr_nz_disp = pr_nz - pr_jnz_patch - 4
-                patch_u32(pr_jnz_patch, pr_nz_disp)
-
-                // Non-zero: convert integer to decimal string
-                // Load value from temp_slot_0 into rax
-                emit_load_rax_from_stack(temp_slot_0)
-                // lea rdi, [rsp + digit_buf + 19] — point to end of 20-byte buffer
-                emit_byte(0x48); emit_byte(0x8D)
-                uint64 buf_end_off = digit_buf + 19
-                if buf_end_off < 128 {
-                    emit_byte(0x7C); emit_byte(0x24)
-                    uint8 beo = buf_end_off
-                    emit_byte(beo)
-                } else {
-                    emit_byte(0xBC); emit_byte(0x24)
-                    emit_u32_le(buf_end_off)
-                }
-                // xor ecx, ecx — digit count
-                emit_byte(0x31); emit_byte(0xC9)
-                // mov r8, 10 — divisor
-                emit_byte(0x49); emit_byte(0xC7); emit_byte(0xC0)
-                emit_u32_le(10)
-
-                // div_loop:
-                uint64 pr_div_loop = out_len
-                // xor edx, edx (zero upper for div)
-                emit_byte(0x31); emit_byte(0xD2)
-                // div r8 (rax = quotient, rdx = remainder)
-                emit_byte(0x49); emit_byte(0xF7); emit_byte(0xF0)
-                // add dl, '0' (0x30)
-                emit_byte(0x80); emit_byte(0xC2); emit_byte(0x30)
-                // mov [rdi], dl
-                emit_byte(0x88); emit_byte(0x17)
-                // dec rdi
-                emit_byte(0x48); emit_byte(0xFF); emit_byte(0xCF)
-                // inc ecx
-                emit_byte(0xFF); emit_byte(0xC1)
-                // test rax, rax
-                emit_byte(0x48); emit_byte(0x85); emit_byte(0xC0)
-                // jnz div_loop
-                emit_byte(0x75)
-                uint64 pr_div_back = pr_div_loop - out_len - 1
-                uint8 pr_db = pr_div_back
-                emit_byte(pr_db)
-
-                // rdi points one before first digit, rcx = digit count
-                // inc rdi to point to first digit
-                emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC7)
-                // Now write(1, rdi, rcx)
-                if target_os == 2 {
-                    // Save rdi (buf) and rcx (count) — 2 pushes = 16 bytes (preserves alignment)
-                    // push rdi
-                    emit_byte(0x57)
-                    // push rcx
-                    emit_byte(0x51)
-                    // GetStdHandle(-11)
-                    emit_mov_rax_imm(0xFFFFFFFFFFFFFFF5)
-                    emit_mov_rcx_rax()
-                    emit_win_alloc_stack(0x20)
-                    emit_win_call_iat(1)
-                    emit_win_free_stack(0x20)
-                    emit_mov_rcx_rax()
-                    // pop r8 (count)
-                    emit_byte(0x41); emit_byte(0x58)
-                    // pop rdx (buf)
-                    emit_byte(0x5A)
-                    emit_mov_r9_imm(0)
-                    emit_win_alloc_stack(0x30)
-                    emit_win_stack_arg5(0)
-                    emit_win_call_iat(2)
-                    emit_win_free_stack(0x30)
-                } else {
-                    // write(1, rdi, rcx)
-                    // mov rsi, rdi
-                    emit_byte(0x48); emit_byte(0x89); emit_byte(0xFE)
-                    // mov rdx, rcx (len)
-                    emit_byte(0x48); emit_byte(0x89); emit_byte(0xCA)
-                    emit_mov_rax_imm(1)
-                    emit_mov_rdi_rax()
-                    if target_os == 1 { emit_mov_rax_imm(0x2000004) } else { emit_mov_rax_imm(1) }
-                    emit_byte(0x0F); emit_byte(0x05)
-                }
-
-                // Patch jmp_end to here
-                uint64 pr_end = out_len
-                uint64 pr_end_disp = pr_end - pr_jmp_end_patch - 4
-                patch_u32(pr_jmp_end_patch, pr_end_disp)
+                uint32 pr_nxt = ast_next(pr_warg)
+                pr_warg = pr_nxt
             }
-            return
-        }
 
-        // Built-in: println(arg) — same as print but adds newline
-        if is_extern_call == 0 && tok_matches(wct, "println", 7) != 0 {
-            uint32 first_arg = ast_child(node)
-            uint64 wfa = first_arg
-            uint32 arg_kind = ast_kind(wfa)
-            if arg_kind == 31 {
-                // String literal: evaluate to get pointer in rax
-                gen_expr(wfa)
-                emit_store_rax_to_stack(temp_slot_0)
-                // Inline strlen
-                emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
-                uint64 pn_loop = out_len
-                emit_byte(0x0F); emit_byte(0xB6); emit_byte(0x11)
-                emit_byte(0x84); emit_byte(0xD2)
-                emit_byte(0x74); emit_byte(0x05)
-                emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC1)
-                emit_byte(0xEB)
-                uint64 pn_back = pn_loop - out_len - 1
-                uint8 pn_b = pn_back
-                emit_byte(pn_b)
-                // len = rcx - ptr
-                emit_load_rax_from_stack(temp_slot_0)
-                emit_byte(0x48); emit_byte(0x29); emit_byte(0xC1)
-                if target_os == 2 {
-                    // Save length
-                    emit_byte(0x48); emit_byte(0x89); emit_byte(0xC8)
-                    emit_store_rax_to_stack(temp_slot_1)
-                    emit_mov_rax_imm(0xFFFFFFFFFFFFFFF5)
-                    emit_mov_rcx_rax()
-                    emit_win_alloc_stack(0x20)
-                    emit_win_call_iat(1)
-                    emit_win_free_stack(0x20)
-                    emit_mov_rcx_rax()
-                    emit_load_rax_from_stack(temp_slot_0)
-                    emit_mov_rdx_rax()
-                    emit_load_rax_from_stack(temp_slot_1)
-                    emit_mov_r8_rax()
-                    emit_mov_r9_imm(0)
-                    emit_win_alloc_stack(0x30)
-                    emit_win_stack_arg5(0)
-                    emit_win_call_iat(2)
-                    emit_win_free_stack(0x30)
-                } else {
-                    emit_byte(0x48); emit_byte(0x89); emit_byte(0xCA)
-                    emit_load_rax_from_stack(temp_slot_0)
-                    emit_mov_rsi_rax()
-                    emit_mov_rax_imm(1)
-                    emit_mov_rdi_rax()
-                    if target_os == 1 { emit_mov_rax_imm(0x2000004) } else { emit_mov_rax_imm(1) }
-                    emit_byte(0x0F); emit_byte(0x05)
-                }
-            } else {
-                // Integer: same as print integer path
-                gen_expr(wfa)
-                emit_store_rax_to_stack(temp_slot_0)
-                // Use var_frame_size as digit buffer (20 bytes, past all locals)
-                uint64 digit_buf2 = var_frame_size
-
-                emit_byte(0x48); emit_byte(0x85); emit_byte(0xC0)
-                // jnz non_zero (near jump, 4-byte displacement)
-                emit_byte(0x0F); emit_byte(0x85)
-                uint64 pn_jnz_patch = out_len
-                emit_u32_le(0)
-
-                // Zero case
+            if pr_is_pln != 0 {
+                // Emit newline
                 emit_byte(0xC6)
-                if digit_buf2 < 128 {
+                if temp_slot_1 < 128 {
                     emit_byte(0x44); emit_byte(0x24)
-                    uint8 ts1z2 = digit_buf2
-                    emit_byte(ts1z2)
+                    uint8 pr_nloff = temp_slot_1; emit_byte(pr_nloff)
                 } else {
-                    emit_byte(0x84); emit_byte(0x24)
-                    emit_u32_le(digit_buf2)
+                    emit_byte(0x84); emit_byte(0x24); emit_u32_le(temp_slot_1)
                 }
-                emit_byte(0x30)
-                emit_byte(0x48); emit_byte(0x8D)
-                if digit_buf2 < 128 {
-                    emit_byte(0x74); emit_byte(0x24)
-                    uint8 ts1a2 = digit_buf2
-                    emit_byte(ts1a2)
-                } else {
-                    emit_byte(0xB4); emit_byte(0x24)
-                    emit_u32_le(digit_buf2)
-                }
+                emit_byte(0x0A)
                 if target_os == 2 {
                     emit_mov_rax_imm(0xFFFFFFFFFFFFFFF5)
                     emit_mov_rcx_rax()
@@ -4589,13 +4481,11 @@ fn gen_expr(uint64 node) {
                     emit_win_free_stack(0x20)
                     emit_mov_rcx_rax()
                     emit_byte(0x48); emit_byte(0x8D)
-                    if digit_buf2 < 128 {
+                    if temp_slot_1 < 128 {
                         emit_byte(0x54); emit_byte(0x24)
-                        uint8 ts1b2 = digit_buf2
-                        emit_byte(ts1b2)
+                        uint8 pr_nloff2 = temp_slot_1; emit_byte(pr_nloff2)
                     } else {
-                        emit_byte(0x94); emit_byte(0x24)
-                        emit_u32_le(digit_buf2)
+                        emit_byte(0x94); emit_byte(0x24); emit_u32_le(temp_slot_1)
                     }
                     emit_mov_rax_imm(1)
                     emit_mov_r8_rax()
@@ -4607,132 +4497,18 @@ fn gen_expr(uint64 node) {
                 } else {
                     emit_mov_rax_imm(1)
                     emit_mov_rdi_rax()
+                    emit_byte(0x48); emit_byte(0x8D)
+                    if temp_slot_1 < 128 {
+                        emit_byte(0x74); emit_byte(0x24)
+                        uint8 pr_nloff3 = temp_slot_1; emit_byte(pr_nloff3)
+                    } else {
+                        emit_byte(0xB4); emit_byte(0x24); emit_u32_le(temp_slot_1)
+                    }
                     emit_mov_rax_imm(1)
                     emit_mov_rdx_rax()
                     if target_os == 1 { emit_mov_rax_imm(0x2000004) } else { emit_mov_rax_imm(1) }
                     emit_byte(0x0F); emit_byte(0x05)
                 }
-                emit_byte(0xE9)
-                uint64 pn_jmp_end_patch = out_len
-                emit_u32_le(0)
-
-                uint64 pn_nz = out_len
-                uint64 pn_nz_disp = pn_nz - pn_jnz_patch - 4
-                patch_u32(pn_jnz_patch, pn_nz_disp)
-
-                emit_load_rax_from_stack(temp_slot_0)
-                emit_byte(0x48); emit_byte(0x8D)
-                uint64 buf_end_off2 = digit_buf2 + 19
-                if buf_end_off2 < 128 {
-                    emit_byte(0x7C); emit_byte(0x24)
-                    uint8 beo2 = buf_end_off2
-                    emit_byte(beo2)
-                } else {
-                    emit_byte(0xBC); emit_byte(0x24)
-                    emit_u32_le(buf_end_off2)
-                }
-                emit_byte(0x31); emit_byte(0xC9)
-                emit_byte(0x49); emit_byte(0xC7); emit_byte(0xC0)
-                emit_u32_le(10)
-
-                uint64 pn_div_loop = out_len
-                emit_byte(0x31); emit_byte(0xD2)
-                emit_byte(0x49); emit_byte(0xF7); emit_byte(0xF0)
-                emit_byte(0x80); emit_byte(0xC2); emit_byte(0x30)
-                emit_byte(0x88); emit_byte(0x17)
-                emit_byte(0x48); emit_byte(0xFF); emit_byte(0xCF)
-                emit_byte(0xFF); emit_byte(0xC1)
-                emit_byte(0x48); emit_byte(0x85); emit_byte(0xC0)
-                emit_byte(0x75)
-                uint64 pn_div_back = pn_div_loop - out_len - 1
-                uint8 pn_db = pn_div_back
-                emit_byte(pn_db)
-
-                emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC7)
-
-                if target_os == 2 {
-                    // 2 pushes = 16 bytes (preserves alignment)
-                    emit_byte(0x57)  // push rdi (buf)
-                    emit_byte(0x51)  // push rcx (count)
-                    emit_mov_rax_imm(0xFFFFFFFFFFFFFFF5)
-                    emit_mov_rcx_rax()
-                    emit_win_alloc_stack(0x20)
-                    emit_win_call_iat(1)
-                    emit_win_free_stack(0x20)
-                    emit_mov_rcx_rax()
-                    emit_byte(0x41); emit_byte(0x58)  // pop r8 (count)
-                    emit_byte(0x5A)                    // pop rdx (buf)
-                    emit_mov_r9_imm(0)
-                    emit_win_alloc_stack(0x30)
-                    emit_win_stack_arg5(0)
-                    emit_win_call_iat(2)
-                    emit_win_free_stack(0x30)
-                } else {
-                    emit_byte(0x48); emit_byte(0x89); emit_byte(0xFE)
-                    emit_byte(0x48); emit_byte(0x89); emit_byte(0xCA)
-                    emit_mov_rax_imm(1)
-                    emit_mov_rdi_rax()
-                    if target_os == 1 { emit_mov_rax_imm(0x2000004) } else { emit_mov_rax_imm(1) }
-                    emit_byte(0x0F); emit_byte(0x05)
-                }
-
-                uint64 pn_end = out_len
-                uint64 pn_end_disp = pn_end - pn_jmp_end_patch - 4
-                patch_u32(pn_jmp_end_patch, pn_end_disp)
-            }
-
-            // Now emit newline: write(1, "\n", 1)
-            // Store '\n' (0x0A) on stack at temp_slot_1
-            emit_byte(0xC6)
-            if temp_slot_1 < 128 {
-                emit_byte(0x44); emit_byte(0x24)
-                uint8 ts1nl = temp_slot_1
-                emit_byte(ts1nl)
-            } else {
-                emit_byte(0x84); emit_byte(0x24)
-                emit_u32_le(temp_slot_1)
-            }
-            emit_byte(0x0A)
-            if target_os == 2 {
-                emit_mov_rax_imm(0xFFFFFFFFFFFFFFF5)
-                emit_mov_rcx_rax()
-                emit_win_alloc_stack(0x20)
-                emit_win_call_iat(1)
-                emit_win_free_stack(0x20)
-                emit_mov_rcx_rax()
-                emit_byte(0x48); emit_byte(0x8D)
-                if temp_slot_1 < 128 {
-                    emit_byte(0x54); emit_byte(0x24)
-                    uint8 ts1nl2 = temp_slot_1
-                    emit_byte(ts1nl2)
-                } else {
-                    emit_byte(0x94); emit_byte(0x24)
-                    emit_u32_le(temp_slot_1)
-                }
-                emit_mov_rax_imm(1)
-                emit_mov_r8_rax()
-                emit_mov_r9_imm(0)
-                emit_win_alloc_stack(0x30)
-                emit_win_stack_arg5(0)
-                emit_win_call_iat(2)
-                emit_win_free_stack(0x30)
-            } else {
-                // write(1, &nl, 1)
-                emit_mov_rax_imm(1)
-                emit_mov_rdi_rax()
-                emit_byte(0x48); emit_byte(0x8D)
-                if temp_slot_1 < 128 {
-                    emit_byte(0x74); emit_byte(0x24)
-                    uint8 ts1nl3 = temp_slot_1
-                    emit_byte(ts1nl3)
-                } else {
-                    emit_byte(0xB4); emit_byte(0x24)
-                    emit_u32_le(temp_slot_1)
-                }
-                emit_mov_rax_imm(1)
-                emit_mov_rdx_rax()
-                if target_os == 1 { emit_mov_rax_imm(0x2000004) } else { emit_mov_rax_imm(1) }
-                emit_byte(0x0F); emit_byte(0x05)
             }
             return
         }

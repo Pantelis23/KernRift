@@ -2864,6 +2864,40 @@ run_test_output "println_char" \
     "fn main() { println('A'); exit(0) }" \
     "A"
 
+# --- variadic print ---
+echo ""
+echo "--- variadic print ---"
+
+TOTAL=$((TOTAL + 1))
+cat > "$REPO_ROOT/test_tmp_$$.kr" << 'VEOF'
+fn main() {
+    print("Here is a number,", 42)
+    exit(0)
+}
+VEOF
+if timeout 10 "$KRC" $KRC_FLAGS "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_v_$$ > /dev/null 2>&1; then
+    chmod +x /tmp/krc_v_$$
+    got=$(timeout 3 /tmp/krc_v_$$)
+    if [ "$got" = "Here is a number, 42" ]; then PASS=$((PASS + 1)); echo "  print_multi_int: PASS"
+    else echo "FAIL: print_multi_int (got '$got')"; FAIL=$((FAIL + 1)); fi
+else echo "FAIL: print_multi_int (compile)"; FAIL=$((FAIL + 1)); fi
+rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_v_$$
+
+TOTAL=$((TOTAL + 1))
+cat > "$REPO_ROOT/test_tmp_$$.kr" << 'VEOF'
+fn main() {
+    println("n=", 5, "ok=", true)
+    exit(0)
+}
+VEOF
+if timeout 10 "$KRC" $KRC_FLAGS "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_v_$$ > /dev/null 2>&1; then
+    chmod +x /tmp/krc_v_$$
+    got=$(timeout 3 /tmp/krc_v_$$)
+    if [ "$got" = "n= 5 ok= true" ]; then PASS=$((PASS + 1)); echo "  println_multi_mixed: PASS"
+    else echo "FAIL: println_multi_mixed (got '$got')"; FAIL=$((FAIL + 1)); fi
+else echo "FAIL: println_multi_mixed (compile)"; FAIL=$((FAIL + 1)); fi
+rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_v_$$
+
 # --- IR optimizer tests ---
 echo ""
 echo "--- IR optimizer tests ---"

@@ -1685,130 +1685,99 @@ fn ir_lower_expr(uint64 node) -> uint64 {
             return size_v
         }
 
-        // print(arg) — write string or integer to stdout
-        if tok_matches(wct, "print", 5) != 0 {
-            uint32 first_arg = ast_child(node)
-            uint64 wfa = first_arg
-            uint32 arg_kind = ast_kind(wfa)
-            if arg_kind == 31 {
-                // String literal: write(1, s, str_len(s))
-                uint64 s_v = ir_lower_expr(wfa)
-                uint64 len_v = ir_new_vreg()
-                ir_emit(IR_STRLEN, len_v, s_v, 0, 0, ir_current_bb)
-                uint64 fd_v = ir_new_vreg()
-                ir_emit(IR_CONST, fd_v, 0, 0, 1, ir_current_bb)
-                ir_emit(IR_ARG, 0, fd_v, 0, 0, ir_current_bb)
-                ir_emit(IR_ARG, 0, s_v, 0, 1, ir_current_bb)
-                ir_emit(IR_ARG, 0, len_v, 0, 2, ir_current_bb)
-                uint64 wr = ir_new_vreg()
-                ir_emit(IR_SYSCALL, wr, 0, 0, 1, ir_current_bb)
-            } else {
-                // Integer/float/bool/char: type-directed dispatch
-                uint64 val_v = ir_lower_expr(wfa)
-                uint64 buf_v = ir_new_vreg()
-                ir_emit(IR_ALLOC, buf_v, 0, 0, 32, ir_current_bb)
-                uint64 len_v = ir_new_vreg()
-                uint64 fk = ir_vreg_fkind_get(val_v)
-                if fk == 1 {
-                    // f64 -> IR_FMT_F64(len, buf, val)
-                    ir_emit(IR_FMT_F64, len_v, buf_v, val_v, 0, ir_current_bb)
-                } else if fk == 2 {
-                    // f32 -> cvt to f64 first, then IR_FMT_F64
-                    uint64 f64v = ir_new_vreg()
-                    ir_emit(IR_F32TOF64, f64v, val_v, 0, 0, ir_current_bb)
-                    ir_vreg_fkind_set(f64v, 1)
-                    ir_emit(IR_FMT_F64, len_v, buf_v, f64v, 0, ir_current_bb)
-                } else if fk == 3 {
-                    // bool -> IR_FMT_BOOL(len, buf, val)
-                    ir_emit(IR_FMT_BOOL, len_v, buf_v, val_v, 0, ir_current_bb)
-                } else if fk == 4 {
-                    // char -> store byte, len = 1
-                    ir_emit(IR_STORE, 1, buf_v, val_v, 0, ir_current_bb)
-                    ir_emit(IR_CONST, len_v, 0, 0, 1, ir_current_bb)
-                } else {
-                    // integer -> IR_FMT_UINT (unchanged)
-                    ir_emit(IR_FMT_UINT, len_v, buf_v, val_v, 0, ir_current_bb)
-                }
-                uint64 fd_v = ir_new_vreg()
-                ir_emit(IR_CONST, fd_v, 0, 0, 1, ir_current_bb)
-                ir_emit(IR_ARG, 0, fd_v, 0, 0, ir_current_bb)
-                ir_emit(IR_ARG, 0, buf_v, 0, 1, ir_current_bb)
-                ir_emit(IR_ARG, 0, len_v, 0, 2, ir_current_bb)
-                uint64 wr = ir_new_vreg()
-                ir_emit(IR_SYSCALL, wr, 0, 0, 1, ir_current_bb)
-                ir_emit(IR_DEALLOC, 0, buf_v, 0, 0, ir_current_bb)
-            }
-            uint64 zero = ir_new_vreg()
-            ir_emit(IR_CONST, zero, 0, 0, 0, ir_current_bb)
-            return zero
-        }
+        // print(arg, ...) / println(arg, ...) — variadic, space-separated args
+        if tok_matches(wct, "println", 7) != 0 || tok_matches(wct, "print", 5) != 0 {
+            uint64 is_println = tok_matches(wct, "println", 7)
+            uint64 buf_v = ir_new_vreg()
+            ir_emit(IR_ALLOC, buf_v, 0, 0, 4096, ir_current_bb)
+            uint64 off_v = ir_new_vreg()
+            ir_emit(IR_CONST, off_v, 0, 0, 0, ir_current_bb)
 
-        // println(arg) — print then newline
-        if tok_matches(wct, "println", 7) != 0 {
-            uint32 first_arg = ast_child(node)
-            uint64 wfa = first_arg
-            uint32 arg_kind = ast_kind(wfa)
-            if arg_kind == 31 {
-                uint64 s_v = ir_lower_expr(wfa)
-                uint64 len_v = ir_new_vreg()
-                ir_emit(IR_STRLEN, len_v, s_v, 0, 0, ir_current_bb)
-                uint64 fd_v = ir_new_vreg()
-                ir_emit(IR_CONST, fd_v, 0, 0, 1, ir_current_bb)
-                ir_emit(IR_ARG, 0, fd_v, 0, 0, ir_current_bb)
-                ir_emit(IR_ARG, 0, s_v, 0, 1, ir_current_bb)
-                ir_emit(IR_ARG, 0, len_v, 0, 2, ir_current_bb)
-                uint64 wr = ir_new_vreg()
-                ir_emit(IR_SYSCALL, wr, 0, 0, 1, ir_current_bb)
-            } else {
-                // Integer/float/bool/char: type-directed dispatch
-                uint64 val_v = ir_lower_expr(wfa)
-                uint64 buf_v = ir_new_vreg()
-                ir_emit(IR_ALLOC, buf_v, 0, 0, 32, ir_current_bb)
-                uint64 len_v = ir_new_vreg()
-                uint64 fk = ir_vreg_fkind_get(val_v)
-                if fk == 1 {
-                    // f64 -> IR_FMT_F64(len, buf, val)
-                    ir_emit(IR_FMT_F64, len_v, buf_v, val_v, 0, ir_current_bb)
-                } else if fk == 2 {
-                    // f32 -> cvt to f64 first, then IR_FMT_F64
-                    uint64 f64v = ir_new_vreg()
-                    ir_emit(IR_F32TOF64, f64v, val_v, 0, 0, ir_current_bb)
-                    ir_vreg_fkind_set(f64v, 1)
-                    ir_emit(IR_FMT_F64, len_v, buf_v, f64v, 0, ir_current_bb)
-                } else if fk == 3 {
-                    // bool -> IR_FMT_BOOL(len, buf, val)
-                    ir_emit(IR_FMT_BOOL, len_v, buf_v, val_v, 0, ir_current_bb)
-                } else if fk == 4 {
-                    // char -> store byte, len = 1
-                    ir_emit(IR_STORE, 1, buf_v, val_v, 0, ir_current_bb)
-                    ir_emit(IR_CONST, len_v, 0, 0, 1, ir_current_bb)
-                } else {
-                    // integer -> IR_FMT_UINT (unchanged)
-                    ir_emit(IR_FMT_UINT, len_v, buf_v, val_v, 0, ir_current_bb)
+            uint32 warg = ast_child(node)
+            uint64 first = 1
+            while warg != 0 {
+                if first == 0 {
+                    // Write space separator between arguments
+                    uint64 space_v = ir_new_vreg()
+                    ir_emit(IR_CONST, space_v, 0, 0, 32, ir_current_bb)
+                    uint64 sp_addr = ir_new_vreg()
+                    ir_emit(IR_ADD, sp_addr, buf_v, off_v, 0, ir_current_bb)
+                    ir_emit(IR_STORE, 1, sp_addr, space_v, 0, ir_current_bb)
+                    uint64 one_sp = ir_new_vreg()
+                    ir_emit(IR_CONST, one_sp, 0, 0, 1, ir_current_bb)
+                    uint64 off_sp = ir_new_vreg()
+                    ir_emit(IR_ADD, off_sp, off_v, one_sp, 0, ir_current_bb)
+                    off_v = off_sp
                 }
-                uint64 fd_v = ir_new_vreg()
-                ir_emit(IR_CONST, fd_v, 0, 0, 1, ir_current_bb)
-                ir_emit(IR_ARG, 0, fd_v, 0, 0, ir_current_bb)
-                ir_emit(IR_ARG, 0, buf_v, 0, 1, ir_current_bb)
-                ir_emit(IR_ARG, 0, len_v, 0, 2, ir_current_bb)
-                uint64 wr = ir_new_vreg()
-                ir_emit(IR_SYSCALL, wr, 0, 0, 1, ir_current_bb)
-                ir_emit(IR_DEALLOC, 0, buf_v, 0, 0, ir_current_bb)
+                first = 0
+
+                uint64 slot_v = ir_new_vreg()
+                ir_emit(IR_ADD, slot_v, buf_v, off_v, 0, ir_current_bb)
+
+                uint32 arg_kind = ast_kind(warg)
+                uint64 len_v = ir_new_vreg()
+                if arg_kind == 31 {
+                    // String literal: STRLEN + MEMCPY
+                    uint64 s_v = ir_lower_expr(warg)
+                    ir_emit(IR_STRLEN, len_v, s_v, 0, 0, ir_current_bb)
+                    uint64 mc_dummy = ir_new_vreg()
+                    ir_emit(IR_MEMCPY, mc_dummy, slot_v, s_v, len_v, ir_current_bb)
+                } else {
+                    // Typed value: dispatch on float-kind
+                    uint64 val_v = ir_lower_expr(warg)
+                    uint64 fk = ir_vreg_fkind_get(val_v)
+                    if fk == 1 {
+                        // f64
+                        ir_emit(IR_FMT_F64, len_v, slot_v, val_v, 0, ir_current_bb)
+                    } else if fk == 2 {
+                        // f32 -> promote to f64 first
+                        uint64 f64v = ir_new_vreg()
+                        ir_emit(IR_F32TOF64, f64v, val_v, 0, 0, ir_current_bb)
+                        ir_vreg_fkind_set(f64v, 1)
+                        ir_emit(IR_FMT_F64, len_v, slot_v, f64v, 0, ir_current_bb)
+                    } else if fk == 3 {
+                        // bool
+                        ir_emit(IR_FMT_BOOL, len_v, slot_v, val_v, 0, ir_current_bb)
+                    } else if fk == 4 {
+                        // char -> single byte
+                        ir_emit(IR_STORE, 1, slot_v, val_v, 0, ir_current_bb)
+                        ir_emit(IR_CONST, len_v, 0, 0, 1, ir_current_bb)
+                    } else {
+                        // integer
+                        ir_emit(IR_FMT_UINT, len_v, slot_v, val_v, 0, ir_current_bb)
+                    }
+                }
+
+                uint64 off_next = ir_new_vreg()
+                ir_emit(IR_ADD, off_next, off_v, len_v, 0, ir_current_bb)
+                off_v = off_next
+
+                uint32 nxt = ast_next(warg)
+                warg = nxt
             }
-            // Write newline
-            uint64 nl_v = ir_new_vreg()
-            ir_emit(IR_CONST, nl_v, 0, 0, 10, ir_current_bb)
-            uint64 nlbuf = ir_new_vreg()
-            ir_emit(IR_ALLOC, nlbuf, 0, 0, 1, ir_current_bb)
-            ir_emit(IR_STORE, 0, nlbuf, nl_v, 1, ir_current_bb)
-            uint64 one_v = ir_new_vreg()
-            ir_emit(IR_CONST, one_v, 0, 0, 1, ir_current_bb)
-            ir_emit(IR_ARG, 0, one_v, 0, 0, ir_current_bb)
-            ir_emit(IR_ARG, 0, nlbuf, 0, 1, ir_current_bb)
-            ir_emit(IR_ARG, 0, one_v, 0, 2, ir_current_bb)
-            uint64 wr2 = ir_new_vreg()
-            ir_emit(IR_SYSCALL, wr2, 0, 0, 1, ir_current_bb)
-            ir_emit(IR_DEALLOC, 0, nlbuf, 0, 0, ir_current_bb)
+
+            if is_println != 0 {
+                // Append newline
+                uint64 nl_v = ir_new_vreg()
+                ir_emit(IR_CONST, nl_v, 0, 0, 10, ir_current_bb)
+                uint64 nl_addr = ir_new_vreg()
+                ir_emit(IR_ADD, nl_addr, buf_v, off_v, 0, ir_current_bb)
+                ir_emit(IR_STORE, 1, nl_addr, nl_v, 0, ir_current_bb)
+                uint64 one_nl = ir_new_vreg()
+                ir_emit(IR_CONST, one_nl, 0, 0, 1, ir_current_bb)
+                uint64 off_nl = ir_new_vreg()
+                ir_emit(IR_ADD, off_nl, off_v, one_nl, 0, ir_current_bb)
+                off_v = off_nl
+            }
+
+            uint64 fd_v = ir_new_vreg()
+            ir_emit(IR_CONST, fd_v, 0, 0, 1, ir_current_bb)
+            ir_emit(IR_ARG, 0, fd_v, 0, 0, ir_current_bb)
+            ir_emit(IR_ARG, 0, buf_v, 0, 1, ir_current_bb)
+            ir_emit(IR_ARG, 0, off_v, 0, 2, ir_current_bb)
+            uint64 wr = ir_new_vreg()
+            ir_emit(IR_SYSCALL, wr, 0, 0, 1, ir_current_bb)
+            ir_emit(IR_DEALLOC, 0, buf_v, 0, 0, ir_current_bb)
             uint64 zero = ir_new_vreg()
             ir_emit(IR_CONST, zero, 0, 0, 0, ir_current_bb)
             return zero

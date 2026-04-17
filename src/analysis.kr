@@ -955,8 +955,8 @@ fn is_builtin(uint64 tok_idx) -> uint64 {
 fn builtin_arg_count(uint64 tok_idx) -> uint64 {
     // 1-arg builtins
     if sema_tok_matches(tok_idx, "exit", 4) != 0 { return 1 }
-    if sema_tok_matches(tok_idx, "print", 5) != 0 { return 1 }
-    if sema_tok_matches(tok_idx, "println", 7) != 0 { return 1 }
+    if sema_tok_matches(tok_idx, "print", 5) != 0 { return 0xFFFFFFFF }
+    if sema_tok_matches(tok_idx, "println", 7) != 0 { return 0xFFFFFFFF }
     if sema_tok_matches(tok_idx, "print_str", 9) != 0 { return 1 }
     if sema_tok_matches(tok_idx, "println_str", 11) != 0 { return 1 }
     if sema_tok_matches(tok_idx, "load8", 5) != 0 { return 1 }
