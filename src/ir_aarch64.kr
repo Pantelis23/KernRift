@@ -148,8 +148,8 @@ fn ir_a64_syscall_nr(uint64 abstract_nr) -> uint64 {
     if abstract_nr == 11 { return 215 }    // munmap -> 215
     if abstract_nr == 59 { return 221 }    // execve -> 221
     if abstract_nr == 228 { return 113 }   // clock_gettime -> 113
-    if abstract_nr == 15 { return 52 }     // chmod -> fchmodat (52)
-    if abstract_nr == 90 { return 52 }     // fchmod -> fchmodat (52)
+    if abstract_nr == 15 { return 53 }     // chmod -> fchmodat (53)
+    if abstract_nr == 90 { return 53 }     // fchmod -> fchmodat (53)
     if abstract_nr == 257 { return 56 }    // openat -> 56
     return abstract_nr
 }
