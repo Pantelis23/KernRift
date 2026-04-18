@@ -650,6 +650,16 @@ else
     PASS=$((PASS + 1))
 fi
 rm -f "$DIR/../test_tmp_uvu_$$.kr" /tmp/krc_uvu_$$
+
+TOTAL=$((TOTAL + 1))
+printf 'fn main() { u8 b = 10; b = 300; exit(b) }\n' > "$DIR/../test_tmp_tas_$$.kr"
+tas_out=$($KRC $KRC_FLAGS "$DIR/../test_tmp_tas_$$.kr" -o /tmp/krc_tas_$$ 2>&1)
+if echo "$tas_out" | grep -q "literal assignment does not fit"; then
+    PASS=$((PASS + 1))
+else
+    echo "FAIL: literal_assign_warns (no warning emitted)"; FAIL=$((FAIL + 1))
+fi
+rm -f "$DIR/../test_tmp_tas_$$.kr" /tmp/krc_tas_$$
 run_test "alloc_aligned_64" 'import "std/mem.kr"
 fn main() {
     uint64 buf = alloc_aligned(100, 64)

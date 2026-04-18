@@ -1182,12 +1182,16 @@ fn sema_check_stmt(uint64 node) {
     if kind == 10 {
         uint32 init = ast_child(node)
         uint64 winit = init
+        // Decode the declared type here so both the init-expression
+        // checks and the later sema_var_declare call can see it.
+        uint32 vd_type_tok_idx = ast_data1(node)
+        uint64 vd_type_tok = vd_type_tok_idx
+        uint64 decl_type_kind = sema_tok_kind(vd_type_tok)
         if winit != 0 {
             sema_check_expr(winit)
             // Strict bool/int separation: check type tag of initializer
             uint32 type_tok_idx = ast_data1(node)
             uint64 wtype_tok = type_tok_idx
-            uint64 decl_type_kind = sema_tok_kind(wtype_tok)
             // Get init expression type tag (data4 for IntLit bool-tagged nodes)
             uint32 init_kind_raw = ast_kind(winit)
             uint64 winit_kind = init_kind_raw
@@ -1236,13 +1240,16 @@ fn sema_check_stmt(uint64 node) {
                 }
             }
         }
-        // Register the new variable for unused-variable tracking. If it
-        // has an initializer, also mark it initialized. Params came in
-        // pre-declared in sema_check_functions.
+        // Register the new variable for unused-variable tracking. We
+        // store the declared type's keyword kind (80 = u8, 81 = u16,
+        // 82 = u32, …) so later Assign checks can re-derive the width
+        // without a second AST lookup. If it has an initializer, also
+        // mark it initialized. Params came in pre-declared in
+        // sema_check_functions.
         uint32 vd_name_tok = ast_data2(node)
         uint64 wvd_name = vd_name_tok
         if wvd_name != 0 {
-            sema_var_declare(wvd_name, 0, 0)
+            sema_var_declare(wvd_name, decl_type_kind, 0)
             if winit != 0 && sema_var_count_v > 0 {
                 sema_var_mark_init(sema_var_count_v - 1)
             }
@@ -1255,13 +1262,37 @@ fn sema_check_stmt(uint64 node) {
         uint32 val = ast_child(node)
         uint64 wval = val
         if wval != 0 { sema_check_expr(wval) }
-        // Mark the target as initialized; an assignment gives it a value.
-        // (It's still unused unless somebody reads it afterwards.)
         uint32 as_target = ast_data1(node)
         uint64 was_target = as_target
         if was_target != 0 {
             uint64 asv = sema_var_lookup_v(was_target)
-            if asv != 0xFFFFFFFF { sema_var_mark_init(asv) }
+            if asv != 0xFFFFFFFF {
+                sema_var_mark_init(asv)
+                // Literal-overflow warning for assignment, same shape as
+                // in VarDecl. Only fires when the RHS is a bare IntLit
+                // and the declared type is narrower than u64.
+                if wval != 0 {
+                    uint32 rhs_kind_raw = ast_kind(wval)
+                    uint64 rhs_kind = rhs_kind_raw
+                    if rhs_kind == 30 {
+                        uint32 rhs_tag = ast_data4(wval)
+                        uint64 rhs_type_tag = rhs_tag
+                        if rhs_type_tag == 0 {
+                            uint32 lit_tok_a = ast_data1(wval)
+                            uint64 wlit_a = lit_tok_a
+                            uint64 lit_val_a = parse_int_token(wlit_a)
+                            uint64 tgt_kind = sema_var_type_id(asv)
+                            uint64 limit_a = 0
+                            if tgt_kind == 80 || tgt_kind == 84 { limit_a = 0x100 }
+                            if tgt_kind == 81 || tgt_kind == 85 { limit_a = 0x10000 }
+                            if tgt_kind == 82 || tgt_kind == 86 { limit_a = 0x100000000 }
+                            if limit_a != 0 && lit_val_a >= limit_a {
+                                report_warn_at(was_target, "literal assignment does not fit the target type (truncated)")
+                            }
+                        }
+                    }
+                }
+            }
         }
         return
     }

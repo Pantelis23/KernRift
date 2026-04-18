@@ -236,6 +236,9 @@ fn report_warn_at(uint64 tok_idx, uint64 msg) {
     write(2, ": warning: ", 11)
     write(2, msg, str_len(msg))
     write(2, "\n", 1)
+    // Keep the end-of-compile summary accurate — same counter used
+    // by diag_emit so 'N error(s), M warning(s)' reflects every warning.
+    diag_warn_count = diag_warn_count + 1
 }
 
 fn import_dir_of(uint64 path) -> uint64 {
