@@ -279,7 +279,7 @@ fn codegen_init(uint64 capacity, uint64 source, uint64 tokens) {
     fn_ret_float_count = 0
     fn_ret_struct_table = alloc(512 * 8)
     fn_ret_struct_count = 0
-    line_table = alloc(65536 * 8)
+    line_table = alloc(65536 * 16)
     line_table_count = 0
     debug_file_table = alloc(256 * 8)
     debug_file_count = 0
@@ -354,13 +354,24 @@ fn patch_u64(uint64 offset, uint64 val) {
 // DWARF line table recording
 // ---------------------------------------------------------------------------
 
+// Flag set by `line_table_record_fn_entry` so the next distinct line
+// recording emits DW_LNS_set_prologue_end. GDB uses that flag to stop
+// at the first real statement on 'break <fn>'.
+static uint64 line_prologue_pending = 0
+
 fn line_table_record(uint64 tok_idx) {
     if debug_info_mode == 0 { return }
     if tok_idx == 0 { return }
     uint64 line = tok_line_at(tok_idx)
     if line == last_recorded_line && line_table_count > 0 { return }
     if line_table_count >= 65536 { return }
-    uint64 entry = line_table + line_table_count * 8
+    // Entry layout (16 bytes):
+    //   [0..4)   code offset (u32)
+    //   [4..6)   file id (u16)
+    //   [6..8)   line (u16)
+    //   [8..9)   flags (bit 0 = prologue_end)
+    //   [9..16)  reserved
+    uint64 entry = line_table + line_table_count * 16
     uint32 off = out_len
     unsafe { *(entry as uint32) = off }
     uint64 e4 = entry + 4
@@ -369,8 +380,26 @@ fn line_table_record(uint64 tok_idx) {
     uint64 e6 = entry + 6
     uint16 ln = line
     unsafe { *(e6 as uint16) = ln }
+    uint64 e8 = entry + 8
+    uint8 fl = 0
+    if line_prologue_pending != 0 {
+        fl = 1
+        line_prologue_pending = 0
+    }
+    unsafe { *(e8 as uint8) = fl }
     line_table_count = line_table_count + 1
     last_recorded_line = line
+}
+
+// Record a function's entry address and arm the prologue_end flag for
+// the next line recording. Callers (main.kr fn dispatch) invoke this
+// right after fn_register(). The next time line_table_record fires
+// with a different line, that entry is marked so DW_LNS_set_prologue_end
+// is emitted for it.
+@export
+fn line_table_record_fn_entry(uint64 fn_tok) {
+    line_table_record(fn_tok)
+    line_prologue_pending = 1
 }
 
 // LEB128 encoding helpers (for DWARF)
@@ -10212,7 +10241,7 @@ fn emit_elf_debug_footer(uint64 text_start, uint64 input_path) {
     uint64 prev_pc = text_start
     uint64 li = 0
     while li < line_table_count {
-        uint64 le = line_table + li * 8
+        uint64 le = line_table + li * 16
         uint32 code_off = 0
         unsafe { *(le as uint32) -> code_off }
         uint64 wco = code_off
@@ -10221,16 +10250,27 @@ fn emit_elf_debug_footer(uint64 text_start, uint64 input_path) {
         unsafe { *(le6 as uint16) -> line_num }
         uint64 wln = line_num
         if wln == 0 { li = li + 1; continue }
+        uint64 le8 = le + 8
+        uint8 fl = 0
+        unsafe { *(le8 as uint8) -> fl }
+        uint64 wfl = fl
 
         uint64 pc_delta = wco - prev_pc
         // line_delta (signed): for subtraction that might go negative
         // KernRift uses u64, so compute carefully
         uint64 line_delta = wln - prev_line
 
+        // If this entry is tagged prologue_end, emit DW_LNS_set_prologue_end
+        // before the row so GDB flags the statement as the first non-prologue
+        // instruction. Then fall through to the normal advance/copy sequence.
+        if (wfl & 1) != 0 {
+            emit_byte(0x0A)   // DW_LNS_set_prologue_end
+        }
+
         // Try special opcode: opcode = (line_delta + 5) + (14 * pc_delta) + 13
         uint64 adjusted = line_delta + 5
         uint64 opcode = adjusted + 14 * pc_delta + 13
-        if adjusted < 14 && opcode <= 255 && opcode >= 13 && pc_delta < 18 {
+        if adjusted < 14 && opcode <= 255 && opcode >= 13 && pc_delta < 18 && (wfl & 1) == 0 {
             uint8 op = opcode
             emit_byte(op)
         } else {
