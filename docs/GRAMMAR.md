@@ -145,7 +145,10 @@ return_stmt = "return" expr?
 
 if_stmt     = "if" expr block ("else" (if_stmt | block))?
 while_stmt  = "while" expr block
-for_stmt    = "for" IDENT "in" expr ".." expr block        (* desugared *)
+for_stmt    = "for" IDENT "in"? expr (".." | "..=") expr block
+            (* `in` is optional — both `for i 0..10` and `for i in 0..10` parse.
+               `..=` is the inclusive form: the loop visits `end` as well.
+               Desugared to a VarDecl + While with `<` or `<=` as the guard. *)
 break_stmt  = "break"
 continue_stmt = "continue"
 
@@ -264,7 +267,11 @@ The stdlib (`std/*.kr`) layers additional helpers (`str_len`, `opt_some`,
 5. **Assignment is a statement, not an expression.** You cannot write
    `while (x = next()) != 0`; extract the assignment first.
 6. **`for` is desugared.** `for i in 0..n { ... }` becomes a `while` with an
-   incrementing `u64` induction variable. No iterator protocol.
+   incrementing `u64` induction variable. No iterator protocol. The `in`
+   keyword is optional (`for i 0..n` also parses), and the range can be
+   inclusive (`..=`) or exclusive (`..`). Endpoint expressions must not
+   use `.field` access on identifiers — `x..y` can be misparsed as `x.y`
+   field access (tracked as a follow-up).
 7. **`match` requires `=>` and blocks.** `match x { 1 => { ... } 2 => { ... } }`
    — no bare-expression arms. Arms do not fall through.
 8. **`unsafe` / `volatile` blocks wrap exactly one pointer op.** They are

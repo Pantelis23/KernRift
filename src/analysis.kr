@@ -1335,6 +1335,33 @@ fn sema_check_stmt(uint64 node) {
         return
     }
 
+    // PtrLoad (41): unsafe { *(addr as TYPE) -> dest_var }.
+    // Walk the address expression and mark the destination as
+    // initialized (the unsafe read gives it a value).
+    if kind == 41 {
+        uint32 pl_addr = ast_child(node)
+        uint64 wpl_addr = pl_addr
+        if wpl_addr != 0 { sema_check_expr(wpl_addr) }
+        uint32 pl_dest = ast_data2(node)
+        uint64 wpl_dest = pl_dest
+        if wpl_dest != 0 {
+            uint64 pli = sema_var_lookup_v(wpl_dest)
+            if pli != 0xFFFFFFFF { sema_var_mark_init(pli) }
+        }
+        return
+    }
+
+    // PtrStore (42): unsafe { *(addr as TYPE) = val }.
+    if kind == 42 {
+        uint32 ps_addr = ast_child(node)
+        uint64 wps_addr = ps_addr
+        if wps_addr != 0 { sema_check_expr(wps_addr) }
+        uint32 ps_val = ast_data2(node)
+        uint64 wps_val = ps_val
+        if wps_val != 0 { sema_check_expr(wps_val) }
+        return
+    }
+
     // Match: child=scrutinee, data1=first_arm
     if kind == 19 {
         uint32 scrut = ast_child(node)
