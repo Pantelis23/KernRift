@@ -20,8 +20,8 @@ reasoning for anything non-obvious.
 
 | Operation                               | Status   | Notes |
 |-----------------------------------------|----------|-------|
-| `u64` / `u32` / `u16` / `u8` add / sub / mul overflow | Defined | Two's-complement wrap, modulo 2^N. |
-| `i64` / `i32` / `i16` / `i8`  add / sub / mul overflow | Defined | Two's-complement wrap — same as unsigned. No UB overflow. |
+| `u64` / `u32` / `u16` / `u8` add / sub / mul overflow | Defined in release; trap under `--debug` | Two's-complement wrap in release. Under `--debug`, any overflow (signed or unsigned) traps with `exit(1)` via the `jno`-guarded overflow check. |
+| `i64` / `i32` / `i16` / `i8`  add / sub / mul overflow | Defined in release; trap under `--debug` | Same semantics as unsigned — two's-complement wrap in release, trap under `--debug`. |
 | Divide / modulo by zero                 | **Undefined** | x86 raises `#DE` (SIGFPE); ARM64 returns 0 for unsigned, traps for signed. No compiler check. |
 | Divide `INT_MIN / -1`                   | **Undefined** | x86 traps; ARM64 produces `INT_MIN`. |
 | Shift by amount `>= bit-width`          | **Undefined** | x86 masks the count mod 64 / 32; ARM64 masks mod 64 / 32. Results differ. |
@@ -154,4 +154,6 @@ Items tracked against the UB surface:
 - Bounds-checked slice indexing (opt-in `--safe` mode): not started; on
   the roadmap. Compile-time-sized array indexing already traps under
   `--debug` (both stack `T[N] name` and `static T[N] name`).
-- Signed-overflow trap mode (`--check=signed`): not started.
+- Dedicated `--check=signed-overflow` flag (signed-only, to separate
+  signed from unsigned overflow detection): not started. Today
+  `--debug` traps on both.
