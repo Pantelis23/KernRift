@@ -327,6 +327,16 @@ fn parse_primary() -> uint64 {
 
         // Field access (possibly chained): ident.field or ident.field.field2...
         // Or method call: ident.method(args) — sugar for method(ident, args)
+        // Guard against the range operator `..` — `x..y` must parse as two
+        // separate expressions bracketing a range, not as `x.y` field
+        // access. If the next two tokens are both dots, bail out here and
+        // let the outer for-loop / range context consume them.
+        if cur_kind() == 17 && tok_kind_at(p_tok_pos + 1) == 17 {
+            uint64 range_node = ast_alloc(AstKind.Ident)
+            ast_set_data1(range_node, t32)
+            ast_set_tok(range_node, t32)
+            return range_node
+        }
         if cur_kind() == 17 {
             // Build initial Ident node for the base object
             uint64 obj_node = ast_alloc(AstKind.Ident)

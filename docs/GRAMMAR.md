@@ -269,9 +269,8 @@ The stdlib (`std/*.kr`) layers additional helpers (`str_len`, `opt_some`,
 6. **`for` is desugared.** `for i in 0..n { ... }` becomes a `while` with an
    incrementing `u64` induction variable. No iterator protocol. The `in`
    keyword is optional (`for i 0..n` also parses), and the range can be
-   inclusive (`..=`) or exclusive (`..`). Endpoint expressions must not
-   use `.field` access on identifiers — `x..y` can be misparsed as `x.y`
-   field access (tracked as a follow-up).
+   inclusive (`..=`) or exclusive (`..`). Identifier endpoints work:
+   `for i a..b` and `for i 0..=n` both parse correctly.
 7. **`match` requires `=>` and blocks.** `match x { 1 => { ... } 2 => { ... } }`
    — no bare-expression arms. Arms do not fall through.
 8. **`unsafe` / `volatile` blocks wrap exactly one pointer op.** They are

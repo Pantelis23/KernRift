@@ -1448,6 +1448,8 @@ run_test "for_range" 'fn main() { uint64 s = 0; for i in 0..10 { s = s + i }; ex
 run_test "for_range_inclusive" 'fn main() { uint64 s = 0; for i in 0..=10 { s = s + i }; exit(s) }' 55
 run_test "for_range_no_in" 'fn main() { uint64 s = 0; for i 0..10 { s = s + i }; exit(s) }' 45
 run_test "for_range_no_in_inclusive" 'fn main() { uint64 s = 0; for i 0..=5 { s = s + i }; exit(s) }' 15
+run_test "for_range_ident_end"  'fn main() { u64 n = 5; u64 s = 0; for i 0..n { s = s + i }; exit(s) }' 10
+run_test "for_range_ident_both" 'fn main() { u64 a = 2; u64 b = 7; u64 s = 0; for i a..b { s = s + i }; exit(s) }' 20
 
 # --- Many-parameter functions ---
 run_test "fn_7args" 'fn sum7(uint64 a, uint64 b, uint64 c, uint64 d, uint64 e, uint64 f, uint64 g) -> uint64 { return a + b + c + d + e + f + g }
