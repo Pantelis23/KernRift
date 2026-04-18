@@ -220,14 +220,19 @@ static uint64 debug_file_count = 0
 // Debug var table — persists across functions. Each 16-byte entry:
 //   [0..4)   fn_idx (u32) into fn_table
 //   [4..8)   name_tok (u32)
-//   [8..12)  stack_offset (u32, relative to frame base = SP)
-//   [12..16) reserved
+//   [8..12)  loc_value (u32) — stack_offset if kind=0, phys_reg if kind=1
+//   [12..16) loc_kind (u32) — 0 = DW_OP_fbreg, 1 = DW_OP_regN
 static uint64 debug_var_table = 0
 static uint64 debug_var_count = 0
 static uint64 debug_var_cap = 4096
 
 @export
 fn debug_var_record(uint64 fn_idx, uint64 name_tok, uint64 stack_offset) {
+    debug_var_record_loc(fn_idx, name_tok, stack_offset, 0)
+}
+
+@export
+fn debug_var_record_loc(uint64 fn_idx, uint64 name_tok, uint64 loc_value, uint64 loc_kind) {
     if debug_info_mode == 0 { return }
     if debug_var_table == 0 { debug_var_table = alloc(debug_var_cap * 16) }
     if debug_var_count >= debug_var_cap { return }
@@ -238,8 +243,11 @@ fn debug_var_record(uint64 fn_idx, uint64 name_tok, uint64 stack_offset) {
     uint32 nt = name_tok
     unsafe { *(e4 as uint32) = nt }
     uint64 e8 = entry + 8
-    uint32 off = stack_offset
-    unsafe { *(e8 as uint32) = off }
+    uint32 lv = loc_value
+    unsafe { *(e8 as uint32) = lv }
+    uint64 e12 = entry + 12
+    uint32 lk = loc_kind
+    unsafe { *(e12 as uint32) = lk }
     debug_var_count = debug_var_count + 1
 }
 
@@ -10618,35 +10626,44 @@ fn emit_elf_debug_footer(uint64 text_start, uint64 input_path) {
                 uint32 dv_stk_off = 0
                 unsafe { *(dv_off_slot as uint32) -> dv_stk_off }
                 uint64 wdso = dv_stk_off
+                uint64 dv_kind_slot = dve2 + 12
+                uint32 dv_kind = 0
+                unsafe { *(dv_kind_slot as uint32) -> dv_kind }
+                uint64 wdk = dv_kind
                 emit_uleb128(4)                   // abbrev 4 = variable
                 emit_u32_le(dv_name_off)          // DW_AT_name
                 emit_u32_le(u64_type_off)         // DW_AT_type ref4 (all u64 for now)
-                // Count the sleb128 bytes by pre-encoding: wdso fits
-                // in 1 byte for offsets 0..63, 2 bytes for 64..8191.
-                // Simple: always assume 2-byte exprloc (1 op + 1 sleb
-                // byte for offsets < 64), expand for larger.
-                if wdso < 64 {
-                    emit_uleb128(2)               // exprloc length
-                    emit_byte(0x91)               // DW_OP_fbreg
-                    uint8 so = wdso
-                    emit_byte(so)                 // sleb128 (single byte, bit7 clear)
-                } else if wdso < 8192 {
-                    emit_uleb128(3)               // exprloc length
-                    emit_byte(0x91)
-                    uint8 so1 = (wdso & 0x7F) | 0x80
-                    emit_byte(so1)
-                    uint8 so2 = (wdso >> 7) & 0x7F
-                    emit_byte(so2)
+                if wdk == 1 {
+                    // In a physical register: DW_OP_reg<N> (N < 32).
+                    // For N >= 32 would use DW_OP_regx, but KernRift's
+                    // regalloc caps well below that.
+                    emit_uleb128(1)               // exprloc length
+                    uint8 rop = 0x50 + (wdso & 0x1F)
+                    emit_byte(rop)
                 } else {
-                    // Unlikely path; still fits in 3 bytes for <= 16KB.
-                    emit_uleb128(4)
-                    emit_byte(0x91)
-                    uint8 so1 = (wdso & 0x7F) | 0x80
-                    emit_byte(so1)
-                    uint8 so2 = ((wdso >> 7) & 0x7F) | 0x80
-                    emit_byte(so2)
-                    uint8 so3 = (wdso >> 14) & 0x7F
-                    emit_byte(so3)
+                    // Spilled: DW_OP_fbreg <offset>.
+                    if wdso < 64 {
+                        emit_uleb128(2)
+                        emit_byte(0x91)           // DW_OP_fbreg
+                        uint8 so = wdso
+                        emit_byte(so)
+                    } else if wdso < 8192 {
+                        emit_uleb128(3)
+                        emit_byte(0x91)
+                        uint8 so1 = (wdso & 0x7F) | 0x80
+                        emit_byte(so1)
+                        uint8 so2 = (wdso >> 7) & 0x7F
+                        emit_byte(so2)
+                    } else {
+                        emit_uleb128(4)
+                        emit_byte(0x91)
+                        uint8 so1 = (wdso & 0x7F) | 0x80
+                        emit_byte(so1)
+                        uint8 so2 = ((wdso >> 7) & 0x7F) | 0x80
+                        emit_byte(so2)
+                        uint8 so3 = (wdso >> 14) & 0x7F
+                        emit_byte(so3)
+                    }
                 }
             }
             dvji = dvji + 1

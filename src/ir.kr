@@ -673,6 +673,47 @@ fn ir_var_set(uint64 name_tok, uint64 vreg) {
     ir_var_map_count = ir_var_map_count + 1
 }
 
+// Snapshot the IR var map into the DWARF debug_var_table. Called
+// from ir_emit_{x86,arm64}_function AFTER regalloc has decided each
+// vreg's physical register (or spill slot). fn_count-1 is the index
+// of the currently-emitting function since fn_register() ran just
+// before us.
+@export
+fn ir_snapshot_debug_vars() {
+    if debug_info_mode == 0 { return }
+    uint64 cur_fn = 0
+    if fn_count > 0 { cur_fn = fn_count - 1 }
+    uint64 i = 0
+    while i < ir_var_map_count {
+        uint64 entry = ir_var_map + i * 8
+        uint32 nt = 0
+        unsafe { *(entry as uint32) -> nt }
+        uint64 wnt = nt
+        uint64 e4 = entry + 4
+        uint32 vr = 0
+        unsafe { *(e4 as uint32) -> vr }
+        uint64 wvr = vr
+        uint64 phys = ir_get_phys_reg(wvr)
+        if phys != 0xFFFFFFFF {
+            // kind 1: physical register; map KernRift's 0-9 colour IDs
+            // through ir_phys_regs to the real ARM/x86 register number
+            // and emit as DW_OP_reg<N> later. debug writer reads the
+            // raw value and maps arch-specific.
+            debug_var_record_loc(cur_fn, wnt, phys, 1)
+        } else {
+            // kind 0: fbreg — use arch-specific spill offset.
+            uint64 off = 0
+            if target_arch == 1 {
+                off = ir_a64_spill_offset(wvr)
+            } else {
+                off = ir_spill_offset(wvr)
+            }
+            debug_var_record_loc(cur_fn, wnt, off, 0)
+        }
+        i = i + 1
+    }
+}
+
 fn ir_var_get(uint64 name_tok) -> uint64 {
     uint64 i = 0
     while i < ir_var_map_count {
@@ -8362,6 +8403,9 @@ fn ir_emit_x86_function(uint64 fn_node) {
     if ir_vreg_next > IR_NUM_REGS + 1 {
         ir_spill_count = ir_vreg_next - IR_NUM_REGS - 1
     }
+
+    // 4a. Snapshot the function's var map for DWARF (if -g)
+    ir_snapshot_debug_vars()
 
     // 5a. For main(): set up argc/argv BEFORE prologue modifies RSP
     uint32 fn_name_tok = ast_data1(fn_node)

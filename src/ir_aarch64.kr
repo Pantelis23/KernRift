@@ -2292,6 +2292,9 @@ fn ir_emit_arm64_function(uint64 fn_node) {
         ir_spill_count = ir_vreg_next - IR_NUM_REGS - 1
     }
 
+    // 4a. Snapshot the function's var map for DWARF (if -g)
+    ir_snapshot_debug_vars()
+
     // NOTE: IR_NUM_REGS must stay at 10 through emission — ir_get_phys_reg()
     // uses it to distinguish colors from spills. Restore AFTER emission completes.
 
