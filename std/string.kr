@@ -1063,3 +1063,80 @@ fn str_from_codepoint(u64 cp) -> u64 {
     store8(tp, z)
     return out
 }
+
+// ---------------------------------------------------------------------------
+// ASCII character predicates and case-conversion helpers.
+// Each takes a byte (u64 holding 0..=255) and returns 0/1. For non-ASCII
+// input the answer is always 0 — use str_lower_utf8 / str_upper_utf8 if
+// you need locale-aware case folding.
+// ---------------------------------------------------------------------------
+
+fn is_digit(u64 c) -> u64 {
+    if c >= 48 && c <= 57 { return 1 }
+    return 0
+}
+
+fn is_lower(u64 c) -> u64 {
+    if c >= 97 && c <= 122 { return 1 }
+    return 0
+}
+
+fn is_upper(u64 c) -> u64 {
+    if c >= 65 && c <= 90 { return 1 }
+    return 0
+}
+
+fn is_alpha(u64 c) -> u64 {
+    if is_lower(c) != 0 { return 1 }
+    if is_upper(c) != 0 { return 1 }
+    return 0
+}
+
+fn is_alnum(u64 c) -> u64 {
+    if is_alpha(c) != 0 { return 1 }
+    if is_digit(c) != 0 { return 1 }
+    return 0
+}
+
+// Whitespace: space, \t, \n, \v, \f, \r (same set as C's isspace).
+fn is_space(u64 c) -> u64 {
+    if c == 32 { return 1 }
+    if c >= 9 && c <= 13 { return 1 }
+    return 0
+}
+
+fn is_hex_digit(u64 c) -> u64 {
+    if is_digit(c) != 0 { return 1 }
+    if c >= 97 && c <= 102 { return 1 }  // a-f
+    if c >= 65 && c <= 70 { return 1 }   // A-F
+    return 0
+}
+
+// Printable ASCII: space (32) through '~' (126). Excludes control codes
+// and DEL; newline/tab are not printable in this sense.
+fn is_print(u64 c) -> u64 {
+    if c >= 32 && c <= 126 { return 1 }
+    return 0
+}
+
+// Return the uppercase form of an ASCII letter; other bytes pass through
+// unchanged. For UTF-8 use str_upper_utf8 / utf8_upper_codepoint.
+fn to_upper_ch(u64 c) -> u64 {
+    if is_lower(c) != 0 { return c - 32 }
+    return c
+}
+
+fn to_lower_ch(u64 c) -> u64 {
+    if is_upper(c) != 0 { return c + 32 }
+    return c
+}
+
+// Parse a hex digit (0-9, a-f, A-F) as its numeric value. Returns
+// 0xFFFFFFFFFFFFFFFF on invalid input (Pattern-1 sentinel from
+// docs/ERROR_HANDLING.md).
+fn hex_digit_val(u64 c) -> u64 {
+    if c >= 48 && c <= 57 { return c - 48 }
+    if c >= 97 && c <= 102 { return c - 87 }
+    if c >= 65 && c <= 70 { return c - 55 }
+    return 0xFFFFFFFFFFFFFFFF
+}

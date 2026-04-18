@@ -1479,6 +1479,22 @@ run_test "match_wildcard_hit_first" 'fn main() {
 run_test "compound_field_assign" 'struct P { u64 x; u64 y }
 fn main() { P p; p.x = 10; p.x += 5; p.x *= 2; exit(p.x) }' 30
 run_test "compound_index_assign" 'fn main() { u64[4] a; a[0] = 10; a[0] += 3; a[0] *= 4; exit(a[0]) }' 52
+
+# --- Char predicates (std/string.kr) ---
+run_test "char_pred_digit"   'import "std/string.kr"
+fn main() { if is_digit(53) == 1 && is_digit(97) == 0 { exit(1) }; exit(0) }' 1
+run_test "char_pred_alpha"   'import "std/string.kr"
+fn main() { if is_alpha(97) == 1 && is_alpha(48) == 0 { exit(1) }; exit(0) }' 1
+run_test "char_pred_space"   'import "std/string.kr"
+fn main() { if is_space(32) == 1 && is_space(10) == 1 && is_space(65) == 0 { exit(1) }; exit(0) }' 1
+run_test "char_pred_hex"     'import "std/string.kr"
+fn main() { if is_hex_digit(70) == 1 && is_hex_digit(103) == 0 { exit(1) }; exit(0) }' 1
+run_test "char_to_upper"     'import "std/string.kr"
+fn main() { exit(to_upper_ch(97)) }' 65
+run_test "char_to_lower"     'import "std/string.kr"
+fn main() { exit(to_lower_ch(90)) }' 122
+run_test "char_hex_val"      'import "std/string.kr"
+fn main() { exit(hex_digit_val(70)) }' 15
 run_test "loop_nested_break" 'fn main() {
     u64 total = 0
     u64 outer = 0
