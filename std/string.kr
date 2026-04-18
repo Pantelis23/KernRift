@@ -221,3 +221,439 @@ fn str_trim(u64 s) -> u64 {
     }
     return str_sub(s, start, end - start)
 }
+
+// ---------------------------------------------------------------------------
+// Added in v2.8.11 — the "missing" stdlib string operations that previously
+// required every caller to roll their own. All functions that return strings
+// allocate fresh memory via `alloc()`; callers own the result.
+// ---------------------------------------------------------------------------
+
+// Find first occurrence of `needle` in `haystack`, return byte index or
+// 0xFFFFFFFFFFFFFFFF (-1 as u64) when absent. Empty needle returns 0.
+fn str_index_of(u64 haystack, u64 needle) -> u64 {
+    u64 hlen = str_len(haystack)
+    u64 nlen = str_len(needle)
+    if nlen == 0 { return 0 }
+    if nlen > hlen { return 0xFFFFFFFFFFFFFFFF }
+    u64 limit = hlen - nlen + 1
+    u64 i = 0
+    while i < limit {
+        u64 j = 0
+        u64 ok = 1
+        while j < nlen && ok != 0 {
+            u64 hp = haystack + i + j
+            u64 np = needle + j
+            u64 hc = load8(hp)
+            u64 nc = load8(np)
+            if hc != nc { ok = 0 }
+            j = j + 1
+        }
+        if ok != 0 { return i }
+        i = i + 1
+    }
+    return 0xFFFFFFFFFFFFFFFF
+}
+
+// Signed lexicographic compare. Returns -1, 0, or +1 as a u64 (so
+// 0xFFFFFFFFFFFFFFFF represents -1). Use `signed_lt(str_compare(a, b), 0)`
+// or compare the result against `0` with the signed helpers.
+fn str_compare(u64 a, u64 b) -> u64 {
+    u64 i = 0
+    u64 ac = 0
+    u64 bc = 0
+    while 1 == 1 {
+        u64 ap = a + i
+        u64 bp = b + i
+        ac = load8(ap)
+        bc = load8(bp)
+        if ac == 0 && bc == 0 { return 0 }
+        if ac == 0 { return 0xFFFFFFFFFFFFFFFF }
+        if bc == 0 { return 1 }
+        if ac < bc { return 0xFFFFFFFFFFFFFFFF }
+        if ac > bc { return 1 }
+        i = i + 1
+    }
+    return 0
+}
+
+// Return a lowercased copy (ASCII only — codepoints outside 'A'..'Z' are
+// copied verbatim, so valid UTF-8 passes through unchanged).
+fn str_lower(u64 s) -> u64 {
+    u64 len = str_len(s)
+    u64 result = alloc(len + 1)
+    u64 i = 0
+    while i < len {
+        u64 sp = s + i
+        u64 dp = result + i
+        u64 c = load8(sp)
+        if c >= 65 && c <= 90 { c = c + 32 }
+        u8 cb = c
+        store8(dp, cb)
+        i = i + 1
+    }
+    u64 tp = result + len
+    u8 z = 0
+    store8(tp, z)
+    return result
+}
+
+// Return an uppercased copy (ASCII only).
+fn str_upper(u64 s) -> u64 {
+    u64 len = str_len(s)
+    u64 result = alloc(len + 1)
+    u64 i = 0
+    while i < len {
+        u64 sp = s + i
+        u64 dp = result + i
+        u64 c = load8(sp)
+        if c >= 97 && c <= 122 { c = c - 32 }
+        u8 cb = c
+        store8(dp, cb)
+        i = i + 1
+    }
+    u64 tp = result + len
+    u8 z = 0
+    store8(tp, z)
+    return result
+}
+
+// Replace every occurrence of `from` (non-empty) with `to` in `haystack`.
+// Allocates a fresh string. Empty `from` returns a copy of `haystack` so
+// the function never loops forever.
+fn str_replace(u64 haystack, u64 from, u64 to) -> u64 {
+    u64 hlen = str_len(haystack)
+    u64 flen = str_len(from)
+    u64 tlen = str_len(to)
+    if flen == 0 { return str_copy(haystack) }
+
+    // First pass: count matches so we can size the output buffer.
+    u64 matches = 0
+    u64 i = 0
+    while i + flen <= hlen {
+        u64 j = 0
+        u64 ok = 1
+        while j < flen && ok != 0 {
+            u64 hp = haystack + i + j
+            u64 fp = from + j
+            if load8(hp) != load8(fp) { ok = 0 }
+            j = j + 1
+        }
+        if ok != 0 {
+            matches = matches + 1
+            i = i + flen
+        } else {
+            i = i + 1
+        }
+    }
+
+    u64 out_len = hlen + matches * tlen - matches * flen
+    u64 result = alloc(out_len + 1)
+    u64 si = 0
+    u64 di = 0
+    while si < hlen {
+        u64 try_match = 0
+        if si + flen <= hlen { try_match = 1 }
+        if try_match != 0 {
+            u64 j = 0
+            u64 ok = 1
+            while j < flen && ok != 0 {
+                u64 hp = haystack + si + j
+                u64 fp = from + j
+                if load8(hp) != load8(fp) { ok = 0 }
+                j = j + 1
+            }
+            if ok != 0 {
+                u64 dp = result + di
+                memcpy(dp, to, tlen)
+                di = di + tlen
+                si = si + flen
+            } else {
+                u64 sp = haystack + si
+                u64 dp = result + di
+                u8 cb = load8(sp)
+                store8(dp, cb)
+                si = si + 1
+                di = di + 1
+            }
+        } else {
+            u64 sp = haystack + si
+            u64 dp = result + di
+            u8 cb = load8(sp)
+            store8(dp, cb)
+            si = si + 1
+            di = di + 1
+        }
+    }
+    u64 tp = result + di
+    u8 z = 0
+    store8(tp, z)
+    return result
+}
+
+// Split `s` on a single-byte delimiter. Writes pointers to freshly-alloc'd
+// substrings into `out_parts` (caller supplies a u64[] large enough) and
+// returns the number of parts produced. "a,b,c" with ',' yields 3 parts:
+// "a", "b", "c"; an empty string yields 1 part (""); leading or trailing
+// delimiters produce empty segments ("a,,b" → ["a", "", "b"]).
+fn str_split(u64 s, u64 delim_byte, u64 out_parts, u64 max_parts) -> u64 {
+    u64 len = str_len(s)
+    u64 count = 0
+    u64 start = 0
+    u64 i = 0
+    while i <= len && count < max_parts {
+        u64 p = s + i
+        u64 ch = 0
+        if i < len { ch = load8(p) }
+        u64 at_end = 0
+        if i == len { at_end = 1 }
+        if at_end != 0 || ch == delim_byte {
+            u64 part = str_sub(s, start, i - start)
+            u64 slot = out_parts + count * 8
+            store64(slot, part)
+            count = count + 1
+            start = i + 1
+            if at_end != 0 { i = i + 1; break }
+        }
+        i = i + 1
+    }
+    return count
+}
+
+// Join `count` strings with `sep` between each pair. Caller passes a u64
+// array of pointers (same shape str_split writes). Empty count returns "".
+fn str_join(u64 parts, u64 count, u64 sep) -> u64 {
+    if count == 0 {
+        u64 empty = alloc(1)
+        u8 z0 = 0
+        store8(empty, z0)
+        return empty
+    }
+    u64 sep_len = str_len(sep)
+    u64 total = 0
+    u64 i = 0
+    while i < count {
+        u64 slot = parts + i * 8
+        u64 pp = 0
+        unsafe { *(slot as uint64) -> pp }
+        total = total + str_len(pp)
+        i = i + 1
+    }
+    total = total + sep_len * (count - 1)
+
+    u64 result = alloc(total + 1)
+    u64 di = 0
+    i = 0
+    while i < count {
+        u64 slot = parts + i * 8
+        u64 pp = 0
+        unsafe { *(slot as uint64) -> pp }
+        u64 pl = str_len(pp)
+        u64 dp = result + di
+        memcpy(dp, pp, pl)
+        di = di + pl
+        if i + 1 < count {
+            u64 sp = result + di
+            memcpy(sp, sep, sep_len)
+            di = di + sep_len
+        }
+        i = i + 1
+    }
+    u64 tp = result + di
+    u8 z = 0
+    store8(tp, z)
+    return result
+}
+
+// Parse a decimal floating-point string. Accepts optional leading sign,
+// an integer part, optional '.' with fractional digits, and an optional
+// 'e'/'E' exponent (also with optional sign). Digits outside '0'..'9'
+// terminate parsing. Returns the f64 bit pattern as a u64.
+//
+// Not a full C strtod (no hex floats, no locale, no "inf"/"nan" literals),
+// but covers 99 % of what you want from `str_to_float("-3.14e2")`.
+fn str_to_float(u64 s) -> f64 {
+    u64 i = 0
+    u64 neg = 0
+    u64 p = s + i
+    u64 ch = load8(p)
+    if ch == 45 { neg = 1; i = i + 1 }
+    else if ch == 43 { i = i + 1 }
+
+    f64 result = int_to_f64(0)
+    f64 ten = int_to_f64(10)
+    u64 have_digit = 0
+
+    // Integer part
+    p = s + i
+    ch = load8(p)
+    while ch >= 48 && ch <= 57 {
+        f64 d = int_to_f64(ch - 48)
+        result = result * ten + d
+        have_digit = 1
+        i = i + 1
+        p = s + i
+        ch = load8(p)
+    }
+
+    // Fractional part
+    if ch == 46 {
+        i = i + 1
+        f64 frac_scale = int_to_f64(1)
+        f64 frac_value = int_to_f64(0)
+        p = s + i
+        ch = load8(p)
+        while ch >= 48 && ch <= 57 {
+            f64 d = int_to_f64(ch - 48)
+            frac_value = frac_value * ten + d
+            frac_scale = frac_scale * ten
+            have_digit = 1
+            i = i + 1
+            p = s + i
+            ch = load8(p)
+        }
+        result = result + frac_value / frac_scale
+    }
+
+    // Exponent
+    if ch == 101 || ch == 69 {
+        i = i + 1
+        u64 exp_neg = 0
+        p = s + i
+        ch = load8(p)
+        if ch == 45 { exp_neg = 1; i = i + 1; p = s + i; ch = load8(p) }
+        else if ch == 43 { i = i + 1; p = s + i; ch = load8(p) }
+        u64 exp_val = 0
+        while ch >= 48 && ch <= 57 {
+            exp_val = exp_val * 10 + ch - 48
+            i = i + 1
+            p = s + i
+            ch = load8(p)
+        }
+        f64 base = ten
+        if exp_neg != 0 { base = int_to_f64(1) / ten }
+        u64 k = 0
+        while k < exp_val {
+            result = result * base
+            k = k + 1
+        }
+    }
+
+    if have_digit == 0 { return int_to_f64(0) }
+    if neg != 0 { return int_to_f64(0) - result }
+    return result
+}
+
+// ---------------------------------------------------------------------------
+// UTF-8 codepoint iteration
+//
+// KernRift strings are just byte arrays, and `str_at(s, i)` / `str_sub`
+// operate on bytes, not Unicode codepoints. The helpers below decode the
+// next codepoint starting at byte offset `i`, or encode a codepoint into
+// a buffer. Byte-oriented string operations (copy, concat, equality,
+// index-of with multi-byte needles) preserve UTF-8 correctness without
+// these — you only need them when you want to iterate *codepoints*.
+// ---------------------------------------------------------------------------
+
+// Decode the UTF-8 codepoint starting at byte offset `i`. Writes the
+// byte length of the sequence to `out_width` (1..4) and returns the
+// codepoint. Invalid bytes return the raw byte with width 1 so callers
+// can step past corruption without looping forever.
+fn utf8_decode_at(u64 s, u64 i, u64 out_width) -> u64 {
+    u64 p = s + i
+    u64 b0 = load8(p)
+    // ASCII / single byte
+    if b0 < 128 {
+        store64(out_width, 1)
+        return b0
+    }
+    // Leading byte patterns: 110xxxxx(2) 1110xxxx(3) 11110xxx(4)
+    if (b0 & 0xE0) == 0xC0 {
+        u64 p1 = s + i + 1
+        u64 b1 = load8(p1)
+        if (b1 & 0xC0) != 0x80 { store64(out_width, 1); return b0 }
+        store64(out_width, 2)
+        return ((b0 & 0x1F) << 6) | (b1 & 0x3F)
+    }
+    if (b0 & 0xF0) == 0xE0 {
+        u64 p1 = s + i + 1
+        u64 p2 = s + i + 2
+        u64 b1 = load8(p1)
+        u64 b2 = load8(p2)
+        if (b1 & 0xC0) != 0x80 { store64(out_width, 1); return b0 }
+        if (b2 & 0xC0) != 0x80 { store64(out_width, 1); return b0 }
+        store64(out_width, 3)
+        return ((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F)
+    }
+    if (b0 & 0xF8) == 0xF0 {
+        u64 p1 = s + i + 1
+        u64 p2 = s + i + 2
+        u64 p3 = s + i + 3
+        u64 b1 = load8(p1)
+        u64 b2 = load8(p2)
+        u64 b3 = load8(p3)
+        if (b1 & 0xC0) != 0x80 { store64(out_width, 1); return b0 }
+        if (b2 & 0xC0) != 0x80 { store64(out_width, 1); return b0 }
+        if (b3 & 0xC0) != 0x80 { store64(out_width, 1); return b0 }
+        store64(out_width, 4)
+        return ((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F)
+    }
+    // Stray continuation byte — treat as width-1 raw byte
+    store64(out_width, 1)
+    return b0
+}
+
+// Encode a codepoint into `buf`. Returns the number of bytes written
+// (1..4). Does not null-terminate. Codepoints >= 0x110000 are silently
+// clamped into replacement character U+FFFD.
+fn utf8_encode(u64 cp, u64 buf) -> u64 {
+    if cp >= 1114112 { cp = 65533 }
+    if cp < 128 {
+        u8 b = cp
+        store8(buf, b)
+        return 1
+    }
+    if cp < 2048 {
+        u8 b0 = 0xC0 | (cp >> 6)
+        u8 b1 = 0x80 | (cp & 0x3F)
+        store8(buf, b0)
+        u64 p1 = buf + 1
+        store8(p1, b1)
+        return 2
+    }
+    if cp < 65536 {
+        u8 b0 = 0xE0 | (cp >> 12)
+        u8 b1 = 0x80 | ((cp >> 6) & 0x3F)
+        u8 b2 = 0x80 | (cp & 0x3F)
+        store8(buf, b0)
+        u64 p1 = buf + 1; store8(p1, b1)
+        u64 p2 = buf + 2; store8(p2, b2)
+        return 3
+    }
+    u8 b0 = 0xF0 | (cp >> 18)
+    u8 b1 = 0x80 | ((cp >> 12) & 0x3F)
+    u8 b2 = 0x80 | ((cp >> 6) & 0x3F)
+    u8 b3 = 0x80 | (cp & 0x3F)
+    store8(buf, b0)
+    u64 p1 = buf + 1; store8(p1, b1)
+    u64 p2 = buf + 2; store8(p2, b2)
+    u64 p3 = buf + 3; store8(p3, b3)
+    return 4
+}
+
+// Count codepoints in a UTF-8 string (≠ byte length). Invalid bytes
+// count as one codepoint each, matching utf8_decode_at's policy.
+fn str_codepoint_count(u64 s) -> u64 {
+    u64 len = str_len(s)
+    u64 count = 0
+    u64 i = 0
+    u64[1] w
+    u64 w_ptr = w
+    while i < len {
+        utf8_decode_at(s, i, w_ptr)
+        u64 ww = 0
+        unsafe { *(w_ptr as uint64) -> ww }
+        i = i + ww
+        count = count + 1
+    }
+    return count
+}

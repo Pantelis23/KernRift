@@ -341,6 +341,89 @@ run_test "str_eq_diff" 'fn main() { uint64 a = "foo"; uint64 b = "bar"; exit(str
 run_test "str_eq_prefix" 'fn main() { uint64 a = "foo"; uint64 b = "foobar"; exit(str_eq(a, b)) }' 0
 run_test "str_eq_empty" 'fn main() { uint64 a = ""; uint64 b = ""; exit(str_eq(a, b)) }' 1
 
+# --- std/string.kr additions (v2.8.11) ---
+run_test "str_index_of_hit" 'import "std/string.kr"
+fn main() { exit(str_index_of("hello world", "world")) }' 6
+run_test "str_index_of_miss" 'import "std/string.kr"
+fn main() {
+    uint64 n = str_index_of("hello", "xyz")
+    if n == 0xFFFFFFFFFFFFFFFF { exit(0) }
+    exit(1)
+}' 0
+run_test "str_compare_eq" 'import "std/string.kr"
+fn main() { exit(str_compare("abc", "abc")) }' 0
+run_test "str_compare_lt" 'import "std/string.kr"
+fn main() {
+    uint64 r = str_compare("abc", "abd")
+    if signed_lt(r, 0) { exit(1) }
+    exit(0)
+}' 1
+run_test "str_compare_prefix" 'import "std/string.kr"
+fn main() {
+    uint64 r = str_compare("abc", "abcd")
+    if signed_lt(r, 0) { exit(1) }
+    exit(0)
+}' 1
+run_test_output "str_lower_basic" 'import "std/string.kr"
+fn main() { println_str(str_lower("HeLLo 123")) }' "hello 123"
+run_test_output "str_upper_basic" 'import "std/string.kr"
+fn main() { println_str(str_upper("HeLLo 123")) }' "HELLO 123"
+run_test_output "str_replace_basic" 'import "std/string.kr"
+fn main() { println_str(str_replace("a.b.c.d", ".", "-")) }' "a-b-c-d"
+run_test_output "str_replace_longer" 'import "std/string.kr"
+fn main() { println_str(str_replace("hi world hi", "hi", "HELLO")) }' "HELLO world HELLO"
+run_test_output "str_replace_noop" 'import "std/string.kr"
+fn main() { println_str(str_replace("abc", "zz", "QQ")) }' "abc"
+run_test "str_split_count" 'import "std/string.kr"
+fn main() {
+    uint64[8] parts
+    exit(str_split("a,b,c,,d", 44, parts, 8))
+}' 5
+run_test_output "str_join_basic" 'import "std/string.kr"
+fn main() {
+    uint64[4] parts
+    uint64 n = str_split("a,b,c", 44, parts, 4)
+    println_str(str_join(parts, n, "|"))
+}' "a|b|c"
+run_test "str_to_float_int" 'import "std/string.kr"
+fn main() {
+    f64 v = str_to_float("42")
+    exit(f64_to_int(v))
+}' 42
+run_test "str_to_float_frac" 'import "std/string.kr"
+fn main() {
+    f64 v = str_to_float("1.5")
+    f64 two = int_to_f64(2)
+    exit(f64_to_int(v * two))
+}' 3
+run_test "str_to_float_exp" 'import "std/string.kr"
+fn main() {
+    f64 v = str_to_float("-3e1")
+    exit(f64_to_int(int_to_f64(0) - v))
+}' 30
+run_test "utf8_decode_ascii" 'import "std/string.kr"
+fn main() {
+    uint64[1] w
+    uint64 wp = w
+    uint64 cp = utf8_decode_at("A", 0, wp)
+    uint64 ww = 0
+    unsafe { *(wp as uint64) -> ww }
+    if cp == 65 && ww == 1 { exit(0) }
+    exit(1)
+}' 0
+run_test "utf8_decode_two_byte" 'import "std/string.kr"
+fn main() {
+    uint64[1] w
+    uint64 wp = w
+    uint64 cp = utf8_decode_at("é", 0, wp)
+    uint64 ww = 0
+    unsafe { *(wp as uint64) -> ww }
+    if cp == 233 && ww == 2 { exit(0) }
+    exit(1)
+}' 0
+run_test "str_codepoint_count_mixed" 'import "std/string.kr"
+fn main() { exit(str_codepoint_count("héllo")) }' 5
+
 # --- Builtin: dealloc ---
 run_test "dealloc_noop" 'fn main() { uint64 p = alloc(64); dealloc(p); exit(0) }' 0
 

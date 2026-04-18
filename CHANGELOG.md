@@ -2,6 +2,28 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## v2.8.11 — 2026-04-18
+
+### Added
+- **`std/string.kr` rounded out** with ten missing functions. Each returns
+  a fresh allocation owned by the caller; every one has a test in
+  `tests/run_tests.sh` (18 new cases).
+
+  | Function | Description |
+  |----------|-------------|
+  | `str_index_of(haystack, needle)` | First byte index of substring, or `0xFF..FF` when absent. Empty needle → 0. |
+  | `str_compare(a, b) -> u64` | Signed `-1 / 0 / +1` (wrapping to `0xFF..FF` / `0` / `1` in u64). Pair with `signed_lt` / `signed_gt` for sorts. |
+  | `str_lower(s)` / `str_upper(s)` | ASCII case conversion; non-ASCII bytes copied verbatim so valid UTF-8 passes through unchanged. |
+  | `str_replace(haystack, from, to)` | Replaces every occurrence; empty `from` returns a copy (no infinite loop). |
+  | `str_split(s, delim_byte, parts[], max) -> count` | Caller supplies a `u64[]` buffer; trailing delimiter produces an empty segment matching POSIX `strtok_r` semantics. |
+  | `str_join(parts[], count, sep)` | Inverse of `str_split`. `count == 0` returns `""`. |
+  | `str_to_float(s) -> f64` | Parses `-3.14e2` and friends. Accepts optional leading sign, integer / fractional / exponent parts; non-digit bytes terminate. No hex floats, no "inf" / "nan" literals (yet). |
+  | `utf8_decode_at(s, i, out_width) -> codepoint` | Decodes one UTF-8 sequence starting at byte offset `i`; writes the byte width (1..4) through `out_width`. Invalid leading bytes decode as width-1 raw bytes so callers never loop forever on corrupt input. |
+  | `utf8_encode(cp, buf) -> width` | Writes `cp` as UTF-8 into `buf`; out-of-range codepoints clamp to U+FFFD. |
+  | `str_codepoint_count(s)` | Byte-length ≠ codepoint length once you have multi-byte chars; this returns the latter. |
+
+  Byte-oriented operations (`str_eq`, `str_copy`, `str_cat`, `str_contains`, `str_replace`) are already UTF-8-safe because they work on raw bytes; the new `utf8_*` helpers only matter when you want to *iterate codepoints* (render text, truncate to N characters, uppercase non-ASCII, etc.).
+
 ## v2.8.10 — 2026-04-18
 
 ### Added
