@@ -2263,16 +2263,26 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
                 if emit_ir_mode != 0 && arch == 0 && emit_mode != 3 {
                     // IR codegen (skip for --emit=obj which needs legacy for extern relocations)
                     fn_register(fn_name, out_len)
+                    // Record a DWARF line-table entry at the function's
+                    // entry address so GDB can correlate `break <name>`
+                    // with the first source line.
+                    line_table_record(fn_name)
                     ir_init()
                     ir_emit_x86_function(wchild)
                 } else if emit_ir_mode != 0 && arch == 1 && emit_mode != 3 {
                     // IR codegen ARM64 (default; --legacy bypasses)
                     fn_register(fn_name, out_len)
+                    line_table_record(fn_name)
                     ir_init()
                     ir_emit_arm64_function(wchild)
                 } else if arch == 0 {
+                    // Legacy x86: gen_function registers internally.
+                    // Record the entry-address line first so DWARF sees it.
+                    line_table_record(fn_name)
                     gen_function(wchild)
                 } else {
+                    // Legacy ARM64: gen_function_a64 registers internally.
+                    line_table_record(fn_name)
                     gen_function_a64(wchild)
                 }
             }

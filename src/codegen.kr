@@ -10259,29 +10259,38 @@ fn emit_elf_debug_footer(uint64 text_start, uint64 input_path) {
     uint64 debug_line_size = debug_line_end - debug_line_off
 
     // === 1b. Emit .debug_abbrev ===
-    // One abbreviation code (1) describing a DW_TAG_compile_unit with
-    // just the fields GDB needs to find the line program:
-    //   DW_AT_name       DW_FORM_strp      — source filename
-    //   DW_AT_comp_dir   DW_FORM_strp      — compilation directory
-    //   DW_AT_language   DW_FORM_data2     — DW_LANG_C
-    //   DW_AT_stmt_list  DW_FORM_sec_offset — offset into .debug_line
-    //   DW_AT_low_pc     DW_FORM_addr      — .text start VA
-    //   DW_AT_high_pc    DW_FORM_data8     — .text length
+    // Abbrev 1: DW_TAG_compile_unit with children (subprograms).
+    // Abbrev 2: DW_TAG_subprogram for each function.
     uint64 debug_abbrev_off = out_len
-    emit_uleb128(1)                     // abbrev code
+    emit_uleb128(1)                     // abbrev code 1
     emit_uleb128(0x11)                  // DW_TAG_compile_unit
-    emit_byte(0)                        // DW_CHILDREN_no
+    emit_byte(1)                        // DW_CHILDREN_yes
     emit_uleb128(0x03); emit_uleb128(0x0E)   // DW_AT_name / DW_FORM_strp
     emit_uleb128(0x1b); emit_uleb128(0x0E)   // DW_AT_comp_dir / DW_FORM_strp
     emit_uleb128(0x13); emit_uleb128(0x05)   // DW_AT_language / DW_FORM_data2
     emit_uleb128(0x10); emit_uleb128(0x17)   // DW_AT_stmt_list / DW_FORM_sec_offset
     emit_uleb128(0x11); emit_uleb128(0x01)   // DW_AT_low_pc / DW_FORM_addr
     emit_uleb128(0x12); emit_uleb128(0x07)   // DW_AT_high_pc / DW_FORM_data8
-    emit_uleb128(0); emit_uleb128(0)         // end of abbreviation
+    emit_uleb128(0); emit_uleb128(0)         // end abbrev 1
+
+    emit_uleb128(2)                     // abbrev code 2
+    emit_uleb128(0x2e)                  // DW_TAG_subprogram
+    emit_byte(0)                        // DW_CHILDREN_no (no vars yet)
+    emit_uleb128(0x03); emit_uleb128(0x0E)   // DW_AT_name / DW_FORM_strp
+    emit_uleb128(0x3a); emit_uleb128(0x0B)   // DW_AT_decl_file / DW_FORM_data1
+    emit_uleb128(0x3b); emit_uleb128(0x05)   // DW_AT_decl_line / DW_FORM_data2
+    emit_uleb128(0x11); emit_uleb128(0x01)   // DW_AT_low_pc / DW_FORM_addr
+    emit_uleb128(0x12); emit_uleb128(0x07)   // DW_AT_high_pc / DW_FORM_data8
+    emit_uleb128(0x3f); emit_uleb128(0x19)   // DW_AT_external / DW_FORM_flag_present
+    emit_uleb128(0); emit_uleb128(0)         // end abbrev 2
+
     emit_uleb128(0)                          // end of .debug_abbrev
     uint64 debug_abbrev_size = out_len - debug_abbrev_off
 
     // === 1c. Emit .debug_str ===
+    // Holds the source filename, comp_dir, and every function name
+    // (referenced as strp from subprogram DIEs). We record each name's
+    // offset into a side table to emit the DIEs later.
     uint64 debug_str_off = out_len
     emit_byte(0)                              // offset 0 = empty string
     uint64 ds_src_off = out_len - debug_str_off
@@ -10297,10 +10306,37 @@ fn emit_elf_debug_footer(uint64 text_start, uint64 input_path) {
     emit_byte(0)
     uint64 ds_dir_off = out_len - debug_str_off
     emit_byte(46); emit_byte(0)               // ".\0"
+
+    // Append every function name; record its offset.
+    uint64 ds_fn_name_offs = alloc(fn_count * 8 + 8)
+    uint64 ds_fi = 0
+    while ds_fi < fn_count {
+        uint64 fe = fn_table + ds_fi * 8
+        uint32 fn_tok = 0
+        unsafe { *(fe as uint32) -> fn_tok }
+        uint64 wft = fn_tok
+        uint64 off_slot = ds_fn_name_offs + ds_fi * 8
+        unsafe { *(off_slot as uint64) = out_len - debug_str_off }
+        uint64 nm_start = tok_text_start(wft)
+        uint64 nm_len = tok_text_len(wft)
+        uint64 nb = 0
+        while nb < nm_len {
+            uint64 sp = cg_source + nm_start + nb
+            uint64 cb = 0
+            unsafe { *(sp as uint8) -> cb }
+            uint8 b = cb
+            emit_byte(b)
+            nb = nb + 1
+        }
+        emit_byte(0)
+        ds_fi = ds_fi + 1
+    }
     uint64 debug_str_size = out_len - debug_str_off
 
     // === 1d. Emit .debug_info ===
-    // A single DW_TAG_compile_unit DIE referencing the line program.
+    // compile_unit DIE (abbrev 1, with children) followed by one
+    // subprogram DIE per function (abbrev 2), then a null byte to
+    // terminate the children.
     uint64 debug_info_off = out_len
     uint64 info_unit_length_patch = out_len
     emit_u32_le(0)                            // unit_length placeholder
@@ -10308,14 +10344,48 @@ fn emit_elf_debug_footer(uint64 text_start, uint64 input_path) {
     emit_byte(1)                              // DW_UT_compile
     emit_byte(8)                              // address_size
     emit_u32_le(0)                            // debug_abbrev_offset
-    // DIE body: abbrev code 1, then fields in the order declared above.
-    emit_uleb128(1)                           // abbrev code
-    emit_u32_le(ds_src_off)                   // name -> "source.kr"
-    emit_u32_le(ds_dir_off)                   // comp_dir -> "."
+    // compile_unit body
+    emit_uleb128(1)                           // abbrev code 1
+    emit_u32_le(ds_src_off)                   // name
+    emit_u32_le(ds_dir_off)                   // comp_dir
     emit_u16_le(2)                            // language = DW_LANG_C
-    emit_u32_le(0)                            // stmt_list = 0 (.debug_line)
-    emit_u64_le(0x400000 + text_start)        // low_pc = .text VA
-    emit_u64_le(debug_line_off - text_start)  // high_pc = .text size (text_end - text_start)
+    emit_u32_le(0)                            // stmt_list
+    emit_u64_le(0x400000 + text_start)        // low_pc
+    emit_u64_le(debug_line_off - text_start)  // high_pc = .text size
+
+    // One subprogram DIE per function.
+    uint64 di_fi = 0
+    while di_fi < fn_count {
+        uint64 fe = fn_table + di_fi * 8
+        uint64 fe4 = fe + 4
+        uint32 fn_off = 0
+        unsafe { *(fe4 as uint32) -> fn_off }
+        uint64 wfo = fn_off
+        // Function end = next fn's start, or debug_line_off for the last.
+        uint64 fn_end = debug_line_off
+        if di_fi + 1 < fn_count {
+            uint64 next_fe = fn_table + (di_fi + 1) * 8 + 4
+            uint32 next_off = 0
+            unsafe { *(next_fe as uint32) -> next_off }
+            fn_end = next_off
+        }
+        uint64 off_slot_i = ds_fn_name_offs + di_fi * 8
+        uint64 name_off_val = 0
+        unsafe { *(off_slot_i as uint64) -> name_off_val }
+        uint32 fn_tok_i = 0
+        unsafe { *(fe as uint32) -> fn_tok_i }
+        uint64 wfti = fn_tok_i
+        uint64 decl_line = tok_line_at(wfti)
+        emit_uleb128(2)                       // abbrev code 2
+        emit_u32_le(name_off_val)             // DW_AT_name
+        emit_byte(1)                          // DW_AT_decl_file = 1 (matches line program file 1)
+        emit_u16_le(decl_line)                // DW_AT_decl_line
+        emit_u64_le(0x400000 + wfo)           // DW_AT_low_pc
+        emit_u64_le(fn_end - wfo)             // DW_AT_high_pc (size)
+        // DW_FORM_flag_present — no bytes
+        di_fi = di_fi + 1
+    }
+    emit_uleb128(0)                           // end of CU children
     // Patch unit_length (length of remainder, excluding the length field itself)
     patch_u32(info_unit_length_patch, out_len - info_unit_length_patch - 4)
     uint64 debug_info_size = out_len - debug_info_off
