@@ -3019,11 +3019,30 @@ fn ir_lower_stmt(uint64 node) {
                 uint64 bb_body = ir_new_bb()
                 uint64 bb_next = ir_new_bb()
                 if is_wild == 0 {
-                    uint64 val_v = ir_lower_expr(val_expr)
-                    uint64 cmp_v = ir_new_vreg()
-                    ir_emit(IR_CMP_EQ, cmp_v, scrut_v, val_v, 0, ir_current_bb)
-                    ir_emit(IR_BR_COND, 0, cmp_v, 0, bb_body, ir_current_bb)
-                    ir_bb_set_succ(ir_current_bb, bb_next, bb_body)
+                    // Walk the comma-separated pattern chain. For each
+                    // pattern emit "if cmp then body" via a BR_COND whose
+                    // false side lands in a fresh BB holding the next
+                    // pattern's check. If every check fails we land in
+                    // bb_next (the existing "skip arm" BB).
+                    uint64 pat = val_expr
+                    while pat != 0 {
+                        uint32 nxt_pat = ast_next(pat)
+                        uint64 val_v = ir_lower_expr(pat)
+                        uint64 cmp_v = ir_new_vreg()
+                        ir_emit(IR_CMP_EQ, cmp_v, scrut_v, val_v, 0, ir_current_bb)
+                        uint64 is_last_pat = 0
+                        if nxt_pat == 0 { is_last_pat = 1 }
+                        if is_last_pat != 0 {
+                            ir_emit(IR_BR_COND, 0, cmp_v, 0, bb_body, ir_current_bb)
+                            ir_bb_set_succ(ir_current_bb, bb_next, bb_body)
+                        } else {
+                            uint64 bb_fail = ir_new_bb()
+                            ir_emit(IR_BR_COND, 0, cmp_v, 0, bb_body, ir_current_bb)
+                            ir_bb_set_succ(ir_current_bb, bb_fail, bb_body)
+                            ir_current_bb = bb_fail
+                        }
+                        pat = nxt_pat
+                    }
                 } else {
                     ir_emit(IR_BR, 0, 0, 0, bb_body, ir_current_bb)
                     ir_bb_set_succ(ir_current_bb, bb_body, 0xFFFFFFFF)

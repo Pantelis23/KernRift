@@ -903,11 +903,24 @@ fn parse_stmt() -> uint64 {
         uint64 first_arm = 0
         uint64 last_arm = 0
         while cur_kind() != 13 && cur_kind() != 0 {
-            uint64 val_expr = parse_expr()
+            // Parse one-or-more comma-separated patterns:
+            //   match x { 1, 2, 3 => { ... } _ => { ... } }
+            // The first pattern sits in data1; any additional patterns
+            // are chained via the `next` field on the first pattern node.
+            // Codegen fires the arm if the scrutinee matches any of them.
+            uint64 first_pat = parse_expr()
+            uint64 last_pat = first_pat
+            while cur_kind() == 16 {                // comma
+                advance_tok()
+                uint64 more_pat = parse_expr()
+                uint32 m32 = more_pat
+                ast_set_next(last_pat, m32)
+                last_pat = more_pat
+            }
             expect(29)  // =>
             uint64 arm_body = parse_block()
             uint64 arm = ast_alloc(20)
-            uint32 ve = val_expr
+            uint32 ve = first_pat
             ast_set_data1(arm, ve)
             uint32 ab = arm_body
             ast_set_data2(arm, ab)

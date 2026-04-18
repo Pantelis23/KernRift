@@ -8341,17 +8341,46 @@ fn gen_stmt(uint64 node) {
                 uint64 wwt = wild_tok
                 if tok_matches(wwt, "_", 1) != 0 { is_wild = 1 }
             }
-            uint64 jne_patch = 0
+            // Collect je-to-body offsets for each pattern; after the loop
+            // we fall through to "skip arm" unless one patched.
+            uint64 je_bodies = 0
+            uint64 je_count = 0
             if is_wild == 0 {
-                gen_expr(wval)
-                // cmp scrutinee (in temp), arm_value (in rax)
-                emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)   // mov rcx, rax
-                emit_load_rax_from_stack(match_temp)
-                emit_byte(0x48); emit_byte(0x39); emit_byte(0xC8)   // cmp rax, rcx
-                // jne skip_arm
-                emit_byte(0x0F); emit_byte(0x85)
-                jne_patch = out_len
+                je_bodies = alloc(64)
+                uint64 pat = wval
+                while pat != 0 {
+                    gen_expr(pat)
+                    emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)   // mov rcx, rax
+                    emit_load_rax_from_stack(match_temp)
+                    emit_byte(0x48); emit_byte(0x39); emit_byte(0xC8)   // cmp rax, rcx
+                    // je body (rel32) — patched after body start.
+                    emit_byte(0x0F); emit_byte(0x84)
+                    uint64 je_p = out_len
+                    emit_u32_le(0)
+                    uint64 slot = je_bodies + je_count * 8
+                    unsafe { *(slot as uint64) = je_p }
+                    je_count = je_count + 1
+                    uint32 pnxt = ast_next(pat)
+                    pat = pnxt
+                }
+            }
+            // If none matched, jump to skip_arm. Emit an unconditional
+            // jmp whose target is patched after the body.
+            uint64 skip_patch = 0
+            if is_wild == 0 {
+                emit_byte(0xE9)
+                skip_patch = out_len
                 emit_u32_le(0)
+            }
+            // Body label: patch every je to land here.
+            uint64 body_addr = out_len
+            uint64 ji = 0
+            while ji < je_count {
+                uint64 slot = je_bodies + ji * 8
+                uint64 jp = 0
+                unsafe { *(slot as uint64) -> jp }
+                patch_u32(jp, (body_addr - jp - 4) & 0xFFFFFFFF)
+                ji = ji + 1
             }
             // Execute arm body
             uint32 body_idx = ast_data2(warm)
@@ -8369,10 +8398,11 @@ fn gen_stmt(uint64 node) {
             uint32 ep32 = end_patch
             unsafe { *(bf as uint32) = ep32 }
             break_fixup_count = break_fixup_count + 1
-            // Patch jne to skip past the body (only for non-wildcard arms).
+            // Patch the unconditional jmp (from "none matched") to land
+            // here — the skip-arm position — only for non-wildcard arms.
             if is_wild == 0 {
                 uint64 skip_target = out_len
-                patch_u32(jne_patch, (skip_target - jne_patch - 4) & 0xFFFFFFFF)
+                patch_u32(skip_patch, (skip_target - skip_patch - 4) & 0xFFFFFFFF)
             }
             uint32 next_arm = ast_next(warm)
             warm = next_arm

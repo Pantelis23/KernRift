@@ -163,7 +163,10 @@ break_stmt  = "break"
 continue_stmt = "continue"
 
 match_stmt  = "match" expr "{" match_arm* "}"
-match_arm   = (expr | "_") "=>" block         (* "_" is a wildcard pattern *)
+match_arm   = pattern ("," pattern)* "=>" block
+            (* Multiple comma-separated patterns fire the body if *any*
+               matches. "_" is a wildcard — always matches. *)
+pattern     = expr | "_"
 
 unsafe_block   = "unsafe" "{" ptr_op "}"
 volatile_block = "volatile" "{" ptr_op "}"

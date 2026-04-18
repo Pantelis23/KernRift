@@ -1476,6 +1476,29 @@ run_test "match_wildcard_hit_first" 'fn main() {
         _ => { exit(42) }
     }
 }' 50
+run_test "match_multi_value_first" 'fn main() {
+    u64 x = 3
+    match x {
+        1, 2, 3 => { exit(77) }
+        _ => { exit(0) }
+    }
+}' 77
+run_test "match_multi_value_second" 'fn main() {
+    u64 x = 5
+    match x {
+        1, 2, 3 => { exit(77) }
+        4, 5 => { exit(66) }
+        _ => { exit(0) }
+    }
+}' 66
+run_test "match_multi_value_miss" 'fn main() {
+    u64 x = 9
+    match x {
+        1, 2, 3 => { exit(77) }
+        4, 5 => { exit(66) }
+        _ => { exit(11) }
+    }
+}' 11
 run_test "compound_field_assign" 'struct P { u64 x; u64 y }
 fn main() { P p; p.x = 10; p.x += 5; p.x *= 2; exit(p.x) }' 30
 run_test "compound_index_assign" 'fn main() { u64[4] a; a[0] = 10; a[0] += 3; a[0] *= 4; exit(a[0]) }' 52
