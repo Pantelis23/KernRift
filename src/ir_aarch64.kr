@@ -339,6 +339,10 @@ fn ir_emit_arm64_insn(uint64 ii) {
     uint64 s2_v = ir_insn_src2(ii)
     uint64 imm = ir_insn_imm(ii)
 
+    // DWARF line-table recording — see ir.kr's ir_emit_x86_insn.
+    uint64 ir_src_tok = ir_insn_src_tok_at(ii)
+    if ir_src_tok != 0 { line_table_record(ir_src_tok) }
+
     uint64 dst_r = ir_get_phys_reg(dest_v)
 
     // ----- IR_STR_CONST (79): dst = lea string data -----

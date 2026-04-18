@@ -147,6 +147,17 @@ static uint64 ir_insn_buf = 0       // pointer to instruction arena
 static uint64 ir_insn_count = 0     // number of instructions allocated
 static uint64 ir_insn_cap = 0       // max instructions
 
+// Parallel table of source tokens per instruction, used by the -g DWARF
+// emitter so each insn's emission can record a source-line mapping.
+// Zero means "no source info" — the emitter skips line recording.
+static uint64 ir_insn_src_tok = 0
+// Current source token, set by ir_lower_stmt so every ir_emit call
+// during a given statement's lowering inherits the same line.
+static uint64 ir_current_src_tok = 0
+
+@export
+fn ir_set_current_src_tok(uint64 tok) { ir_current_src_tok = tok }
+
 
 // ---------------------------------------------------------------------------
 // Basic block arena
@@ -176,8 +187,12 @@ fn ir_init() {
     if ir_insn_buf == 0 {
         ir_insn_cap = 65536
         ir_insn_buf = alloc(ir_insn_cap * 32)
+        // 4 bytes per insn — enough for a u32 token index. Shares the
+        // same cap as the main insn buf so indexing matches.
+        ir_insn_src_tok = alloc(ir_insn_cap * 4)
     }
     ir_insn_count = 0
+    ir_current_src_tok = 0
 
     if ir_bb_buf == 0 {
         ir_bb_cap = 4096
@@ -286,6 +301,15 @@ fn ir_insn_base(uint64 idx) -> uint64 {
 
 // Read the opcode (offset 0, uint32) of instruction `idx`.
 @export
+@export
+fn ir_insn_src_tok_at(uint64 idx) -> uint64 {
+    if ir_insn_src_tok == 0 { return 0 }
+    uint64 slot = ir_insn_src_tok + idx * 4
+    uint32 v = 0
+    unsafe { *(slot as uint32) -> v }
+    return v
+}
+
 fn ir_insn_opcode(uint64 idx) -> uint64 {
     uint64 p = ir_insn_base(idx)
     uint32 val = 0
@@ -388,6 +412,12 @@ fn ir_emit(uint64 opcode, uint64 dest, uint64 src1, uint64 src2, uint64 imm64, u
     }
 
     uint64 idx = ir_insn_count
+    // Parallel-table the current statement's source token. Per-insn
+    // granularity would be nicer but statement-level is enough for
+    // file:line mapping and keeps the insn layout untouched.
+    uint64 st_slot = ir_insn_src_tok + idx * 4
+    uint32 st = ir_current_src_tok
+    unsafe { *(st_slot as uint32) = st }
     ir_insn_count = ir_insn_count + 1
     uint64 base = ir_insn_base(idx)
 
@@ -2635,6 +2665,12 @@ fn ir_lower_expr(uint64 node) -> uint64 {
 
 fn ir_lower_stmt(uint64 node) {
     if node == 0 { return }
+    // Stash the statement's source token so every ir_emit that runs
+    // during this stmt's lowering carries the right line for DWARF.
+    uint32 stmt_tok = ast_tok(node)
+    if stmt_tok == 0 { stmt_tok = ast_data1(node) }
+    uint64 wst_tok = stmt_tok
+    ir_current_src_tok = wst_tok
     uint32 kind = ast_kind(node)
 
     // VarDecl (10)
@@ -4687,6 +4723,12 @@ fn ir_emit_x86_insn(uint64 ii) {
     uint64 s1_v = ir_insn_src1(ii)
     uint64 s2_v = ir_insn_src2(ii)
     uint64 imm = ir_insn_imm(ii)
+
+    // Record DWARF line-table entry at the start of each instruction
+    // that carries a source token. The line_table_record helper itself
+    // deduplicates same-line entries and no-ops when -g is off.
+    uint64 ir_src_tok = ir_insn_src_tok_at(ii)
+    if ir_src_tok != 0 { line_table_record(ir_src_tok) }
 
     // Get physical registers (0xFFFFFFFF = spilled)
     uint64 dst_r = ir_get_phys_reg(dest_v)

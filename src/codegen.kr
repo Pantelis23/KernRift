@@ -10123,8 +10123,30 @@ fn emit_program_header(uint64 text_size) {
 // header table at the end of an ELF executable.  Only called when -g is active.
 // text_start = file offset where .text begins (typically 120 = ELF hdr + phdr).
 @export
-fn emit_elf_debug_footer(uint64 text_start) {
+fn emit_elf_debug_footer(uint64 text_start, uint64 input_path) {
     if debug_info_mode == 0 { return }
+
+    // Extract just the basename from input_path (strip directory
+    // prefix), and compute the directory string. GDB loads the source
+    // by joining comp_dir + '/' + name, so we point comp_dir at "."
+    // and give name the path portion as-is — users running gdb in
+    // the source directory get working source display.
+    uint64 in_len = str_len(input_path)
+    uint64 last_slash = 0xFFFFFFFFFFFFFFFF
+    uint64 psi = 0
+    while psi < in_len {
+        uint64 sp = input_path + psi
+        uint64 ch = 0
+        unsafe { *(sp as uint8) -> ch }
+        if ch == 47 { last_slash = psi }
+        psi = psi + 1
+    }
+    uint64 name_start = 0
+    uint64 name_len = in_len
+    if last_slash != 0xFFFFFFFFFFFFFFFF {
+        name_start = last_slash + 1
+        name_len = in_len - name_start
+    }
 
     // === 1. Emit .debug_line section ===
     uint64 debug_line_off = out_len
@@ -10161,10 +10183,17 @@ fn emit_elf_debug_footer(uint64 text_start) {
     emit_uleb128(2)           // DW_LNCT_directory_index
     emit_uleb128(15)          // DW_FORM_udata
     emit_uleb128(1)           // file_names_count = 1
-    // File entry: "source.kr" + directory 0
-    emit_byte(115); emit_byte(111); emit_byte(117); emit_byte(114)
-    emit_byte(99); emit_byte(101); emit_byte(46); emit_byte(107)
-    emit_byte(114); emit_byte(0)  // "source.kr\0"
+    // File entry: real input basename + directory 0
+    uint64 fn_bi = 0
+    while fn_bi < name_len {
+        uint64 sp = input_path + name_start + fn_bi
+        uint64 cb = 0
+        unsafe { *(sp as uint8) -> cb }
+        uint8 b = cb
+        emit_byte(b)
+        fn_bi = fn_bi + 1
+    }
+    emit_byte(0)
     emit_uleb128(0)           // directory_index = 0
 
     // Patch header_length
@@ -10228,6 +10257,68 @@ fn emit_elf_debug_footer(uint64 text_start) {
     uint64 debug_line_end = out_len
     patch_u32(unit_length_patch, debug_line_end - unit_length_patch - 4)
     uint64 debug_line_size = debug_line_end - debug_line_off
+
+    // === 1b. Emit .debug_abbrev ===
+    // One abbreviation code (1) describing a DW_TAG_compile_unit with
+    // just the fields GDB needs to find the line program:
+    //   DW_AT_name       DW_FORM_strp      — source filename
+    //   DW_AT_comp_dir   DW_FORM_strp      — compilation directory
+    //   DW_AT_language   DW_FORM_data2     — DW_LANG_C
+    //   DW_AT_stmt_list  DW_FORM_sec_offset — offset into .debug_line
+    //   DW_AT_low_pc     DW_FORM_addr      — .text start VA
+    //   DW_AT_high_pc    DW_FORM_data8     — .text length
+    uint64 debug_abbrev_off = out_len
+    emit_uleb128(1)                     // abbrev code
+    emit_uleb128(0x11)                  // DW_TAG_compile_unit
+    emit_byte(0)                        // DW_CHILDREN_no
+    emit_uleb128(0x03); emit_uleb128(0x0E)   // DW_AT_name / DW_FORM_strp
+    emit_uleb128(0x1b); emit_uleb128(0x0E)   // DW_AT_comp_dir / DW_FORM_strp
+    emit_uleb128(0x13); emit_uleb128(0x05)   // DW_AT_language / DW_FORM_data2
+    emit_uleb128(0x10); emit_uleb128(0x17)   // DW_AT_stmt_list / DW_FORM_sec_offset
+    emit_uleb128(0x11); emit_uleb128(0x01)   // DW_AT_low_pc / DW_FORM_addr
+    emit_uleb128(0x12); emit_uleb128(0x07)   // DW_AT_high_pc / DW_FORM_data8
+    emit_uleb128(0); emit_uleb128(0)         // end of abbreviation
+    emit_uleb128(0)                          // end of .debug_abbrev
+    uint64 debug_abbrev_size = out_len - debug_abbrev_off
+
+    // === 1c. Emit .debug_str ===
+    uint64 debug_str_off = out_len
+    emit_byte(0)                              // offset 0 = empty string
+    uint64 ds_src_off = out_len - debug_str_off
+    uint64 ds_bi = 0
+    while ds_bi < name_len {
+        uint64 sp = input_path + name_start + ds_bi
+        uint64 cb = 0
+        unsafe { *(sp as uint8) -> cb }
+        uint8 b = cb
+        emit_byte(b)
+        ds_bi = ds_bi + 1
+    }
+    emit_byte(0)
+    uint64 ds_dir_off = out_len - debug_str_off
+    emit_byte(46); emit_byte(0)               // ".\0"
+    uint64 debug_str_size = out_len - debug_str_off
+
+    // === 1d. Emit .debug_info ===
+    // A single DW_TAG_compile_unit DIE referencing the line program.
+    uint64 debug_info_off = out_len
+    uint64 info_unit_length_patch = out_len
+    emit_u32_le(0)                            // unit_length placeholder
+    emit_u16_le(5)                            // DWARF version = 5
+    emit_byte(1)                              // DW_UT_compile
+    emit_byte(8)                              // address_size
+    emit_u32_le(0)                            // debug_abbrev_offset
+    // DIE body: abbrev code 1, then fields in the order declared above.
+    emit_uleb128(1)                           // abbrev code
+    emit_u32_le(ds_src_off)                   // name -> "source.kr"
+    emit_u32_le(ds_dir_off)                   // comp_dir -> "."
+    emit_u16_le(2)                            // language = DW_LANG_C
+    emit_u32_le(0)                            // stmt_list = 0 (.debug_line)
+    emit_u64_le(0x400000 + text_start)        // low_pc = .text VA
+    emit_u64_le(debug_line_off - text_start)  // high_pc = .text size (text_end - text_start)
+    // Patch unit_length (length of remainder, excluding the length field itself)
+    patch_u32(info_unit_length_patch, out_len - info_unit_length_patch - 4)
+    uint64 debug_info_size = out_len - debug_info_off
 
     // === 2. Emit .symtab ===
     uint64 symtab_off = out_len
@@ -10328,24 +10419,28 @@ fn emit_elf_debug_footer(uint64 text_start) {
 
     // === 4. Emit .shstrtab ===
     uint64 shstrtab_off = out_len
-    // Section name strings: \0 .text\0 .debug_line\0 .symtab\0 .strtab\0 .shstrtab\0
     emit_byte(0)  // idx 0: empty string
-    // .text = idx 1
     uint64 text_name_idx = out_len - shstrtab_off
     emit_byte(46); emit_byte(116); emit_byte(101); emit_byte(120); emit_byte(116); emit_byte(0)
-    // .debug_line = idx 7
     uint64 debug_line_name_idx = out_len - shstrtab_off
     emit_byte(46); emit_byte(100); emit_byte(101); emit_byte(98); emit_byte(117); emit_byte(103)
     emit_byte(95); emit_byte(108); emit_byte(105); emit_byte(110); emit_byte(101); emit_byte(0)
-    // .symtab = idx 19
+    uint64 debug_info_name_idx = out_len - shstrtab_off
+    emit_byte(46); emit_byte(100); emit_byte(101); emit_byte(98); emit_byte(117); emit_byte(103)
+    emit_byte(95); emit_byte(105); emit_byte(110); emit_byte(102); emit_byte(111); emit_byte(0)
+    uint64 debug_abbrev_name_idx = out_len - shstrtab_off
+    emit_byte(46); emit_byte(100); emit_byte(101); emit_byte(98); emit_byte(117); emit_byte(103)
+    emit_byte(95); emit_byte(97); emit_byte(98); emit_byte(98); emit_byte(114); emit_byte(101)
+    emit_byte(118); emit_byte(0)
+    uint64 debug_str_name_idx = out_len - shstrtab_off
+    emit_byte(46); emit_byte(100); emit_byte(101); emit_byte(98); emit_byte(117); emit_byte(103)
+    emit_byte(95); emit_byte(115); emit_byte(116); emit_byte(114); emit_byte(0)
     uint64 symtab_name_idx = out_len - shstrtab_off
     emit_byte(46); emit_byte(115); emit_byte(121); emit_byte(109); emit_byte(116)
     emit_byte(97); emit_byte(98); emit_byte(0)
-    // .strtab = idx 27
     uint64 strtab_name_idx = out_len - shstrtab_off
     emit_byte(46); emit_byte(115); emit_byte(116); emit_byte(114); emit_byte(116)
     emit_byte(97); emit_byte(98); emit_byte(0)
-    // .shstrtab = idx 35
     uint64 shstrtab_name_idx = out_len - shstrtab_off
     emit_byte(46); emit_byte(115); emit_byte(104); emit_byte(115); emit_byte(116)
     emit_byte(114); emit_byte(116); emit_byte(97); emit_byte(98); emit_byte(0)
@@ -10386,19 +10481,55 @@ fn emit_elf_debug_footer(uint64 text_start) {
     emit_u64_le(1)                 // sh_addralign
     emit_u64_le(0)
 
-    // Section 3: .symtab
+    // Section 3: .debug_abbrev
+    emit_u32_le(debug_abbrev_name_idx)
+    emit_u32_le(1)
+    emit_u64_le(0)
+    emit_u64_le(0)
+    emit_u64_le(debug_abbrev_off)
+    emit_u64_le(debug_abbrev_size)
+    emit_u32_le(0)
+    emit_u32_le(0)
+    emit_u64_le(1)
+    emit_u64_le(0)
+
+    // Section 4: .debug_str
+    emit_u32_le(debug_str_name_idx)
+    emit_u32_le(1)
+    emit_u64_le(0x30)              // SHF_MERGE | SHF_STRINGS
+    emit_u64_le(0)
+    emit_u64_le(debug_str_off)
+    emit_u64_le(debug_str_size)
+    emit_u32_le(0)
+    emit_u32_le(0)
+    emit_u64_le(1)
+    emit_u64_le(1)                 // sh_entsize = 1 (char)
+
+    // Section 5: .debug_info
+    emit_u32_le(debug_info_name_idx)
+    emit_u32_le(1)
+    emit_u64_le(0)
+    emit_u64_le(0)
+    emit_u64_le(debug_info_off)
+    emit_u64_le(debug_info_size)
+    emit_u32_le(0)
+    emit_u32_le(0)
+    emit_u64_le(1)
+    emit_u64_le(0)
+
+    // Section 6: .symtab
     emit_u32_le(symtab_name_idx)
     emit_u32_le(2)                 // SHT_SYMTAB
     emit_u64_le(0)                 // no flags
     emit_u64_le(0)                 // sh_addr = 0
     emit_u64_le(symtab_off)        // sh_offset
     emit_u64_le(symtab_size)       // sh_size
-    emit_u32_le(4)                 // sh_link = .strtab section index
+    emit_u32_le(7)                 // sh_link = .strtab index (now 7)
     emit_u32_le(1)                 // sh_info = index of first global symbol
     emit_u64_le(8)                 // sh_addralign
     emit_u64_le(24)                // sh_entsize = sizeof(Elf64_Sym)
 
-    // Section 4: .strtab
+    // Section 7: .strtab
     emit_u32_le(strtab_name_idx)
     emit_u32_le(3)                 // SHT_STRTAB
     emit_u64_le(0)
@@ -10410,7 +10541,7 @@ fn emit_elf_debug_footer(uint64 text_start) {
     emit_u64_le(1)
     emit_u64_le(0)
 
-    // Section 5: .shstrtab
+    // Section 8: .shstrtab
     emit_u32_le(shstrtab_name_idx)
     emit_u32_le(3)                 // SHT_STRTAB
     emit_u64_le(0)
@@ -10425,8 +10556,11 @@ fn emit_elf_debug_footer(uint64 text_start) {
     // === 6. Patch ELF header ===
     patch_u64(40, shdr_off)    // e_shoff
     patch_u16(58, 64)          // e_shentsize
-    patch_u16(60, 6)           // e_shnum
-    patch_u16(62, 5)           // e_shstrndx
+    patch_u16(60, 9)           // e_shnum (null, .text, .debug_line,
+                                //          .debug_abbrev, .debug_str,
+                                //          .debug_info, .symtab,
+                                //          .strtab, .shstrtab)
+    patch_u16(62, 8)           // e_shstrndx — .shstrtab is idx 8
 }
 
 // Emit an ELF relocatable object file (.o) wrapping the code already in out_buf.
