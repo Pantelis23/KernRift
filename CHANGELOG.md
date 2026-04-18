@@ -2,6 +2,32 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## v2.8.13 — 2026-04-18
+
+### Added
+- **Modern Greek case folding.** `utf8_lower_codepoint` and
+  `utf8_upper_codepoint` now cover the Greek and Coptic block
+  (U+0370..U+03FF) in addition to ASCII and Latin-1 Supplement:
+
+  - Α-Ρ ↔ α-ρ and Σ-Ω ↔ σ-ω (+32 pattern, skipping the unassigned
+    U+03A2 slot).
+  - Accented pairs with tonos / dialytika: Ά↔ά, Έ-Ί↔έ-ί, Ό↔ό,
+    Ύ-Ώ↔ύ-ώ, Ϊ-Ϋ↔ϊ-ϋ.
+  - Final sigma ς upper-cases to Σ (the "end of word" information
+    is lost, same way every Unicode case fold does it).
+
+  `str_lower_utf8("Γειά σου Κόσμε")` → `"γειά σου κόσμε"`.
+  `str_upper_utf8("ελληνικός")` → `"ΕΛΛΗΝΙΚΌΣ"`.
+  Mixed Latin-1 + Greek text round-trips correctly
+  (`"café Ωραία"` → `"CAFÉ ΩΡΑΊΑ"`).
+
+### Out of scope (documented in `std/string.kr`)
+- Polytonic Greek (U+1F00..U+1FFF — classical Greek with breathings
+  and circumflexes, ~230 codepoints).
+- Cyrillic, Armenian, Georgian, and other bicameral scripts.
+- One-to-many folds (German ß→SS, Turkish İ→i̇, Dutch IJ).
+- Locale-aware transforms.
+
 ## v2.8.12 — 2026-04-18
 
 ### Added (completion of the v2.8.11 string work)

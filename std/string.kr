@@ -696,44 +696,64 @@ fn str_grapheme_count(u64 s) -> u64 {
 }
 
 // ---------------------------------------------------------------------------
-// UTF-8-aware case folding (v2.8.11)
+// UTF-8-aware case folding
 //
-// We cover ASCII and the Latin-1 Supplement block (U+00C0..U+00FF) with a
-// direct codepoint->codepoint table. That takes care of common European
-// accented letters (á é í ö ü ñ ç å ø æ …). Codepoints outside those
-// ranges pass through unchanged.
+// Covered blocks:
+//   • ASCII (A-Z / a-z)
+//   • Latin-1 Supplement (À-Þ / à-þ)                    — common Western text
+//   • Greek and Coptic, modern subset (U+0370..U+03FF)  — modern Greek only
 //
-// What we deliberately *don't* do — use the ASCII-only str_lower /
-// str_upper if you need guaranteed locale stability:
-//   • Full Unicode case folding (Greek, Cyrillic, Armenian, Georgian,
-//     Cherokee, Vai, etc.). The full table is ~1 500 entries; not worth
-//     the binary-size tax for a kernel-first language.
-//   • One-to-many foldings like German ß -> SS, or Turkish İ -> i̇. Each
-//     mapping here is a 1-codepoint -> 1-codepoint transform.
-//   • Locale-aware transforms (Turkish dotless i, lithuanian accented i).
+// Codepoints outside those ranges pass through unchanged — use the
+// ASCII-only `str_lower` / `str_upper` if you need guaranteed locale
+// stability.
+//
+// Explicitly out of scope (documented so nobody's surprised):
+//   • Polytonic Greek (U+1F00..U+1FFF) — the ~230 entries used for
+//     classical Greek with breathings and circumflexes.
+//   • Cyrillic, Armenian, Georgian, Cherokee, Adlam, Vai, Warang Citi,
+//     Deseret, Osage. Full Unicode case folding is ~1 500 entries.
+//   • One-to-many folds like German ß -> SS, Turkish İ -> i̇, Dutch IJ.
+//     Each mapping here is a 1-codepoint -> 1-codepoint transform.
+//   • Locale-aware transforms (Turkish dotless i, Lithuanian accented i).
 // ---------------------------------------------------------------------------
 
-// Return the lowercase form of `cp`. ASCII A-Z folds to a-z; the Latin-1
-// Supplement block folds symmetrically; everything else passes through.
+// Return the lowercase form of `cp` for ASCII, Latin-1 Supplement, and
+// modern Greek. Codepoints outside those ranges pass through unchanged.
 fn utf8_lower_codepoint(u64 cp) -> u64 {
-    if cp >= 65 && cp <= 90 { return cp + 32 }            // ASCII A-Z
-    if cp >= 0xC0 && cp <= 0xDE && cp != 0xD7 {
-        // À-Þ (Latin-1 Supplement uppercase) minus × (multiplication sign)
-        return cp + 32
-    }
+    // ASCII A-Z
+    if cp >= 65 && cp <= 90 { return cp + 32 }
+    // Latin-1 Supplement À-Þ (skip × at 0xD7)
+    if cp >= 0xC0 && cp <= 0xDE && cp != 0xD7 { return cp + 32 }
+    // Greek accented uppercase with tonos / dialytika
+    if cp == 0x0386 { return 0x03AC }                      // Ά -> ά
+    if cp >= 0x0388 && cp <= 0x038A { return cp + 0x25 }   // Έ-Ί -> έ-ί
+    if cp == 0x038C { return 0x03CC }                      // Ό -> ό
+    if cp >= 0x038E && cp <= 0x038F { return cp + 0x3F }   // Ύ-Ώ -> ύ-ώ
+    // Greek main uppercase Α-Ρ and Σ-Ω (0x3A2 is unassigned, skip it)
+    if cp >= 0x0391 && cp <= 0x03A1 { return cp + 32 }     // Α-Ρ -> α-ρ
+    if cp >= 0x03A3 && cp <= 0x03AB { return cp + 32 }     // Σ-Ϋ -> σ-ϋ
     return cp
 }
 
 // Return the uppercase form of `cp` with the same coverage as
-// utf8_lower_codepoint. ß (U+00DF) does NOT uppercase to SS here — it
-// stays ß; use ASCII-only str_upper on strings that might contain it
-// if you need the German fold.
+// utf8_lower_codepoint. ß (U+00DF) is 1->2 in real Unicode (SS) and
+// therefore stays ß here; use ASCII-only str_upper on strings that
+// might contain it. Final sigma ς (U+03C2) upper-cases to Σ — the
+// "end of word" information is lost, as with every Unicode case fold.
 fn utf8_upper_codepoint(u64 cp) -> u64 {
-    if cp >= 97 && cp <= 122 { return cp - 32 }           // ASCII a-z
-    if cp >= 0xE0 && cp <= 0xFE && cp != 0xF7 {
-        // à-þ minus ÷ (division sign)
-        return cp - 32
-    }
+    // ASCII a-z
+    if cp >= 97 && cp <= 122 { return cp - 32 }
+    // Latin-1 Supplement à-þ (skip ÷ at 0xF7)
+    if cp >= 0xE0 && cp <= 0xFE && cp != 0xF7 { return cp - 32 }
+    // Greek accented lowercase -> accented uppercase
+    if cp == 0x03AC { return 0x0386 }                      // ά -> Ά
+    if cp >= 0x03AD && cp <= 0x03AF { return cp - 0x25 }   // έ-ί -> Έ-Ί
+    if cp == 0x03CC { return 0x038C }                      // ό -> Ό
+    if cp >= 0x03CD && cp <= 0x03CE { return cp - 0x3F }   // ύ-ώ -> Ύ-Ώ
+    // Greek main lowercase α-ρ and final sigma ς
+    if cp >= 0x03B1 && cp <= 0x03C1 { return cp - 32 }     // α-ρ -> Α-Ρ
+    if cp == 0x03C2 { return 0x03A3 }                      // ς -> Σ
+    if cp >= 0x03C3 && cp <= 0x03CB { return cp - 32 }     // σ-ϋ -> Σ-Ϋ
     return cp
 }
 

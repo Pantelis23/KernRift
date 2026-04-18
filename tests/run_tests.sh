@@ -436,6 +436,31 @@ fn main() { exit(utf8_is_combining(0x0301)) }' 1
 run_test "utf8_is_combining_no" 'import "std/string.kr"
 fn main() { exit(utf8_is_combining(65)) }' 0
 
+# --- Greek case folding (v2.8.13) ---
+run_test_output "greek_lower_sentence" 'import "std/string.kr"
+fn main() { println_str(str_lower_utf8("Γειά σου Κόσμε")) }' "γειά σου κόσμε"
+run_test_output "greek_upper_sentence" 'import "std/string.kr"
+fn main() { println_str(str_upper_utf8("γειά σου κόσμε")) }' "ΓΕΙΆ ΣΟΥ ΚΌΣΜΕ"
+run_test_output "greek_upper_final_sigma" 'import "std/string.kr"
+fn main() { println_str(str_upper_utf8("ελληνικός")) }' "ΕΛΛΗΝΙΚΌΣ"
+run_test_output "greek_mixed_latin1" 'import "std/string.kr"
+fn main() { println_str(str_upper_utf8("café Ωραία")) }' "CAFÉ ΩΡΑΊΑ"
+run_test "greek_lower_alpha" 'import "std/string.kr"
+fn main() {
+    if utf8_lower_codepoint(0x0391) == 0x03B1 { exit(1) }
+    exit(0)
+}' 1
+run_test "greek_upper_omega" 'import "std/string.kr"
+fn main() {
+    if utf8_upper_codepoint(0x03C9) == 0x03A9 { exit(1) }
+    exit(0)
+}' 1
+run_test "greek_final_sigma_to_sigma" 'import "std/string.kr"
+fn main() {
+    if utf8_upper_codepoint(0x03C2) == 0x03A3 { exit(1) }
+    exit(0)
+}' 1
+
 # --- String builder (v2.8.11) ---
 run_test_output "sb_basic" 'import "std/string.kr"
 fn main() {
