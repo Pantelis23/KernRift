@@ -598,6 +598,27 @@ run_bchk_test "bchk_stack_oob_write"   'fn main() { u64[4] a; a[4] = 99; exit(0)
 run_bchk_test "bchk_stack_oob_read"    'fn main() { u64[4] a; exit(a[7]) }' 1
 run_bchk_test "bchk_static_in_range"   'static u64[8] s; fn main() { s[5] = 42; exit(s[5]) }' 42
 run_bchk_test "bchk_static_oob_write"  'static u64[8] s; fn main() { s[8] = 1; exit(0) }' 1
+
+# --- Literal-overflow warning ---
+TOTAL=$((TOTAL + 1))
+printf 'fn main() { u8 b = 300; exit(b) }\n' > "$DIR/../test_tmp_trunc_$$.kr"
+trunc_out=$($KRC $KRC_FLAGS "$DIR/../test_tmp_trunc_$$.kr" -o /tmp/krc_trunc_$$ 2>&1)
+if echo "$trunc_out" | grep -q "literal initializer does not fit"; then
+    PASS=$((PASS + 1))
+else
+    echo "FAIL: literal_overflow_warns (no warning emitted)"; FAIL=$((FAIL + 1))
+fi
+rm -f "$DIR/../test_tmp_trunc_$$.kr" /tmp/krc_trunc_$$
+
+TOTAL=$((TOTAL + 1))
+printf 'fn main() { u8 b = 200; exit(b) }\n' > "$DIR/../test_tmp_okw_$$.kr"
+okw_out=$($KRC $KRC_FLAGS "$DIR/../test_tmp_okw_$$.kr" -o /tmp/krc_okw_$$ 2>&1)
+if echo "$okw_out" | grep -q "literal initializer"; then
+    echo "FAIL: literal_in_range_silent (false warning)"; FAIL=$((FAIL + 1))
+else
+    PASS=$((PASS + 1))
+fi
+rm -f "$DIR/../test_tmp_okw_$$.kr" /tmp/krc_okw_$$
 run_test "alloc_aligned_64" 'import "std/mem.kr"
 fn main() {
     uint64 buf = alloc_aligned(100, 64)

@@ -1205,6 +1205,22 @@ fn sema_check_stmt(uint64 node) {
                 report_error_at(wtype_tok, "type mismatch: char requires explicit cast")
                 sema_errors = sema_errors + 1
             }
+            // Literal-overflow warning: if the initializer is an untagged
+            // IntLit (not a bool/char literal) and the declared type is
+            // narrower than u64, warn when the literal doesn't fit. This
+            // catches the classic `u8 b = 300` foot-gun at compile time.
+            if winit_kind == 30 && init_type_tag == 0 {
+                uint32 lit_tok = ast_data1(winit)
+                uint64 wlit_tok = lit_tok
+                uint64 lit_val = parse_int_token(wlit_tok)
+                uint64 limit = 0
+                if decl_type_kind == 80 || decl_type_kind == 84 { limit = 0x100 }
+                if decl_type_kind == 81 || decl_type_kind == 85 { limit = 0x10000 }
+                if decl_type_kind == 82 || decl_type_kind == 86 { limit = 0x100000000 }
+                if limit != 0 && lit_val >= limit {
+                    report_warn_at(wtype_tok, "literal initializer does not fit the declared type (truncated)")
+                }
+            }
         }
         return
     }

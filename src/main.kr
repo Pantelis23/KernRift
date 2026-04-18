@@ -222,6 +222,22 @@ fn report_error_at(uint64 tok_idx, uint64 msg) {
     write(2, "\n", 1)
 }
 
+@export
+fn report_warn_at(uint64 tok_idx, uint64 msg) {
+    uint64 tok_start = tok_text_start(tok_idx)
+    uint64 file_path = srcmap_file(tok_start)
+    if file_path != 0 {
+        write(2, file_path, str_len(file_path))
+    }
+    write(2, ":", 1)
+    uint8[24] lbuf
+    uint64 llen = fmt_uint(lbuf, srcmap_line(tok_start))
+    write(2, lbuf, llen)
+    write(2, ": warning: ", 11)
+    write(2, msg, str_len(msg))
+    write(2, "\n", 1)
+}
+
 fn import_dir_of(uint64 path) -> uint64 {
     // Find last '/' in path, return length including the slash
     uint64 len = str_len(path)
