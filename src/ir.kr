@@ -2639,14 +2639,33 @@ fn ir_lower_stmt(uint64 node) {
         if vd_type_kind == 99 { vd_fk = 4 }
         if winit != 0 {
             uint64 val = ir_lower_expr(winit)
+            uint64 fk_from_val = ir_vreg_fkind_get(val)
+            // If declared type is f32 but init produced f64 (common for
+            // `f32 x = 6.9`), emit a narrowing conversion so the stored
+            // bits are an actual f32. Relabel-only would leave the variable
+            // holding the upper 32 bits of the f64 bit pattern, which
+            // cvtss2sd later interprets as a tiny negative value.
+            if vd_fk == 2 && fk_from_val == 1 {
+                uint64 f32v = ir_new_vreg()
+                ir_emit(IR_F64TOF32, f32v, val, 0, 0, ir_current_bb)
+                ir_vreg_fkind_set(f32v, 2)
+                val = f32v
+                fk_from_val = 2
+            }
+            // Symmetric widening for `f64 x = 1.5f` style cases.
+            if vd_fk == 1 && fk_from_val == 2 {
+                uint64 f64v = ir_new_vreg()
+                ir_emit(IR_F32TOF64, f64v, val, 0, 0, ir_current_bb)
+                ir_vreg_fkind_set(f64v, 1)
+                val = f64v
+                fk_from_val = 1
+            }
             // Always create a fresh vreg for the new variable so it doesn't
             // alias the source. This is critical when the init is a variable
             // reference (e.g., uint64 test = bits) — without the copy, both
             // names share a vreg and modifications to one affect the other.
             uint64 fresh_val = ir_new_vreg()
             ir_emit(IR_COPY, fresh_val, val, 0, 0, ir_current_bb)
-            // Propagate float kind from either the type annotation or the init value
-            uint64 fk_from_val = ir_vreg_fkind_get(val)
             if vd_fk != 0 {
                 ir_vreg_fkind_set(fresh_val, vd_fk)
             } else if fk_from_val != 0 {
@@ -8163,6 +8182,22 @@ fn ir_emit_x86_function(uint64 fn_node) {
 
     // 10. Epilogue (skip for @naked functions)
     if is_naked == 0 {
+        // For main(): auto-insert exit(0) so programs without explicit exit()
+        // don't segfault on return. Matches the legacy codegen behavior.
+        if tok_matches(fn_name_tok, "main", 4) != 0 && freestanding == 0 {
+            if target_os == 2 {
+                // Windows: ExitProcess(0) via IAT slot 0
+                emit_byte(0xB9); emit_u32_le(0)
+                emit_win_alloc_stack(0x20)
+                emit_win_call_iat(0)
+            } else {
+                // Linux/macOS/Android: exit(0) syscall
+                emit_byte(0xBF); emit_u32_le(0)
+                if target_os == 1 { emit_byte(0xB8); emit_u32_le(0x2000001) }
+                else { emit_byte(0xB8); emit_u32_le(231) }
+                emit_byte(0x0F); emit_byte(0x05)
+            }
+        }
         if frame_size > 0 {
             emit_byte(0x48)
             emit_byte(0x81)

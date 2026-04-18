@@ -4044,8 +4044,25 @@ fn main() {
                 uint64 emit_str = arg + 7
                 if str_starts_with(emit_str, "elfexe", 6) != 0 {
                     emit_mode = 0
+                } else if str_starts_with(emit_str, "elf", 3) != 0 {
+                    // "elf" / "elf-arm64" / "elf-x86_64" aliases for ELF
+                    emit_mode = 0
+                } else if str_starts_with(emit_str, "linux", 5) != 0 {
+                    // "linux", "linux-x86_64", "linux-arm64", "linux-x86-64" all alias to ELF
+                    emit_mode = 0
                 } else if str_starts_with(emit_str, "macho", 5) != 0 {
                     emit_mode = 1
+                } else if str_starts_with(emit_str, "mac", 3) != 0 {
+                    // "macos", "mac-x64", "mac-arm64" alias to Mach-O
+                    emit_mode = 1
+                } else if str_starts_with(emit_str, "darwin", 6) != 0 {
+                    emit_mode = 1
+                } else if str_starts_with(emit_str, "windows", 7) != 0 {
+                    // "windows", "windows-x64", "windows-arm64" alias to PE
+                    emit_mode = 2
+                } else if str_starts_with(emit_str, "win", 3) != 0 {
+                    // "win", "win-x64", "win-arm64" alias to PE
+                    emit_mode = 2
                 } else if str_starts_with(emit_str, "pe", 2) != 0 {
                     emit_mode = 2
                 } else if str_starts_with(emit_str, "obj", 3) != 0 {
@@ -4061,7 +4078,7 @@ fn main() {
                     uint64 esl = str_len(emit_str)
                     write(2, emit_str, esl)
                     write(2, "'\n", 2)
-                    write(2, "valid: elfexe, macho, pe, obj, android, asm, ir\n", 48)
+                    write(2, "valid: elfexe, linux, macho, mac, pe, windows, win, obj, android, asm, ir\n", 74)
                     exit(1)
                 }
             } else if str_eq_full(arg, "-c") != 0 {
