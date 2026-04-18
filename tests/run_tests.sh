@@ -1499,6 +1499,31 @@ run_test "match_multi_value_miss" 'fn main() {
         _ => { exit(11) }
     }
 }' 11
+run_test "match_range_inclusive" 'fn main() {
+    u64 x = 50
+    match x {
+        0..=31 => { exit(1) }
+        32..=126 => { exit(2) }
+        _ => { exit(3) }
+    }
+}' 2
+run_test "match_range_exclusive" 'fn main() {
+    u64 x = 10
+    match x {
+        0..10 => { exit(1) }
+        10..20 => { exit(2) }
+        _ => { exit(3) }
+    }
+}' 2
+run_test "match_range_ident" 'fn main() {
+    u64 lo = 5
+    u64 hi = 10
+    u64 x = 7
+    match x {
+        lo..=hi => { exit(7) }
+        _ => { exit(0) }
+    }
+}' 7
 run_test "compound_field_assign" 'struct P { u64 x; u64 y }
 fn main() { P p; p.x = 10; p.x += 5; p.x *= 2; exit(p.x) }' 30
 run_test "compound_index_assign" 'fn main() { u64[4] a; a[0] = 10; a[0] += 3; a[0] *= 4; exit(a[0]) }' 52

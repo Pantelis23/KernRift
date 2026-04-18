@@ -602,6 +602,39 @@ fn is_type_keyword(uint32 kind) -> uint64 {
     return 0
 }
 
+// Parse one match-arm pattern. Most patterns are bare expressions
+// (IntLits, Idents, `_`). A range pattern takes the form `lo .. hi` or
+// `lo ..= hi` and gets wrapped in a RangePat (kind 52) AST node so
+// codegen knows to emit two bounds checks instead of a single equality
+// comparison.
+fn parse_match_pattern() -> uint64 {
+    uint64 lo_expr = parse_expr()
+    // If the next token isn't `.`, this is a plain pattern.
+    if cur_kind() != 17 { return lo_expr }
+    advance_tok()                          // first `.`
+    if cur_kind() != 17 {
+        // Only one dot — not a range. Parser shouldn't reach here for
+        // anything valid; treat as plain and leave the stray dot for
+        // the caller's expect() to error on.
+        return lo_expr
+    }
+    advance_tok()                          // second `.`
+    uint64 inclusive = 0
+    if cur_kind() == 34 {                  // optional `=`
+        advance_tok()
+        inclusive = 1
+    }
+    uint64 hi_expr = parse_expr()
+    uint64 rp = ast_alloc(52)
+    uint32 lo32 = lo_expr
+    ast_set_data1(rp, lo32)
+    uint32 hi32 = hi_expr
+    ast_set_data2(rp, hi32)
+    uint32 inc32 = inclusive
+    ast_set_data3(rp, inc32)
+    return rp
+}
+
 fn parse_stmt() -> uint64 {
     uint32 kind = cur_kind()
 
@@ -903,16 +936,22 @@ fn parse_stmt() -> uint64 {
         uint64 first_arm = 0
         uint64 last_arm = 0
         while cur_kind() != 13 && cur_kind() != 0 {
-            // Parse one-or-more comma-separated patterns:
-            //   match x { 1, 2, 3 => { ... } _ => { ... } }
+            // Parse one-or-more comma-separated patterns. Each pattern
+            // is either a bare expression, "_" (wildcard), or a range
+            // form: lo ".." hi or lo "..=" hi.
+            //   match b {
+            //       0..=31 => { ... }          # inclusive range
+            //       32..126 => { ... }         # exclusive range
+            //       1, 2, 3 => { ... }
+            //       _ => { ... }
+            //   }
             // The first pattern sits in data1; any additional patterns
             // are chained via the `next` field on the first pattern node.
-            // Codegen fires the arm if the scrutinee matches any of them.
-            uint64 first_pat = parse_expr()
+            uint64 first_pat = parse_match_pattern()
             uint64 last_pat = first_pat
             while cur_kind() == 16 {                // comma
                 advance_tok()
-                uint64 more_pat = parse_expr()
+                uint64 more_pat = parse_match_pattern()
                 uint32 m32 = more_pat
                 ast_set_next(last_pat, m32)
                 last_pat = more_pat

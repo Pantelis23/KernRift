@@ -8349,6 +8349,12 @@ fn gen_stmt(uint64 node) {
                 je_bodies = alloc(64)
                 uint64 pat = wval
                 while pat != 0 {
+                    uint32 pat_k_raw = ast_kind(pat)
+                    uint64 pat_k = pat_k_raw
+                    if pat_k == 52 {
+                        write(2, "error: range patterns require the IR backend (drop --legacy)\n", 62)
+                        exit(1)
+                    }
                     gen_expr(pat)
                     emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)   // mov rcx, rax
                     emit_load_rax_from_stack(match_temp)

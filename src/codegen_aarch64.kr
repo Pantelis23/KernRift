@@ -4480,6 +4480,12 @@ fn gen_stmt_a64(uint64 node) {
                 beq_patches = alloc(64)
                 uint64 pat = wval
                 while pat != 0 {
+                    uint32 pat_k_raw = ast_kind(pat)
+                    uint64 pat_k = pat_k_raw
+                    if pat_k == 52 {
+                        write(2, "error: range patterns require the IR backend (drop --legacy)\n", 62)
+                        exit(1)
+                    }
                     gen_expr_a64(pat)
                     emit_a64_mov(9, 0)
                     emit_a64_load_x0(match_temp)

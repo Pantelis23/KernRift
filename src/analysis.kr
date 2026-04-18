@@ -1180,6 +1180,18 @@ fn sema_check_expr(uint64 node) {
         }
         return
     }
+
+    // RangePat (52): match-arm `lo .. hi` / `lo ..= hi`. Walk both
+    // bounds so idents / calls inside them count as used.
+    if kind == 52 {
+        uint32 rp_lo = ast_data1(node)
+        uint64 wrp_lo = rp_lo
+        if wrp_lo != 0 { sema_check_expr(wrp_lo) }
+        uint32 rp_hi = ast_data2(node)
+        uint64 wrp_hi = rp_hi
+        if wrp_hi != 0 { sema_check_expr(wrp_hi) }
+        return
+    }
 }
 
 // Check a statement for call argument count mismatches

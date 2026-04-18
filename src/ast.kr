@@ -78,6 +78,8 @@ enum AstKind {
     FString = 50         // f-string: child=first segment (StrLit or expr), ...
     Defer = 51           // defer { body }; data1=body_block_idx — codegen
                          // emits body (LIFO) before every return/fall-through
+    RangePat = 52        // match range pattern: data1=lo_expr, data2=hi_expr,
+                         // data3=inclusive_flag (1 = ..= inclusive, 0 = .. exclusive)
 }
 
 // ---------------------------------------------------------------------------
