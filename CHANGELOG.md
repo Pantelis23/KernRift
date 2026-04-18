@@ -2,6 +2,59 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## v2.8.8 — 2026-04-18
+
+IR ARM64 codegen bug bash.
+
+### Fixed
+All bugs here are miscompiled ARM64 output from the IR backend — the
+shipped krc binaries have been legacy-compiled as a workaround since
+v2.8.7, but programs built *by* krc for ARM64 via the IR path
+(the default for direct `--arch=arm64`) hit these:
+
+- **`str_eq` returned garbage on equal strings, wrong bool on prefixes.**
+  The hand-emitted `CMP w2, w3` had Rd=w2 instead of Rd=wZR, so SUBS
+  destroyed the byte in w2 right before the `CBZ w2, equal` check —
+  every matching byte looked like "end of string" and made the
+  function claim `str_eq("ab","a") == 1`. The surrounding `B.NE`/`CBZ`
+  offsets were also encoded with imm19 shifted by 6 bits instead of 5
+  (both offsets doubled); those are now `0x540000A1`/`0x340000C2`.
+- **`int_to_f32` / `f32_to_int` produced 0 for every value.** SCVTF was
+  encoded as `SCVTF Dd, Wn` (double destination, 32-bit int source),
+  so 64-bit ints got rounded into a double and the subsequent
+  `fmov w, s` pulled garbage low bits. FCVTZS had the mirror bug.
+- **`atomic_add` / `atomic_sub` / `atomic_and` / `atomic_or` /
+  `atomic_xor` returned the NEW value** (matched neither the doc
+  comment "returns old" nor the x86 xadd-based lowering). The retry
+  loops now keep the pre-op value in x9 and write the computed result
+  from x13 back via STLXR.
+- **`atomic_cas` always reported success.** The `B.NE fail` offset
+  landed on the `MOVZ d=1` success branch instead of the `MOVZ d=0`
+  fail branch, because imm19=3 reached `MOVZ d=1` and skipped all
+  three instructions in between. Now `imm19=5`.
+- **`memcmp` / `struct ==` returned equal on mismatches.** The CMP
+  inside the loop wrote to `w3` (same SUBS-clobber shape as str_eq),
+  and the `B.NE not_equal` offset pointed at the `B done` branch
+  instead of the `MOVZ d=0` a couple of instructions past it. Both
+  fixed together.
+- **`println(0.0)` printed `0.0000048`.** The fraction pad-loop
+  repurposed x11 as the ASCII `'0'` scratch to feed STRB, but x11
+  still held `frac_int` for the subsequent digit-extraction loop. It
+  now uses x3 instead, and the per-iteration `x10++` (which
+  double-counted the padding bytes) is gone — `add x10, x10, 6`
+  after the digit copy handles the full fraction length.
+- **`--debug` divide-by-zero didn't trap on ARM64.** ARM64's UDIV
+  returns 0 for `x/0` instead of raising like x86 `div`. Added an
+  explicit `CBNZ divisor, skip ; exit(1)` guard in debug builds.
+
+### Tests
+329/335 pass on an IR-compiled ARM64 krc under qemu-aarch64; the four
+x86-only `asm_*` tests are (correctly) skipped on native aarch64 CI.
+`device_block_read_write` and `custom_fat_smaller` still fail — the
+former maps an absolute VA that qemu's user-mode translator can't
+honour, and the latter hits the same compile_fat-on-IR-ARM64 segfault
+tracked separately.
+
 ## v2.8.7 — 2026-04-18
 
 Android/ARM64 fat-binary segfault fix.

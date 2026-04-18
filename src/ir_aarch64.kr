@@ -372,6 +372,19 @@ fn ir_emit_arm64_insn(uint64 ii) {
         uint64 b_reg = ir_a64_resolve_src(s2_v, 10)
         uint64 d = dst_r
         if d == 0xFFFFFFFF { d = 9 }
+        // Debug-mode div-by-zero trap: ARM64 UDIV silently returns 0
+        // for b==0 (no CPU trap), unlike x86 DIV which #DE's. Emit an
+        // explicit exit(1) guard so programs behave the same under
+        // --debug on both architectures.
+        if debug_mode != 0 {
+            uint64 dz_cbnz = out_len
+            emit_a64(0xB5000000 | (b_reg & 0x1F))   // CBNZ xB, skip — patched below
+            emit_a64_mov_imm(0, 1)
+            emit_a64_mov_imm(8, 93)                  // exit syscall
+            emit_a64_svc()
+            uint64 dz_delta = (out_len - dz_cbnz) / 4
+            patch_u32(dz_cbnz, 0xB5000000 | ((dz_delta & 0x7FFFF) << 5) | (b_reg & 0x1F))
+        }
         emit_a64_udiv(d, a_reg, b_reg)
         if dst_r == 0xFFFFFFFF {
             ir_a64_emit_store_spill(9, dest_v)
@@ -385,6 +398,15 @@ fn ir_emit_arm64_insn(uint64 ii) {
         uint64 b_reg = ir_a64_resolve_src(s2_v, 10)
         uint64 d = dst_r
         if d == 0xFFFFFFFF { d = 9 }
+        if debug_mode != 0 {
+            uint64 dz_cbnz = out_len
+            emit_a64(0xB5000000 | (b_reg & 0x1F))
+            emit_a64_mov_imm(0, 1)
+            emit_a64_mov_imm(8, 93)
+            emit_a64_svc()
+            uint64 dz_delta = (out_len - dz_cbnz) / 4
+            patch_u32(dz_cbnz, 0xB5000000 | ((dz_delta & 0x7FFFF) << 5) | (b_reg & 0x1F))
+        }
         // x11 = a / b
         emit_a64_udiv(11, a_reg, b_reg)
         // d = a - x11 * b (MSUB d, x11, b, a)
@@ -943,12 +965,24 @@ fn ir_emit_arm64_insn(uint64 ii) {
         uint64 se_loop = out_len
         emit_a64_ldrb(2, 0, 0)
         emit_a64_ldrb(3, 1, 0)
-        // CMP w2, w3 (32-bit)
-        emit_a64(0x6B030042)
-        // B.NE not_equal (+5 insns = 20 bytes)
-        emit_a64(0x54000141)    // B.NE +5
-        // CBZ w2, equal (+4 insns = 16 bytes)
-        emit_a64(0x34000102)    // CBZ w2, +4
+        // CMP w2, w3 (32-bit) — SUBS WZR, w2, w3 so flags are set but w2
+        // is preserved. The old encoding used Rd=w2, which destroyed w2
+        // whenever the bytes matched (SUBS w2,w2,w3 = 0), making the
+        // subsequent CBZ w2 *always* treat equal-byte positions as
+        // end-of-string and return 1 (equal) immediately. Classic case:
+        // str_eq("ab","a") returned 1 because the first match byte 'a'
+        // got subtracted into 0 and CBZ fired on the synthesized zero.
+        emit_a64(0x6B03005F)
+        // B.NE not_equal (+5 insns). imm19 field sits at [23:5], so the
+        // instruction-count goes in bits 9:5 for small offsets — 5 << 5 = 0xA0.
+        // The old constants here (0x54000141, 0x34000102) had imm19 shifted by
+        // 6 instead of 5, doubling every branch offset and falling off the end
+        // of the comparator — that made str_eq return the first byte instead
+        // of a 0/1 result.
+        emit_a64(0x540000A1)    // B.NE +5
+        // CBZ w2, equal (+6 insns) — need 6 to hop over the back-edge
+        // branch AND the not_equal path's MOVZ+B pair.
+        emit_a64(0x340000C2)    // CBZ w2, +6
         emit_a64_add_imm(0, 0, 1)
         emit_a64_add_imm(1, 1, 1)
         uint64 se_back = se_loop - out_len
@@ -1158,9 +1192,18 @@ fn ir_emit_arm64_insn(uint64 ii) {
         emit_a64_cbz(2, 28)
         emit_a64(0x38401403)    // LDRB w3, [x0], #1
         emit_a64(0x38401424)    // LDRB w4, [x1], #1
-        emit_a64(0x6B040063)    // CMP w3, w4
-        // B.NE not_equal (+3 insns = 12 bytes)
-        emit_a64(0x54000061)    // B.NE +3
+        // CMP w3, w4 (SUBS WZR, w3, w4). Old constant 0x6B040063 had
+        // Rd=w3, so it overwrote w3 with the subtraction result — same
+        // shape as the str_eq bug. Must be Rd=WZR(31) to preserve the
+        // bytes for the loop-exit path (not strictly needed here since
+        // we don't reuse w3 after CMP, but keep it faithful to `CMP`).
+        emit_a64(0x6B04007F)    // CMP w3, w4
+        // B.NE not_equal (+4 insns) — want to land on the MOVZ d,0
+        // at position (+4). Old encoding 0x54000061 set imm19=3 which
+        // dropped us onto the unconditional `B done` and skipped the
+        // MOVZ d=0, so memcmp always returned the pre-loop value 1
+        // (thus == true for every non-equal struct).
+        emit_a64(0x54000081)    // B.NE +4
         emit_a64(0xD1000442)    // SUB x2, x2, #1
         uint64 mc_back = mc_loop - out_len
         emit_a64(0x14000000 | ((mc_back / 4) & 0x3FFFFFF))
@@ -1207,16 +1250,18 @@ fn ir_emit_arm64_insn(uint64 ii) {
         uint64 val_r = ir_a64_resolve_src(s2_v, 11)
         // retry:
         uint64 aa_retry = out_len
-        // LDAXR x9, [ptr_r]: 0xC85FFC00 | (ptr_r << 5) | 9
+        // LDAXR x9, [ptr_r] — x9 holds the OLD value (what we must return)
         emit_a64(0xC85FFC00 | (ptr_r << 5) | 9)
-        // ADD x9, x9, val_r
-        emit_a64_add(9, 9, val_r)
-        // STLXR w12, x9, [ptr_r]: 0xC800FC00 | (12 << 16) | (ptr_r << 5) | 9
-        emit_a64(0xC800FC00 | (12 << 16) | (ptr_r << 5) | 9)
+        // Compute new value in x13. x86's `xadd` returns the pre-add value;
+        // the old code wrote the new value into x9 and returned that,
+        // flipping the semantic (atomic_add(40,10) returned 50 instead of 40).
+        emit_a64_add(13, 9, val_r)
+        // STLXR w12, x13, [ptr_r] — store the NEW value back
+        emit_a64(0xC800FC00 | (12 << 16) | (ptr_r << 5) | 13)
         // CBNZ w12, retry (32-bit CBNZ for status register)
         uint64 aa_back = aa_retry - out_len
         emit_a64(0x35000000 | (((aa_back / 4) & 0x7FFFF) << 5) | 12)
-        // x9 = new value
+        // x9 still holds the old value — that's the return.
         if dst_r != 0xFFFFFFFF {
             emit_a64_mov(dst_r, 9)
         } else {
@@ -1240,26 +1285,30 @@ fn ir_emit_arm64_insn(uint64 ii) {
         }
         // retry:
         uint64 cas_retry = out_len
-        // LDAXR x9, [ptr_r]
+        // LDAXR x9, [ptr_r]                                    (+0)
         emit_a64(0xC85FFC00 | (ptr_r << 5) | 9)
-        // CMP x9, exp_r (SUBS xzr, x9, exp_r)
+        // CMP x9, exp_r (SUBS xzr, x9, exp_r)                  (+1)
         emit_a64_cmp(9, exp_r)
-        // B.NE fail (+3 insns = 12 bytes)
-        emit_a64(0x54000061)
-        // STLXR w12, des_r, [ptr_r]
+        // B.NE fail — need +5 insns (STLXR, CBNZ, MOVZ d=1,
+        // B done, then FAIL = MOVZ d=0). imm19=5 → 0x540000A1.
+        // The old constant 0x54000061 encoded imm19=3, which landed
+        // exactly on "Success: MOVZ d=1" — so CAS always reported
+        // success, even when the compare mismatched.
+        emit_a64(0x540000A1)                                    // (+2)
+        // STLXR w12, des_r, [ptr_r]                            (+3)
         emit_a64(0xC800FC00 | (12 << 16) | (ptr_r << 5) | des_r)
-        // CBNZ w12, retry
+        // CBNZ w12, retry                                      (+4)
         uint64 cas_back = cas_retry - out_len
         emit_a64(0x35000000 | (((cas_back / 4) & 0x7FFFF) << 5) | 12)
-        // Success: result = 1
+        // Success: result = 1                                  (+5)
         uint64 cas_d = dst_r
         if cas_d == 0xFFFFFFFF { cas_d = 9 }
         emit_a64_mov_imm(cas_d, 1)
-        // B done (+2 insns = 8 bytes)
+        // B done (+2 insns = 8 bytes)                          (+6)
         emit_a64(0x14000002)
-        // fail: result = 0
+        // fail: result = 0                                     (+7)
         emit_a64_mov_imm(cas_d, 0)
-        // done:
+        // done:                                                (+8)
         if dst_r == 0xFFFFFFFF {
             ir_a64_emit_store_spill(9, dest_v)
         }
@@ -1311,21 +1360,16 @@ fn ir_emit_arm64_insn(uint64 ii) {
     }
 
     // ----- IR_ATOMIC_SUB (109): ldaxr/sub/stlxr retry loop -----
+    // Returns the OLD value (mirrors x86's xadd-based lowering).
     if op == 109 {
         uint64 ptr_r = ir_a64_resolve_src(s1_v, 10)
         uint64 val_r = ir_a64_resolve_src(s2_v, 11)
-        // retry:
         uint64 as_retry = out_len
-        // LDAXR x9, [ptr_r]
-        emit_a64(0xC85FFC00 | (ptr_r << 5) | 9)
-        // SUB x9, x9, val_r
-        emit_a64_sub(9, 9, val_r)
-        // STLXR w12, x9, [ptr_r]
-        emit_a64(0xC800FC00 | (12 << 16) | (ptr_r << 5) | 9)
-        // CBNZ w12, retry
+        emit_a64(0xC85FFC00 | (ptr_r << 5) | 9)       // LDAXR x9 (= old)
+        emit_a64_sub(13, 9, val_r)                    // x13 = new
+        emit_a64(0xC800FC00 | (12 << 16) | (ptr_r << 5) | 13)  // STLXR w12, x13
         uint64 as_back = as_retry - out_len
         emit_a64(0x35000000 | (((as_back / 4) & 0x7FFFF) << 5) | 12)
-        // x9 = new value
         if dst_r != 0xFFFFFFFF {
             emit_a64_mov(dst_r, 9)
         } else {
@@ -1334,14 +1378,14 @@ fn ir_emit_arm64_insn(uint64 ii) {
         return
     }
 
-    // ----- IR_ATOMIC_AND (110): ldaxr/and/stlxr retry loop -----
+    // ----- IR_ATOMIC_AND (110): ldaxr/and/stlxr retry loop — returns OLD -----
     if op == 110 {
         uint64 ptr_r = ir_a64_resolve_src(s1_v, 10)
         uint64 val_r = ir_a64_resolve_src(s2_v, 11)
         uint64 aand_retry = out_len
-        emit_a64(0xC85FFC00 | (ptr_r << 5) | 9)
-        emit_a64_and(9, 9, val_r)
-        emit_a64(0xC800FC00 | (12 << 16) | (ptr_r << 5) | 9)
+        emit_a64(0xC85FFC00 | (ptr_r << 5) | 9)       // LDAXR x9 (= old)
+        emit_a64_and(13, 9, val_r)                    // x13 = new
+        emit_a64(0xC800FC00 | (12 << 16) | (ptr_r << 5) | 13)
         uint64 aand_back = aand_retry - out_len
         emit_a64(0x35000000 | (((aand_back / 4) & 0x7FFFF) << 5) | 12)
         if dst_r != 0xFFFFFFFF {
@@ -1352,14 +1396,14 @@ fn ir_emit_arm64_insn(uint64 ii) {
         return
     }
 
-    // ----- IR_ATOMIC_OR (111): ldaxr/orr/stlxr retry loop -----
+    // ----- IR_ATOMIC_OR (111): ldaxr/orr/stlxr retry loop — returns OLD -----
     if op == 111 {
         uint64 ptr_r = ir_a64_resolve_src(s1_v, 10)
         uint64 val_r = ir_a64_resolve_src(s2_v, 11)
         uint64 aor_retry = out_len
-        emit_a64(0xC85FFC00 | (ptr_r << 5) | 9)
-        emit_a64_orr(9, 9, val_r)
-        emit_a64(0xC800FC00 | (12 << 16) | (ptr_r << 5) | 9)
+        emit_a64(0xC85FFC00 | (ptr_r << 5) | 9)       // LDAXR x9 (= old)
+        emit_a64_orr(13, 9, val_r)                    // x13 = new
+        emit_a64(0xC800FC00 | (12 << 16) | (ptr_r << 5) | 13)
         uint64 aor_back = aor_retry - out_len
         emit_a64(0x35000000 | (((aor_back / 4) & 0x7FFFF) << 5) | 12)
         if dst_r != 0xFFFFFFFF {
@@ -1370,14 +1414,14 @@ fn ir_emit_arm64_insn(uint64 ii) {
         return
     }
 
-    // ----- IR_ATOMIC_XOR (112): ldaxr/eor/stlxr retry loop -----
+    // ----- IR_ATOMIC_XOR (112): ldaxr/eor/stlxr retry loop — returns OLD -----
     if op == 112 {
         uint64 ptr_r = ir_a64_resolve_src(s1_v, 10)
         uint64 val_r = ir_a64_resolve_src(s2_v, 11)
         uint64 axor_retry = out_len
-        emit_a64(0xC85FFC00 | (ptr_r << 5) | 9)
-        emit_a64_eor(9, 9, val_r)
-        emit_a64(0xC800FC00 | (12 << 16) | (ptr_r << 5) | 9)
+        emit_a64(0xC85FFC00 | (ptr_r << 5) | 9)       // LDAXR x9 (= old)
+        emit_a64_eor(13, 9, val_r)                    // x13 = new
+        emit_a64(0xC800FC00 | (12 << 16) | (ptr_r << 5) | 13)
         uint64 axor_back = axor_retry - out_len
         emit_a64(0x35000000 | (((axor_back / 4) & 0x7FFFF) << 5) | 12)
         if dst_r != 0xFFFFFFFF {
@@ -1836,7 +1880,12 @@ fn ir_emit_arm64_insn(uint64 ii) {
         uint64 a = ir_a64_resolve_src(s1_v, 9)
         uint64 d = dst_r
         if d == 0xFFFFFFFF { d = 9 }
-        emit_a64(0x1E620000 | (a << 5) | 0)           // scvtf s0, xA
+        // SCVTF Sd, Xn (sf=1, type=00) — encode 0x9E220000. The old
+        // constant 0x1E620000 decoded to SCVTF Dd, Wn (double destination,
+        // 32-bit source), so a 64-bit int turned into a *double*, then
+        // FMOV w, s read the low 32 bits of the double bit-pattern —
+        // always garbage that rounded to 0 on the round-trip.
+        emit_a64(0x9E220000 | (a << 5) | 0)           // scvtf s0, xA
         emit_a64(0x1E260000 | (0 << 5) | d)           // fmov wDst, s0
         if dst_r == 0xFFFFFFFF { ir_a64_emit_store_spill(9, dest_v) }
         return
@@ -1848,7 +1897,11 @@ fn ir_emit_arm64_insn(uint64 ii) {
         uint64 d = dst_r
         if d == 0xFFFFFFFF { d = 9 }
         emit_a64(0x1E270000 | (a << 5) | 0)           // fmov s0, wA
-        emit_a64(0x1E380000 | (0 << 5) | d)           // fcvtzs xDst, s0
+        // FCVTZS Xd, Sn (sf=1, type=00, rmode=11, opcode=000) — encode
+        // 0x9E380000. Old constant 0x1E380000 was FCVTZS Wd which did
+        // a 32-bit result write that zeroed the upper half of Xd; this
+        // was only correct by accident for small values.
+        emit_a64(0x9E380000 | (0 << 5) | d)           // fcvtzs xDst, s0
         if dst_r == 0xFFFFFFFF { ir_a64_emit_store_spill(9, dest_v) }
         return
     }
@@ -2010,13 +2063,20 @@ fn ir_emit_arm64_insn(uint64 ii) {
         // .ff_have_digits: pad = 6 - x14 (always 0..5; no need for neg check since count ∈ 1..6)
         emit_a64_mov_imm(15, 6)
         emit_a64_sub(15, 15, 14)                    // x15 = pad
-        // Pad zero loop body = 6 insns (mov_imm+strb+add+add+sub+b_back): CBZ skips 7 insns = 28 bytes
+        // Pad zero loop. Body = 5 insns (mov+strb+add+sub+b). Use x3 as
+        // the byte-constant scratch rather than x11: x11 holds frac_int
+        // and is re-read by the fi_loop below. The earlier version used
+        // `mov_imm x11, 48` which clobbered frac_int with the ASCII code
+        // 0x30, so fi_loop then decomposed 48 into "84" — visible in
+        // `println(1.0)` as "1.000004" (the trailing '8' got sliced off
+        // by the `write(len)` call but the '4' landed). Also DO NOT
+        // `add x10, x10, 1` here; the final `add x10, x10, 6` below
+        // already accounts for every fraction byte.
         uint64 ff_pad_loop = out_len
-        emit_a64_cbz(15, 28)                        // CBZ x15, pad_done (7 insns=28 bytes)
-        emit_a64_mov_imm(11, 0x30)                  // '0' (1 insn)
-        emit_a64_strb(11, 9, 0)
+        emit_a64_cbz(15, 24)                        // CBZ x15, pad_done (6 insns=24 bytes)
+        emit_a64_mov_imm(3, 0x30)                   // x3 = '0'
+        emit_a64_strb(3, 9, 0)
         emit_a64_add_imm(9, 9, 1)
-        emit_a64_add_imm(10, 10, 1)
         emit_a64(0xD1000400 | (15 << 5) | 15)       // SUB x15, x15, #1
         uint64 ff_pad_back = ff_pad_loop - out_len
         emit_a64(0x14000000 | ((ff_pad_back / 4) & 0x3FFFFFF))  // B pad_loop
