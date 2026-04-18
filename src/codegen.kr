@@ -217,6 +217,32 @@ static uint64 current_file_id = 0
 static uint64 debug_file_table = 0
 static uint64 debug_file_count = 0
 
+// Debug var table — persists across functions. Each 16-byte entry:
+//   [0..4)   fn_idx (u32) into fn_table
+//   [4..8)   name_tok (u32)
+//   [8..12)  stack_offset (u32, relative to frame base = SP)
+//   [12..16) reserved
+static uint64 debug_var_table = 0
+static uint64 debug_var_count = 0
+static uint64 debug_var_cap = 4096
+
+@export
+fn debug_var_record(uint64 fn_idx, uint64 name_tok, uint64 stack_offset) {
+    if debug_info_mode == 0 { return }
+    if debug_var_table == 0 { debug_var_table = alloc(debug_var_cap * 16) }
+    if debug_var_count >= debug_var_cap { return }
+    uint64 entry = debug_var_table + debug_var_count * 16
+    uint32 fi = fn_idx
+    unsafe { *(entry as uint32) = fi }
+    uint64 e4 = entry + 4
+    uint32 nt = name_tok
+    unsafe { *(e4 as uint32) = nt }
+    uint64 e8 = entry + 8
+    uint32 off = stack_offset
+    unsafe { *(e8 as uint32) = off }
+    debug_var_count = debug_var_count + 1
+}
+
 @export
 fn codegen_init(uint64 capacity, uint64 source, uint64 tokens) {
     out_buf = alloc(capacity)
@@ -654,6 +680,13 @@ fn var_declare(uint64 name_tok) -> uint64 {
     if rem != 0 {
         var_frame_size = var_frame_size + 16 - rem
     }
+    // Persist in the DWARF debug-var table (no-op unless -g is active).
+    // fn_count is the CURRENT function's index — it's incremented by
+    // fn_register at the start of each function, so the current fn
+    // lives at fn_count - 1 when var_declare is called.
+    uint64 cur_fn_idx = 0
+    if fn_count > 0 { cur_fn_idx = fn_count - 1 }
+    debug_var_record(cur_fn_idx, name_tok, offset)
     return offset
 }
 
@@ -10315,12 +10348,13 @@ fn emit_elf_debug_footer(uint64 text_start, uint64 input_path) {
 
     emit_uleb128(2)                     // abbrev code 2
     emit_uleb128(0x2e)                  // DW_TAG_subprogram
-    emit_byte(0)                        // DW_CHILDREN_no (no vars yet)
+    emit_byte(1)                        // DW_CHILDREN_yes (has variable DIEs)
     emit_uleb128(0x03); emit_uleb128(0x0E)   // DW_AT_name / DW_FORM_strp
     emit_uleb128(0x3a); emit_uleb128(0x0B)   // DW_AT_decl_file / DW_FORM_data1
     emit_uleb128(0x3b); emit_uleb128(0x05)   // DW_AT_decl_line / DW_FORM_data2
     emit_uleb128(0x11); emit_uleb128(0x01)   // DW_AT_low_pc / DW_FORM_addr
     emit_uleb128(0x12); emit_uleb128(0x07)   // DW_AT_high_pc / DW_FORM_data8
+    emit_uleb128(0x40); emit_uleb128(0x18)   // DW_AT_frame_base / DW_FORM_exprloc
     emit_uleb128(0x3f); emit_uleb128(0x19)   // DW_AT_external / DW_FORM_flag_present
     emit_uleb128(0); emit_uleb128(0)         // end abbrev 2
 
@@ -10331,6 +10365,14 @@ fn emit_elf_debug_footer(uint64 text_start, uint64 input_path) {
     emit_uleb128(0x0b); emit_uleb128(0x0B)   // DW_AT_byte_size / DW_FORM_data1
     emit_uleb128(0x3e); emit_uleb128(0x0B)   // DW_AT_encoding / DW_FORM_data1
     emit_uleb128(0); emit_uleb128(0)         // end abbrev 3
+
+    emit_uleb128(4)                     // abbrev code 4
+    emit_uleb128(0x34)                  // DW_TAG_variable
+    emit_byte(0)                        // DW_CHILDREN_no
+    emit_uleb128(0x03); emit_uleb128(0x0E)   // DW_AT_name / DW_FORM_strp
+    emit_uleb128(0x49); emit_uleb128(0x13)   // DW_AT_type / DW_FORM_ref4
+    emit_uleb128(0x02); emit_uleb128(0x18)   // DW_AT_location / DW_FORM_exprloc
+    emit_uleb128(0); emit_uleb128(0)         // end abbrev 4
 
     emit_uleb128(0)                          // end of .debug_abbrev
     uint64 debug_abbrev_size = out_len - debug_abbrev_off
@@ -10431,6 +10473,35 @@ fn emit_elf_debug_footer(uint64 text_start, uint64 input_path) {
         emit_byte(0)
         ds_fi = ds_fi + 1
     }
+
+    // And every debug_var name.
+    uint64 ds_var_name_offs = 0
+    if debug_var_count > 0 {
+        ds_var_name_offs = alloc(debug_var_count * 8)
+        uint64 dvi = 0
+        while dvi < debug_var_count {
+            uint64 dve = debug_var_table + dvi * 16
+            uint64 dve4 = dve + 4
+            uint32 vn_tok = 0
+            unsafe { *(dve4 as uint32) -> vn_tok }
+            uint64 wvnt = vn_tok
+            uint64 nslot = ds_var_name_offs + dvi * 8
+            unsafe { *(nslot as uint64) = out_len - debug_str_off }
+            uint64 vn_start = tok_text_start(wvnt)
+            uint64 vn_len = tok_text_len(wvnt)
+            uint64 vnb = 0
+            while vnb < vn_len {
+                uint64 sp = cg_source + vn_start + vnb
+                uint64 cb = 0
+                unsafe { *(sp as uint8) -> cb }
+                uint8 b = cb
+                emit_byte(b)
+                vnb = vnb + 1
+            }
+            emit_byte(0)
+            dvi = dvi + 1
+        }
+    }
     uint64 debug_str_size = out_len - debug_str_off
 
     // === 1d. Emit .debug_info ===
@@ -10519,7 +10590,68 @@ fn emit_elf_debug_footer(uint64 text_start, uint64 input_path) {
         emit_u16_le(decl_line)                // DW_AT_decl_line
         emit_u64_le(0x400000 + wfo)           // DW_AT_low_pc
         emit_u64_le(fn_end - wfo)             // DW_AT_high_pc (size)
+        // DW_AT_frame_base exprloc: DW_OP_breg7 0  (rsp + 0) on x86_64,
+        // DW_OP_breg31 0 on arm64. Choose by architecture.
+        uint64 fb_reg = 0x77                  // DW_OP_breg7 (x86_64 rsp)
+        if target_arch == 1 { fb_reg = 0x8f } // DW_OP_breg31 (arm64 sp)
+        emit_uleb128(2)                       // exprloc length
+        uint8 fb_op = fb_reg
+        emit_byte(fb_op)
+        emit_byte(0)                          // sleb128 offset = 0
         // DW_FORM_flag_present — no bytes
+
+        // Variable DIE children — every debug_var_table entry tagged
+        // with this function's index. Location: DW_OP_fbreg <offset>.
+        uint64 u64_type_off_slot = type_die_offs + 3 * 8
+        uint64 u64_type_off = 0
+        unsafe { *(u64_type_off_slot as uint64) -> u64_type_off }
+        uint64 dvji = 0
+        while dvji < debug_var_count {
+            uint64 dve2 = debug_var_table + dvji * 16
+            uint32 dv_fn_idx = 0
+            unsafe { *(dve2 as uint32) -> dv_fn_idx }
+            if dv_fn_idx == di_fi {
+                uint64 dv_name_slot = ds_var_name_offs + dvji * 8
+                uint64 dv_name_off = 0
+                unsafe { *(dv_name_slot as uint64) -> dv_name_off }
+                uint64 dv_off_slot = dve2 + 8
+                uint32 dv_stk_off = 0
+                unsafe { *(dv_off_slot as uint32) -> dv_stk_off }
+                uint64 wdso = dv_stk_off
+                emit_uleb128(4)                   // abbrev 4 = variable
+                emit_u32_le(dv_name_off)          // DW_AT_name
+                emit_u32_le(u64_type_off)         // DW_AT_type ref4 (all u64 for now)
+                // Count the sleb128 bytes by pre-encoding: wdso fits
+                // in 1 byte for offsets 0..63, 2 bytes for 64..8191.
+                // Simple: always assume 2-byte exprloc (1 op + 1 sleb
+                // byte for offsets < 64), expand for larger.
+                if wdso < 64 {
+                    emit_uleb128(2)               // exprloc length
+                    emit_byte(0x91)               // DW_OP_fbreg
+                    uint8 so = wdso
+                    emit_byte(so)                 // sleb128 (single byte, bit7 clear)
+                } else if wdso < 8192 {
+                    emit_uleb128(3)               // exprloc length
+                    emit_byte(0x91)
+                    uint8 so1 = (wdso & 0x7F) | 0x80
+                    emit_byte(so1)
+                    uint8 so2 = (wdso >> 7) & 0x7F
+                    emit_byte(so2)
+                } else {
+                    // Unlikely path; still fits in 3 bytes for <= 16KB.
+                    emit_uleb128(4)
+                    emit_byte(0x91)
+                    uint8 so1 = (wdso & 0x7F) | 0x80
+                    emit_byte(so1)
+                    uint8 so2 = ((wdso >> 7) & 0x7F) | 0x80
+                    emit_byte(so2)
+                    uint8 so3 = (wdso >> 14) & 0x7F
+                    emit_byte(so3)
+                }
+            }
+            dvji = dvji + 1
+        }
+        emit_uleb128(0)                           // end of subprogram children
         di_fi = di_fi + 1
     }
     emit_uleb128(0)                           // end of CU children
