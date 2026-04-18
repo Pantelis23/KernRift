@@ -5,6 +5,36 @@ All notable changes to `kernriftc` are documented in this file.
 ## v2.8.11 — 2026-04-18
 
 ### Added
+- **String builder + sprintf-style fill-ins.** `sb_new` / `sb_reserve`
+  / `sb_append_byte` / `sb_append_str` / `sb_append_int` /
+  `sb_append_hex` / `sb_append_float` / `sb_append_bool` /
+  `sb_append_codepoint` / `sb_len` / `sb_finish` / `sb_free`. Doubling
+  growth policy, 16-byte header (capacity + length), O(1) amortised
+  append. Fills the `sprintf`-shaped gap where f-strings aren't the
+  right fit (per-line logger, serialisation, building hundreds of
+  strings without allocating each one).
+- **UTF-8-aware case folding for ASCII + Latin-1 Supplement.**
+  `utf8_lower_codepoint(cp)` / `utf8_upper_codepoint(cp)` /
+  `str_lower_utf8(s)` / `str_upper_utf8(s)`. Covers the A-Z / a-z plus
+  the À-Þ / à-þ blocks — enough for common Western European text.
+  Codepoints outside those ranges pass through unchanged; ASCII-only
+  `str_lower` / `str_upper` are still available if you want
+  guaranteed locale stability. We deliberately don't ship a full
+  Unicode fold table (~1500 entries), one-to-many folds like ß→SS, or
+  locale-sensitive transforms — tracked as future work.
+- **Combining-mark detection + grapheme count.**
+  `utf8_is_combining(cp)` recognises the two combining-diacritical
+  blocks (U+0300–U+036F, U+20D0–U+20FF) plus ZWJ/ZWNJ/BOM.
+  `str_grapheme_count(s)` counts base codepoints, so both `"café"` and
+  `"cafe" + combining-acute` are 4 graphemes. Indic, Arabic joining
+  forms, and emoji ZWJ sequences need the full Unicode break-property
+  tables and aren't handled here.
+- **`str_from_float(v, decimals)`** / **`str_from_bool(b)`** /
+  **`str_from_codepoint(cp)`** — symmetric scalar-to-string helpers so
+  callers don't have to thread a buffer themselves. Integer form
+  already existed as `int_to_str`.
+
+### Added (from earlier in the same release)
 - **`std/string.kr` rounded out** with ten missing functions. Each returns
   a fresh allocation owned by the caller; every one has a test in
   `tests/run_tests.sh` (18 new cases).

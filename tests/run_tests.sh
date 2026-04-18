@@ -423,6 +423,55 @@ fn main() {
 }' 0
 run_test "str_codepoint_count_mixed" 'import "std/string.kr"
 fn main() { exit(str_codepoint_count("héllo")) }' 5
+run_test "utf8_lower_codepoint_ascii" 'import "std/string.kr"
+fn main() { exit(utf8_lower_codepoint(65)) }' 97
+run_test "utf8_upper_codepoint_latin1" 'import "std/string.kr"
+fn main() { exit(utf8_upper_codepoint(0xE9)) }' 201
+run_test_output "str_lower_utf8_latin1" 'import "std/string.kr"
+fn main() { println_str(str_lower_utf8("CaFÉ")) }' "café"
+run_test_output "str_upper_utf8_latin1" 'import "std/string.kr"
+fn main() { println_str(str_upper_utf8("café")) }' "CAFÉ"
+run_test "utf8_is_combining_yes" 'import "std/string.kr"
+fn main() { exit(utf8_is_combining(0x0301)) }' 1
+run_test "utf8_is_combining_no" 'import "std/string.kr"
+fn main() { exit(utf8_is_combining(65)) }' 0
+
+# --- String builder (v2.8.11) ---
+run_test_output "sb_basic" 'import "std/string.kr"
+fn main() {
+    uint64 sb = sb_new(16)
+    sb = sb_append_str(sb, "x = ")
+    sb = sb_append_int(sb, 42)
+    uint64 r = sb_finish(sb)
+    println_str(r)
+    sb_free(sb)
+}' "x = 42"
+run_test_output "sb_mixed" 'import "std/string.kr"
+import "std/math_float.kr"
+fn main() {
+    uint64 sb = sb_new(16)
+    sb = sb_append_str(sb, "hex=")
+    sb = sb_append_hex(sb, 0xDEAD)
+    sb = sb_append_str(sb, ", bool=")
+    sb = sb_append_bool(sb, 0)
+    sb = sb_append_str(sb, ", f=")
+    sb = sb_append_float(sb, 1.5, 2)
+    uint64 r = sb_finish(sb)
+    println_str(r)
+    sb_free(sb)
+}' "hex=0xdead, bool=false, f=1.50"
+run_test "sb_grows" 'import "std/string.kr"
+fn main() {
+    uint64 sb = sb_new(4)     // deliberately tiny
+    sb = sb_append_str(sb, "0123456789ABCDEFGHIJ")   // force grow
+    exit(sb_len(sb))
+}' 20
+run_test_output "str_from_bool_true" 'import "std/string.kr"
+fn main() { println_str(str_from_bool(1)) }' "true"
+run_test_output "str_from_bool_false" 'import "std/string.kr"
+fn main() { println_str(str_from_bool(0)) }' "false"
+run_test_output "str_from_codepoint_latin1" 'import "std/string.kr"
+fn main() { println_str(str_from_codepoint(0xE9)) }' "é"
 
 # --- Builtin: dealloc ---
 run_test "dealloc_noop" 'fn main() { uint64 p = alloc(64); dealloc(p); exit(0) }' 0

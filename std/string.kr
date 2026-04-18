@@ -657,3 +657,354 @@ fn str_codepoint_count(u64 s) -> u64 {
     }
     return count
 }
+
+// Is `cp` a combining mark that visually attaches to the previous grapheme?
+// Covers the two main combining-diacritical ranges (U+0300..U+036F and
+// U+20D0..U+20FF) plus zero-width joiner / non-joiner. Enough for most
+// Latin / Greek / Cyrillic text that uses precomposed plus trailing
+// combining accents. Indic scripts, Arabic joiners, emoji ZWJ sequences
+// etc. need the full Unicode break-property tables — tracked separately.
+fn utf8_is_combining(u64 cp) -> u64 {
+    if cp >= 0x0300 && cp <= 0x036F { return 1 }  // Combining Diacriticals
+    if cp >= 0x20D0 && cp <= 0x20FF { return 1 }  // Combining Diacriticals Supplement
+    if cp == 0x200C { return 1 }                  // Zero-Width Non-Joiner
+    if cp == 0x200D { return 1 }                  // Zero-Width Joiner
+    if cp == 0xFEFF { return 1 }                  // Zero-Width No-Break Space / BOM
+    return 0
+}
+
+// Count grapheme clusters in a UTF-8 string. A grapheme here is "one
+// non-combining codepoint plus any combining codepoints that follow"
+// using utf8_is_combining's conservative definition. `"cafe\u0301"`
+// counts as 4 graphemes, same as `"café"`.
+fn str_grapheme_count(u64 s) -> u64 {
+    u64 len = str_len(s)
+    u64 count = 0
+    u64 i = 0
+    u64[1] w
+    u64 w_ptr = w
+    while i < len {
+        u64 cp = utf8_decode_at(s, i, w_ptr)
+        u64 ww = 0
+        unsafe { *(w_ptr as uint64) -> ww }
+        if utf8_is_combining(cp) == 0 {
+            count = count + 1
+        }
+        i = i + ww
+    }
+    return count
+}
+
+// ---------------------------------------------------------------------------
+// UTF-8-aware case folding (v2.8.11)
+//
+// We cover ASCII and the Latin-1 Supplement block (U+00C0..U+00FF) with a
+// direct codepoint->codepoint table. That takes care of common European
+// accented letters (á é í ö ü ñ ç å ø æ …). Codepoints outside those
+// ranges pass through unchanged.
+//
+// What we deliberately *don't* do — use the ASCII-only str_lower /
+// str_upper if you need guaranteed locale stability:
+//   • Full Unicode case folding (Greek, Cyrillic, Armenian, Georgian,
+//     Cherokee, Vai, etc.). The full table is ~1 500 entries; not worth
+//     the binary-size tax for a kernel-first language.
+//   • One-to-many foldings like German ß -> SS, or Turkish İ -> i̇. Each
+//     mapping here is a 1-codepoint -> 1-codepoint transform.
+//   • Locale-aware transforms (Turkish dotless i, lithuanian accented i).
+// ---------------------------------------------------------------------------
+
+// Return the lowercase form of `cp`. ASCII A-Z folds to a-z; the Latin-1
+// Supplement block folds symmetrically; everything else passes through.
+fn utf8_lower_codepoint(u64 cp) -> u64 {
+    if cp >= 65 && cp <= 90 { return cp + 32 }            // ASCII A-Z
+    if cp >= 0xC0 && cp <= 0xDE && cp != 0xD7 {
+        // À-Þ (Latin-1 Supplement uppercase) minus × (multiplication sign)
+        return cp + 32
+    }
+    return cp
+}
+
+// Return the uppercase form of `cp` with the same coverage as
+// utf8_lower_codepoint. ß (U+00DF) does NOT uppercase to SS here — it
+// stays ß; use ASCII-only str_upper on strings that might contain it
+// if you need the German fold.
+fn utf8_upper_codepoint(u64 cp) -> u64 {
+    if cp >= 97 && cp <= 122 { return cp - 32 }           // ASCII a-z
+    if cp >= 0xE0 && cp <= 0xFE && cp != 0xF7 {
+        // à-þ minus ÷ (division sign)
+        return cp - 32
+    }
+    return cp
+}
+
+// Lowercase every Latin codepoint in `s` (UTF-8-aware). Allocates a
+// fresh buffer; length stays within 2× input because each Latin-1
+// codepoint is at most 2 bytes UTF-8 and case folds don't change the
+// byte length for this coverage.
+fn str_lower_utf8(u64 s) -> u64 {
+    u64 len = str_len(s)
+    u64 result = alloc(len + 1)
+    u64 si = 0
+    u64 di = 0
+    u64[1] w
+    u64 wp = w
+    while si < len {
+        u64 cp = utf8_decode_at(s, si, wp)
+        u64 ww = 0
+        unsafe { *(wp as uint64) -> ww }
+        u64 folded = utf8_lower_codepoint(cp)
+        u64 dp = result + di
+        di = di + utf8_encode(folded, dp)
+        si = si + ww
+    }
+    u64 tp = result + di
+    u8 z = 0
+    store8(tp, z)
+    return result
+}
+
+// Uppercase every Latin codepoint in `s` (UTF-8-aware). Same caveats as
+// utf8_lower_codepoint's — German ß and Turkish İ are not handled.
+fn str_upper_utf8(u64 s) -> u64 {
+    u64 len = str_len(s)
+    u64 result = alloc(len + 1)
+    u64 si = 0
+    u64 di = 0
+    u64[1] w
+    u64 wp = w
+    while si < len {
+        u64 cp = utf8_decode_at(s, si, wp)
+        u64 ww = 0
+        unsafe { *(wp as uint64) -> ww }
+        u64 folded = utf8_upper_codepoint(cp)
+        u64 dp = result + di
+        di = di + utf8_encode(folded, dp)
+        si = si + ww
+    }
+    u64 tp = result + di
+    u8 z = 0
+    store8(tp, z)
+    return result
+}
+
+// ---------------------------------------------------------------------------
+// String builder (v2.8.11)
+//
+// The go-to pattern when you'd reach for sprintf elsewhere. A builder is
+// an alloc'd block with a 16-byte header:
+//   [0..8]   capacity (u64)
+//   [8..16]  length   (u64)
+//   [16..]   byte buffer
+// All sb_* functions grow the buffer when capacity runs out (doubling
+// policy). sb_finish returns a freshly-alloc'd null-terminated string
+// with just the used bytes; sb_free releases the builder itself.
+//
+// Typical use:
+//
+//   u64 sb = sb_new(64)
+//   sb_append_str(sb, "x = ")
+//   sb_append_int(sb, 42)
+//   sb_append_str(sb, ", y = ")
+//   sb_append_hex(sb, 0xFF)
+//   u64 s = sb_finish(sb)     // "x = 42, y = 0xFF"
+//   sb_free(sb)
+//   // use s, then dealloc(s) when done
+// ---------------------------------------------------------------------------
+
+// Create a string builder with an initial capacity. Use 64 as a default
+// when you don't have a better estimate.
+fn sb_new(u64 cap) -> u64 {
+    if cap < 16 { cap = 16 }
+    u64 sb = alloc(16 + cap)
+    store64(sb, cap)
+    u64 lp = sb + 8
+    store64(lp, 0)
+    return sb
+}
+
+// Ensure the builder has room for `extra` more bytes. Grows by doubling
+// if necessary. Returns the (possibly new) builder handle — callers MUST
+// reassign: `sb = sb_reserve(sb, n)`.
+fn sb_reserve(u64 sb, u64 extra) -> u64 {
+    u64 cap = 0
+    u64 ln = 0
+    unsafe { *(sb as uint64) -> cap }
+    u64 lp = sb + 8
+    unsafe { *(lp as uint64) -> ln }
+    u64 need = ln + extra
+    if need <= cap { return sb }
+
+    u64 new_cap = cap
+    while new_cap < need {
+        new_cap = new_cap * 2
+        if new_cap < 32 { new_cap = 32 }
+    }
+    u64 new_sb = alloc(16 + new_cap)
+    memcpy(new_sb, sb, 16 + ln)
+    store64(new_sb, new_cap)
+    dealloc(sb)
+    return new_sb
+}
+
+// Append a single byte. Returns the (possibly new) handle.
+fn sb_append_byte(u64 sb, u64 b) -> u64 {
+    sb = sb_reserve(sb, 1)
+    u64 ln = 0
+    u64 lp = sb + 8
+    unsafe { *(lp as uint64) -> ln }
+    u64 bp = sb + 16 + ln
+    u8 bb = b
+    store8(bp, bb)
+    store64(lp, ln + 1)
+    return sb
+}
+
+// Append a null-terminated string.
+fn sb_append_str(u64 sb, u64 s) -> u64 {
+    u64 slen = str_len(s)
+    sb = sb_reserve(sb, slen)
+    u64 ln = 0
+    u64 lp = sb + 8
+    unsafe { *(lp as uint64) -> ln }
+    u64 bp = sb + 16 + ln
+    memcpy(bp, s, slen)
+    store64(lp, ln + slen)
+    return sb
+}
+
+// Append `n` as decimal digits.
+fn sb_append_int(u64 sb, u64 n) -> u64 {
+    u64 tmp = int_to_str(n)
+    sb = sb_append_str(sb, tmp)
+    dealloc(tmp)
+    return sb
+}
+
+// Append `n` as lowercase hex with a leading `0x` — mirrors the existing
+// std/fmt.kr `fmt_hex` format.
+fn sb_append_hex(u64 sb, u64 n) -> u64 {
+    sb = sb_append_str(sb, "0x")
+    if n == 0 { return sb_append_byte(sb, 48) }
+    u8[16] buf
+    u64 len = 0
+    u64 tmp = n
+    while tmp > 0 {
+        u64 d = tmp & 0xF
+        u8 ch = 0
+        if d < 10 { ch = d + 48 }
+        else { ch = d + 87 }
+        buf[len] = ch
+        len = len + 1
+        tmp = tmp >> 4
+    }
+    sb = sb_reserve(sb, len)
+    u64 ln = 0
+    u64 lp = sb + 8
+    unsafe { *(lp as uint64) -> ln }
+    u64 i = 0
+    while i < len {
+        u64 dp = sb + 16 + ln + i
+        u8 b = buf[len - 1 - i]
+        store8(dp, b)
+        i = i + 1
+    }
+    store64(lp, ln + len)
+    return sb
+}
+
+// Append an `f64` with `decimals` fractional digits. Requires
+// `import "std/math_float.kr"` in the caller for `fmt_f64`.
+fn sb_append_float(u64 sb, f64 v, u64 decimals) -> u64 {
+    u64 s = fmt_f64(v, decimals)
+    sb = sb_append_str(sb, s)
+    dealloc(s)
+    return sb
+}
+
+// Append `true` or `false`.
+fn sb_append_bool(u64 sb, u64 b) -> u64 {
+    if b != 0 { return sb_append_str(sb, "true") }
+    return sb_append_str(sb, "false")
+}
+
+// Append a UTF-8-encoded codepoint.
+fn sb_append_codepoint(u64 sb, u64 cp) -> u64 {
+    sb = sb_reserve(sb, 4)
+    u64 ln = 0
+    u64 lp = sb + 8
+    unsafe { *(lp as uint64) -> ln }
+    u64 bp = sb + 16 + ln
+    u64 w = utf8_encode(cp, bp)
+    store64(lp, ln + w)
+    return sb
+}
+
+// Current length in bytes.
+fn sb_len(u64 sb) -> u64 {
+    u64 ln = 0
+    u64 lp = sb + 8
+    unsafe { *(lp as uint64) -> ln }
+    return ln
+}
+
+// Finalize: copy the accumulated bytes into a fresh null-terminated
+// string and return it. Does NOT free the builder — call sb_free
+// when you're done with it. The returned string is owned by the caller
+// and should be `dealloc`'d when no longer needed.
+fn sb_finish(u64 sb) -> u64 {
+    u64 ln = 0
+    u64 lp = sb + 8
+    unsafe { *(lp as uint64) -> ln }
+    u64 out = alloc(ln + 1)
+    u64 bp = sb + 16
+    memcpy(out, bp, ln)
+    u64 tp = out + ln
+    u8 z = 0
+    store8(tp, z)
+    return out
+}
+
+// Release the builder's memory.
+fn sb_free(u64 sb) {
+    dealloc(sb)
+}
+
+// ---------------------------------------------------------------------------
+// Scalar-to-string helpers (v2.8.11)
+//
+// Thin wrappers so you can get a u64 string pointer from any scalar type
+// without threading a buffer yourself. `int_to_str` already covers the
+// integer case. These wrappers require their respective fmt_* modules to
+// be imported.
+// ---------------------------------------------------------------------------
+
+// Format `v` as "[-]INT.FRAC" with `decimals` fractional digits.
+// Requires `import "std/math_float.kr"` in the caller.
+fn str_from_float(f64 v, u64 decimals) -> u64 {
+    return fmt_f64(v, decimals)
+}
+
+// Format `b` as the literal "true" or "false". Always returns a fresh
+// allocation so callers can dealloc it uniformly.
+fn str_from_bool(u64 b) -> u64 {
+    u64 len = 0
+    u64 src = 0
+    if b != 0 { src = "true"; len = 4 }
+    else { src = "false"; len = 5 }
+    u64 out = alloc(len + 1)
+    memcpy(out, src, len)
+    u64 tp = out + len
+    u8 z = 0
+    store8(tp, z)
+    return out
+}
+
+// Format `cp` as a UTF-8 string holding exactly one codepoint.
+fn str_from_codepoint(u64 cp) -> u64 {
+    u64 out = alloc(5)
+    u64 w = utf8_encode(cp, out)
+    u64 tp = out + w
+    u8 z = 0
+    store8(tp, z)
+    return out
+}
