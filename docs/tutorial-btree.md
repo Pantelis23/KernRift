@@ -263,10 +263,29 @@ fn db_range(u64 base, u64 lo, u64 hi, u64 cb) {
 }
 ```
 
-KernRift doesn't support function pointers yet (roadmap item). For now,
-write a state-machine iterator that exposes `iter_next()` and returns a
-sentinel when done. See `examples/tutorial-btree/iter.kr` for the
-finished version.
+KernRift supports function pointers via the `fn_addr("name")` +
+`call_ptr(fn, args...)` pair. A callback-style version looks like:
+
+```kernrift
+fn _cb_print(u64 key, u64 val) -> u64 {
+    println(key); println(val); return 0
+}
+
+fn db_range(u64 base, u64 lo, u64 hi, u64 cb) {
+    // ... walk the tree; at each qualifying (k, v):
+    call_ptr(cb, k, v)
+}
+
+fn main() {
+    u64 cb = fn_addr("_cb_print")
+    db_range(base, 100, 200, cb)
+}
+```
+
+`fn_addr` requires the function name as a string literal — it resolves
+at link time, not at run time. For a true iterator that returns values,
+use a state-machine with `iter_next()` / `iter_end()` that returns a
+sentinel when done; `examples/tutorial-btree/iter.kr` sketches both.
 
 ---
 

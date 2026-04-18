@@ -1180,8 +1180,35 @@ signed_le(a, b)    signed_ge(a, b)
 
 | Function | Description |
 |---|---|
-| `fn_addr(name)` | Get the address of a named function. |
-| `call_ptr(addr, ...)` | Call a function by address with any number of arguments. |
+| `fn_addr(name)` | Get the address of a named function. The name is a string literal, resolved at link time. |
+| `call_ptr(addr, ...)` | Call a function by address with any number of arguments. The caller's signature must match the target's or the result is undefined. |
+
+Example — passing a comparator to a generic sort-ish loop:
+
+```kr
+fn asc(u64 a, u64 b) -> u64 { return a < b }
+fn desc(u64 a, u64 b) -> u64 { return a > b }
+
+fn sorted(u64 a, u64 b, u64 cmp) -> u64 {
+    if call_ptr(cmp, a, b) != 0 { return a }
+    return b
+}
+
+fn main() {
+    u64 c = fn_addr("asc")
+    exit(sorted(3, 7, c))        // → 3
+}
+```
+
+### Cache and memory-ordering builtins (ARM64 / x86)
+
+| Function | ARM64 | x86_64 | Description |
+|---|---|---|---|
+| `isb()` | `ISB` | nop | Instruction-sync barrier. |
+| `dsb()` | `DSB SY` | `MFENCE` | Full data-sync barrier — waits for completion. |
+| `dmb()` | `DMB ISH` | `MFENCE` | Data-memory barrier (inner-shareable). |
+| `dcache_flush(addr)` | `DC CIVAC + DSB ISH + ISB` | `CLFLUSH + MFENCE` | Writeback + invalidate one cache line. |
+| `icache_invalidate(addr)` | `IC IVAU + DSB ISH + ISB` | nop (coherent) | Invalidate one I-cache line. |
 
 ---
 
