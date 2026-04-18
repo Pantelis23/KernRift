@@ -1657,6 +1657,15 @@ fn ir_emit_arm64_insn(uint64 ii) {
         return
     }
 
+    // ----- IR_ISB (126): instruction-sync barrier -----
+    // Use after writing new code to RAM to make sure the subsequent
+    // instruction fetches see the writes. ARM64 I-cache is not
+    // kept coherent with D-cache automatically (unlike x86).
+    if op == 126 {
+        emit_a64(0xD5033FDF)   // ISB
+        return
+    }
+
     // ----- IR_FADD (20), IR_FSUB (21), IR_FMUL (22), IR_FDIV (23) -----
     if op >= 20 && op <= 23 {
         uint64 a = ir_a64_resolve_src(s1_v, 9)

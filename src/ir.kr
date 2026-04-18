@@ -132,6 +132,7 @@ static uint64 IR_SCMP_GE = 123      // dest = (src1 >= src2) signed
 // Typed print formatters: dest=len_vreg, src1=buf_vreg, src2=val_vreg
 static uint64 IR_FMT_BOOL = 124     // format bool as "true"/"false" into buf
 static uint64 IR_FMT_F64 = 125      // format f64 as decimal into buf
+static uint64 IR_ISB = 126          // instruction-sync barrier (ARM64 ISB; x86 no-op)
 
 // ---------------------------------------------------------------------------
 // Instruction arena
@@ -1371,6 +1372,16 @@ fn ir_lower_expr(uint64 node) -> uint64 {
         if tok_matches(wct, "time_ns", 7) != 0 {
             uint64 dest = ir_new_vreg()
             ir_emit(IR_TIME_NS, dest, 0, 0, 0, ir_current_bb)
+            return dest
+        }
+        // isb() → IR_ISB. Instruction-sync barrier after writing new code
+        // to RAM. Maps to ISB on ARM64; x86 keeps I- and D-cache coherent
+        // automatically, so the emitter issues no instruction there — the
+        // builtin exists so portable code can compile on both archs.
+        if tok_matches(wct, "isb", 3) != 0 {
+            ir_emit(IR_ISB, 0, 0, 0, 0, ir_current_bb)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_CONST, dest, 0, 0, 0, ir_current_bb)
             return dest
         }
         // vload8(ptr) → IR_VLOAD width 1
@@ -3402,6 +3413,7 @@ fn ir_opcode_name(uint64 op) -> uint64 {
     if op == 115 { return "set_exec" }
     if op == 118 { return "fsqrt32" }
     if op == 119 { return "time_ns" }
+    if op == 126 { return "isb" }
     if op == 120 { return "scmp_lt" }
     if op == 121 { return "scmp_le" }
     if op == 122 { return "scmp_gt" }
@@ -6543,6 +6555,14 @@ fn ir_emit_x86_insn(uint64 ii) {
         return
     }
 
+    if op == 126 {
+        // IR_ISB: instruction-sync barrier. On x86_64, D-cache and
+        // I-cache are kept coherent by the hardware, so this is a
+        // no-op. (The builtin exists so portable code can compile on
+        // both archs; on ARM64 it emits a real ISB instruction.)
+        return
+    }
+
     // ---------------------------------------------------------------
     // Float opcodes
     // ---------------------------------------------------------------
@@ -7691,6 +7711,7 @@ fn ir_opt_is_side_effect(uint64 op) -> uint64 {
     if op >= 90 && op <= 96 { return 1 }    // atomics, vstore/vload, asm
     if op >= 109 && op <= 115 { return 1 }  // atomic RMW, exec, set_exec
     if op == 119 { return 1 }  // TIME_NS (reads clock, not pure)
+    if op == 126 { return 1 }  // ISB (synchronization barrier)
     return 0
 }
 

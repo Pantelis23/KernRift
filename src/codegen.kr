@@ -6395,6 +6395,13 @@ fn gen_expr(uint64 node) {
             return
         }
 
+        // Built-in: isb() — instruction-sync barrier. x86 keeps I-cache
+        // coherent with D-cache automatically, so nothing to emit. The
+        // builtin exists so portable code compiles on both archs.
+        if is_extern_call == 0 && tok_matches(wct, "isb", 3) != 0 {
+            return
+        }
+
         // Built-in: f64_to_int(x) → cvttsd2si rax, xmm0
         if is_extern_call == 0 && tok_matches(wct, "f64_to_int", 10) != 0 {
             uint32 first_arg = ast_child(node)

@@ -512,6 +512,23 @@ fn main() { exit(is_errno(42)) }' 0
 run_test "get_errno_val" 'import "std/io.kr"
 fn main() { exit(get_errno(0xFFFFFFFFFFFFFFFE)) }' 2
 
+# --- isb() / alloc_aligned() (v2.8.14) ---
+run_test "isb_noop" 'fn main() { isb(); exit(0) }' 0
+run_test "alloc_aligned_64" 'import "std/mem.kr"
+fn main() {
+    uint64 buf = alloc_aligned(100, 64)
+    if (buf & 63) != 0 { exit(1) }
+    alloc_aligned_free(buf)
+    exit(0)
+}' 0
+run_test "alloc_aligned_256" 'import "std/mem.kr"
+fn main() {
+    uint64 buf = alloc_aligned(1000, 256)
+    if (buf & 255) != 0 { exit(1) }
+    alloc_aligned_free(buf)
+    exit(0)
+}' 0
+
 # --- Builtin: dealloc ---
 run_test "dealloc_noop" 'fn main() { uint64 p = alloc(64); dealloc(p); exit(0) }' 0
 

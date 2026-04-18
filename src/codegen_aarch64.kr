@@ -3472,6 +3472,13 @@ fn gen_expr_a64(uint64 node) {
         }
 
         // Built-in: time_ns() → monotonic nanosecond counter.
+        // Built-in: isb() — ARM64 instruction-sync barrier. Emits
+        // exactly one ISB instruction (0xD5033FDF).
+        if is_extern_call == 0 && tok_matches(wct, "isb", 3) != 0 {
+            emit_a64(0xD5033FDF)
+            return
+        }
+
         // Linux/Android arm64: clock_gettime(CLOCK_MONOTONIC=1, &ts)
         // via syscall 113. macOS arm64: gettimeofday via x16=116.
         // Windows arm64: not yet — returns 0.
