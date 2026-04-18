@@ -76,9 +76,9 @@ ignored — useful when you want to write multiple statements on one line.
 | `int16`   | 2 B   | `i16` | Signed 16-bit                 |
 | `int32`   | 4 B   | `i32` | Signed 32-bit                 |
 | `int64`   | 8 B   | `i64` | Signed 64-bit                 |
-| `f16`     | 2 B   |       | IEEE 754 half-precision (storage only on ARM64) |
-| `f32`     | 4 B   |       | IEEE 754 single-precision — full arithmetic, literals `1.5f` |
-| `f64`     | 8 B   |       | IEEE 754 double-precision — full arithmetic, default for float literals (`1.5`, `2e10`, `3.14`) |
+| `f16`     | 2 B   |              | IEEE 754 half-precision (storage only on ARM64) |
+| `f32`     | 4 B   | `float`      | IEEE 754 single-precision — full arithmetic, literals `1.5f` |
+| `f64`     | 8 B   | `double`     | IEEE 754 double-precision — full arithmetic, default for float literals (`1.5`, `2e10`, `3.14`) |
 | `bool`    | 1 B   |       | `true` / `false` (strict, since v2.8.3) |
 | `char`    | 1 B   |       | Single byte holding a character literal (`'A'`, `'\n'`, …); strict since v2.8.3 |
 

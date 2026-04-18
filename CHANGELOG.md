@@ -2,6 +2,19 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## v2.8.9 — 2026-04-18
+
+### Added
+- **`float` / `double` type aliases** — `float` is a synonym for `f32`,
+  `double` for `f64`, matching the C/C++/Java convention. The IR
+  backend sees them as identical to `f32` / `f64`; no runtime cost.
+  Bootstrap fixed point holds; 335/335 tests pass.
+
+  ```kr
+  float pi = 3.14       // same as: f32 pi = 3.14
+  double tau = 6.283    // same as: f64 tau = 6.283
+  ```
+
 ## v2.8.8 — 2026-04-18
 
 IR ARM64 codegen bug bash.
