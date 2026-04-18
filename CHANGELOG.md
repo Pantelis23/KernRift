@@ -2,6 +2,28 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## v2.8.4 — 2026-04-17
+
+User-reported correctness fixes on top of v2.8.3.
+
+### Fixed
+- **`kr <prog>.krbo` SIGBUS on Android** — compile_fat's android-arm64 slice
+  was missing the 8-byte static-data alignment that direct `--emit=android`
+  applies. The resulting slice was 4 bytes shorter and every string/static
+  reference shifted; bionic's loader SIGBUSed before main ran. Fat slice
+  is now byte-identical to the direct emit output.
+- **`println(f32_var)` printed garbage / `-0.000000`** — `f32 x = 6.9`
+  took an f64 literal and relabeled the vreg as f32 without narrowing the
+  bits; cvtss2sd then read the low 32 bits of the f64 pattern, producing
+  a tiny negative number. VarDecl now emits `IR_F64TOF32` on f64→f32
+  assignment (and symmetric `IR_F32TOF64` for `f64 x = 1.5f`).
+- **Programs without explicit `exit()` segfaulted on return from main** —
+  the IR path was missing the auto-insert `exit(0)` syscall that the
+  legacy codegen has. Fixed for both x86_64 and ARM64 IR backends.
+- **`--emit=linux-x86_64` / `--emit=linux` / `--emit=elf` / `--emit=windows` /
+  `--emit=macos`** rejected as unknown formats. Added as aliases for
+  `elfexe` / `pe` / `macho`.
+
 ## v2.8.3 — 2026-04-17
 
 Language-level polish and Android correctness.
