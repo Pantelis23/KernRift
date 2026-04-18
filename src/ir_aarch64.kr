@@ -1701,6 +1701,31 @@ fn ir_emit_arm64_insn(uint64 ii) {
         return
     }
 
+    // ----- IR_ARR_CHECK (131): trap if idx (s1_v) >= count (imm) -----
+    // Emits: MOVZ x9, count ; CMP idx, x9 ; B.LO +<trap> ; trap ; ok:
+    // Windows ARM64 uses ExitProcess via IAT which doesn't fit this
+    // short-sequence pattern; fall back to no-check there.
+    if op == 131 {
+        if target_os == 2 { return }                      // Windows — skip
+        uint64 idx_r = ir_a64_resolve_src(s1_v, 9)
+        // Put count in x10 so idx can stay in its register.
+        emit_a64_mov_imm(10, imm)
+        emit_a64_cmp(idx_r, 10)
+        // Compute trap length in instructions.
+        //   Linux / Android: MOVZ x0 + MOVZ x8 + SVC #0 = 3 insns.
+        //   macOS:           MOVZ x0 + MOVZ x16 + SVC #0 = 3 insns.
+        // B.LO +3 insns (skip trap). Encoding: 0x54 | (3<<5) | 3.
+        emit_a64(0x54000063)
+        emit_a64_mov_imm(0, 1)
+        if target_os == 1 {
+            emit_a64_mov_imm(16, 1)                        // macOS: exit = 1 via x16
+        } else {
+            emit_a64_mov_imm(8, 93)                        // Linux/Android: exit = 93 via x8
+        }
+        emit_a64(0xD4000001)                               // SVC #0
+        return
+    }
+
     // ----- IR_FADD (20), IR_FSUB (21), IR_FMUL (22), IR_FDIV (23) -----
     if op >= 20 && op <= 23 {
         uint64 a = ir_a64_resolve_src(s1_v, 9)

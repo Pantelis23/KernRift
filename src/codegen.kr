@@ -261,7 +261,7 @@ fn codegen_init(uint64 capacity, uint64 source, uint64 tokens) {
     a64_digit_buf = alloc(32)
     type_alias_table = alloc(64 * 8)
     type_alias_count = 0
-    arr_elem_table = alloc(512 * 8)
+    arr_elem_table = alloc(512 * 16)
     arr_elem_count = 0
     fnaddr_fixup_table = alloc(1024 * 8)
     fnaddr_fixup_count = 0
@@ -1337,13 +1337,29 @@ fn arr_elem_register(uint64 name_tok, uint64 elem_size) {
         write(2, "error: arr_elem_table overflow (max 512)\n", 41)
         exit(1)
     }
-    uint64 entry = arr_elem_table + arr_elem_count * 8
+    uint64 entry = arr_elem_table + arr_elem_count * 16
     uint32 nt = name_tok
     unsafe { *(entry as uint32) = nt }
     uint64 e4 = entry + 4
     uint32 es = elem_size
     unsafe { *(e4 as uint32) = es }
+    // Default count = 0 means "unknown / unchecked" for bounds.
+    uint64 e8 = entry + 8
+    uint32 zero32 = 0
+    unsafe { *(e8 as uint32) = zero32 }
     arr_elem_count = arr_elem_count + 1
+}
+
+// Record the element count for the most recently declared array.
+// Callers invoke this after arr_elem_register with the literal size.
+// A count of 0 leaves the slot as "unknown" — no bounds check emitted.
+@export
+fn arr_count_set_last(uint64 count) {
+    if arr_elem_count == 0 { return }
+    uint64 entry = arr_elem_table + (arr_elem_count - 1) * 16
+    uint64 e8 = entry + 8
+    uint32 c32 = count
+    unsafe { *(e8 as uint32) = c32 }
 }
 
 // Look up an array's element size. Checks local (per-function) array
@@ -1353,7 +1369,7 @@ fn arr_elem_register(uint64 name_tok, uint64 elem_size) {
 fn arr_elem_lookup(uint64 name_tok) -> uint64 {
     uint64 i = 0
     while i < arr_elem_count {
-        uint64 entry = arr_elem_table + i * 8
+        uint64 entry = arr_elem_table + i * 16
         uint32 stored = 0
         unsafe { *(entry as uint32) -> stored }
         uint64 ws = stored
@@ -1366,6 +1382,36 @@ fn arr_elem_lookup(uint64 name_tok) -> uint64 {
         i = i + 1
     }
     return static_elem_size_of(name_tok)
+}
+
+// Return the declared element count of an array, or 0xFFFFFFFF if
+// the size is not known at compile time. Looks at stack-array
+// declarations first, then derives the count for static arrays
+// from their byte size and element size.
+@export
+fn arr_count_lookup(uint64 name_tok) -> uint64 {
+    uint64 i = 0
+    while i < arr_elem_count {
+        uint64 entry = arr_elem_table + i * 16
+        uint32 stored = 0
+        unsafe { *(entry as uint32) -> stored }
+        uint64 ws = stored
+        if tok_text_eq(ws, name_tok) != 0 {
+            uint64 e8 = entry + 8
+            uint32 c = 0
+            unsafe { *(e8 as uint32) -> c }
+            uint64 wc = c
+            if wc == 0 { return 0xFFFFFFFF }
+            return wc
+        }
+        i = i + 1
+    }
+    // Static array path: bytes / elem_size.
+    uint64 bytes = static_array_size_of(name_tok)
+    if bytes == 0xFFFFFFFF || bytes == 0 { return 0xFFFFFFFF }
+    uint64 es = static_elem_size_of(name_tok)
+    if es == 0 { return 0xFFFFFFFF }
+    return bytes / es
 }
 
 // Emit: load static at data_offset into rax (RIP-relative, placeholder)
@@ -2911,6 +2957,31 @@ fn gen_expr(uint64 node) {
         uint32 idx_child = ast_child(node)
         uint64 wi = idx_child
         gen_expr(wi)
+        // Bounds check under --debug for arrays with a known compile-time
+        // length. We treat the index as unsigned — negative-looking values
+        // (from signed math) become huge positives and fail the check.
+        if debug_mode != 0 {
+            uint64 bc_count = arr_count_lookup(warrt)
+            if bc_count != 0xFFFFFFFF {
+                // cmp rax, imm32 — tolerate counts up to 2^31-1
+                emit_byte(0x48); emit_byte(0x3D)
+                emit_u32_le(bc_count)
+                // jb rel8 — in-range, skip the trap
+                emit_byte(0x72)
+                uint64 bc_jb = out_len
+                emit_byte(0)
+                // trap: exit(1)
+                emit_mov_rax_imm(1)
+                emit_mov_rdi_rax()
+                if target_os == 2 { emit_mov_rcx_rax(); emit_win_alloc_stack(0x20); emit_win_call_iat(0) }
+                else if target_os == 1 { emit_mov_rax_imm(0x2000001); emit_byte(0x0F); emit_byte(0x05) }
+                else { emit_mov_rax_imm(231); emit_byte(0x0F); emit_byte(0x05) }
+                uint64 bc_skip = out_len - bc_jb - 1
+                uint8 bc_s = bc_skip
+                uint64 bc_pp = out_buf + bc_jb
+                unsafe { *(bc_pp as uint8) = bc_s }
+            }
+        }
         // mov rcx, rax (save index)
         emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
         if arr_offset != 0xFFFFFFFF {
@@ -7466,6 +7537,7 @@ fn gen_stmt(uint64 node) {
             uint64 ptr_offset = var_declare(name_tok)
             // Record per-element size for correct index scaling later
             arr_elem_register(name_tok, elem_size_v)
+            arr_count_set_last(arr_size)
             // lea rax, [rsp + arr_offset]
             emit_byte(0x48)
             emit_byte(0x8D)
@@ -8259,6 +8331,7 @@ fn gen_stmt(uint64 node) {
         uint32 idx_d3 = ast_data3(node)
         uint64 wd3 = idx_d3
         if wd3 == 1 {
+            uint32 arr_tok = ast_data1(node)
             // Evaluate value first → save to temp
             uint32 rhs_child = ast_data2(node)
             uint64 wrhs = rhs_child
@@ -8268,9 +8341,28 @@ fn gen_stmt(uint64 node) {
             uint32 idx_child = ast_child(node)
             uint64 wi = idx_child
             gen_expr(wi)
+            // Bounds check under --debug (same shape as the read path).
+            if debug_mode != 0 {
+                uint64 bca_count = arr_count_lookup(arr_tok)
+                if bca_count != 0xFFFFFFFF {
+                    emit_byte(0x48); emit_byte(0x3D)
+                    emit_u32_le(bca_count)
+                    emit_byte(0x72)
+                    uint64 bca_jb = out_len
+                    emit_byte(0)
+                    emit_mov_rax_imm(1)
+                    emit_mov_rdi_rax()
+                    if target_os == 2 { emit_mov_rcx_rax(); emit_win_alloc_stack(0x20); emit_win_call_iat(0) }
+                    else if target_os == 1 { emit_mov_rax_imm(0x2000001); emit_byte(0x0F); emit_byte(0x05) }
+                    else { emit_mov_rax_imm(231); emit_byte(0x0F); emit_byte(0x05) }
+                    uint64 bca_skip = out_len - bca_jb - 1
+                    uint8 bca_s = bca_skip
+                    uint64 bca_pp = out_buf + bca_jb
+                    unsafe { *(bca_pp as uint8) = bca_s }
+                }
+            }
             emit_store_rax_to_stack(temp_slot_1)
             // Load array base
-            uint32 arr_tok = ast_data1(node)
             uint64 warrt2 = arr_tok
             uint64 arr_offset = var_lookup(arr_tok)
             uint64 elem_sz_w = arr_elem_lookup(arr_tok)

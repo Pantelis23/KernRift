@@ -46,7 +46,7 @@ reasoning for anything non-obvious.
 | Unaligned load / store (non-atomic)     | Defined  | Both x86 and ARMv8 permit; a few microbenchmarks pay a penalty. |
 | Unaligned atomic load / store           | **Undefined** | ARMv8 traps. x86 works but is not portable. |
 | Load / store of an invalid pointer      | **Undefined** | No bounds tracking. Typically SIGSEGV. |
-| Array indexing out-of-bounds            | **Undefined** | No bounds check emitted — reads or writes adjacent memory. |
+| Array indexing out-of-bounds            | **Undefined** in release; trap under `--debug` | Compile with `--debug` to turn every indexed access of a compile-time-sized array (stack or static) into a bounds check that `exit(1)`s on violation. Release builds elide the check. |
 | Use-after-free (`dealloc` then access)  | **Undefined** | The backing allocator is `mmap` / `HeapAlloc`; behavior varies. |
 | Double `dealloc`                        | **Undefined** | Allocator-dependent. |
 | Read of an uninitialized stack slot     | Unspecified | Whatever value happens to be on the stack. Not cleared by prologue. |
@@ -151,6 +151,7 @@ block.
 Items tracked against the UB surface:
 
 - #53 — `static T x = expr` silently drops non-literal initializers.
-- Bounds-checked `[T] name` slice indexing (opt-in `--safe` mode): not
-  started; on the roadmap.
+- Bounds-checked slice indexing (opt-in `--safe` mode): not started; on
+  the roadmap. Compile-time-sized array indexing already traps under
+  `--debug` (both stack `T[N] name` and `static T[N] name`).
 - Signed-overflow trap mode (`--check=signed`): not started.

@@ -4053,6 +4053,7 @@ fn gen_stmt_a64(uint64 node) {
             if arem2 != 0 { var_frame_size = var_frame_size + 16 - arem2 }
             uint64 ptr_offset = var_declare(name_tok)
             arr_elem_register(name_tok, elem_size_v)
+            arr_count_set_last(arr_size)
             emit_a64_add_imm(0, 31, a64_var_base + arr_offset)
             emit_a64_store_x0(ptr_offset)
             return

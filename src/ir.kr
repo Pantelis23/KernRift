@@ -137,6 +137,7 @@ static uint64 IR_DCACHE_FLUSH = 127 // D-cache clean+invalidate by VA (ARM64 DC 
 static uint64 IR_ICACHE_INV = 128   // I-cache invalidate by VA (ARM64 IC IVAU; x86 no-op)
 static uint64 IR_DSB = 129          // data-sync barrier (ARM64 DSB SY; x86 MFENCE)
 static uint64 IR_DMB = 130          // data-memory barrier (ARM64 DMB ISH; x86 MFENCE)
+static uint64 IR_ARR_CHECK = 131    // bounds check: trap if s1_v (idx) >= imm (count)
 
 // ---------------------------------------------------------------------------
 // Instruction arena
@@ -2423,6 +2424,14 @@ fn ir_lower_expr(uint64 node) -> uint64 {
         // Evaluate index expression
         uint32 idx_child = ast_child(node)
         uint64 idx_v = ir_lower_expr(idx_child)
+        // Bounds check under --debug: trap if idx >= count (for arrays
+        // whose size is known at compile time).
+        if debug_mode != 0 {
+            uint64 bchk_count = arr_count_lookup(warrt)
+            if bchk_count != 0xFFFFFFFF {
+                ir_emit(IR_ARR_CHECK, 0, idx_v, 0, bchk_count, ir_current_bb)
+            }
+        }
         // Get element size
         uint64 elem_sz = arr_elem_lookup(warrt)
         // addr = base + idx * elem_sz
@@ -2642,6 +2651,7 @@ fn ir_lower_stmt(uint64 node) {
             ir_var_set(name_tok, buf_v)
             // Register element size so array indexing can scale correctly
             arr_elem_register(name_tok, elem_size_v)
+            arr_count_set_last(arr_size)
             return
         }
         // Check for struct variable declaration
@@ -2686,6 +2696,7 @@ fn ir_lower_stmt(uint64 node) {
             // Register element size for struct array indexing
             if arr_count > 1 {
                 arr_elem_register(name_tok, struct_size)
+                arr_count_set_last(arr_count)
             }
             return
         }
@@ -3117,6 +3128,13 @@ fn ir_lower_stmt(uint64 node) {
             // Load array base
             uint32 arr_tok = ast_data1(node)
             uint64 warrt = arr_tok
+            // Bounds check under --debug for known-size arrays.
+            if debug_mode != 0 {
+                uint64 bchk_count_s = arr_count_lookup(warrt)
+                if bchk_count_s != 0xFFFFFFFF {
+                    ir_emit(IR_ARR_CHECK, 0, idx_v, 0, bchk_count_s, ir_current_bb)
+                }
+            }
             uint64 base_v = ir_var_get(arr_tok)
             if base_v == 0xFFFFFFFF {
                 // Check static array
@@ -3464,6 +3482,7 @@ fn ir_opcode_name(uint64 op) -> uint64 {
     if op == 128 { return "icache_invalidate" }
     if op == 129 { return "dsb" }
     if op == 130 { return "dmb" }
+    if op == 131 { return "arr_check" }
     if op == 120 { return "scmp_lt" }
     if op == 121 { return "scmp_le" }
     if op == 122 { return "scmp_gt" }
@@ -6654,6 +6673,33 @@ fn ir_emit_x86_insn(uint64 ii) {
         return
     }
 
+    if op == 131 {
+        // IR_ARR_CHECK: trap if (unsigned) idx >= count.
+        //   s1_v = idx vreg, imm = count.
+        // Resolve idx into rax, compare with imm32, jb skips the trap
+        // (unsigned branch — a signed-negative index becomes a huge
+        // positive and also fails, which is exactly what we want).
+        uint64 idx_r = ir_resolve_src(s1_v, 0)
+        if idx_r != 0 {
+            ir_emit_mov_r64_r64(0, idx_r)
+        }
+        emit_byte(0x48); emit_byte(0x3D)
+        emit_u32_le(imm)
+        emit_byte(0x72)
+        uint64 bchk_jb = out_len
+        emit_byte(0)
+        emit_mov_rax_imm(1)
+        emit_mov_rdi_rax()
+        if target_os == 2 { emit_mov_rcx_rax(); emit_win_alloc_stack(0x20); emit_win_call_iat(0) }
+        else if target_os == 1 { emit_mov_rax_imm(0x2000001); emit_byte(0x0F); emit_byte(0x05) }
+        else { emit_mov_rax_imm(231); emit_byte(0x0F); emit_byte(0x05) }
+        uint64 bchk_skip = out_len - bchk_jb - 1
+        uint8 bchk_s = bchk_skip
+        uint64 bchk_pp = out_buf + bchk_jb
+        unsafe { *(bchk_pp as uint8) = bchk_s }
+        return
+    }
+
     // ---------------------------------------------------------------
     // Float opcodes
     // ---------------------------------------------------------------
@@ -7807,6 +7853,7 @@ fn ir_opt_is_side_effect(uint64 op) -> uint64 {
     if op == 128 { return 1 }  // ICACHE_INV (cache maintenance)
     if op == 129 { return 1 }  // DSB (synchronization barrier)
     if op == 130 { return 1 }  // DMB (synchronization barrier)
+    if op == 131 { return 1 }  // ARR_CHECK (traps, must not be DCE'd)
     return 0
 }
 

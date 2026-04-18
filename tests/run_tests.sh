@@ -569,6 +569,35 @@ fn main() {
     memmove(0, 0, 0)
     exit(0)
 }' 0
+
+# --- Bounds checks under --debug ---
+run_bchk_test() {
+    local name="$1"
+    local input="$2"
+    local expected="$3"
+    TOTAL=$((TOTAL + 1))
+    local REPO_ROOT="$DIR/.."
+    printf '%s\n' "$input" > "$REPO_ROOT/test_tmp_$$.kr"
+    if $KRC --debug $KRC_FLAGS "$REPO_ROOT/test_tmp_$$.kr" -o /tmp/krc_bchk_$$ > /dev/null 2>&1; then
+        rm -f "$REPO_ROOT/test_tmp_$$.kr"
+        chmod +x /tmp/krc_bchk_$$
+        local got=0
+        /tmp/krc_bchk_$$ > /dev/null 2>&1 && got=0 || got=$?
+        if [ "$got" = "$expected" ]; then
+            PASS=$((PASS + 1))
+        else
+            echo "FAIL: $name (expected $expected, got $got)"; FAIL=$((FAIL + 1))
+        fi
+    else
+        echo "FAIL: $name (compilation failed)"; FAIL=$((FAIL + 1))
+    fi
+    rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_bchk_$$
+}
+run_bchk_test "bchk_stack_in_range"    'fn main() { u64[4] a; a[0] = 1; a[3] = 4; exit(a[3]) }' 4
+run_bchk_test "bchk_stack_oob_write"   'fn main() { u64[4] a; a[4] = 99; exit(0) }' 1
+run_bchk_test "bchk_stack_oob_read"    'fn main() { u64[4] a; exit(a[7]) }' 1
+run_bchk_test "bchk_static_in_range"   'static u64[8] s; fn main() { s[5] = 42; exit(s[5]) }' 42
+run_bchk_test "bchk_static_oob_write"  'static u64[8] s; fn main() { s[8] = 1; exit(0) }' 1
 run_test "alloc_aligned_64" 'import "std/mem.kr"
 fn main() {
     uint64 buf = alloc_aligned(100, 64)
