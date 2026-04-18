@@ -240,7 +240,7 @@ fn main() {
     if arg_offset == 16 { eff_argc = cli_argc - 1 }
 
     if eff_argc < 2 {
-        write(1, "kr 2.8.2 (KernRift fat binary runner)\n", 38)
+        write(1, "kr 2.8.5 (KernRift fat binary runner)\n", 38)
         write(1, "usage: kr <program.krbo> [args...]\n\n", 36)
         write(1, "Runs .krbo fat binaries (BCJ+LZ4-compressed, 7 platform slices).\n", 65)
         write(1, "Auto-detects host architecture and extracts the matching native binary.\n\n", 73)
@@ -268,12 +268,12 @@ fn main() {
             unsafe { *(kp2 as uint8) -> tc }
             if tc == 118 {
                 // --version
-                write(1, "kr 2.8.2 (KernRift fat binary runner)\n", 38)
+                write(1, "kr 2.8.5 (KernRift fat binary runner)\n", 38)
                 exit(0)
             }
             if tc == 104 {
                 // --help
-                write(1, "kr 2.8.2 (KernRift fat binary runner)\n", 38)
+                write(1, "kr 2.8.5 (KernRift fat binary runner)\n", 38)
                 write(1, "usage: kr <program.krbo> [args...]\n\n", 36)
                 write(1, "Runs .krbo fat binaries (BCJ+LZ4-compressed, 7 platform slices).\n", 65)
                 write(1, "Auto-detects host architecture and extracts the matching native binary.\n", 71)
@@ -310,6 +310,30 @@ fn main() {
         uint64 tmp = "/tmp/.kr-exec"
         if raw_os == 2 { tmp = ".\\kr-run.exe" }
         if raw_os == 3 {
+            // Android: try memfd_create + execveat(AT_EMPTY_PATH) first (same
+            // rationale as the fat-binary path — filesystem-free exec works
+            // under Termux SELinux where file-based execve is blocked).
+            uint64 memfd_nr_nf = 319
+            uint64 execveat_nr_nf = 322
+            uint64 write_nr_nf = 1
+            if host_arch == 7 {
+                memfd_nr_nf = 279
+                execveat_nr_nf = 281
+                write_nr_nf = 64
+            }
+            uint64 mfd_label_nf = "kr"
+            uint64 mfd_fd_nf = syscall_raw(memfd_nr_nf, mfd_label_nf, 1, 0, 0, 0, 0)
+            if mfd_fd_nf < 0xFFFFFFFFFFFFF000 {
+                uint64 wrote_nf = syscall_raw(write_nr_nf, mfd_fd_nf, data, fsize, 0, 0, 0)
+                if wrote_nf == fsize {
+                    uint64 nf_argv_ptr = alloc(16)
+                    store64(nf_argv_ptr, mfd_label_nf)
+                    store64(nf_argv_ptr + 8, 0)
+                    uint64 empty_path_nf = ""
+                    syscall_raw(execveat_nr_nf, mfd_fd_nf, empty_path_nf, nf_argv_ptr, cli_envp, 0x1000, 0)
+                }
+                file_close(mfd_fd_nf)
+            }
             tmp = "/data/local/tmp/kr-exec"
             uint64 atfd = file_open(tmp, 1)
             if atfd > 0xFFFFFFFFFFFFF000 {
@@ -400,20 +424,71 @@ fn main() {
         filter_aarch64_bcj(binary, slice_uncomp_size, 0)
     }
 
-    // Write to temp and execute
     uint64 host_os = get_target_os()
+
+    // Build argv = [argv[0], original-argv[2..], NULL] to forward to execve.
+    // cli_argv[0]=kr, cli_argv[1]=program.krbo, cli_argv[2..]=user args.
+    // arg_offset is 16 on Android (linker shift), 8 otherwise. argv[0] gets
+    // filled in per-platform once we know the final exec identity.
+    uint64 fwd_start = 0
+    if arg_offset == 8 {
+        fwd_start = 2
+    } else {
+        fwd_start = 3
+    }
+    uint64 n_fwd = 0
+    if cli_argc > fwd_start { n_fwd = cli_argc - fwd_start }
+    uint64 argv_bytes = (n_fwd + 2) * 8
+    uint64 nargv = alloc(argv_bytes)
+    uint64 ai = 0
+    while ai < n_fwd {
+        uint64 src = cli_argv + (fwd_start + ai) * 8
+        uint64 v = 0
+        unsafe { *(src as uint64) -> v }
+        uint64 dst = nargv + (1 + ai) * 8
+        store64(dst, v)
+        ai = ai + 1
+    }
+    store64(nargv + (1 + n_fwd) * 8, 0)
+
     uint64 tmp_path = "/tmp/.kr-exec"
     if host_os == 2 {
         tmp_path = ".\\kr-run.exe"
     }
     if host_os == 3 {
-        // Android: try /data/local/tmp (adb), then cwd (Termux).
-        // Raw execve works on adb but is blocked by SELinux on Termux.
-        // If exec fails, exit 120 so the Termux shell wrapper can handle it.
+        // Android: prefer memfd_create + execveat(AT_EMPTY_PATH).
+        // The binary lives in an anonymous kernel fd and execveat with
+        // AT_EMPTY_PATH ignores the pathname, so nothing touches the
+        // filesystem — no chmod, no SELinux file-label check, no noexec
+        // mount, no leftover kr-exec file in the user's cwd. Falls back to
+        // the file-based path on kernels older than 3.17 (no memfd_create).
+        uint64 memfd_nr = 319
+        uint64 execveat_nr = 322
+        uint64 write_nr = 1
+        if host_arch == 7 {
+            memfd_nr = 279
+            execveat_nr = 281
+            write_nr = 64
+        }
+        uint64 mfd_label = "kr"
+        uint64 mfd_fd = syscall_raw(memfd_nr, mfd_label, 1, 0, 0, 0, 0)
+        if mfd_fd < 0xFFFFFFFFFFFFF000 {
+            uint64 wrote = syscall_raw(write_nr, mfd_fd, binary, slice_uncomp_size, 0, 0, 0)
+            if wrote == slice_uncomp_size {
+                store64(nargv, mfd_label)
+                uint64 empty_path = ""
+                syscall_raw(execveat_nr, mfd_fd, empty_path, nargv, cli_envp, 0x1000, 0)
+                // execveat failed — fall through to file-based path.
+            }
+            file_close(mfd_fd)
+        }
+
+        // File-based fallback. Raw execve works on adb but is blocked by
+        // SELinux on Termux, so exit 120 tells the shell wrapper to retry
+        // via `./kr-exec` under its own SELinux domain.
         tmp_path = "/data/local/tmp/kr-exec"
         uint64 atfd = file_open(tmp_path, 1)
         if atfd > 0xFFFFFFFFFFFFF000 {
-            // /data/local/tmp not writable — try current directory
             tmp_path = "kr-exec"
             atfd = file_open(tmp_path, 1)
         }
@@ -421,8 +496,8 @@ fn main() {
             file_write(atfd, binary, slice_uncomp_size)
             file_close(atfd)
             set_executable(tmp_path)
-            exec_process(tmp_path)
-            // execve failed (SELinux on Termux) — exit 120 for shell wrapper
+            store64(nargv, tmp_path)
+            exec_process_argv(tmp_path, nargv)
             exit(120)
         }
         write(2, "kr: failed to create temp file\n", 31)
@@ -435,38 +510,8 @@ fn main() {
     }
     file_write(tfd, binary, slice_uncomp_size)
     file_close(tfd)
-
     set_executable(tmp_path)
-
-    // Build argv = [tmp_path, original-argv[2..], NULL] and forward to execve.
-    // Effective argv from user is cli_argv, where cli_argv[0]=kr,
-    // cli_argv[1]=program.krbo, cli_argv[2..]=user args to forward.
-    // arg_offset is 16 on Android (linker shift), 8 otherwise, and the
-    // "program.krbo" slot sits at cli_argv[arg_offset/8].
-    uint64 fwd_start = 0
-    if arg_offset == 8 {
-        fwd_start = 2
-    } else {
-        fwd_start = 3
-    }
-    uint64 n_fwd = 0
-    if cli_argc > fwd_start { n_fwd = cli_argc - fwd_start }
-    uint64 argv_bytes = (n_fwd + 2) * 8
-    uint64 nargv = alloc(argv_bytes)
-    // argv[0] = tmp_path
     store64(nargv, tmp_path)
-    // argv[1..n_fwd+1] = forwarded args
-    uint64 ai = 0
-    while ai < n_fwd {
-        uint64 src = cli_argv + (fwd_start + ai) * 8
-        uint64 v = 0
-        unsafe { *(src as uint64) -> v }
-        uint64 dst = nargv + (1 + ai) * 8
-        store64(dst, v)
-        ai = ai + 1
-    }
-    // argv[n_fwd+1] = NULL
-    store64(nargv + (1 + n_fwd) * 8, 0)
 
     exec_process_argv(tmp_path, nargv)
 

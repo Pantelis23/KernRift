@@ -2,6 +2,26 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## v2.8.5 — 2026-04-18
+
+Android runner robustness.
+
+### Fixed
+- **IR `main()` startup never populated `cli_envp`** — only `cli_argc` and
+  `cli_argv` were wired up (legacy codegen set all three). As a result the
+  `kr` runner forwarded `envp=NULL` to every child process it spawned; fine
+  on plain Linux, but on Android bionic the loader expects a real envp
+  vector. Both IR backends (x86_64 and ARM64) now compute envp the same
+  way legacy codegen does.
+
+### Added
+- **`kr` runner prefers `memfd_create` + `execveat(AT_EMPTY_PATH)` on
+  Android.** The extracted slice lives only in an anonymous kernel fd and
+  `execveat` ignores the pathname arg, so nothing touches the filesystem —
+  no chmod, no SELinux file-label transition, no noexec mount check, no
+  leftover `kr-exec` file in the user's cwd. Falls back to the file-based
+  path on kernels older than Linux 3.17.
+
 ## v2.8.4 — 2026-04-17
 
 User-reported correctness fixes on top of v2.8.3.

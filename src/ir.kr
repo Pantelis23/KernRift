@@ -8025,6 +8025,20 @@ fn ir_emit_x86_function(uint64 fn_node) {
         if argv_off != 0xFFFFFFFF {
             emit_static_store(argv_off)
         }
+        // envp = rsp + 8 + (argc+1)*8 — matches legacy codegen. Previously the
+        // IR path silently left cli_envp=0, forwarding NULL envp through
+        // exec_process(). Harmless on plain Linux, breaks Android's fat-binary
+        // runner spawn path where bionic expects a real envp vector.
+        uint64 envp_off_main = static_lookup_by_name("cli_envp", 8)
+        if envp_off_main != 0xFFFFFFFF {
+            // mov rcx, [rsp]
+            emit_byte(0x48); emit_byte(0x8B); emit_byte(0x0C); emit_byte(0x24)
+            // inc rcx
+            emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC1)
+            // lea rax, [rsp + rcx*8 + 8]
+            emit_byte(0x48); emit_byte(0x8D); emit_byte(0x44); emit_byte(0xCC); emit_byte(0x08)
+            emit_static_store(envp_off_main)
+        }
     }
 
     // 5. Emit prologue (skip for @naked functions)

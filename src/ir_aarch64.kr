@@ -2151,6 +2151,33 @@ fn ir_emit_arm64_function(uint64 fn_node) {
                 emit_a64_static_store(argv_off)
             }
         }
+        // envp: Linux/Android = sp + 8 + (argc+1)*8; macOS = argv + (argc+1)*8.
+        // The legacy codegen populates this; the IR path was silently leaving
+        // cli_envp at 0, so exec_process() forwarded envp=NULL — fine on plain
+        // Linux but breaks Android bionic which needs at least LD_* vars to
+        // start the child process.
+        uint64 envp_off_main = static_lookup_by_name("cli_envp", 8)
+        if envp_off_main != 0xFFFFFFFF {
+            if target_os == 1 {
+                uint64 argc_off_env = static_lookup_by_name("cli_argc", 8)
+                if argc_off_env != 0xFFFFFFFF { emit_a64_static_load(argc_off_env) }
+                emit_a64_mov(9, 0)
+                emit_a64_add_imm(9, 9, 1)
+                emit_a64_mov_imm(10, 8)
+                emit_a64_mul(9, 9, 10)
+                uint64 argv_off_env = static_lookup_by_name("cli_argv", 8)
+                if argv_off_env != 0xFFFFFFFF { emit_a64_static_load(argv_off_env) }
+                emit_a64_add(0, 0, 9)
+            } else {
+                emit_a64_ldr(9, 31, 0)
+                emit_a64_add_imm(9, 9, 1)
+                emit_a64_mov_imm(10, 8)
+                emit_a64_mul(9, 9, 10)
+                emit_a64_add_imm(0, 31, 8)
+                emit_a64_add(0, 0, 9)
+            }
+            emit_a64_static_store(envp_off_main)
+        }
     }
     if tok_matches(fn_name_tok, "main", 4) != 0 && freestanding == 0 && target_os == 2 {
         // Windows ARM64: GetCommandLineA via IAT
