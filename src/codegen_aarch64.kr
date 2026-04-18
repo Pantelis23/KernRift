@@ -109,6 +109,9 @@ fn emit_a64_orr(uint64 rd, uint64 rn, uint64 rm) {
 
 // MOV Xd, Xn (alias for ORR Xd, XZR, Xn)
 fn emit_a64_mov(uint64 rd, uint64 rn) {
+    // Self-move is a 4-byte no-op (mov xN, xN). Skip to shave bytes
+    // off every regalloc coalescing path that ends up same-color.
+    if rd == rn { return }
     emit_a64_orr(rd, 31, rn)
 }
 

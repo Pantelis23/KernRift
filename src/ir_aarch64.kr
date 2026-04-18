@@ -76,10 +76,32 @@ fn ir_a64_spill_offset(uint64 vreg) -> uint64 {
     return IR_A64_OVERFLOW_RESERVE + slot * 8
 }
 
+// Peephole tracking for spill-reload elision (same pattern as the x86
+// backend uses in ir.kr). If the last bytes emitted were exactly
+// `store_spill reg, vreg` and the very next emission would be
+// `load_spill reg, vreg` (same reg + same vreg, no bytes in between),
+// the reload is redundant — the value is still in the register.
+static uint64 ir_a64_last_spill_vreg = 0xFFFFFFFF
+static uint64 ir_a64_last_spill_reg = 0xFFFFFFFF
+static uint64 ir_a64_last_spill_end = 0xFFFFFFFFFFFFFFFF
+
+@export
+fn ir_a64_peephole_reset() {
+    ir_a64_last_spill_vreg = 0xFFFFFFFF
+    ir_a64_last_spill_reg = 0xFFFFFFFF
+    ir_a64_last_spill_end = 0xFFFFFFFFFFFFFFFF
+}
+
 // Load a spilled vreg into scratch register (x9 or x10).
 // ARM64 LDR Xt,[Xn,#imm] uses a 12-bit scaled field: max offset = 4095*8 = 32760.
 // For larger offsets, use a scratch register to form the address.
 fn ir_a64_load_spill(uint64 scratch, uint64 vreg) {
+    // Peephole: if the prior emission was `store_spill scratch, vreg`
+    // and nothing's been emitted since, the value is still in scratch.
+    if vreg == ir_a64_last_spill_vreg && scratch == ir_a64_last_spill_reg && out_len == ir_a64_last_spill_end {
+        ir_a64_last_spill_end = 0xFFFFFFFFFFFFFFFF   // one-shot
+        return
+    }
     uint64 off = ir_a64_spill_offset(vreg)
     ir_a64_ldr_sp(scratch, off)
 }
@@ -88,6 +110,9 @@ fn ir_a64_load_spill(uint64 scratch, uint64 vreg) {
 fn ir_a64_emit_store_spill(uint64 reg, uint64 vreg) {
     uint64 off = ir_a64_spill_offset(vreg)
     ir_a64_str_sp(reg, off)
+    ir_a64_last_spill_vreg = vreg
+    ir_a64_last_spill_reg = reg
+    ir_a64_last_spill_end = out_len
 }
 
 // Large-offset-safe LDR/STR from SP.
@@ -2384,6 +2409,9 @@ fn ir_emit_arm64_function(uint64 fn_node) {
         // Record this block's code offset
         uint64 bop = ir_block_offsets + bi * 8
         unsafe { *(bop as uint64) = out_len }
+        // Reset the spill-reload peephole at every BB boundary so a
+        // branch target never lands mid-pattern.
+        ir_a64_peephole_reset()
 
         // Emit non-terminator instructions
         uint64 ii = ir_bb_first_insn(bi)
