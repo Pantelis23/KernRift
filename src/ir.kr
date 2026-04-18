@@ -4318,7 +4318,31 @@ fn ir_spill_offset(uint64 vreg) -> uint64 {
     return ir_spill_base + slot * 8
 }
 
+// Peephole: track the most recent `store_spill reg, vreg` so an
+// immediately-following `load_spill reg, same-vreg` (with no other
+// bytes emitted in between) can be elided — the value is already in
+// that register. Cleared by invalidating the end position whenever
+// any non-tracking byte emitter runs; here we rely on out_len being
+// stable between the two calls to signal "nothing else happened".
+static uint64 ir_last_spill_vreg = 0xFFFFFFFF
+static uint64 ir_last_spill_reg = 0xFFFFFFFF
+static uint64 ir_last_spill_end = 0xFFFFFFFFFFFFFFFF
+
+@export
+fn ir_peephole_reset() {
+    ir_last_spill_vreg = 0xFFFFFFFF
+    ir_last_spill_reg = 0xFFFFFFFF
+    ir_last_spill_end = 0xFFFFFFFFFFFFFFFF
+}
+
 fn ir_emit_load_spill(uint64 dst_reg, uint64 vreg) {
+    // Peephole: if the last emission was exactly `store_spill
+    // src_reg=dst_reg, src_vreg=vreg` and nothing was emitted after
+    // it, the value is still in dst_reg — skip the reload entirely.
+    if vreg == ir_last_spill_vreg && dst_reg == ir_last_spill_reg && out_len == ir_last_spill_end {
+        ir_last_spill_end = 0xFFFFFFFFFFFFFFFF   // one-shot: don't re-apply
+        return
+    }
     // mov dst_reg, [rsp + spill_offset]
     uint64 off = ir_spill_offset(vreg)
     uint8 rex = 0x48
@@ -4362,6 +4386,13 @@ fn ir_emit_store_spill(uint64 src_reg, uint64 vreg) {
         emit_byte(0x24)
         emit_u32_le(off)
     }
+    // Record for the peephole check above. Captures (src_reg, vreg)
+    // and the out_len after emission. The next emit that bumps
+    // out_len without matching those parameters invalidates this
+    // via the position check.
+    ir_last_spill_vreg = vreg
+    ir_last_spill_reg = src_reg
+    ir_last_spill_end = out_len
 }
 
 // ---------------------------------------------------------------------------
@@ -8329,6 +8360,11 @@ fn ir_emit_x86_function(uint64 fn_node) {
         // Record this block's code offset
         uint64 bop = ir_block_offsets + bi * 8
         unsafe { *(bop as uint64) = out_len }
+
+        // Every basic-block boundary is a potential branch target, so
+        // the spill-reload peephole's "nothing happened between" check
+        // must restart from this point.
+        ir_peephole_reset()
 
         // Emit non-terminator instructions
         uint64 ii = ir_bb_first_insn(bi)
