@@ -1605,6 +1605,61 @@ fn fn_register(uint64 name_tok, uint64 code_offset) {
     fn_count = fn_count + 1
 }
 
+// Per-function `@section("name")` annotation storage. Each entry is 16
+// bytes: u32 fn_name_tok, u32 section_text_start, u32 section_text_len,
+// u32 reserved. Keyed by the function's name token (not its index in
+// fn_table because this may be populated before fn_register runs).
+static uint64 fn_section_table = 0
+static uint64 fn_section_count = 0
+
+fn fn_section_init() {
+    if fn_section_table == 0 {
+        fn_section_table = alloc(1024 * 16)
+    }
+}
+
+@export
+fn fn_section_set(uint64 name_tok, uint64 str_start, uint64 str_len) {
+    fn_section_init()
+    if fn_section_count >= 1024 { return }
+    uint64 entry = fn_section_table + fn_section_count * 16
+    uint32 nt = name_tok
+    unsafe { *(entry as uint32) = nt }
+    uint64 e4 = entry + 4
+    uint32 ss = str_start
+    unsafe { *(e4 as uint32) = ss }
+    uint64 e8 = entry + 8
+    uint32 sl = str_len
+    unsafe { *(e8 as uint32) = sl }
+    fn_section_count = fn_section_count + 1
+}
+
+// Returns the section string's byte range as (start << 32) | len, or
+// 0 if the function has no @section annotation.
+@export
+fn fn_section_lookup(uint64 name_tok) -> uint64 {
+    uint64 i = 0
+    while i < fn_section_count {
+        uint64 entry = fn_section_table + i * 16
+        uint32 stored = 0
+        unsafe { *(entry as uint32) -> stored }
+        uint64 ws = stored
+        if tok_text_eq(ws, name_tok) != 0 {
+            uint64 e4 = entry + 4
+            uint32 ss = 0
+            unsafe { *(e4 as uint32) -> ss }
+            uint64 e8 = entry + 8
+            uint32 sl = 0
+            unsafe { *(e8 as uint32) -> sl }
+            uint64 wss = ss
+            uint64 wsl = sl
+            return (wss << 32) | wsl
+        }
+        i = i + 1
+    }
+    return 0
+}
+
 fn fn_lookup(uint64 name_tok) -> uint64 {
     uint64 i = 0
     while i < fn_count {

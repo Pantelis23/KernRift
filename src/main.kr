@@ -795,6 +795,21 @@ fn emit_asm_listing(uint64 output_path, uint64 arch, uint64 text_start, uint64 s
         unsafe { *(fe4 as uint32) -> fn_off }
         uint64 woff = fn_off
 
+        // If this function carries a @section("name") annotation, emit
+        // a gas-style `.section <name>,"ax",@progbits` directive so the
+        // listing round-trips cleanly through an external assembler.
+        uint64 sect_info = fn_section_lookup(fn_tok)
+        if sect_info != 0 {
+            uint64 sect_start = (sect_info >> 32) & 0xFFFFFFFF
+            uint64 sect_len = sect_info & 0xFFFFFFFF
+            write(fd, "\n.section ", 10)
+            write(fd, source + sect_start, sect_len)
+            if arch == 0 {
+                write(fd, ",\"ax\",@progbits\n", 16)
+            } else {
+                write(fd, ",\"ax\",%progbits\n", 16)
+            }
+        }
         // Print function label
         write(fd, "\n", 1)
         uint64 tstart = tok_text_start(fn_tok)

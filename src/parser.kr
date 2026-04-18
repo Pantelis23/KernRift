@@ -1480,6 +1480,8 @@ fn parse_module() -> uint64 {
         uint64 ann_naked = 0
         uint64 ann_packed = 0
         uint64 ann_export = 0
+        uint64 ann_section_start = 0
+        uint64 ann_section_len = 0
         while kind == 21 {
             advance_tok()
             // Read annotation name
@@ -1514,8 +1516,27 @@ fn parse_module() -> uint64 {
                 // Check export (6 chars, starts with 'e' = 101)
                 if ann_ch4 == 101 { ann_export = 1 }
             }
-            // Skip annotation arguments if present: @section("...")
+            // Check section (7 chars, starts with 's')
+            uint64 is_section = 0
+            if ann_len_v == 7 {
+                uint64 ann_a5 = src_ptr + ann_start
+                uint64 ann_ch5 = 0
+                unsafe { *(ann_a5 as uint8) -> ann_ch5 }
+                if ann_ch5 == 115 { is_section = 1 }  // 's' = 115
+            }
+            // Annotation arguments: for @section, capture the string
+            // literal (minus its quotes). For everything else, skip.
             if eat(10) != 0 {
+                if is_section != 0 && cur_kind() == 3 {
+                    uint64 str_tok = advance_tok()
+                    uint64 st_s = tok_start_at(str_tok)
+                    uint64 st_l = tok_len_at(str_tok)
+                    // Token text includes the leading and trailing "; trim them.
+                    if st_l >= 2 {
+                        ann_section_start = st_s + 1
+                        ann_section_len = st_l - 2
+                    }
+                }
                 while cur_kind() != 11 && cur_kind() != 0 {
                     advance_tok()
                 }
@@ -1530,6 +1551,15 @@ fn parse_module() -> uint64 {
             uint32 ann_flags = ann_noreturn | (ann_naked << 1) | (ann_export << 2)
             if ann_flags != 0 {
                 ast_set_data4(fn_node, ann_flags)
+            }
+            // If the user wrote `@section("name")`, stash the (start, len)
+            // pair in the side-table keyed by the function's name token.
+            // The ELF relocatable writer will read this when it supports
+            // multi-section emission.
+            if ann_section_len != 0 {
+                uint32 fn_name_tok = ast_data1(fn_node)
+                uint64 wfn_name = fn_name_tok
+                fn_section_set(wfn_name, ann_section_start, ann_section_len)
             }
             ast_append_child(mod_node, fn_node)
         } else if kind == 74 {

@@ -1475,6 +1475,27 @@ run_test "defer_nested_block" 'static u64 v = 0
 fn inner() { if 1 == 1 { defer { v = 42 } } }
 fn main() { inner(); exit(v) }' 42
 
+# --- @section annotation capture ---
+TOTAL=$((TOTAL + 1))
+printf '@section(".text.init")\nfn boot() -> u64 { return 0 }\nfn main() { exit(boot()) }\n' > "$DIR/../test_tmp_sect_$$.kr"
+$KRC --emit=asm $KRC_FLAGS "$DIR/../test_tmp_sect_$$.kr" -o /tmp/krc_sect_$$.s > /dev/null 2>&1
+if grep -q "^\\.section \\.text\\.init" /tmp/krc_sect_$$.s 2>/dev/null; then
+    PASS=$((PASS + 1))
+else
+    echo "FAIL: section_asm_directive (no .section emitted)"; FAIL=$((FAIL + 1))
+fi
+rm -f "$DIR/../test_tmp_sect_$$.kr" /tmp/krc_sect_$$.s
+
+TOTAL=$((TOTAL + 1))
+printf 'fn boot() -> u64 { return 0 }\nfn main() { exit(boot()) }\n' > "$DIR/../test_tmp_nosect_$$.kr"
+$KRC --emit=asm $KRC_FLAGS "$DIR/../test_tmp_nosect_$$.kr" -o /tmp/krc_nosect_$$.s > /dev/null 2>&1
+if grep -q "^\\.section" /tmp/krc_nosect_$$.s 2>/dev/null; then
+    echo "FAIL: no_section_no_directive (spurious .section)"; FAIL=$((FAIL + 1))
+else
+    PASS=$((PASS + 1))
+fi
+rm -f "$DIR/../test_tmp_nosect_$$.kr" /tmp/krc_nosect_$$.s
+
 # --- Many-parameter functions ---
 run_test "fn_7args" 'fn sum7(uint64 a, uint64 b, uint64 c, uint64 d, uint64 e, uint64 f, uint64 g) -> uint64 { return a + b + c + d + e + f + g }
 fn main() { exit(sum7(1,2,3,4,5,6,7)) }' 28

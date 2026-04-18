@@ -1226,6 +1226,23 @@ linking or ELF object introspection).
 fn my_entry() { }
 ```
 
+### `@section("name")`
+
+Places the function in a named section for kernel / bare-metal
+layouts. Under `--emit=asm` the listing emits a gas-style directive
+(`.section .text.init,"ax",@progbits`) before the function's label,
+so the output round-trips through GNU as + ld with a user-supplied
+linker script.
+
+```kr
+@section(".text.init")
+fn _start() { /* placed in a separate section */ }
+```
+
+Under `--emit=obj` the name is captured but the ELF relocatable still
+groups all code into `.text` — full multi-section object emit is on
+the roadmap.
+
 ### `@naked`
 
 Emits a function with no prologue/epilogue. Useful for interrupt handlers
