@@ -24,6 +24,23 @@ fn ir_a64_add_sp_reg(uint64 rd, uint64 rm) {
     emit_a64(insn)
 }
 
+// STP Xt1, Xt2, [SP, #off]  — store-pair of two 64-bit regs at one
+// 8-byte-aligned offset. Halves prologue size (one insn per pair vs
+// two STRs). Offset must be multiple of 8 in range 0..504 for the
+// unsigned form we use here.
+fn ir_a64_stp_sp(uint64 rt1, uint64 rt2, uint64 off) {
+    uint64 imm7 = (off / 8) & 0x7F
+    uint64 insn = 0xA9000000 | (imm7 << 15) | (rt2 << 10) | (31 << 5) | rt1
+    emit_a64(insn)
+}
+
+// LDP Xt1, Xt2, [SP, #off]
+fn ir_a64_ldp_sp(uint64 rt1, uint64 rt2, uint64 off) {
+    uint64 imm7 = (off / 8) & 0x7F
+    uint64 insn = 0xA9400000 | (imm7 << 15) | (rt2 << 10) | (31 << 5) | rt1
+    emit_a64(insn)
+}
+
 // ---------------------------------------------------------------------------
 // Register allocator setup for ARM64
 // ---------------------------------------------------------------------------
@@ -2372,22 +2389,33 @@ fn ir_emit_arm64_function(uint64 fn_node) {
     if is_naked == 0 {
         // SUB SP, SP, #total_frame
         emit_a64_sub_sp_imm(total_frame)
-        // Save FP/LR and callee-saved regs after spill+scratch area
-        uint64 cs_base = spill_size + scratch_size
+        // Save FP/LR and callee-saved regs after spill+scratch area.
+        // Pair them with STP — halves the instruction count vs per-reg
+        // STRs. STP's offset is imm7 scaled by 8, capped at 504; fall
+        // back to individual STR for large frames to stay correct.
+        uint64 cs_base = IR_A64_OVERFLOW_RESERVE + spill_size + scratch_size
         uint64 fp_off = cs_base + 80
-        ir_a64_str_sp(29, fp_off)
-        ir_a64_str_sp(30, fp_off + 8)
-        // Save callee-saved registers x19-x28
-        ir_a64_str_sp(19, cs_base)
-        ir_a64_str_sp(20, cs_base + 8)
-        ir_a64_str_sp(21, cs_base + 16)
-        ir_a64_str_sp(22, cs_base + 24)
-        ir_a64_str_sp(23, cs_base + 32)
-        ir_a64_str_sp(24, cs_base + 40)
-        ir_a64_str_sp(25, cs_base + 48)
-        ir_a64_str_sp(26, cs_base + 56)
-        ir_a64_str_sp(27, cs_base + 64)
-        ir_a64_str_sp(28, cs_base + 72)
+        if fp_off + 8 <= 504 {
+            ir_a64_stp_sp(19, 20, cs_base)
+            ir_a64_stp_sp(21, 22, cs_base + 16)
+            ir_a64_stp_sp(23, 24, cs_base + 32)
+            ir_a64_stp_sp(25, 26, cs_base + 48)
+            ir_a64_stp_sp(27, 28, cs_base + 64)
+            ir_a64_stp_sp(29, 30, fp_off)
+        } else {
+            ir_a64_str_sp(29, fp_off)
+            ir_a64_str_sp(30, fp_off + 8)
+            ir_a64_str_sp(19, cs_base)
+            ir_a64_str_sp(20, cs_base + 8)
+            ir_a64_str_sp(21, cs_base + 16)
+            ir_a64_str_sp(22, cs_base + 24)
+            ir_a64_str_sp(23, cs_base + 32)
+            ir_a64_str_sp(24, cs_base + 40)
+            ir_a64_str_sp(25, cs_base + 48)
+            ir_a64_str_sp(26, cs_base + 56)
+            ir_a64_str_sp(27, cs_base + 64)
+            ir_a64_str_sp(28, cs_base + 72)
+        }
     }
 
     // 7. Allocate branch/return fixup tracking
@@ -2544,22 +2572,31 @@ fn ir_emit_arm64_function(uint64 fn_node) {
                 emit_a64_svc()
             }
         }
-        // Restore callee-saved registers (large-offset safe)
-        uint64 cs_base_e = spill_size + scratch_size
-        ir_a64_ldr_sp(19, cs_base_e)
-        ir_a64_ldr_sp(20, cs_base_e + 8)
-        ir_a64_ldr_sp(21, cs_base_e + 16)
-        ir_a64_ldr_sp(22, cs_base_e + 24)
-        ir_a64_ldr_sp(23, cs_base_e + 32)
-        ir_a64_ldr_sp(24, cs_base_e + 40)
-        ir_a64_ldr_sp(25, cs_base_e + 48)
-        ir_a64_ldr_sp(26, cs_base_e + 56)
-        ir_a64_ldr_sp(27, cs_base_e + 64)
-        ir_a64_ldr_sp(28, cs_base_e + 72)
-        // Restore FP and LR
+        // Restore callee-saved registers. Mirror the prologue: LDP
+        // pairs when the frame fits, individual LDRs otherwise.
+        uint64 cs_base_e = IR_A64_OVERFLOW_RESERVE + spill_size + scratch_size
         uint64 fp_off_e = cs_base_e + 80
-        ir_a64_ldr_sp(29, fp_off_e)
-        ir_a64_ldr_sp(30, fp_off_e + 8)
+        if fp_off_e + 8 <= 504 {
+            ir_a64_ldp_sp(19, 20, cs_base_e)
+            ir_a64_ldp_sp(21, 22, cs_base_e + 16)
+            ir_a64_ldp_sp(23, 24, cs_base_e + 32)
+            ir_a64_ldp_sp(25, 26, cs_base_e + 48)
+            ir_a64_ldp_sp(27, 28, cs_base_e + 64)
+            ir_a64_ldp_sp(29, 30, fp_off_e)
+        } else {
+            ir_a64_ldr_sp(19, cs_base_e)
+            ir_a64_ldr_sp(20, cs_base_e + 8)
+            ir_a64_ldr_sp(21, cs_base_e + 16)
+            ir_a64_ldr_sp(22, cs_base_e + 24)
+            ir_a64_ldr_sp(23, cs_base_e + 32)
+            ir_a64_ldr_sp(24, cs_base_e + 40)
+            ir_a64_ldr_sp(25, cs_base_e + 48)
+            ir_a64_ldr_sp(26, cs_base_e + 56)
+            ir_a64_ldr_sp(27, cs_base_e + 64)
+            ir_a64_ldr_sp(28, cs_base_e + 72)
+            ir_a64_ldr_sp(29, fp_off_e)
+            ir_a64_ldr_sp(30, fp_off_e + 8)
+        }
         // ADD SP, SP, #total_frame
         emit_a64_add_sp_imm(total_frame)
         // RET
