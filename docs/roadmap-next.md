@@ -90,19 +90,43 @@ argument count, stack-frame-over-4 KB warning.
 
 ---
 
-## R5: Debug symbols (DWARF + PDB)
+## R5-next: Mach-O / PE debug info
 
-Full source-level debugging.
+ELF DWARF 5 is complete (line table, compile_unit DIE, base types,
+subprograms, variables for the legacy backend). The remaining two
+backends:
 
-- DWARF `.debug_info` with types, variables, scopes
-- DWARF `.debug_line` for source file:line mapping
-- DWARF `.debug_abbrev`, `.debug_str`, `.debug_aranges`
-- PDB for Windows PE (separate `.pdb` file)
-- **Goal:** GDB/LLDB/WinDbg can set breakpoints, step through source,
-  print variables, inspect structs.
+- **Mach-O**: needs a `__DWARF` segment with `__debug_line` /
+  `__debug_info` / `__debug_abbrev` / `__debug_str` sections. The
+  section contents can be the exact same bytes as the ELF writer
+  emits; plumbing is adding the segment + load-command entries.
+  Estimated 300-500 lines.
+- **PE**: Windows' native debug format is PDB, which is a separate
+  multi-megabyte MSF container. Two pragmatic paths:
+    1. Embed DWARF in `.debug_info`-named sections inside the PE —
+       mingw + LLDB read this fine, MSVC's debugger does not.
+    2. Full PDB generator — multi-week.
+  (1) is what the ecosystem usually does; recommended.
 
-**Status:** Design started; waiting on R1/R2/R4 to land first so the
-debugger isn't chasing codegen ghosts.
+Also IR-backend variable DIEs: the current variable-DIE emission
+works against the legacy backend's var_declare-based stack layout.
+IR uses vreg + spill-slot allocation, so the DW_OP_fbreg offsets
+need to come from the spill map. Track the spill-slot of each
+`ir_var_set` name and emit from there.
+
+## R5: Debug symbols (DWARF + PDB) — ELF MVP RESOLVED 2026-04-19
+
+Landed in a450a76..c1accfa:
+- `.debug_line` / `.debug_abbrev` / `.debug_str` / `.debug_info` for ELF
+- IR backend wired to record source tokens per instruction
+- `DW_TAG_subprogram` DIEs per function with low_pc/high_pc/decl_line
+- `DW_LNS_set_prologue_end` flag on first real statement
+- `DW_TAG_base_type` DIEs for u8/u16/u32/u64/i8/i16/i32/i64/f32/f64/bool
+- `DW_TAG_variable` DIEs for legacy backend locals + params
+- GDB `info functions`, `info locals`, `break <fn>` all work
+
+Gaps tracked in "R5-next" above (Mach-O/PE, IR-backend variable
+locations). ELF is the default target and fully debuggable now.
 
 ---
 
