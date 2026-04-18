@@ -76,22 +76,49 @@ ignored — useful when you want to write multiple statements on one line.
 | `int16`   | 2 B   | `i16` | Signed 16-bit                 |
 | `int32`   | 4 B   | `i32` | Signed 32-bit                 |
 | `int64`   | 8 B   | `i64` | Signed 64-bit                 |
+| `bool`    | 1 B   |       | `true` / `false`              |
+| `char`    | 1 B   |       | Single byte holding a character literal |
 
 All scalar values are stored as 64-bit words in variable slots. The specific
 width matters for pointer load/store and for struct field layout. The short
 aliases (`u8`, `u64`, `i32`, ...) are exact synonyms for the long form.
 
-There is no `bool` keyword. Use `0` / `1` for booleans. Floating-point
-types (`f16`, `f32`, `f64`) are covered in §15.
+Floating-point types (`f16`, `f32`, `f64`) are covered in §15.
+
+### `bool` (strict since v2.8.3)
+
+```kr
+bool ok = true            // ok
+bool done = false         // ok
+bool b = 1                // compile error — int literal not assignable to bool
+```
+
+Inside `if`/`while`, the compiler still accepts any integer (`0` false,
+non-zero true), so `if str_eq(a, b) { ... }` works even though `str_eq`
+returns `u64`. The type strictness only bites on variable declarations and
+struct fields — it stops `uint64 flag = true` being silently coerced.
+
+### `char` (strict since v2.8.3)
+
+```kr
+char c = 'A'               // stored as byte 65
+char nl = '\n'             // stored as byte 10
+if c == 'A' { ... }        // mixing char with its int value works
+char bad = 97              // compile error — int literal not assignable
+```
 
 ### Literals
 
 - Decimal: `42`, `1000000`
 - Hex: `0x1000`, `0xDEADBEEF`
+- Float: `1.5`, `-3.14`, `2e10`, `1.5f` (f32 suffix)
+- Bool: `true`, `false` (strict `bool` type)
 - String: `"hello"` with `\n`, `\t`, `\\`, `\"`, `\0` escapes
 - Character: `'A'`, `'\n'`, `'\t'`, `'\r'`, `'\0'`, `'\\'`, `'\''` — evaluates
   to the byte value of the character (e.g. `'A'` is 65, `'\n'` is 10).
   Use them directly in comparisons and arithmetic: `if c == 'a' { ... }`.
+- f-string: `f"pi = {3.14}, answer = {x}"` — `{expr}` interpolates with type-directed
+  formatting (integers, floats, bools, chars, `@string` slots), `{{`/`}}` escape.
 
 ---
 
@@ -1055,9 +1082,9 @@ needed.
 
 | Function | Description |
 |---|---|
-| `print(literal_or_int)` | Print a string literal or format an integer as decimal. No newline. |
-| `println(literal_or_int)` | Same, plus a newline. |
-| `print_str(s)` | Print a null-terminated string from a pointer variable. |
+| `print(a, b, ...)` | Typed, variadic (v2.8.3). Each arg is formatted according to its type: string literals emitted as-is, integers as decimal, floats via `fmt_f64`/`fmt_f32`, bools as `true`/`false`, chars as a single byte. Args are space-separated; no trailing newline. |
+| `println(a, b, ...)` | Same, plus a newline. |
+| `print_str(s)` | Print a null-terminated string from a pointer variable (for results of `int_to_str`, `fmt_hex`, etc.). |
 | `println_str(s)` | Same, plus a newline. |
 | `write(fd, buf, len)` | Write `len` bytes from `buf` to file descriptor `fd`. |
 | `file_open(path, flags)` | Open a file. Returns a descriptor. |
@@ -1066,10 +1093,19 @@ needed.
 | `file_close(fd)` | Close a descriptor. |
 | `file_size(fd)` | Return the size of an open file. |
 
-**Important:** `print(variable)` and `println(variable)` format the
-variable as a decimal integer. If you want to print a string that lives
-in a variable (e.g. the return value of `int_to_str`), use `print_str` /
-`println_str` instead.
+**f-strings** (v2.8.3): `f"x = {x}, pi ≈ {3.14}"` interpolates each
+`{expr}` with the same type-directed formatter `print` uses. `{{` and
+`}}` escape braces. The surrounding string segments are emitted
+verbatim, so f-strings compose with variadic `println`:
+
+```kr
+println(f"result = {answer} ({percent}%)")
+```
+
+**When to prefer `*_str`:** `print(variable)` formats the variable as a
+decimal integer (or float/bool/char, based on its static type). If your
+variable holds a string *pointer* — e.g. the return of `int_to_str` or a
+manually-built buffer — reach for `print_str` / `println_str`.
 
 ### Memory
 
@@ -1206,16 +1242,32 @@ Parses and records a linker section name. Used with `--emit=obj` output.
 ## 20. Compiler CLI
 
 ```sh
-krc <file.kr>                        # compile to <stem>.krbo (fat binary)
+krc <file.kr>                        # compile to <stem>.krbo (fat binary, all 8 slices)
 krc <file.kr> -o out                 # specify output name
 krc <file.kr> --arch=x86_64 -o out   # single-arch native ELF
 krc <file.kr> --arch=arm64 -o out    # single-arch ARM64 ELF
-krc <file.kr> --emit=asm -o out.s    # disassembled listing
-krc <file.kr> --emit=obj -o out.o    # ELF relocatable object
-krc <file.kr> --emit=pe -o out.exe   # Windows PE
-krc <file.kr> --emit=macho -o out    # macOS Mach-O
-krc <file.kr> --emit=android -o out  # Android ARM64 PIE ELF (default)
-krc <file.kr> --arch=x86_64 --emit=android -o out  # Android x86_64 PIE ELF
+krc <file.kr> --targets=linux-x64,macos-arm64 -o out.krbo   # custom fat subset (v2.8.x)
+
+# Emit format (aliased since v2.8.4):
+#   linux / linux-x86_64 / linux-arm64 / elfexe / elf   → Linux ELF
+#   windows / pe                                        → Windows PE
+#   macos / darwin / macho                              → macOS Mach-O
+#   android                                             → Android PIE ELF
+#   obj                                                 → ELF relocatable (.o)
+#   asm                                                 → disassembled listing
+krc <file.kr> --emit=pe -o out.exe
+krc <file.kr> --emit=macho -o out
+krc <file.kr> --emit=android -o out
+krc <file.kr> --arch=x86_64 --emit=android -o out
+
+# Codegen backend
+krc <file.kr> --arch=arm64           # default: IR (SSA + optimizer + regalloc)
+krc --legacy --arch=arm64 <file.kr>  # legacy direct-walking codegen
+krc --ir <file.kr>                   # force IR even where the release recipe falls back to legacy (e.g. ARM64 fat slices)
+krc -O0 <file.kr>                    # disable IR optimizer (useful for debugging miscompiles)
+krc --debug <file.kr>                # enable runtime div-by-zero + bounds traps
+
+# Non-compile modes
 krc --freestanding <file.kr> -o out  # no main trampoline, no auto-exit
 krc check <file.kr>                  # run semantic checks only
 krc fmt   <file.kr>                  # auto-format the file in place
@@ -1228,6 +1280,7 @@ krc lc --list-proposals              # print the proposal registry
 krc lc --promote <name>              # promote a proposal to stable
 krc lc --deprecate <name>            # mark a proposal as deprecated
 krc lc --reject <name>               # revert a proposal to experimental
+krc --emit=ir <file.kr>              # dump the SSA IR for a single function
 krc --version                        # print the compiler version
 krc --help                           # usage info
 ```
@@ -1236,12 +1289,18 @@ krc --help                           # usage info
 
 ```sh
 kr program.krbo                      # run a fat binary on any platform
+kr program.krbo arg1 arg2            # forward args to the child
 kr --version
 kr --help
 ```
 
-The `kr` runner extracts the slice matching the current host architecture
-from a `.krbo` fat binary and executes it.
+The `kr` runner auto-detects the host architecture (x86_64 / arm64 / Linux
+/ Windows / macOS / Android), extracts the matching slice from `.krbo`,
+BCJ-unfilters the decompressed code, and execves it. On Android (Linux
+≥ 3.17) it uses `memfd_create` + `execveat(AT_EMPTY_PATH)` to bypass
+SELinux file-exec restrictions without writing to cwd; older kernels
+fall back to a `/data/local/tmp/kr-exec` / cwd temp file plus a
+`exit(120)` shell-wrapper trampoline.
 
 ---
 

@@ -2,7 +2,15 @@
 
 **KernRift is a bare-metal systems programming language and compiler created by Pantelis Christou.**
 
-A self-hosted systems language compiler for kernel-first development. KernRift compiles itself — no Rust, no C, no LLVM, no external toolchain. It produces native executables for x86_64 and AArch64 on Linux, Windows, macOS, and Android, with BCJ+LZ-Rift-compressed fat binaries as the default output (8 platform slices per `.krbo`). The `kr` runner executes `.krbo` fat binaries on any supported platform. The compiler self-hosts on all 8 targets and is verified via CI on every push. As of v2.8.2, the compiler ships with a new **SSA-based IR backend** with a graph-coloring register allocator, producing native machine code for all targets directly from the IR — no assembler in the loop.
+A self-hosted systems language compiler for kernel-first development. KernRift compiles itself — no Rust, no C, no LLVM, no external toolchain. It produces native executables for x86_64 and AArch64 on Linux, Windows, macOS, and Android, with BCJ+LZ-Rift-compressed fat binaries as the default output (8 platform slices per `.krbo`). The `kr` runner executes `.krbo` fat binaries on any supported platform. The compiler self-hosts on all 8 targets and is verified via CI on every push. The compiler ships with an **SSA-based IR backend** with liveness analysis, graph-coloring register allocation, and a constant-folding / DCE / CSE optimizer, producing native machine code for all targets directly from the IR — no assembler in the loop.
+
+**v2.8.8 highlights** (full details in [CHANGELOG.md](CHANGELOG.md)):
+
+- **Android fat-binary runner** now prefers `memfd_create` + `execveat(AT_EMPTY_PATH)` so `kr program.krbo` runs on Termux without touching the filesystem — no `kr-exec` file, no SELinux file-label transition, no chmod. Falls back to the file-based path on pre-3.17 kernels.
+- **IR `main()` now initializes `cli_envp`** — the IR backend previously left it at 0, forwarding `envp=NULL` to every child `exec_process()` spawned.
+- **compile_fat memory regression fixed** — a `uint64[1]` slot declared inside LZ4's match loop was leaking ~8 B per iteration; a self-compile hit 18 GB peak RSS before this release. Now ~1 GB, safely inside GitHub's 16 GB runner budget.
+- **Ten IR ARM64 miscompiles patched** — `str_eq` bytewise clobber, `atomic_*` OLD-vs-NEW return, `atomic_cas` branch offset, `memcmp`/struct-equality, `int_to_f32` / `f32_to_int` encoding, `println(0.0)` digit-count, `--debug` div-by-zero trap, and a handful of branch-offset imm19 `<<` bugs.
+- **Shipped ARM64 krc binaries route through legacy codegen** (Makefile + release.yml), while user-invoked `--arch=arm64` still defaults to IR. A separate compile_fat-on-IR-ARM64 segfault is tracked for the next release.
 
 ## Features
 
@@ -50,22 +58,23 @@ krc check module.kr
 krc lc program.kr
 ```
 
-### Self-compilation (v2.8.2, ~192K tokens, ~120K AST nodes)
+### Self-compilation (v2.8.8, ~204K tokens, ~128K AST nodes, ~1.5 MB source)
 
-All 8 targets self-compile. CI verifies bootstrap fixed point (krc3 == krc4) and runs 311 tests on every push.
+All 8 targets self-compile. CI verifies bootstrap fixed point (krc3 == krc4) and runs 335 tests on every push. Numbers below are on an AMD Ryzen 9 7900X — see [`benchmarks/BENCHMARKS.md`](benchmarks/BENCHMARKS.md) for the complete run including gcc / rustc comparisons.
 
-| Platform | Legacy codegen | IR backend |
-|----------|----------------|------------|
-| Linux x86_64 | ~230ms / 1.05 MB | ~1.4s / 1.42 MB |
-| Linux ARM64 (native) | verified | verified |
-| macOS ARM64 | verified | verified |
-| macOS x86_64 (Rosetta) | verified | verified |
-| Windows x86_64 | verified | verified |
-| Windows ARM64 | verified | verified |
-| Android ARM64 | verified (QEMU) | verified (QEMU) |
-| Android x86_64 | verified | verified |
+| Target | Legacy codegen | IR codegen | IR is… |
+|--------|---------------:|-----------:|-------:|
+| linux   x86_64 ELF    |  249 ms / 1.12 MB | 1 600 ms / 1.50 MB | **+34 %** size |
+| linux   arm64  ELF    |  244 ms / 0.97 MB | 1 595 ms / 0.85 MB | **−12 %** size |
+| windows x86_64 PE     |  245 ms / 1.40 MB | 1 600 ms / 1.56 MB | +11 % size |
+| windows arm64  PE     |  244 ms / 1.01 MB | 1 606 ms / 0.91 MB | −10 % size |
+| macOS   x86_64 Mach-O |  249 ms / 1.13 MB | 1 605 ms / 1.51 MB | +33 % size |
+| macOS   arm64  Mach-O |  251 ms / 1.02 MB | 1 602 ms / 0.92 MB | −10 % size |
+| android x86_64 ELF    |  249 ms / 1.25 MB | 1 604 ms / 1.57 MB | +26 % size |
+| android arm64  ELF    |  244 ms / 1.05 MB | 1 597 ms / 0.98 MB |  −6 % size |
+| **Fat binary (all 8)**| **1 990 ms / 3.88 MB** | **1 982 ms / 3.87 MB** | same (hybrid default) |
 
-The IR backend is slower and produces larger binaries today — optimization passes (constant folding, DCE, CSE) are the next milestone. `--legacy` remains available as a fast path.
+**Current defaults**: `--arch=x86_64` stays on IR (optimizer wins matter more on real programs than the straight-line size regression); `--arch=arm64` uses IR (consistently 10 % smaller). Fat-binary builds (`krc program.kr`) route ARM64 slices through legacy because the IR ARM64 backend still miscompiles `compile_fat` itself — tracked as the next release milestone. `--legacy` and `--ir` flags force the respective backends.
 
 ## Install
 
@@ -92,8 +101,8 @@ winget install Pantelis23.KernRift
 
 **Debian/Ubuntu** (.deb):
 ```bash
-curl -sSLO https://github.com/Pantelis23/KernRift/releases/latest/download/kernrift_2.5.2_amd64.deb
-sudo dpkg -i kernrift_2.5.2_amd64.deb
+curl -sSLO https://github.com/Pantelis23/KernRift/releases/latest/download/kernrift_2.8.8_amd64.deb
+sudo dpkg -i kernrift_2.8.8_amd64.deb
 ```
 
 **AUR** (Arch Linux):
@@ -270,7 +279,7 @@ See the [`examples/`](examples/) directory for runnable programs covering every 
 
 ## Architecture
 
-~23,000 lines of KernRift across 18 source files + 17 stdlib modules. Self-compiles to a ~660 KB native binary in ~230ms (legacy) / ~1.4s (IR), or an 8-slice fat binary (BCJ + LZ-Rift compression) in ~2s on an AMD Ryzen 9 7900X. 311 tests, bootstrap fixed point verified on all 8 targets — Linux, macOS, Windows, and Android on both x86_64 and ARM64.
+~40 000 lines of KernRift across 17 source files + 17 stdlib modules (204 K tokens, 128 K AST nodes on self-compile). Self-compiles to a 1.1 MB x86_64 native binary in ~249 ms (legacy) / ~1.6 s (IR), or an 8-slice fat binary (BCJ + LZ-Rift compression) in ~2 s on an AMD Ryzen 9 7900X. **335 tests** pass, bootstrap fixed point verified on all 8 targets — Linux, macOS, Windows, and Android on both x86_64 and ARM64. See [`benchmarks/BENCHMARKS.md`](benchmarks/BENCHMARKS.md) for micro-benchmarks vs gcc / rustc and peak-memory numbers.
 
 | File | Purpose |
 |------|---------|
@@ -302,13 +311,15 @@ A released `krc` binary compiles the current source into the next `krc`. No Rust
 | Platform | Compile | Run | Self-host | File I/O | Bootstrap |
 |----------|---------|-----|-----------|----------|-----------|
 | Linux x86_64 | ✅ | ✅ | ✅ | ✅ | ✅ fixed point |
-| Linux ARM64 | ✅ | ✅ | ✅ | ✅ | ✅ fixed point |
-| macOS ARM64 | ✅ | ✅ | ✅ | ✅ | ✅ fixed point |
+| Linux ARM64 | ✅ | ✅ | ✅ | ✅ | ✅ fixed point (legacy-compiled krc) |
+| macOS ARM64 | ✅ | ✅ | ✅ | ✅ | ✅ fixed point (legacy-compiled krc) |
 | macOS x86_64 | ✅ | ✅ | ✅ | ✅ | ✅ (Rosetta) |
 | Windows x86_64 | ✅ | ✅ | ✅ | ✅ | ✅ fixed point |
-| Windows ARM64 | ✅ | ✅ | ✅ | ✅ | ✅ krc3==krc4 |
-| Android ARM64 | ✅ | ✅ | ✅ | ✅ | ✅ self-compiled on phone |
+| Windows ARM64 | ✅ | ✅ | ✅ | ✅ | ✅ krc3==krc4 (legacy-compiled krc) |
+| Android ARM64 | ✅ | ✅ | ✅ | ✅ | ✅ self-compiled on phone (legacy-compiled krc) |
 | Android x86_64 | ✅ | ✅ | ✅ | ✅ | ✅ verified |
+
+> **Note on ARM64 krc binaries:** The shipped `krc-*-arm64` executables use the legacy codegen (13 % larger than IR) as a workaround for an IR ARM64 miscompile of `compile_fat` itself. User programs compiled by those binaries still go through IR on ARM64 and get the smaller, optimized output. The underlying codegen bug is the next milestone.
 
 ## License
 

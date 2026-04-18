@@ -40,6 +40,36 @@ src/
 
 The `--legacy` flag bypasses steps 4–6 and uses the direct AST-walking codegen path instead. Legacy codegen remains available as a correctness oracle; IR is the default and the supported path forward.
 
+## IR vs legacy in the shipped binaries
+
+Not every target defaults to IR. The release recipe is:
+
+| Binary | Flags | Why |
+|--------|-------|-----|
+| `krc-linux-x86_64`        | default (IR)     | IR + optimizer handles real-world code well |
+| `krc-windows-x86_64.exe`  | default (IR)     | same |
+| `krc-macos-x86_64`        | default (IR)     | same |
+| `krc-android-x86_64`      | default (IR)     | same |
+| `krc-linux-arm64`         | **`--legacy`**   | IR ARM64 miscompiles `compile_fat`; legacy is 13 % larger but correct |
+| `krc-windows-arm64.exe`   | **`--legacy`**   | same |
+| `krc-macos-arm64`         | **`--legacy`**   | same |
+| `krc-android-arm64`       | **`--legacy`**   | same |
+| `kr-*` (runner, all 8)    | default (IR)     | simple program, no compile_fat — IR is fine |
+
+Inside `compile_fat` itself (building the 8-slice `.krbo`), every ARM64 slice dispatches to `gen_function_a64` (legacy) regardless of `emit_ir_mode`, so the arm64 slice users pull out of `krc.krbo` is also legacy-built. `--ir` (emit_ir_mode ≥ 2) forces the IR path through those slices for backend testing.
+
+User-invoked `krc --arch=arm64 myprog.kr -o myprog` still defaults to IR — the miscompile is specific to the `compile_fat` function's shape.
+
+## Android fat-binary runner
+
+`src/runner.kr` (the `kr` tool) on Android prefers a filesystem-free exec path:
+
+1. `memfd_create("kr", MFD_CLOEXEC)` — anonymous in-kernel fd
+2. `write(fd, slice, slice_size)` — copy the BCJ-decoded slice into it
+3. `execveat(fd, "", argv, envp, AT_EMPTY_PATH)` — kernel ignores the pathname and execs the fd directly
+
+This bypasses the SELinux file-label transition Termux uses to block execve of user-owned binaries, avoids touching any noexec mount, and leaves nothing behind in the user's cwd. On kernels older than Linux 3.17 (no `memfd_create`) it falls back to the file-based path (chmod + execve + exit-120 shell-wrapper trampoline) that earlier releases used.
+
 ## Key Design Decisions
 
 - **Flat AST**: 32-byte nodes in a contiguous arena. No pointers, just indices.

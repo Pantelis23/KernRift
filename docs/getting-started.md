@@ -71,13 +71,17 @@ live in [LANGUAGE.md](LANGUAGE.md).
 Compound assigns: `+=` `-=` `*=` `/=` `%=` `&=` `|=` `^=` `<<=` `>>=`.
 
 **Scalar types** are `u8`/`u16`/`u32`/`u64` and their signed siblings
-`i8`/`i16`/`i32`/`i64`; `f16`, `f32`, and `f64` cover IEEE 754 floats.
-`u64` is the integer default — use it when in doubt.
+`i8`/`i16`/`i32`/`i64`; `f16`, `f32`, and `f64` cover IEEE 754 floats;
+`bool` stores a single byte holding `true` / `false`; `char` stores a
+single byte holding a character literal (`'A'`, `'\n'`, …). `u64` is the
+integer default — use it when in doubt.
 
-**No `bool` type.** `if` and `while` take an integer condition: `0` is
-false, any non-zero value is true. Stdlib predicates (e.g. `is_prime`,
-`str_eq`) return `0` or `1`, so `if is_prime(n) { ... }` works the way
-you'd expect.
+**`bool`** is strictly typed since v2.8.3: you cannot assign an integer
+literal to a `bool` variable (`bool b = 1` is rejected; `bool b = true`
+is the spelling). `if` and `while` still accept integer conditions where
+`0` is false and any non-zero value is true, so stdlib predicates that
+return `0` / `1` (like `str_eq`, `is_prime`) read naturally in control
+flow: `if is_prime(n) { ... }`.
 
 **Integer division** is truncating: `7 / 2 == 3`, `(-7) / 2` rounds toward
 zero. Remainder: `7 % 2 == 1`.
@@ -98,15 +102,20 @@ directly in comparisons: `if c == 'a' { ... }`).
 **Printing**:
 
 ```kr
-println("hello")      // string literal
-println(42)           // integer (decimal)
-println(x)            // variable (decimal)
-print("no newline")   // same family, no trailing \n
-print(42)             // integer without newline
+println("hello")           // string literal
+println(42)                // integer (decimal)
+println(x)                 // variable (decimal)
+println(3.14)              // f64 (6-digit fraction)
+println(true)              // bool → "true" / "false"
+println('A')               // char → one byte
+print("no newline")        // same family, no trailing \n
 
-// Mixing string and integer in one line (no format string yet):
-print("x = ")
-println(x)            // prints "x = 42"
+// Variadic println (v2.8.3) — space-separated args, typed correctly:
+println("x =", x, "y =", y)       // prints "x = 42 y = 100"
+print("loading ", percent, "%\n")
+
+// f-strings (v2.8.3) — `{expr}` interpolates, `{{` / `}}` escape braces:
+println(f"pi ≈ {3.14159}, answer = {answer}")
 
 // For a string that lives in a variable (e.g. a heap-allocated
 // buffer or the result of fmt_hex/fmt_dec), use print_str / println_str:
