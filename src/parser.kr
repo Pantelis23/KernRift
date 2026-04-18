@@ -824,6 +824,21 @@ fn parse_stmt() -> uint64 {
         return node
     }
 
+    // Defer: `defer { ... }` — runs the body in LIFO order at every
+    // function exit (return, exit, fall-through). Function-scoped:
+    // a defer lexically inside a nested block is still part of the
+    // enclosing function's defer stack.
+    if kind == 79 {
+        uint64 defer_tok = advance_tok()
+        uint64 body = parse_block()
+        uint64 node = ast_alloc(51)
+        uint32 t32 = defer_tok
+        ast_set_tok(node, t32)
+        uint32 b32 = body
+        ast_set_data1(node, b32)
+        return node
+    }
+
     // Continue
     if kind == 68 {
         uint64 tok = advance_tok()

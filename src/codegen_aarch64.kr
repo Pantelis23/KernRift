@@ -4843,6 +4843,14 @@ fn gen_stmt_a64(uint64 node) {
         gen_expr_a64(wec)
         return
     }
+
+    // Defer (51): legacy ARM64 codegen doesn't implement defer. Fail
+    // loudly so users drop --legacy and use the IR backend where it
+    // works.
+    if kind == 51 {
+        write(2, "error: `defer` requires the IR backend (drop --legacy)\n", 56)
+        exit(1)
+    }
 }
 
 fn gen_block_a64(uint64 block_node) {

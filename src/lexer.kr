@@ -78,6 +78,7 @@ enum TokenKind {
     KwBreak = 67
     KwContinue = 68
     KwLoop = 69
+    KwDefer = 79
     KwConst = 70
     KwStatic = 71
     KwStruct = 72
@@ -397,6 +398,7 @@ fn classify_keyword(uint64 start, uint64 len) -> uint32 {
     if match_keyword(start, len, "break", 5) != 0 { return TokenKind.KwBreak }
     if match_keyword(start, len, "continue", 8) != 0 { return TokenKind.KwContinue }
     if match_keyword(start, len, "loop", 4) != 0 { return TokenKind.KwLoop }
+    if match_keyword(start, len, "defer", 5) != 0 { return TokenKind.KwDefer }
     if match_keyword(start, len, "const", 5) != 0 { return TokenKind.KwConst }
     if match_keyword(start, len, "static", 6) != 0 { return TokenKind.KwStatic }
     if match_keyword(start, len, "struct", 6) != 0 { return TokenKind.KwStruct }

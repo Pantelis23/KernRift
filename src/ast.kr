@@ -76,6 +76,8 @@ enum AstKind {
     StructLit = 48       // (reserved for struct literals)
     SizeofLit = 49       // data1=resolved_size (low 32 bits)
     FString = 50         // f-string: child=first segment (StrLit or expr), ...
+    Defer = 51           // defer { body }; data1=body_block_idx — codegen
+                         // emits body (LIFO) before every return/fall-through
 }
 
 // ---------------------------------------------------------------------------

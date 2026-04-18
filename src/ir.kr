@@ -2784,23 +2784,37 @@ fn ir_lower_stmt(uint64 node) {
         uint64 wsecond = second_expr
         uint32 third_expr = ast_data4(node)
         uint64 wthird = third_expr
+        // Compute return value(s) first so the produced vregs are already
+        // in hand before the defer bodies run. The regalloc may spill if
+        // the defers touch the same physical regs — that's fine.
         if wthird != 0 && wsecond != 0 {
-            // 3-tuple return: first -> rax, second -> rdx, third -> r8
             uint64 v1 = ir_lower_expr(wexpr)
             uint64 v2 = ir_lower_expr(wsecond)
             uint64 v3 = ir_lower_expr(wthird)
+            ir_defer_emit_all()
             ir_emit(IR_RET3, 0, v1, v2, v3, ir_current_bb)
         } else if wsecond != 0 {
-            // 2-tuple return: first -> rax, second -> rdx
             uint64 v1 = ir_lower_expr(wexpr)
             uint64 v2 = ir_lower_expr(wsecond)
+            ir_defer_emit_all()
             ir_emit(IR_RET2, 0, v1, v2, 0, ir_current_bb)
         } else if wexpr != 0 {
             uint64 val = ir_lower_expr(wexpr)
+            ir_defer_emit_all()
             ir_emit(IR_RET, 0, val, 0, 0, ir_current_bb)
         } else {
+            ir_defer_emit_all()
             ir_emit(IR_RET_VOID, 0, 0, 0, 0, ir_current_bb)
         }
+        return
+    }
+
+    // Defer (51): stash the body on the function-scoped defer stack.
+    // Emission is deferred to the next IR_RET* instruction.
+    if kind == 51 {
+        uint32 body_node = ast_data1(node)
+        uint64 wbody = body_node
+        ir_defer_push(wbody)
         return
     }
 
@@ -3613,12 +3627,57 @@ fn ir_lower_block(uint64 block_node) {
 }
 
 // ---------------------------------------------------------------------------
+// Defer stack — a function-scoped LIFO of `defer { ... }` block AST pointers.
+// When we see a Defer stmt we stash the block here instead of lowering it.
+// At every function-exit point (return, implicit tail-return) we lower the
+// recorded blocks in reverse-declaration order right before the IR_RET*
+// instruction is emitted.
+// ---------------------------------------------------------------------------
+static uint64 ir_defer_stack = 0
+static uint64 ir_defer_count = 0
+static uint64 ir_defer_cap = 0
+
+fn ir_defer_reset() {
+    if ir_defer_stack == 0 {
+        ir_defer_cap = 32
+        ir_defer_stack = alloc(ir_defer_cap * 4)
+    }
+    ir_defer_count = 0
+}
+
+fn ir_defer_push(uint64 body_node) {
+    if ir_defer_count >= ir_defer_cap { return }
+    uint64 slot = ir_defer_stack + ir_defer_count * 4
+    uint32 b32 = body_node
+    unsafe { *(slot as uint32) = b32 }
+    ir_defer_count = ir_defer_count + 1
+}
+
+// Emit every pending defer body in LIFO order without popping them —
+// a function may have multiple return sites, and every one of them must
+// see the full defer chain. ir_defer_reset clears the stack between
+// functions.
+fn ir_defer_emit_all() {
+    if ir_defer_count == 0 { return }
+    uint64 i = ir_defer_count
+    while i > 0 {
+        i = i - 1
+        uint64 slot = ir_defer_stack + i * 4
+        uint32 b32 = 0
+        unsafe { *(slot as uint32) -> b32 }
+        uint64 body = b32
+        if body != 0 { ir_lower_block(body) }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Function lowering
 // ---------------------------------------------------------------------------
 
 fn ir_lower_function(uint64 fn_node) {
     ir_reset()
     ir_var_map_init()
+    ir_defer_reset()
     ir_current_bb = ir_new_bb()  // entry block
 
     // Register parameters
@@ -3665,12 +3724,18 @@ fn ir_lower_function(uint64 fn_node) {
 
     // Ensure the function ends with a return instruction.
     // If the last block doesn't end with IR_RET/IR_RET_VOID/IR_RET2/IR_RET3,
-    // add an implicit IR_RET_VOID so the epilogue is always reached.
+    // run pending defers (in LIFO order) and then add an implicit
+    // IR_RET_VOID so the epilogue is always reached.
+    uint64 need_tail = 1
     if ir_insn_count > 0 {
         uint64 last_op = ir_insn_opcode(ir_insn_count - 1)
-        if last_op != 42 && last_op != 43 && last_op != 82 && last_op != 83 {
-            ir_emit(IR_RET_VOID, 0, 0, 0, 0, ir_current_bb)
+        if last_op == 42 || last_op == 43 || last_op == 82 || last_op == 83 {
+            need_tail = 0
         }
+    }
+    if need_tail != 0 {
+        ir_defer_emit_all()
+        ir_emit(IR_RET_VOID, 0, 0, 0, 0, ir_current_bb)
     }
 }
 

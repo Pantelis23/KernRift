@@ -1393,6 +1393,15 @@ fn sema_check_stmt(uint64 node) {
         return
     }
 
+    // Defer (51): walk the body in a nested scope so variables used
+    // only inside the defer are counted as used.
+    if kind == 51 {
+        uint32 def_body = ast_data1(node)
+        uint64 wdef_body = def_body
+        if wdef_body != 0 { sema_check_block(wdef_body) }
+        return
+    }
+
     // Match: child=scrutinee, data1=first_arm
     if kind == 19 {
         uint32 scrut = ast_child(node)

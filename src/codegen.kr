@@ -8590,6 +8590,15 @@ fn gen_stmt(uint64 node) {
         gen_expr(wec)
         return
     }
+
+    // Defer (51): the legacy x86 codegen doesn't implement defer's
+    // return-time injection semantics. Fail loudly so users switch
+    // to the IR backend (which is the default) instead of silently
+    // dropping the cleanup.
+    if kind == 51 {
+        write(2, "error: `defer` requires the IR backend (drop --legacy)\n", 56)
+        exit(1)
+    }
 }
 
 // Generate code for a block (linked list of statements)

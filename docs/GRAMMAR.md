@@ -126,6 +126,7 @@ stmt        = var_decl
             | match_stmt
             | break_stmt
             | continue_stmt
+            | defer_stmt
             | unsafe_block
             | volatile_block
             | asm_stmt
@@ -133,6 +134,13 @@ stmt        = var_decl
             | compound_assign
             | expr_stmt
             | ";"                                (* empty *)
+
+defer_stmt  = "defer" block
+            (* Body runs in LIFO order at every function exit — every
+               `return`, the 2-tuple and 3-tuple return forms, and the
+               implicit fall-through at the end of the body. `exit(n)`
+               syscalls bypass defer (they're calls, not `return`s).
+               Requires the IR backend — `--legacy` rejects it. *)
 
 var_decl        = type IDENT ("=" expr)?
                 | type "[" INT_LIT "]" IDENT    (* stack array *)
