@@ -92,27 +92,50 @@ argument count, stack-frame-over-4 KB warning.
 
 ## R5-next: Mach-O / PE debug info
 
-ELF DWARF 5 is complete (line table, compile_unit DIE, base types,
-subprograms, variables for the legacy backend). The remaining two
-backends:
+ELF DWARF 5 is fully complete now. IR backend wires vregs into
+DW_OP_reg<N> / DW_OP_fbreg locations; legacy backend uses
+DW_OP_fbreg from named stack slots. Both backends produce the same
+DWARF sections (line table, compile_unit DIE, base types,
+subprograms, variables).
 
-- **Mach-O**: needs a `__DWARF` segment with `__debug_line` /
-  `__debug_info` / `__debug_abbrev` / `__debug_str` sections. The
-  section contents can be the exact same bytes as the ELF writer
-  emits; plumbing is adding the segment + load-command entries.
-  Estimated 300-500 lines.
-- **PE**: Windows' native debug format is PDB, which is a separate
-  multi-megabyte MSF container. Two pragmatic paths:
-    1. Embed DWARF in `.debug_info`-named sections inside the PE —
-       mingw + LLDB read this fine, MSVC's debugger does not.
-    2. Full PDB generator — multi-week.
-  (1) is what the ecosystem usually does; recommended.
+Remaining: the two non-ELF executable formats. Each is its own
+multi-day project because neither writer was designed for dynamic
+section addition — header offsets are hand-patched at fixed layout.
 
-Also IR-backend variable DIEs: the current variable-DIE emission
-works against the legacy backend's var_declare-based stack layout.
-IR uses vreg + spill-slot allocation, so the DW_OP_fbreg offsets
-need to come from the spill map. Track the spill-slot of each
-`ir_var_set` name and emit from there.
+### Mach-O — estimated 2-3 days
+
+The existing emit_macho_headers_{x64,a64} produces a tightly-packed
+header with __PAGEZERO + __TEXT + __DATA + __LINKEDIT segments at
+fixed LC offsets (the patch offsets in main.kr are 136/216/280/...).
+Adding __DWARF requires either:
+
+  1. A new LC_SEGMENT_64 after __LINKEDIT with __debug_{line,info,
+     abbrev,str} sections. Involves re-packing the load-command
+     table and re-patching every offset in main.kr's Mach-O branch.
+  2. Writing a separate .dSYM bundle (a Mach-O with only the
+     __DWARF segment) — preferred by the Apple toolchain.
+
+Content bytes can reuse `emit_elf_debug_footer` exactly — just the
+segment / load-command wrapping differs.
+
+### PE — estimated 1-2 days
+
+Windows native is PDB (multi-megabyte MSF container, multi-week).
+Practical path: embed DWARF in PE sections named `.debug_info` etc.
+with `IMAGE_SCN_LNK_INFO | IMAGE_SCN_MEM_DISCARDABLE` flags. GDB on
+Wine and MinGW-side tooling read this fine; MSVC's debugger does
+not — if MSVC support matters, PDB is the only path.
+
+The existing emit_pe_headers_{x64,a64} layout also uses hand-patched
+section-table offsets; adding 4 debug sections means resizing the
+section table and re-offsetting .text / .data / .idata RVAs.
+
+### IR-backend variable locations — DONE
+
+Landed in 7c1d0d4. ir_snapshot_debug_vars walks ir_var_map after
+regalloc; each var records a DW_OP_reg<N> location if it has a
+physical register, or DW_OP_fbreg <spill-offset> if spilled. GDB
+reads both forms correctly on the default backend.
 
 ## R5: Debug symbols (DWARF + PDB) — ELF MVP RESOLVED 2026-04-19
 
