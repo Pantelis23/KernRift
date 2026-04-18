@@ -651,6 +651,37 @@ else
 fi
 rm -f "$DIR/../test_tmp_uvu_$$.kr" /tmp/krc_uvu_$$
 
+# --- Uninitialized-read warning ---
+TOTAL=$((TOTAL + 1))
+printf 'fn main() { u64 stale; exit(stale) }\n' > "$DIR/../test_tmp_ur_$$.kr"
+ur_out=$($KRC $KRC_FLAGS "$DIR/../test_tmp_ur_$$.kr" -o /tmp/krc_ur_$$ 2>&1)
+if echo "$ur_out" | grep -q "used before initialization.*stale"; then
+    PASS=$((PASS + 1))
+else
+    echo "FAIL: uninit_read_warns (no warning)"; FAIL=$((FAIL + 1))
+fi
+rm -f "$DIR/../test_tmp_ur_$$.kr" /tmp/krc_ur_$$
+
+TOTAL=$((TOTAL + 1))
+printf 'fn main() { u64 x = 0; exit(x) }\n' > "$DIR/../test_tmp_urs_$$.kr"
+urs_out=$($KRC $KRC_FLAGS "$DIR/../test_tmp_urs_$$.kr" -o /tmp/krc_urs_$$ 2>&1)
+if echo "$urs_out" | grep -q "used before initialization"; then
+    echo "FAIL: init_read_silent (false warning)"; FAIL=$((FAIL + 1))
+else
+    PASS=$((PASS + 1))
+fi
+rm -f "$DIR/../test_tmp_urs_$$.kr" /tmp/krc_urs_$$
+
+TOTAL=$((TOTAL + 1))
+printf 'fn main() { u64 _x; exit(_x) }\n' > "$DIR/../test_tmp_urus_$$.kr"
+urus_out=$($KRC $KRC_FLAGS "$DIR/../test_tmp_urus_$$.kr" -o /tmp/krc_urus_$$ 2>&1)
+if echo "$urus_out" | grep -q "used before initialization"; then
+    echo "FAIL: underscore_uninit_silent (false warning)"; FAIL=$((FAIL + 1))
+else
+    PASS=$((PASS + 1))
+fi
+rm -f "$DIR/../test_tmp_urus_$$.kr" /tmp/krc_urus_$$
+
 TOTAL=$((TOTAL + 1))
 printf 'fn main() { u8 b = 10; b = 300; exit(b) }\n' > "$DIR/../test_tmp_tas_$$.kr"
 tas_out=$($KRC $KRC_FLAGS "$DIR/../test_tmp_tas_$$.kr" -o /tmp/krc_tas_$$ 2>&1)

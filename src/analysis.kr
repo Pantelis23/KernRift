@@ -1156,11 +1156,36 @@ fn sema_check_expr(uint64 node) {
 
     // Ident: a bare variable reference. Mark the variable used so the
     // unused-variable warning knows to skip it when its scope ends.
+    // Also check whether the variable has been written yet — a read of
+    // a never-initialized local is almost always a bug. The check is
+    // conservative (linear source-order scan): a variable is "init"
+    // if it had an initializer OR if any assignment to it was seen
+    // earlier in the walk. Writes inside `if`/`match` branches count
+    // unconditionally — so a read gated on the same condition that
+    // writes the variable won't warn, but `if c { x = 5 } exit(x)`
+    // where the read is outside the branch will also be silent. That
+    // is deliberately looser than a full dataflow analysis — false
+    // positives are worse than false negatives for this warning.
     if kind == 32 {
         uint32 id_tok = ast_data1(node)
         uint64 wid_tok = id_tok
         uint64 vi = sema_var_lookup_v(wid_tok)
-        if vi != 0xFFFFFFFF { sema_var_mark_used(vi) }
+        if vi != 0xFFFFFFFF {
+            if sema_var_is_init(vi) == 0 {
+                // Name starts with '_' opts out, same as unused-var.
+                uint64 nstart = sema_tok_text_start(wid_tok)
+                uint64 nch = 0
+                uint64 np = sema_source + nstart
+                unsafe { *(np as uint8) -> nch }
+                if nch != 95 {
+                    diag_emit(wid_tok, 1, 9)
+                    // Mark init now so repeated reads don't pile up
+                    // diagnostics for the same variable.
+                    sema_var_mark_init(vi)
+                }
+            }
+            sema_var_mark_used(vi)
+        }
         return
     }
 
