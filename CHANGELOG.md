@@ -2,9 +2,9 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
-## v2.8.11 — 2026-04-18
+## v2.8.12 — 2026-04-18
 
-### Added
+### Added (completion of the v2.8.11 string work)
 - **String builder + sprintf-style fill-ins.** `sb_new` / `sb_reserve`
   / `sb_append_byte` / `sb_append_str` / `sb_append_int` /
   `sb_append_hex` / `sb_append_float` / `sb_append_bool` /
@@ -34,7 +34,9 @@ All notable changes to `kernriftc` are documented in this file.
   callers don't have to thread a buffer themselves. Integer form
   already existed as `int_to_str`.
 
-### Added (from earlier in the same release)
+## v2.8.11 — 2026-04-18
+
+### Added
 - **`std/string.kr` rounded out** with ten missing functions. Each returns
   a fresh allocation owned by the caller; every one has a test in
   `tests/run_tests.sh` (18 new cases).
