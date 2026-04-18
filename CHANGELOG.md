@@ -2,6 +2,30 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## v2.8.10 — 2026-04-18
+
+### Added
+- **Full C-style escape table in string and char literals.** Previously
+  only `\n` / `\t` / `\r` / `\0` / `\\` / `\"` / `\'` were translated;
+  other backslash sequences silently passed through their *source byte*
+  (so `'\b'` evaluated to the byte value of `'b'`, and `"\e[31m"`
+  emitted `e[31m` instead of an ESC sequence). Now also handled:
+
+  | Escape | Byte | Description |
+  |--------|-----:|-------------|
+  | `\b`   |    8 | backspace |
+  | `\f`   |   12 | form feed |
+  | `\v`   |   11 | vertical tab |
+  | `\a`   |    7 | alert / bell |
+  | `\e`   |   27 | ESC (handy for ANSI colour codes) |
+  | `\xHH` | 0xHH | two-digit hex byte |
+
+  The char lexer now scans up to the closing `'` so `'\xHH'` literals
+  fit in a single token. Both the IR lowering and the legacy x86 / ARM64
+  emitters share the same two helpers in `codegen.kr`
+  (`escape_char_to_byte`, `hex_digit_pair_to_byte`) so the table stays
+  in one place.
+
 ## v2.8.9 — 2026-04-18
 
 ### Added

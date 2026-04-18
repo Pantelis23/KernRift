@@ -586,12 +586,16 @@ fn lex_one_token() {
         return
     }
 
-    // Char literal
+    // Char literal. Scan up to the closing ' so that escapes longer than two
+    // bytes ('\\xAB', '\\n', …) all fit inside one CharLit token. parse_int_token
+    // validates the content.
     if ch == 39 {
         advance()
-        if peek() == 92 { advance() }
-        advance()
-        if pos < src_len && peek() == 39 { advance() }
+        while pos < src_len && peek() != 39 {
+            if peek() == 92 { advance() }
+            advance()
+        }
+        if pos < src_len { advance() }
         emit_token(TokenKind.CharLit, start, pos - start, tok_line)
         return
     }

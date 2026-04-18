@@ -420,23 +420,61 @@ fn tok_source_byte(uint64 tok_idx, uint64 offset) -> uint64 {
     return val & 0xFF
 }
 
+// Translate a single-byte escape character (the byte following `\`) to its
+// resolved value. Returns 0xFFFFFFFFFFFFFFFF when the escape isn't known
+// (callers pass the escape byte through verbatim in that case). Keeps the
+// same table used by string-literal lowering and by the `parse_int_token`
+// char-literal parser — if you add one here, mirror it in both places.
+@export
+fn escape_char_to_byte(uint64 esc) -> uint64 {
+    if esc == 110 { return 10 }    // \n — line feed
+    if esc == 116 { return 9 }     // \t — horizontal tab
+    if esc == 114 { return 13 }    // \r — carriage return
+    if esc == 48  { return 0 }     // \0 — null
+    if esc == 92  { return 92 }    // \\ — backslash
+    if esc == 34  { return 34 }    // \" — double quote
+    if esc == 39  { return 39 }    // \' — single quote
+    if esc == 98  { return 8 }     // \b — backspace
+    if esc == 102 { return 12 }    // \f — form feed
+    if esc == 118 { return 11 }    // \v — vertical tab
+    if esc == 97  { return 7 }     // \a — alert / bell
+    if esc == 101 { return 27 }    // \e — ESC (ANSI colour sequences)
+    return 0xFFFFFFFFFFFFFFFF
+}
+
+// Parse a two-digit hex byte for `\xHH` escapes. Returns 0 when either
+// digit is out of range — callers shouldn't land here unless the source
+// already matched `\x`.
+@export
+fn hex_digit_pair_to_byte(uint64 h1, uint64 h2) -> uint64 {
+    uint64 v1 = 0
+    uint64 v2 = 0
+    if h1 >= 48 && h1 <= 57 { v1 = h1 - 48 }
+    else if h1 >= 97 && h1 <= 102 { v1 = h1 - 87 }
+    else if h1 >= 65 && h1 <= 70 { v1 = h1 - 55 }
+    if h2 >= 48 && h2 <= 57 { v2 = h2 - 48 }
+    else if h2 >= 97 && h2 <= 102 { v2 = h2 - 87 }
+    else if h2 >= 65 && h2 <= 70 { v2 = h2 - 55 }
+    return v1 * 16 + v2
+}
+
 // Parse integer or char literal from token text
 fn parse_int_token(uint64 tok_idx) -> uint64 {
     uint64 len = tok_text_len(tok_idx)
     // Check for boolean keywords: true → 1, false → 0
     if len == 4 && tok_source_byte(tok_idx, 0) == 116 { return 1 }
     if len == 5 && tok_source_byte(tok_idx, 0) == 102 { return 0 }
-    // Check for char literal: 'x' or '\n'
+    // Check for char literal: 'x' or '\n' or '\xAB'
     if len >= 3 && tok_source_byte(tok_idx, 0) == 39 {
         if tok_source_byte(tok_idx, 1) == 92 {
-            // Escape sequence
             uint64 esc = tok_source_byte(tok_idx, 2)
-            if esc == 110 { return 10 }
-            if esc == 116 { return 9 }
-            if esc == 114 { return 13 }
-            if esc == 48 { return 0 }
-            if esc == 92 { return 92 }
-            if esc == 39 { return 39 }
+            // \xHH — two-digit hex byte. Token shape is '\xHH' = 5 source bytes.
+            if esc == 120 && len >= 5 {
+                return hex_digit_pair_to_byte(tok_source_byte(tok_idx, 3),
+                                              tok_source_byte(tok_idx, 4))
+            }
+            uint64 mapped = escape_char_to_byte(esc)
+            if mapped != 0xFFFFFFFFFFFFFFFF { return mapped }
             return esc
         }
         return tok_source_byte(tok_idx, 1)
@@ -2579,13 +2617,16 @@ fn gen_expr(uint64 node) {
             if ch == 92 {
                 si = si + 1
                 uint64 esc = tok_source_byte(wtok, si)
-                if esc == 110 { ch = 10 }
-                else if esc == 116 { ch = 9 }
-                else if esc == 114 { ch = 13 }
-                else if esc == 48 { ch = 0 }
-                else if esc == 92 { ch = 92 }
-                else if esc == 34 { ch = 34 }
-                else { ch = esc }
+                if esc == 120 && si + 2 < tlen {
+                    // \xHH — consume two hex digits
+                    ch = hex_digit_pair_to_byte(tok_source_byte(wtok, si + 1),
+                                                tok_source_byte(wtok, si + 2))
+                    si = si + 2
+                } else {
+                    uint64 mapped = escape_char_to_byte(esc)
+                    if mapped != 0xFFFFFFFFFFFFFFFF { ch = mapped }
+                    else { ch = esc }
+                }
             }
             uint64 sp = str_buf + str_len
             uint8 cb = ch

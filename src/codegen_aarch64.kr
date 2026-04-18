@@ -856,13 +856,15 @@ fn gen_expr_a64(uint64 node) {
             if ch == 92 {
                 si = si + 1
                 uint64 esc = tok_source_byte(wtok, si)
-                if esc == 110 { ch = 10 }
-                else if esc == 116 { ch = 9 }
-                else if esc == 114 { ch = 13 }
-                else if esc == 48 { ch = 0 }
-                else if esc == 92 { ch = 92 }
-                else if esc == 34 { ch = 34 }
-                else { ch = esc }
+                if esc == 120 && si + 2 < tlen {
+                    ch = hex_digit_pair_to_byte(tok_source_byte(wtok, si + 1),
+                                                tok_source_byte(wtok, si + 2))
+                    si = si + 2
+                } else {
+                    uint64 mapped = escape_char_to_byte(esc)
+                    if mapped != 0xFFFFFFFFFFFFFFFF { ch = mapped }
+                    else { ch = esc }
+                }
             }
             uint64 sp = str_buf + str_len
             uint8 cb = ch

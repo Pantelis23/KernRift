@@ -880,20 +880,24 @@ fn ir_lower_expr(uint64 node) -> uint64 {
             exit(1)
         }
         uint64 str_offset = str_len
-        // Copy string bytes (skip quotes, process escapes)
+        // Copy string bytes (skip quotes, process escapes). Escape table
+        // lives in codegen.kr via escape_char_to_byte + hex_digit_pair_to_byte;
+        // the legacy codegen and the aarch64 emitter share the same helpers.
         uint64 si = 1
         while si < tlen - 1 {
             uint64 ch = tok_source_byte(wtok, si)
             if ch == 92 {
                 si = si + 1
                 uint64 esc = tok_source_byte(wtok, si)
-                if esc == 110 { ch = 10 }
-                else if esc == 116 { ch = 9 }
-                else if esc == 114 { ch = 13 }
-                else if esc == 48 { ch = 0 }
-                else if esc == 92 { ch = 92 }
-                else if esc == 34 { ch = 34 }
-                else { ch = esc }
+                if esc == 120 && si + 2 < tlen {
+                    ch = hex_digit_pair_to_byte(tok_source_byte(wtok, si + 1),
+                                                tok_source_byte(wtok, si + 2))
+                    si = si + 2
+                } else {
+                    uint64 mapped = escape_char_to_byte(esc)
+                    if mapped != 0xFFFFFFFFFFFFFFFF { ch = mapped }
+                    else { ch = esc }
+                }
             }
             uint64 sp = str_buf + str_len
             uint8 cb = ch
