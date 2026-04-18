@@ -68,22 +68,29 @@ ignored — useful when you want to write multiple statements on one line.
 
 | Type      | Width | Alias | Notes                         |
 |-----------|-------|-------|-------------------------------|
-| `uint8`   | 1 B   | `u8`  | Unsigned byte                 |
+| `uint8`   | 1 B   | `u8`, `byte` | Unsigned byte          |
 | `uint16`  | 2 B   | `u16` | Unsigned 16-bit               |
 | `uint32`  | 4 B   | `u32` | Unsigned 32-bit               |
-| `uint64`  | 8 B   | `u64` | Unsigned 64-bit, pointer-sized |
+| `uint64`  | 8 B   | `u64`, `addr` | Unsigned 64-bit, pointer-sized |
 | `int8`    | 1 B   | `i8`  | Signed byte                   |
 | `int16`   | 2 B   | `i16` | Signed 16-bit                 |
 | `int32`   | 4 B   | `i32` | Signed 32-bit                 |
 | `int64`   | 8 B   | `i64` | Signed 64-bit                 |
-| `bool`    | 1 B   |       | `true` / `false`              |
-| `char`    | 1 B   |       | Single byte holding a character literal |
+| `f16`     | 2 B   |       | IEEE 754 half-precision (storage only on ARM64) |
+| `f32`     | 4 B   |       | IEEE 754 single-precision — full arithmetic, literals `1.5f` |
+| `f64`     | 8 B   |       | IEEE 754 double-precision — full arithmetic, default for float literals (`1.5`, `2e10`, `3.14`) |
+| `bool`    | 1 B   |       | `true` / `false` (strict, since v2.8.3) |
+| `char`    | 1 B   |       | Single byte holding a character literal (`'A'`, `'\n'`, …); strict since v2.8.3 |
 
-All scalar values are stored as 64-bit words in variable slots. The specific
+All integer values are stored as 64-bit words in variable slots. The specific
 width matters for pointer load/store and for struct field layout. The short
-aliases (`u8`, `u64`, `i32`, ...) are exact synonyms for the long form.
+aliases (`u8`, `u64`, `i32`, …) are exact synonyms for the long form.
+Floating-point types keep their declared width (f32 in 32-bit slots, f64 in
+64-bit slots) and are tracked through the IR with a per-vreg "fkind" tag so
+the emitter picks the right load/store/convert instructions.
 
-Floating-point types (`f16`, `f32`, `f64`) are covered in §15.
+Full floating-point details (operators, conversions, the `std/math_float.kr`
+library) live in §15.
 
 ### `bool` (strict since v2.8.3)
 
