@@ -1884,6 +1884,9 @@ run_test "const_mul"    'const u64 C = 21; fn main() { exit(C * 2) }' 42
 run_test "const_char"   "const u64 CH = 'A'; fn main() { exit(CH) }" 65
 run_test "const_true"   'const u64 T = true; fn main() { exit(T + 41) }' 42
 run_test "static_int"   'static u64 X = 99; fn main() { exit(X) }' 99
+run_test "static_neg"   'static i64 X = -1; fn main() { exit(X) }' 255
+run_test "static_bnot"  'static u64 X = ~0; fn main() { exit(X & 7) }' 7
+run_test "const_neg"    'const i64 X = -42; fn main() { exit(0 - X) }' 42
 
 echo ""
 echo "--- import after comment (regression) ---"

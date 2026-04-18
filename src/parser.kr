@@ -1557,12 +1557,19 @@ fn parse_module() -> uint64 {
             uint64 name_tok = expect(1)
             static_declare(name_tok)
             if eat(34) != 0 {
-                // If the next token is an IntLit/CharLit/true/false, parse it
-                // as an integer and record it as the initial value.
+                // Accept literal initializers, including leading unary - or ~.
+                // Anything else (calls, named constants, expressions) is
+                // skipped with a zero value — tracked by issue #53.
+                uint64 init_neg = 0
+                uint64 init_inv = 0
+                if cur_kind() == 31 { init_neg = 1; advance_tok() }
+                else if cur_kind() == 26 { init_inv = 1; advance_tok() }
                 uint32 init_kind = cur_kind()
                 if init_kind == 2 || init_kind == 4 || init_kind == 77 || init_kind == 78 {
                     uint64 init_tok = advance_tok()
                     uint64 init_val = parse_int_token(init_tok)
+                    if init_neg != 0 { init_val = 0 - init_val }
+                    if init_inv != 0 { init_val = ~init_val }
                     static_set_init_last(init_val)
                 } else {
                     // Skip unsupported initializer (function calls, etc.) — value stays 0.
@@ -1640,10 +1647,16 @@ fn parse_module() -> uint64 {
                 static_declare(name_tok)
                 // Capture literal initializer if present
                 if eat(34) != 0 {
+                    uint64 sinit_neg = 0
+                    uint64 sinit_inv = 0
+                    if cur_kind() == 31 { sinit_neg = 1; advance_tok() }
+                    else if cur_kind() == 26 { sinit_inv = 1; advance_tok() }
                     uint32 sinit_kind = cur_kind()
                     if sinit_kind == 2 || sinit_kind == 4 || sinit_kind == 77 || sinit_kind == 78 {
                         uint64 sinit_tok = advance_tok()
                         uint64 sinit_val = parse_int_token(sinit_tok)
+                        if sinit_neg != 0 { sinit_val = 0 - sinit_val }
+                        if sinit_inv != 0 { sinit_val = ~sinit_val }
                         static_set_init_last(sinit_val)
                     } else {
                         while cur_kind() != 60 && cur_kind() != 71 && cur_kind() != 72 && cur_kind() != 73 && cur_kind() != 21 && cur_kind() != 89 && cur_kind() != 0 {
