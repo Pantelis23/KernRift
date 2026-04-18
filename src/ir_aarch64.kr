@@ -59,11 +59,21 @@ fn ir_regalloc_init_arm64() {
 // ARM64 spill helpers
 // ---------------------------------------------------------------------------
 
-// Compute the spill slot offset for a spilled vreg.
-// Spill slots start at SP (after prologue), each 8 bytes.
+// Number of bytes reserved at the BOTTOM of every function's stack
+// frame to hold overflow-call-arguments (args 9+ under AAPCS64). With
+// this space pre-reserved the SP-at-BL already points at the arg slots
+// (callee reads `[SP + callee_frame + (idx-8)*8]` and finds our
+// values), so we never SUB SP around a call — SUB would invalidate
+// every spill offset we need to read between the overflow args.
+// 128 = 16 slots, more than any call in the compiler today needs.
+static uint64 IR_A64_OVERFLOW_RESERVE = 128
+
+// Compute the spill slot offset for a spilled vreg. Spill slots live
+// above the overflow-arg reservation so they remain addressable at a
+// stable offset across calls.
 fn ir_a64_spill_offset(uint64 vreg) -> uint64 {
     uint64 slot = vreg - IR_NUM_REGS - 1
-    return slot * 8
+    return IR_A64_OVERFLOW_RESERVE + slot * 8
 }
 
 // Load a spilled vreg into scratch register (x9 or x10).
@@ -681,13 +691,15 @@ fn ir_emit_arm64_insn(uint64 ii) {
             uint64 src_reg = ir_a64_resolve_src(s1_v, 9)
             emit_a64_mov(phys_target, src_reg)
         } else {
-            // Overflow arg: save vreg to overflow buffer for IR_CALL
+            // Overflow arg (AAPCS64: the 9th+ parameter). The caller's
+            // frame already reserves IR_A64_OVERFLOW_RESERVE bytes at
+            // the bottom, so SP at the upcoming BL will sit exactly on
+            // top of those slots — no SUB/ADD needed. Just STR the
+            // arg value at [SP + (imm-8)*8].
             uint64 oi = imm - 8
             if oi < 16 {
-                uint64 op_ptr = ir_overflow_args + oi * 8
-                uint64 sv = s1_v
-                unsafe { *(op_ptr as uint64) = sv }
-                if oi >= ir_overflow_arg_count { ir_overflow_arg_count = oi + 1 }
+                uint64 src_reg = ir_a64_resolve_src(s1_v, 9)
+                ir_a64_str_sp(src_reg, oi * 8)
             }
         }
         return
@@ -695,8 +707,9 @@ fn ir_emit_arm64_insn(uint64 ii) {
 
     // ----- IR_CALL (50): bl with fixup -----
     if op == 50 {
-        // Overflow args (>8 args) not yet implemented for ARM64 IR
-        // Emit BL placeholder
+        // Overflow args (>8 args) were already written to [SP + oi*8]
+        // by IR_ARG — the caller's bottom-of-frame overflow reserve
+        // lines them up with the callee's arg-9 slot.
         uint64 call_patch = out_len
         emit_a64(0x94000000)    // BL #0 (placeholder)
         // Record fixup: imm holds the callee token
@@ -2245,13 +2258,21 @@ fn ir_emit_arm64_function(uint64 fn_node) {
     // dynamic SP shifts that invalidate spill slot addresses.
     uint64 scratch_size = 32
     // Total frame = spill + scratch + callee save, must be 16-aligned
-    uint64 total_frame = spill_size + scratch_size + callee_save_size
+    // Layout from SP upward:
+    //   [SP + 0 .. IR_A64_OVERFLOW_RESERVE)  — stack slots for outgoing calls' args 9+
+    //   [spills ...]
+    //   [scratchpad ...]
+    //   [saved callee regs]
+    // With the overflow reserve at the bottom, the caller can STR
+    // outgoing args to [SP + offset] without any SUB — the callee
+    // reads [SP + callee_frame + (idx-8)*8] = caller's arg slots.
+    uint64 total_frame = IR_A64_OVERFLOW_RESERVE + spill_size + scratch_size + callee_save_size
     if (total_frame & 15) != 0 { total_frame = total_frame + 16 - (total_frame & 15) }
     if is_naked != 0 { total_frame = 0 }
 
     ir_frame_size = total_frame
-    // Scratchpad sits right after spill slots
-    ir_a64_scratch_off = spill_size
+    // Scratchpad sits right after spill slots (which start at the overflow reserve).
+    ir_a64_scratch_off = IR_A64_OVERFLOW_RESERVE + spill_size
 
     // 5a. For main(): set up argc/argv BEFORE prologue
     uint32 fn_name_tok = ast_data1(fn_node)
