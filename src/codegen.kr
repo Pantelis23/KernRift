@@ -10324,6 +10324,14 @@ fn emit_elf_debug_footer(uint64 text_start, uint64 input_path) {
     emit_uleb128(0x3f); emit_uleb128(0x19)   // DW_AT_external / DW_FORM_flag_present
     emit_uleb128(0); emit_uleb128(0)         // end abbrev 2
 
+    emit_uleb128(3)                     // abbrev code 3
+    emit_uleb128(0x24)                  // DW_TAG_base_type
+    emit_byte(0)                        // DW_CHILDREN_no
+    emit_uleb128(0x03); emit_uleb128(0x0E)   // DW_AT_name / DW_FORM_strp
+    emit_uleb128(0x0b); emit_uleb128(0x0B)   // DW_AT_byte_size / DW_FORM_data1
+    emit_uleb128(0x3e); emit_uleb128(0x0B)   // DW_AT_encoding / DW_FORM_data1
+    emit_uleb128(0); emit_uleb128(0)         // end abbrev 3
+
     emit_uleb128(0)                          // end of .debug_abbrev
     uint64 debug_abbrev_size = out_len - debug_abbrev_off
 
@@ -10346,6 +10354,58 @@ fn emit_elf_debug_footer(uint64 text_start, uint64 input_path) {
     emit_byte(0)
     uint64 ds_dir_off = out_len - debug_str_off
     emit_byte(46); emit_byte(0)               // ".\0"
+
+    // Primitive-type name strings. Offsets referenced from base_type DIEs.
+    // Index matches the entries emitted below: u8, u16, u32, u64, i8,
+    // i16, i32, i64, f32, f64, bool (11 entries).
+    uint64 ds_type_name_offs = alloc(11 * 8)
+    // helper-style body inline to avoid another function: write name N
+    // into .debug_str and stash offset.
+    uint64 ti_idx = 0
+    // u8
+    uint64 off_slot = ds_type_name_offs + ti_idx * 8
+    unsafe { *(off_slot as uint64) = out_len - debug_str_off }
+    emit_byte(117); emit_byte(56); emit_byte(0)                               // u8
+    ti_idx = ti_idx + 1
+    off_slot = ds_type_name_offs + ti_idx * 8
+    unsafe { *(off_slot as uint64) = out_len - debug_str_off }
+    emit_byte(117); emit_byte(49); emit_byte(54); emit_byte(0)                // u16
+    ti_idx = ti_idx + 1
+    off_slot = ds_type_name_offs + ti_idx * 8
+    unsafe { *(off_slot as uint64) = out_len - debug_str_off }
+    emit_byte(117); emit_byte(51); emit_byte(50); emit_byte(0)                // u32
+    ti_idx = ti_idx + 1
+    off_slot = ds_type_name_offs + ti_idx * 8
+    unsafe { *(off_slot as uint64) = out_len - debug_str_off }
+    emit_byte(117); emit_byte(54); emit_byte(52); emit_byte(0)                // u64
+    ti_idx = ti_idx + 1
+    off_slot = ds_type_name_offs + ti_idx * 8
+    unsafe { *(off_slot as uint64) = out_len - debug_str_off }
+    emit_byte(105); emit_byte(56); emit_byte(0)                               // i8
+    ti_idx = ti_idx + 1
+    off_slot = ds_type_name_offs + ti_idx * 8
+    unsafe { *(off_slot as uint64) = out_len - debug_str_off }
+    emit_byte(105); emit_byte(49); emit_byte(54); emit_byte(0)                // i16
+    ti_idx = ti_idx + 1
+    off_slot = ds_type_name_offs + ti_idx * 8
+    unsafe { *(off_slot as uint64) = out_len - debug_str_off }
+    emit_byte(105); emit_byte(51); emit_byte(50); emit_byte(0)                // i32
+    ti_idx = ti_idx + 1
+    off_slot = ds_type_name_offs + ti_idx * 8
+    unsafe { *(off_slot as uint64) = out_len - debug_str_off }
+    emit_byte(105); emit_byte(54); emit_byte(52); emit_byte(0)                // i64
+    ti_idx = ti_idx + 1
+    off_slot = ds_type_name_offs + ti_idx * 8
+    unsafe { *(off_slot as uint64) = out_len - debug_str_off }
+    emit_byte(102); emit_byte(51); emit_byte(50); emit_byte(0)                // f32
+    ti_idx = ti_idx + 1
+    off_slot = ds_type_name_offs + ti_idx * 8
+    unsafe { *(off_slot as uint64) = out_len - debug_str_off }
+    emit_byte(102); emit_byte(54); emit_byte(52); emit_byte(0)                // f64
+    ti_idx = ti_idx + 1
+    off_slot = ds_type_name_offs + ti_idx * 8
+    unsafe { *(off_slot as uint64) = out_len - debug_str_off }
+    emit_byte(98); emit_byte(111); emit_byte(111); emit_byte(108); emit_byte(0)  // bool
 
     // Append every function name; record its offset.
     uint64 ds_fn_name_offs = alloc(fn_count * 8 + 8)
@@ -10392,6 +10452,43 @@ fn emit_elf_debug_footer(uint64 text_start, uint64 input_path) {
     emit_u32_le(0)                            // stmt_list
     emit_u64_le(0x400000 + text_start)        // low_pc
     emit_u64_le(debug_line_off - text_start)  // high_pc = .text size
+
+    // Base-type DIEs. Encoding values per DWARF 5:
+    //   5 = signed, 7 = unsigned, 4 = float, 2 = boolean.
+    // DIE-relative offsets start at the compile-unit header (11 bytes:
+    //   4 length + 2 version + 1 unit_type + 1 addr_size + 4 abbrev_off
+    //   + 1 CU abbrev code + 4+4+2+4+8+8 CU attrs = 52 bytes).
+    // Storing each emitted offset into a table keyed by the index
+    // above lets future variable DIEs reference them via DW_FORM_ref4.
+    uint64 type_die_offs = alloc(11 * 8)
+    uint64 tdi = 0
+    while tdi < 11 {
+        uint64 tdo_slot = type_die_offs + tdi * 8
+        unsafe { *(tdo_slot as uint64) = out_len - debug_info_off }
+        uint64 tno_slot = ds_type_name_offs + tdi * 8
+        uint64 tno = 0
+        unsafe { *(tno_slot as uint64) -> tno }
+        uint64 byte_sz = 8
+        uint64 enc = 7
+        if tdi == 0 { byte_sz = 1; enc = 7 }                   // u8
+        if tdi == 1 { byte_sz = 2; enc = 7 }                   // u16
+        if tdi == 2 { byte_sz = 4; enc = 7 }                   // u32
+        if tdi == 3 { byte_sz = 8; enc = 7 }                   // u64
+        if tdi == 4 { byte_sz = 1; enc = 5 }                   // i8
+        if tdi == 5 { byte_sz = 2; enc = 5 }                   // i16
+        if tdi == 6 { byte_sz = 4; enc = 5 }                   // i32
+        if tdi == 7 { byte_sz = 8; enc = 5 }                   // i64
+        if tdi == 8 { byte_sz = 4; enc = 4 }                   // f32
+        if tdi == 9 { byte_sz = 8; enc = 4 }                   // f64
+        if tdi == 10 { byte_sz = 1; enc = 2 }                  // bool
+        emit_uleb128(3)                  // abbrev 3 = base_type
+        emit_u32_le(tno)                 // DW_AT_name
+        uint8 bs8 = byte_sz
+        emit_byte(bs8)                   // DW_AT_byte_size
+        uint8 en8 = enc
+        emit_byte(en8)                   // DW_AT_encoding
+        tdi = tdi + 1
+    }
 
     // One subprogram DIE per function.
     uint64 di_fi = 0
