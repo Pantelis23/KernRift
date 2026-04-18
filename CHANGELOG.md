@@ -2,6 +2,23 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## v2.8.6 — 2026-04-18
+
+compile_fat memory regression fix.
+
+### Fixed
+- **`compile_fat` leaked ~4.5 million `alloc(8)` calls per self-compile**,
+  pushing peak RSS to 18 GB and OOM-killing GitHub's 16 GB CI runners.
+  The offender was `uint64[1]` slot arrays declared inside LZ4's
+  match-search hot loop in `format_archive.kr` — KernRift compiles
+  `uint64[N]` to a heap `alloc` with no scope-end free, so each of the
+  ~1 M compress-loop iterations leaked a slot. Hoisting the two slots out
+  of the loop drops the fat-binary build from 17 s / 18 GB to 2 s / 1 GB,
+  so CI/release jobs finish well inside the runner budget.
+- **IR control-flow snapshot buffers are now freed at their scope end**
+  (`if` / `while` / `match` in `ir_lower_stmt` alloc'd per-statement
+  bookkeeping and never called `dealloc` on it).
+
 ## v2.8.5 — 2026-04-18
 
 Android runner robustness.

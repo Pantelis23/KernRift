@@ -141,6 +141,7 @@ static uint64 ir_insn_buf = 0       // pointer to instruction arena
 static uint64 ir_insn_count = 0     // number of instructions allocated
 static uint64 ir_insn_cap = 0       // max instructions
 
+
 // ---------------------------------------------------------------------------
 // Basic block arena
 // ---------------------------------------------------------------------------
@@ -2809,6 +2810,7 @@ fn ir_lower_stmt(uint64 node) {
             ir_var_map_count = if_snap_count
         }
         ir_current_bb = bb_merge
+        dealloc(if_snap)
         return
     }
 
@@ -2884,6 +2886,8 @@ fn ir_lower_stmt(uint64 node) {
         }
         ir_var_map_count = hdr_count
         ir_current_bb = bb_exit
+        dealloc(snap_buf)
+        dealloc(hdr_buf)
         return
     }
 
@@ -2961,6 +2965,7 @@ fn ir_lower_stmt(uint64 node) {
         }
         ir_var_map_count = match_snap_count
         ir_current_bb = bb_exit
+        dealloc(match_snap)
         return
     }
 

@@ -249,9 +249,16 @@ fn lz4_compress_block(uint64 src, uint64 src_len, uint64 dst) -> uint64 {
     uint64 match_search_limit = src_len - 12
     uint64 match_extend_limit = src_len - 5
 
+    // Hoist the single-slot output buffers out of the loop — KernRift compiles
+    // `uint64[1] foo` to a heap alloc with no auto-free, so declaring them
+    // inside the match search leaked ~8 B per iteration. On a self-compile
+    // fat binary that meant ~4 million mmap(16) calls, each rounded up to a
+    // full 4 KB page (~18 GB RSS — past GitHub runners' 16 GB budget).
+    uint64[1] best_mpos_slot
+    uint64[1] next_mpos_slot
+
     while src_pos < match_search_limit {
         uint64 cur4 = lz4_load_u32_le(src + src_pos)
-        uint64[1] best_mpos_slot
         uint64 match_len = lz4_find_best_match(
             hash_table, hash_table2,
             src, src_pos, cur4, match_extend_limit,
@@ -270,7 +277,6 @@ fn lz4_compress_block(uint64 src, uint64 src_len, uint64 dst) -> uint64 {
         if match_len < 48 && src_pos + 1 < match_search_limit {
             uint64 next_pos = src_pos + 1
             uint64 next_cur4 = lz4_load_u32_le(src + next_pos)
-            uint64[1] next_mpos_slot
             uint64 next_match_len = lz4_find_best_match(
                 hash_table, hash_table2,
                 src, next_pos, next_cur4, match_extend_limit,
