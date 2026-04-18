@@ -51,7 +51,7 @@ reasoning for anything non-obvious.
 | Double `dealloc`                        | **Undefined** | Allocator-dependent. |
 | Read of an uninitialized stack slot     | Unspecified | Whatever value happens to be on the stack. Not cleared by prologue. |
 | Read of an uninitialized `static`       | Defined  | Zero-initialized by the loader (BSS). |
-| `memcpy` with overlapping src/dst       | **Undefined** | Use `memmove` — currently not in stdlib; roll your own. |
+| `memcpy` with overlapping src/dst       | **Undefined** | Use `memmove` from `std/mem.kr` — it picks the right scan direction. |
 | `memcpy` / `memset` with len 0          | Defined  | No-op even if the pointer is invalid. |
 | Store of `bool` value other than 0/1    | **Undefined** | Only `true` (1) and `false` (0) are valid bit patterns. |
 
@@ -153,5 +153,4 @@ Items tracked against the UB surface:
 - #53 — `static T x = expr` silently drops non-literal initializers.
 - Bounds-checked `[T] name` slice indexing (opt-in `--safe` mode): not
   started; on the roadmap.
-- `memmove` in stdlib: not started.
 - Signed-overflow trap mode (`--check=signed`): not started.

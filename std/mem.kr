@@ -67,3 +67,30 @@ fn memzero(u64 ptr, u64 len) {
     memset(ptr, 0, len)
 }
 
+// Copy `len` bytes from src to dst, correctly handling the case where the
+// two regions overlap. When they don't overlap or dst < src, we scan
+// forward (same as memcpy). When dst > src and the regions overlap,
+// we scan backwards so the source bytes aren't trampled before we
+// read them. memcpy's behavior on overlap is undefined — use this when
+// you can't guarantee disjointness.
+fn memmove(u64 dst, u64 src, u64 len) {
+    if dst == src || len == 0 { return }
+    if dst < src {
+        // Forward copy is safe — any dst byte we've just written is
+        // at a lower address than the next src byte we read.
+        memcpy(dst, src, len)
+        return
+    }
+    // dst > src: scan backwards, byte by byte. A bulk word copy would
+    // need length/alignment accounting we don't need for correctness;
+    // memcpy handles the non-overlapping fast paths already.
+    u64 i = len
+    while i > 0 {
+        i = i - 1
+        u64 sp = src + i
+        u64 dp = dst + i
+        u64 b = load8(sp)
+        store8(dp, b)
+    }
+}
+

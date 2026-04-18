@@ -528,6 +528,47 @@ run_test "icache_invalidate_basic" 'fn main() {
     icache_invalidate(p)
     exit(0)
 }' 0
+run_test "memmove_forward" 'import "std/mem.kr"
+fn main() {
+    u64 p = alloc(64)
+    store64(p, 0xAABBCCDD)
+    memmove(p + 8, p, 8)
+    u64 v = load64(p + 8)
+    if v == 0xAABBCCDD { exit(11) }
+    exit(1)
+}' 11
+run_test "memmove_backward_overlap" 'import "std/mem.kr"
+fn main() {
+    // Layout: bytes 0..=7 = 1..8. Shift right by 4, so bytes 4..=11
+    // become 1..8. memcpy would corrupt this; memmove must not.
+    u64 p = alloc(32)
+    u64 i = 0
+    while i < 8 { store8(p + i, i + 1); i = i + 1 }
+    memmove(p + 4, p, 8)
+    // Verify: p[4..11] = 1..8
+    u64 sum = 0
+    i = 4
+    while i < 12 { sum = sum + load8(p + i); i = i + 1 }
+    exit(sum)
+}' 36
+run_test "memmove_forward_overlap" 'import "std/mem.kr"
+fn main() {
+    u64 p = alloc(32)
+    u64 i = 0
+    while i < 8 { store8(p + 4 + i, i + 1); i = i + 1 }
+    // Shift left by 4: bytes 0..=7 become 1..=8 (read from 4..=11).
+    memmove(p, p + 4, 8)
+    u64 sum = 0
+    i = 0
+    while i < 8 { sum = sum + load8(p + i); i = i + 1 }
+    exit(sum)
+}' 36
+run_test "memmove_zero_len" 'import "std/mem.kr"
+fn main() {
+    // Must be a no-op regardless of pointer values.
+    memmove(0, 0, 0)
+    exit(0)
+}' 0
 run_test "alloc_aligned_64" 'import "std/mem.kr"
 fn main() {
     uint64 buf = alloc_aligned(100, 64)
