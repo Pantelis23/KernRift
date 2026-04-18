@@ -240,7 +240,7 @@ read  write  open  close  mmap  munmap  exit
 load8 load16 load32 load64  store8 store16 store32 store64
 vload8 vload16 vload32 vload64  vstore8 vstore16 vstore32 vstore64
 atomic_load atomic_store atomic_cas atomic_add atomic_sub atomic_and atomic_or atomic_xor
-dmb dsb isb
+dmb dsb isb  dcache_flush icache_invalidate
 time_ns  rdrand  cpuid
 ```
 

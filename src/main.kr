@@ -823,8 +823,17 @@ fn emit_asm_listing(uint64 output_path, uint64 arch, uint64 text_start, uint64 s
                 else if wi == 0xD503207F { write(fd, "wfi", 3) }
                 else if wi == 0xD5033FDF { write(fd, "isb", 3) }
                 else if wi == 0xD5033BBF { write(fd, "dmb ish", 7) }
+                else if wi == 0xD5033B9F { write(fd, "dsb ish", 7) }
                 else if wi == 0xD5033F9F { write(fd, "dsb sy", 6) }
                 else if wi == 0xD5033FBF { write(fd, "dmb sy", 6) }
+                else if (wi & 0xFFFFFFE0) == 0xD50B7E20 {
+                    write(fd, "dc civac, ", 10)
+                    write_a64_xreg(fd, rd)
+                }
+                else if (wi & 0xFFFFFFE0) == 0xD50B7520 {
+                    write(fd, "ic ivau, ", 9)
+                    write_a64_xreg(fd, rd)
+                }
                 else if wi == 0xD69F03E0 { write(fd, "eret", 4) }
                 else if wi == 0xD4000001 { write(fd, "svc #0", 6) }
                 // MOVZ 64-bit

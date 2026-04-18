@@ -1666,6 +1666,41 @@ fn ir_emit_arm64_insn(uint64 ii) {
         return
     }
 
+    // ----- IR_DCACHE_FLUSH (127): clean + invalidate one D-cache line to PoC -----
+    // Emits: DC CIVAC, Xt ; DSB ISH ; ISB. Safe for post-DMA and
+    // pre-handoff uses. Requires EL1+ on real hardware; user-space
+    // code on Linux will fault with SIGILL unless the kernel emulates.
+    if op == 127 {
+        uint64 a_reg = ir_a64_resolve_src(s1_v, 9)
+        emit_a64(0xD50B7E20 | a_reg)  // DC CIVAC, Xa
+        emit_a64(0xD5033B9F)          // DSB ISH
+        emit_a64(0xD5033FDF)          // ISB
+        return
+    }
+
+    // ----- IR_ICACHE_INV (128): invalidate one I-cache line by VA to PoU -----
+    // Emits: IC IVAU, Xt ; DSB ISH ; ISB. Use after writing new code
+    // into RAM. IC IVAU is available at EL0.
+    if op == 128 {
+        uint64 a_reg = ir_a64_resolve_src(s1_v, 9)
+        emit_a64(0xD50B7520 | a_reg)  // IC IVAU, Xa
+        emit_a64(0xD5033B9F)          // DSB ISH
+        emit_a64(0xD5033FDF)          // ISB
+        return
+    }
+
+    // ----- IR_DSB (129): DSB SY — full-system data-sync barrier -----
+    if op == 129 {
+        emit_a64(0xD5033F9F)
+        return
+    }
+
+    // ----- IR_DMB (130): DMB ISH — inner-shareable data-memory barrier -----
+    if op == 130 {
+        emit_a64(0xD5033BBF)
+        return
+    }
+
     // ----- IR_FADD (20), IR_FSUB (21), IR_FMUL (22), IR_FDIV (23) -----
     if op >= 20 && op <= 23 {
         uint64 a = ir_a64_resolve_src(s1_v, 9)

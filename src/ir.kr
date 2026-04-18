@@ -133,6 +133,10 @@ static uint64 IR_SCMP_GE = 123      // dest = (src1 >= src2) signed
 static uint64 IR_FMT_BOOL = 124     // format bool as "true"/"false" into buf
 static uint64 IR_FMT_F64 = 125      // format f64 as decimal into buf
 static uint64 IR_ISB = 126          // instruction-sync barrier (ARM64 ISB; x86 no-op)
+static uint64 IR_DCACHE_FLUSH = 127 // D-cache clean+invalidate by VA (ARM64 DC CIVAC; x86 CLFLUSH)
+static uint64 IR_ICACHE_INV = 128   // I-cache invalidate by VA (ARM64 IC IVAU; x86 no-op)
+static uint64 IR_DSB = 129          // data-sync barrier (ARM64 DSB SY; x86 MFENCE)
+static uint64 IR_DMB = 130          // data-memory barrier (ARM64 DMB ISH; x86 MFENCE)
 
 // ---------------------------------------------------------------------------
 // Instruction arena
@@ -1380,6 +1384,48 @@ fn ir_lower_expr(uint64 node) -> uint64 {
         // builtin exists so portable code can compile on both archs.
         if tok_matches(wct, "isb", 3) != 0 {
             ir_emit(IR_ISB, 0, 0, 0, 0, ir_current_bb)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_CONST, dest, 0, 0, 0, ir_current_bb)
+            return dest
+        }
+        // dsb() → IR_DSB. Data-sync barrier. ARM64: DSB SY — waits for
+        // every load/store by this PE to complete. x86: MFENCE.
+        if tok_matches(wct, "dsb", 3) != 0 {
+            ir_emit(IR_DSB, 0, 0, 0, 0, ir_current_bb)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_CONST, dest, 0, 0, 0, ir_current_bb)
+            return dest
+        }
+        // dmb() → IR_DMB. Data-memory barrier, inner-shareable. ARM64:
+        // DMB ISH. x86: MFENCE. Cheaper than DSB because it orders but
+        // does not wait for completion.
+        if tok_matches(wct, "dmb", 3) != 0 {
+            ir_emit(IR_DMB, 0, 0, 0, 0, ir_current_bb)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_CONST, dest, 0, 0, 0, ir_current_bb)
+            return dest
+        }
+        // dcache_flush(addr) → IR_DCACHE_FLUSH. Clean dirty lines to the
+        // point of coherency and invalidate, so subsequent loads fetch
+        // fresh data. Use after DMA or before handing a buffer to a
+        // different coherency domain. ARM64: DC CIVAC + DSB + ISB. x86:
+        // CLFLUSH + MFENCE.
+        if tok_matches(wct, "dcache_flush", 12) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 addr_v = ir_lower_expr(arg1)
+            ir_emit(IR_DCACHE_FLUSH, 0, addr_v, 0, 0, ir_current_bb)
+            uint64 dest = ir_new_vreg()
+            ir_emit(IR_CONST, dest, 0, 0, 0, ir_current_bb)
+            return dest
+        }
+        // icache_invalidate(addr) → IR_ICACHE_INV. Invalidate one
+        // instruction-cache line so the next fetch sees freshly
+        // written code. ARM64: IC IVAU + DSB + ISB. x86: no-op
+        // (I-cache is kept coherent by the hardware).
+        if tok_matches(wct, "icache_invalidate", 17) != 0 {
+            uint32 arg1 = ast_child(node)
+            uint64 addr_v = ir_lower_expr(arg1)
+            ir_emit(IR_ICACHE_INV, 0, addr_v, 0, 0, ir_current_bb)
             uint64 dest = ir_new_vreg()
             ir_emit(IR_CONST, dest, 0, 0, 0, ir_current_bb)
             return dest
@@ -3414,6 +3460,10 @@ fn ir_opcode_name(uint64 op) -> uint64 {
     if op == 118 { return "fsqrt32" }
     if op == 119 { return "time_ns" }
     if op == 126 { return "isb" }
+    if op == 127 { return "dcache_flush" }
+    if op == 128 { return "icache_invalidate" }
+    if op == 129 { return "dsb" }
+    if op == 130 { return "dmb" }
     if op == 120 { return "scmp_lt" }
     if op == 121 { return "scmp_le" }
     if op == 122 { return "scmp_gt" }
@@ -6563,6 +6613,47 @@ fn ir_emit_x86_insn(uint64 ii) {
         return
     }
 
+    if op == 127 {
+        // IR_DCACHE_FLUSH: CLFLUSH [ptr] + MFENCE on x86. Resolves the
+        // address vreg into a register, then emits the two instructions.
+        uint64 ptr_r = ir_resolve_src(s1_v, 0)
+        if ptr_r >= 8 { emit_byte(0x41) }     // REX.B for r8..r15
+        emit_byte(0x0F); emit_byte(0xAE)
+        uint64 r_low = ptr_r & 7
+        if r_low == 4 {
+            emit_byte(0x3C); emit_byte(0x24)  // CLFLUSH [rsp] via SIB
+        } else if r_low == 5 {
+            emit_byte(0x7D); emit_byte(0x00)  // CLFLUSH [rbp+0] via disp8
+        } else {
+            uint8 modrm_7 = 0x38 | r_low
+            emit_byte(modrm_7)
+        }
+        emit_byte(0x0F); emit_byte(0xAE); emit_byte(0xF0)   // MFENCE
+        return
+    }
+
+    if op == 128 {
+        // IR_ICACHE_INV: no-op on x86. The I-cache is kept coherent
+        // with the D-cache by the hardware, so no flush is needed.
+        return
+    }
+
+    if op == 129 {
+        // IR_DSB: MFENCE on x86 — waits for all prior loads and stores
+        // to complete before later ones start, matching the "wait for
+        // completion" semantics of ARM64 DSB SY.
+        emit_byte(0x0F); emit_byte(0xAE); emit_byte(0xF0)
+        return
+    }
+
+    if op == 130 {
+        // IR_DMB: MFENCE on x86 — x86 has no cheaper barrier with the
+        // right ordering guarantees, so DMB and DSB lower to the same
+        // instruction here. On ARM64 they differ.
+        emit_byte(0x0F); emit_byte(0xAE); emit_byte(0xF0)
+        return
+    }
+
     // ---------------------------------------------------------------
     // Float opcodes
     // ---------------------------------------------------------------
@@ -7712,6 +7803,10 @@ fn ir_opt_is_side_effect(uint64 op) -> uint64 {
     if op >= 109 && op <= 115 { return 1 }  // atomic RMW, exec, set_exec
     if op == 119 { return 1 }  // TIME_NS (reads clock, not pure)
     if op == 126 { return 1 }  // ISB (synchronization barrier)
+    if op == 127 { return 1 }  // DCACHE_FLUSH (cache maintenance)
+    if op == 128 { return 1 }  // ICACHE_INV (cache maintenance)
+    if op == 129 { return 1 }  // DSB (synchronization barrier)
+    if op == 130 { return 1 }  // DMB (synchronization barrier)
     return 0
 }
 

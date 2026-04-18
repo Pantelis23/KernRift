@@ -514,6 +514,20 @@ fn main() { exit(get_errno(0xFFFFFFFFFFFFFFFE)) }' 2
 
 # --- isb() / alloc_aligned() (v2.8.14) ---
 run_test "isb_noop" 'fn main() { isb(); exit(0) }' 0
+run_test "dsb_noop" 'fn main() { dsb(); exit(0) }' 0
+run_test "dmb_noop" 'fn main() { dmb(); exit(0) }' 0
+run_test "dcache_flush_basic" 'fn main() {
+    u64 p = alloc(64)
+    store64(p, 0x1234)
+    dcache_flush(p)
+    u64 v = load64(p)
+    exit(v & 0xFF)
+}' 52
+run_test "icache_invalidate_basic" 'fn main() {
+    u64 p = alloc(64)
+    icache_invalidate(p)
+    exit(0)
+}' 0
 run_test "alloc_aligned_64" 'import "std/mem.kr"
 fn main() {
     uint64 buf = alloc_aligned(100, 64)

@@ -227,7 +227,12 @@ fn install_vectors(u64 vbar_addr) {
 }
 ```
 
-`isb()` (the v2.8.14 builtin) also works, and is clearer.
+`isb()` (the v2.8.14 builtin) also works, and is clearer. For
+cache-maintenance (e.g. after DMA or when writing new code into
+RAM), use `dcache_flush(addr)` and `icache_invalidate(addr)` — both
+emit the ARM64 `DC CIVAC` / `IC IVAU` instructions plus the required
+`DSB ISH` + `ISB` fences, and are no-ops on x86 where the hardware
+keeps I- and D-cache coherent.
 
 ---
 

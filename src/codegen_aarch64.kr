@@ -3479,6 +3479,40 @@ fn gen_expr_a64(uint64 node) {
             return
         }
 
+        // Built-in: dsb() — DSB SY.
+        if is_extern_call == 0 && tok_matches(wct, "dsb", 3) != 0 {
+            emit_a64(0xD5033F9F)
+            return
+        }
+
+        // Built-in: dmb() — DMB ISH.
+        if is_extern_call == 0 && tok_matches(wct, "dmb", 3) != 0 {
+            emit_a64(0xD5033BBF)
+            return
+        }
+
+        // Built-in: dcache_flush(addr) — DC CIVAC, Xaddr; DSB ISH; ISB.
+        if is_extern_call == 0 && tok_matches(wct, "dcache_flush", 12) != 0 {
+            uint32 first_arg_dc = ast_child(node)
+            uint64 wfa_dc = first_arg_dc
+            gen_expr(wfa_dc)                   // addr → x0
+            emit_a64(0xD50B7E20)               // DC CIVAC, X0
+            emit_a64(0xD5033B9F)               // DSB ISH
+            emit_a64(0xD5033FDF)               // ISB
+            return
+        }
+
+        // Built-in: icache_invalidate(addr) — IC IVAU, Xaddr; DSB ISH; ISB.
+        if is_extern_call == 0 && tok_matches(wct, "icache_invalidate", 17) != 0 {
+            uint32 first_arg_ic = ast_child(node)
+            uint64 wfa_ic = first_arg_ic
+            gen_expr(wfa_ic)                   // addr → x0
+            emit_a64(0xD50B7520)               // IC IVAU, X0
+            emit_a64(0xD5033B9F)               // DSB ISH
+            emit_a64(0xD5033FDF)               // ISB
+            return
+        }
+
         // Linux/Android arm64: clock_gettime(CLOCK_MONOTONIC=1, &ts)
         // via syscall 113. macOS arm64: gettimeofday via x16=116.
         // Windows arm64: not yet — returns 0.

@@ -6402,6 +6402,35 @@ fn gen_expr(uint64 node) {
             return
         }
 
+        // Built-in: icache_invalidate(addr) — no-op on x86, the I-cache
+        // is coherent. We still evaluate the arg so side effects in the
+        // address expression happen in source order.
+        if is_extern_call == 0 && tok_matches(wct, "icache_invalidate", 17) != 0 {
+            uint32 first_arg_ic = ast_child(node)
+            uint64 wfa_ic = first_arg_ic
+            gen_expr(wfa_ic)
+            return
+        }
+
+        // Built-in: dsb() / dmb() — x86 MFENCE covers both. Same 3-byte
+        // encoding as the atomic barrier elsewhere: 0F AE F0.
+        if is_extern_call == 0 && (tok_matches(wct, "dsb", 3) != 0 || tok_matches(wct, "dmb", 3) != 0) {
+            emit_byte(0x0F); emit_byte(0xAE); emit_byte(0xF0)
+            return
+        }
+
+        // Built-in: dcache_flush(addr) — CLFLUSH [rax] + MFENCE.
+        if is_extern_call == 0 && tok_matches(wct, "dcache_flush", 12) != 0 {
+            uint32 first_arg_dc = ast_child(node)
+            uint64 wfa_dc = first_arg_dc
+            gen_expr(wfa_dc)                       // addr → rax
+            // CLFLUSH [rax]: 0F AE 38
+            emit_byte(0x0F); emit_byte(0xAE); emit_byte(0x38)
+            // MFENCE: 0F AE F0
+            emit_byte(0x0F); emit_byte(0xAE); emit_byte(0xF0)
+            return
+        }
+
         // Built-in: f64_to_int(x) → cvttsd2si rax, xmm0
         if is_extern_call == 0 && tok_matches(wct, "f64_to_int", 10) != 0 {
             uint32 first_arg = ast_child(node)
