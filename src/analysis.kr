@@ -1144,9 +1144,23 @@ fn sema_check_expr(uint64 node) {
 
     // Index: child=index_expr (data1=ident_tok)
     if kind == 37 {
+        uint32 arr_ident_tok = ast_data1(node)
+        uint64 warr_tok = arr_ident_tok
+        uint64 arr_vi = sema_var_lookup_v(warr_tok)
+        if arr_vi != 0xFFFFFFFF { sema_var_mark_used(arr_vi) }
         uint32 idx_expr = ast_child(node)
         uint64 widx = idx_expr
         sema_check_expr(widx)
+        return
+    }
+
+    // Ident: a bare variable reference. Mark the variable used so the
+    // unused-variable warning knows to skip it when its scope ends.
+    if kind == 32 {
+        uint32 id_tok = ast_data1(node)
+        uint64 wid_tok = id_tok
+        uint64 vi = sema_var_lookup_v(wid_tok)
+        if vi != 0xFFFFFFFF { sema_var_mark_used(vi) }
         return
     }
 }
@@ -1222,14 +1236,33 @@ fn sema_check_stmt(uint64 node) {
                 }
             }
         }
+        // Register the new variable for unused-variable tracking. If it
+        // has an initializer, also mark it initialized. Params came in
+        // pre-declared in sema_check_functions.
+        uint32 vd_name_tok = ast_data2(node)
+        uint64 wvd_name = vd_name_tok
+        if wvd_name != 0 {
+            sema_var_declare(wvd_name, 0, 0)
+            if winit != 0 && sema_var_count_v > 0 {
+                sema_var_mark_init(sema_var_count_v - 1)
+            }
+        }
         return
     }
 
-    // Assign: child=value_expr
+    // Assign: child=value_expr, data1=target_name_tok
     if kind == 11 {
         uint32 val = ast_child(node)
         uint64 wval = val
         if wval != 0 { sema_check_expr(wval) }
+        // Mark the target as initialized; an assignment gives it a value.
+        // (It's still unused unless somebody reads it afterwards.)
+        uint32 as_target = ast_data1(node)
+        uint64 was_target = as_target
+        if was_target != 0 {
+            uint64 asv = sema_var_lookup_v(was_target)
+            if asv != 0xFFFFFFFF { sema_var_mark_init(asv) }
+        }
         return
     }
 
@@ -1323,6 +1356,7 @@ fn sema_check_stmt(uint64 node) {
 // Check all statements in a block
 fn sema_check_block(uint64 block_node) {
     if block_node == 0 { return }
+    sema_scope_push()
     uint32 child = ast_child(block_node)
     uint64 wchild = child
     while wchild != 0 {
@@ -1330,18 +1364,40 @@ fn sema_check_block(uint64 block_node) {
         uint32 nxt = ast_next(wchild)
         wchild = nxt
     }
+    sema_scope_pop()
 }
 
 // Check all functions' bodies for call argument count mismatches
 fn sema_check_functions(uint64 root) {
+    sema_scope_init()
     uint32 child = ast_child(root)
     uint64 wchild = child
     while wchild != 0 {
         uint32 ck = ast_kind(wchild)
         if ck == 2 {
+            // Outer per-function scope that holds the parameter bindings.
+            // sema_check_block will push a second, nested scope for the
+            // body itself — that matches C-family "parameters are in the
+            // enclosing scope" semantics and keeps block locals distinct.
+            sema_scope_push()
+            // Declare params as "used already" so they never trigger the
+            // unused-variable warning — callers dictate signatures.
+            uint32 param = ast_child(wchild)
+            uint64 wparam = param
+            while wparam != 0 {
+                uint32 pname_tok = ast_data2(wparam)
+                uint64 wpname = pname_tok
+                sema_var_declare(wpname, 0, 1)
+                if sema_var_count_v > 0 {
+                    sema_var_mark_used(sema_var_count_v - 1)
+                }
+                uint32 pnxt = ast_next(wparam)
+                wparam = pnxt
+            }
             uint32 body = ast_data3(wchild)
             uint64 wbody = body
             if wbody != 0 { sema_check_block(wbody) }
+            sema_scope_pop()
         }
         uint32 nxt = ast_next(wchild)
         wchild = nxt

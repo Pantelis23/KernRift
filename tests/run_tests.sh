@@ -619,6 +619,37 @@ else
     PASS=$((PASS + 1))
 fi
 rm -f "$DIR/../test_tmp_okw_$$.kr" /tmp/krc_okw_$$
+
+# --- Unused-variable warning ---
+TOTAL=$((TOTAL + 1))
+printf 'fn main() { u64 stale = 5; exit(0) }\n' > "$DIR/../test_tmp_uv_$$.kr"
+uv_out=$($KRC $KRC_FLAGS "$DIR/../test_tmp_uv_$$.kr" -o /tmp/krc_uv_$$ 2>&1)
+if echo "$uv_out" | grep -q "unused variable.*stale"; then
+    PASS=$((PASS + 1))
+else
+    echo "FAIL: unused_var_warns (no warning)"; FAIL=$((FAIL + 1))
+fi
+rm -f "$DIR/../test_tmp_uv_$$.kr" /tmp/krc_uv_$$
+
+TOTAL=$((TOTAL + 1))
+printf 'fn main() { u64 _skip = 5; exit(0) }\n' > "$DIR/../test_tmp_uvs_$$.kr"
+uvs_out=$($KRC $KRC_FLAGS "$DIR/../test_tmp_uvs_$$.kr" -o /tmp/krc_uvs_$$ 2>&1)
+if echo "$uvs_out" | grep -q "unused variable"; then
+    echo "FAIL: unused_underscore_silent (false warning)"; FAIL=$((FAIL + 1))
+else
+    PASS=$((PASS + 1))
+fi
+rm -f "$DIR/../test_tmp_uvs_$$.kr" /tmp/krc_uvs_$$
+
+TOTAL=$((TOTAL + 1))
+printf 'fn main() { u64 x = 5; exit(x) }\n' > "$DIR/../test_tmp_uvu_$$.kr"
+uvu_out=$($KRC $KRC_FLAGS "$DIR/../test_tmp_uvu_$$.kr" -o /tmp/krc_uvu_$$ 2>&1)
+if echo "$uvu_out" | grep -q "unused variable"; then
+    echo "FAIL: used_var_silent (false warning)"; FAIL=$((FAIL + 1))
+else
+    PASS=$((PASS + 1))
+fi
+rm -f "$DIR/../test_tmp_uvu_$$.kr" /tmp/krc_uvu_$$
 run_test "alloc_aligned_64" 'import "std/mem.kr"
 fn main() {
     uint64 buf = alloc_aligned(100, 64)
