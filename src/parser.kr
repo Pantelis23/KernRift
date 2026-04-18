@@ -824,6 +824,50 @@ fn parse_stmt() -> uint64 {
         return node
     }
 
+    // loop { body } — desugar to while 1 == 1 { body }. Reuses the loop
+    // token's text position to synthesize the literal '1' by rewriting
+    // its first source byte; the token's kind is flipped to IntLit.
+    if kind == 69 {
+        uint64 loop_tok = advance_tok()
+        uint64 body_block = parse_block()
+        // Write a '1' byte at the start of the 'loop' keyword's source
+        // range — safe because no other AST node references that range
+        // after we're done here.
+        uint64 loop_text_start = tok_text_start(loop_tok)
+        uint64 src_p = cg_source + loop_text_start
+        uint8 one_ch = 49
+        unsafe { *(src_p as uint8) = one_ch }
+        // Flip the loop_tok slot into an IntLit with length 1.
+        uint64 lp = p_tok_buf + loop_tok * 16
+        uint32 il_kind = 2
+        unsafe { *(lp as uint32) = il_kind }
+        uint64 lp8 = lp + 8
+        uint32 one_len = 1
+        unsafe { *(lp8 as uint32) = one_len }
+        // Build: Compare(==, IntLit(1), IntLit(1))
+        uint64 lit_a = ast_alloc(AstKind.IntLit)
+        uint32 lt = loop_tok
+        ast_set_data1(lit_a, lt)
+        ast_set_tok(lit_a, lt)
+        uint64 lit_b = ast_alloc(AstKind.IntLit)
+        ast_set_data1(lit_b, lt)
+        ast_set_tok(lit_b, lt)
+        uint64 cmp_node = ast_alloc(AstKind.Compare)
+        uint32 eq_kind = 35   // ==
+        ast_set_data1(cmp_node, eq_kind)
+        uint32 la = lit_a
+        ast_set_child(cmp_node, la)
+        uint32 lb = lit_b
+        ast_set_data2(cmp_node, lb)
+        // Build While wrapping the cmp + user body.
+        uint64 while_node = ast_alloc(AstKind.While)
+        uint32 cn = cmp_node
+        ast_set_child(while_node, cn)
+        uint32 bn = body_block
+        ast_set_data1(while_node, bn)
+        return while_node
+    }
+
     // Defer: `defer { ... }` — runs the body in LIFO order at every
     // function exit (return, exit, fall-through). Function-scoped:
     // a defer lexically inside a nested block is still part of the

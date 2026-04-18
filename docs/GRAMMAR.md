@@ -122,6 +122,7 @@ stmt        = var_decl
             | return_stmt
             | if_stmt
             | while_stmt
+            | loop_stmt
             | for_stmt
             | match_stmt
             | break_stmt
@@ -153,6 +154,7 @@ return_stmt = "return" expr?
 
 if_stmt     = "if" expr block ("else" (if_stmt | block))?
 while_stmt  = "while" expr block
+loop_stmt   = "loop" block                                  (* desugars to while 1 == 1 *)
 for_stmt    = "for" IDENT "in"? expr (".." | "..=") expr block
             (* `in` is optional — both `for i 0..10` and `for i in 0..10` parse.
                `..=` is the inclusive form: the loop visits `end` as well.

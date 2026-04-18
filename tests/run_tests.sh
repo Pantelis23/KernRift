@@ -1460,6 +1460,22 @@ run_test "for_range_no_in" 'fn main() { uint64 s = 0; for i 0..10 { s = s + i };
 run_test "for_range_no_in_inclusive" 'fn main() { uint64 s = 0; for i 0..=5 { s = s + i }; exit(s) }' 15
 run_test "for_range_ident_end"  'fn main() { u64 n = 5; u64 s = 0; for i 0..n { s = s + i }; exit(s) }' 10
 run_test "for_range_ident_both" 'fn main() { u64 a = 2; u64 b = 7; u64 s = 0; for i a..b { s = s + i }; exit(s) }' 20
+run_test "loop_break" 'fn main() { u64 n = 0; loop { n = n + 1; if n >= 42 { break } }; exit(n) }' 42
+run_test "loop_nested_break" 'fn main() {
+    u64 total = 0
+    u64 outer = 0
+    loop {
+        outer = outer + 1
+        u64 inner = 0
+        loop {
+            inner = inner + 1
+            total = total + 1
+            if inner >= 3 { break }
+        }
+        if outer >= 2 { break }
+    }
+    exit(total)
+}' 6
 
 # --- Defer ---
 run_test "defer_on_return" 'static u64 n = 0
