@@ -1351,15 +1351,67 @@ fn parse_stmt() -> uint64 {
     }
 
     // Compound assignment: += -= *= /= %= &= |= ^= <<= >>=
-    // Desugar: x OP= val → x = x OP val
-    // Compound assignment: += -= *= /= %= &= |= ^= <<= >>=
-    // Desugar: x OP= val → x = x OP val
+    // Desugar: x OP= val → x = x OP val. Also supports p.field OP= val
+    // and arr[i] OP= val by building the matching FieldAssign / indexed
+    // assign node instead of a plain Assign.
     uint32 ck = cur_kind()
     uint64 wck = ck
     if wck >= 45 && wck <= 54 {
         uint64 op_tok = advance_tok()
         uint64 rhs = parse_expr()
-        // Build: Assign(lhs_tok, BinOp(op_tok, lhs_copy, rhs))
+        uint32 expr_kind_c = ast_kind(expr)
+        uint64 wek_c = expr_kind_c
+
+        // p.field OP= val → FieldAccess with data3 = BinOp(op, p.field, rhs)
+        if wek_c == 36 {
+            uint64 lhs_copy = ast_alloc(AstKind.FieldAccess)
+            uint32 fobj = ast_child(expr)
+            ast_set_child(lhs_copy, fobj)
+            uint32 fname = ast_data2(expr)
+            ast_set_data2(lhs_copy, fname)
+            ast_set_tok(lhs_copy, fname)
+            uint64 binop = ast_alloc(AstKind.BinOp)
+            uint32 ot32 = op_tok
+            ast_set_data1(binop, ot32)
+            uint32 lc32 = lhs_copy
+            ast_set_child(binop, lc32)
+            uint32 r32 = rhs
+            ast_set_data2(binop, r32)
+            // Overlay the original FieldAccess to carry the store:
+            // data3 = rhs (the binop), data4 = 1 signals field-assign.
+            uint32 bp32 = binop
+            ast_set_data3(expr, bp32)
+            uint32 one = 1
+            ast_set_data4(expr, one)
+            return expr
+        }
+
+        // arr[i] OP= val → Index with data3=1 + data2 = BinOp(op, arr[i], rhs)
+        if wek_c == 37 {
+            // Build a fresh copy of the Index node for the read side so
+            // the store side can reuse the existing node as its AST home.
+            uint64 idx_copy = ast_alloc(AstKind.Index)
+            uint32 arr_tok = ast_data1(expr)
+            ast_set_data1(idx_copy, arr_tok)
+            uint32 idx_child = ast_child(expr)
+            ast_set_child(idx_copy, idx_child)
+            ast_set_tok(idx_copy, arr_tok)
+            uint64 binop2 = ast_alloc(AstKind.BinOp)
+            uint32 ot32b = op_tok
+            ast_set_data1(binop2, ot32b)
+            uint32 ic32 = idx_copy
+            ast_set_child(binop2, ic32)
+            uint32 r32b = rhs
+            ast_set_data2(binop2, r32b)
+            // Store form: data2 = BinOp, data3 = 1 (indexed-assign marker).
+            uint32 bp32b = binop2
+            ast_set_data2(expr, bp32b)
+            uint32 one_b = 1
+            ast_set_data3(expr, one_b)
+            return expr
+        }
+
+        // Plain identifier OP= val.
         uint32 lhs_tok = ast_data1(expr)
         uint64 lhs_copy = ast_alloc(AstKind.Ident)
         ast_set_data1(lhs_copy, lhs_tok)

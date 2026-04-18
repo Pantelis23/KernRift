@@ -1163,6 +1163,23 @@ fn sema_check_expr(uint64 node) {
         if vi != 0xFFFFFFFF { sema_var_mark_used(vi) }
         return
     }
+
+    // FieldAccess (36): both EnumName.Field (constant access) and
+    // obj.field on a variable. In the variable case the object token is
+    // the base var; mark it used. Walks the object chain so struct
+    // method calls and nested access (p.inner.x) flow through.
+    if kind == 36 {
+        uint32 fa_obj = ast_child(node)
+        uint64 wfa_obj = fa_obj
+        if wfa_obj != 0 { sema_check_expr(wfa_obj) }
+        uint32 fa_obj_tok = ast_data1(node)
+        uint64 wfa_obj_tok = fa_obj_tok
+        if wfa_obj_tok != 0 {
+            uint64 fi = sema_var_lookup_v(wfa_obj_tok)
+            if fi != 0xFFFFFFFF { sema_var_mark_used(fi) }
+        }
+        return
+    }
 }
 
 // Check a statement for call argument count mismatches
