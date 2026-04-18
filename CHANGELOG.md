@@ -2,6 +2,36 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## v2.8.7 — 2026-04-18
+
+Android/ARM64 fat-binary segfault fix.
+
+### Fixed
+- **`kr krc.krbo` segfaulted on every ARM64 platform (Android, Linux, macOS,
+  Windows).** Every recently-released ARM64 krc was IR-compiled, but the IR
+  ARM64 backend mis-compiles `compile_fat` itself — the machine code runs
+  until it hits LZ4 pair compression, then segfaults inside the compressor.
+  The bug survived testing because every prior ARM64 release was manually
+  rebuilt with `--legacy` before upload. Now:
+  - All four ARM64 slices inside `compile_fat` route through `gen_function_a64`
+    (legacy) by default, so `krc.krbo`'s arm64 slice is functional for users.
+    `--ir` still forces IR through the fat ARM64 path for backend testing.
+  - `make dist` and `.github/workflows/release.yml` pass `--legacy --arch=arm64`
+    when building `krc-linux-arm64` / `krc-windows-arm64.exe` /
+    `krc-macos-arm64` / `krc-android-arm64` so CI-published binaries also
+    boot correctly. The 13% size hit is the cost of correctness; the IR
+    ARM64 regression is being isolated separately.
+  - Single-architecture builds (`--arch=arm64`) stay on the IR default —
+    only the fat-binary path and the shipped krc binaries themselves move
+    to legacy.
+
+### Known
+- IR ARM64 code generation still mis-handles string compare, atomics,
+  struct equality, f32 printing, and several other code patterns when the
+  resulting binary is executed natively on ARM64. Tracked for a follow-up.
+  Cross-compiled single-arch ARM64 targets that users ship from an x86_64
+  host execute fine on ARM64 for the tests they pass locally.
+
 ## v2.8.6 — 2026-04-18
 
 compile_fat memory regression fix.

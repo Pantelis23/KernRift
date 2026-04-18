@@ -85,14 +85,17 @@ dist: build/krc2
 	cp build/krc2 $(DIST_DIR)/krc-linux-x86_64
 	chmod +x $(DIST_DIR)/krc-linux-x86_64
 	@echo "  krc-linux-x86_64"
-	@# ARM64 Linux ELF (cross-compiled)
-	./build/krc2 --arch=arm64 build/krc.kr -o $(DIST_DIR)/krc-linux-arm64 2>/dev/null
+	@# ARM64 Linux ELF (cross-compiled). IR ARM64 mis-compiles compile_fat
+	@# itself, so ship krc-arm64 built with legacy codegen (~13% larger but
+	@# functioning). User programs compiled under IR ARM64 still work for
+	@# single-arch builds — only the compiler's own fat path hits the bug.
+	./build/krc2 --legacy --arch=arm64 build/krc.kr -o $(DIST_DIR)/krc-linux-arm64 2>/dev/null
 	chmod +x $(DIST_DIR)/krc-linux-arm64
 	@echo "  krc-linux-arm64"
 	@# Windows PE (cross-compiled)
 	./build/krc2 --arch=x86_64 --emit=pe build/krc.kr -o $(DIST_DIR)/krc-windows-x86_64.exe 2>/dev/null
 	@echo "  krc-windows-x86_64.exe"
-	./build/krc2 --arch=arm64 --emit=pe build/krc.kr -o $(DIST_DIR)/krc-windows-arm64.exe 2>/dev/null
+	./build/krc2 --legacy --arch=arm64 --emit=pe build/krc.kr -o $(DIST_DIR)/krc-windows-arm64.exe 2>/dev/null
 	@echo "  krc-windows-arm64.exe"
 	@# Fat binary (default)
 	./build/krc2 build/krc.kr -o $(DIST_DIR)/krc.krbo 2>/dev/null

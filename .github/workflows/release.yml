@@ -39,14 +39,19 @@ jobs:
 
       - name: Build all platform binaries
         run: |
-          # krc for Windows
+          # krc for Windows. ARM64 krc is built with --legacy — IR ARM64
+          # currently mis-compiles compile_fat (complex control flow inside
+          # the function segfaults at runtime), and the bug lives in ARM64
+          # IR regardless of target OS, so every krc-arm64 variant needs
+          # legacy codegen until the underlying bug is fixed. User programs
+          # compiled by these krc's still go through IR on ARM64.
           ./build/krc2 --arch=x86_64 --emit=pe build/krc.kr -o dist/krc-windows-x86_64.exe
-          ./build/krc2 --arch=arm64  --emit=pe build/krc.kr -o dist/krc-windows-arm64.exe
+          ./build/krc2 --legacy --arch=arm64 --emit=pe build/krc.kr -o dist/krc-windows-arm64.exe
           # krc for macOS
           ./build/krc2 --arch=x86_64 --emit=macho build/krc.kr -o dist/krc-macos-x86_64
-          ./build/krc2 --arch=arm64  --emit=macho build/krc.kr -o dist/krc-macos-arm64
+          ./build/krc2 --legacy --arch=arm64 --emit=macho build/krc.kr -o dist/krc-macos-arm64
           # krc for Android
-          ./build/krc2 --emit=android build/krc.kr -o dist/krc-android-arm64
+          ./build/krc2 --legacy --emit=android build/krc.kr -o dist/krc-android-arm64
           ./build/krc2 --arch=x86_64 --emit=android build/krc.kr -o dist/krc-android-x86_64
           # kr runner (merge bcj.kr + runner.kr)
           cat src/bcj.kr src/runner.kr > build/kr.kr
