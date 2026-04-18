@@ -498,6 +498,20 @@ fn main() { println_str(str_from_bool(0)) }' "false"
 run_test_output "str_from_codepoint_latin1" 'import "std/string.kr"
 fn main() { println_str(str_from_codepoint(0xE9)) }' "é"
 
+# --- Error-handling helpers (v2.8.14) ---
+run_test "opt_some_unwrap" 'import "std/string.kr"
+fn main() { exit(opt_unwrap(opt_some(42))) }' 42
+run_test "opt_is_some_yes" 'import "std/string.kr"
+fn main() { exit(opt_is_some(opt_some(0))) }' 1
+run_test "opt_is_some_no" 'import "std/string.kr"
+fn main() { exit(opt_is_some(opt_none())) }' 0
+run_test "is_errno_yes" 'import "std/io.kr"
+fn main() { exit(is_errno(0xFFFFFFFFFFFFFFFE)) }' 1
+run_test "is_errno_no" 'import "std/io.kr"
+fn main() { exit(is_errno(42)) }' 0
+run_test "get_errno_val" 'import "std/io.kr"
+fn main() { exit(get_errno(0xFFFFFFFFFFFFFFFE)) }' 2
+
 # --- Builtin: dealloc ---
 run_test "dealloc_noop" 'fn main() { uint64 p = alloc(64); dealloc(p); exit(0) }' 0
 

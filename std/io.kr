@@ -134,3 +134,23 @@ fn scan_int() -> u64 {
 fn scan_str() -> u64 {
     return read_line(1024)
 }
+
+// ---------------------------------------------------------------------------
+// Syscall-errno helpers — see docs/ERROR_HANDLING.md Pattern 2.
+//
+// Linux syscalls that fail return -errno in two's complement. Cast as u64
+// that's a value in the window 0xFFFFFFFFFFFFF000..0xFFFFFFFFFFFFFFFF
+// (errno values are always < 4096, largest Linux errno is EHWPOISON = 133).
+// ---------------------------------------------------------------------------
+
+// 1 if `r` looks like a kernel error code, 0 otherwise.
+fn is_errno(u64 r) -> u64 {
+    if r > 0xFFFFFFFFFFFFF000 { return 1 }
+    return 0
+}
+
+// Return the positive errno value if `r` is an error, else 0.
+fn get_errno(u64 r) -> u64 {
+    if is_errno(r) != 0 { return 0 - r }
+    return 0
+}

@@ -223,6 +223,41 @@ fn str_trim(u64 s) -> u64 {
 }
 
 // ---------------------------------------------------------------------------
+// opt_* helpers for Pattern 1 of the error-handling convention
+// (docs/ERROR_HANDLING.md). The sentinel is 0xFFFFFFFFFFFFFFFF ("all ones"),
+// chosen so it's unreachable as a legitimate index / offset / byte-count.
+// ---------------------------------------------------------------------------
+
+// The sentinel value representing "no result".
+fn opt_none() -> u64 {
+    return 0xFFFFFFFFFFFFFFFF
+}
+
+// Wrap a value. Aborts if the value already equals the sentinel.
+fn opt_some(u64 v) -> u64 {
+    if v == 0xFFFFFFFFFFFFFFFF {
+        write(2, "opt_some: value equals sentinel\n", 32)
+        exit(1)
+    }
+    return v
+}
+
+// 1 if `v` is a real value, 0 if it's the sentinel.
+fn opt_is_some(u64 v) -> u64 {
+    if v == 0xFFFFFFFFFFFFFFFF { return 0 }
+    return 1
+}
+
+// Extract the value or abort.
+fn opt_unwrap(u64 v) -> u64 {
+    if v == 0xFFFFFFFFFFFFFFFF {
+        write(2, "opt_unwrap: sentinel\n", 21)
+        exit(1)
+    }
+    return v
+}
+
+// ---------------------------------------------------------------------------
 // Added in v2.8.11 — the "missing" stdlib string operations that previously
 // required every caller to roll their own. All functions that return strings
 // allocate fresh memory via `alloc()`; callers own the result.
