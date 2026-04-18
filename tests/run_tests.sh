@@ -1889,7 +1889,13 @@ run_test "device_block_read_write" 'device Fake at 0x66666000 {
 fn main() {
     // mmap a page at 0x66666000 (Linux x86_64 syscall 9, ARM64 222)
     u64 nr = 9
-    if get_arch_id() == 2 { nr = 222 }
+    // arm64 mmap syscall is 222 on every OS (Linux / Android / macOS).
+    // get_arch_id() returns 2=linux-arm64, 4=windows-arm64, 6=macos-arm64, 7=android-arm64.
+    u64 aid = get_arch_id()
+    if aid == 2 { nr = 222 }
+    if aid == 4 { nr = 222 }
+    if aid == 6 { nr = 222 }
+    if aid == 7 { nr = 222 }
     syscall_raw(nr, 0x66666000, 4096, 3, 0x32, 0xFFFFFFFFFFFFFFFF, 0)
     Fake.Data = 42
     Fake.Status = 7

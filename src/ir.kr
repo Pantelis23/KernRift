@@ -2122,12 +2122,23 @@ fn ir_lower_expr(uint64 node) -> uint64 {
             return dest
         }
 
-        // get_arch_id() → compile-time arch ID
+        // get_arch_id() → compile-time arch ID.
+        // Matches the legacy codegen IDs. Arch+OS crosstable:
+        //   x86_64:  linux=1, windows=3, macos=5, android=8
+        //   arm64:   linux=2, windows=4, macos=6, android=7
+        // target_arch is 0 for x86_64, 1 for arm64 (set from main.kr).
         if tok_matches(wct, "get_arch_id", 11) != 0 {
             uint64 arch_id = 1
-            if target_os == 2 { arch_id = 3 }
-            if target_os == 1 { arch_id = 5 }
-            if target_os == 3 { arch_id = 8 }
+            if target_arch == 1 {
+                arch_id = 2
+                if target_os == 2 { arch_id = 4 }
+                if target_os == 1 { arch_id = 6 }
+                if target_os == 3 { arch_id = 7 }
+            } else {
+                if target_os == 2 { arch_id = 3 }
+                if target_os == 1 { arch_id = 5 }
+                if target_os == 3 { arch_id = 8 }
+            }
             uint64 dest = ir_new_vreg()
             ir_emit(IR_CONST, dest, 0, 0, arch_id, ir_current_bb)
             return dest

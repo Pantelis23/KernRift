@@ -126,6 +126,14 @@ static uint64 str_fixup_count = 0
 
 // Target OS: 0=linux, 1=macos, 2=windows
 static uint64 target_os = 0
+// Active target arch: 0 = x86_64, 1 = arm64. Settable from main.kr
+// via set_target_arch so ir.kr's get_arch_id lowering can pick the
+// right constant without having to thread the value through every
+// function call.
+static uint64 target_arch = 0
+
+@export
+fn set_target_arch(uint64 v) { target_arch = v }
 
 // Windows IAT call fixups: [patch_offset(4), iat_slot(4)] × 1024
 static uint64 win_iat_fixups = 0

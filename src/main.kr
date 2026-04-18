@@ -2144,6 +2144,7 @@ fn time_ns() -> uint64 {
 // emit: 0=elfexe, 1=machoexe, 2=peexe, 3=obj (ELF relocatable), 5=asm listing, 6=ir dump
 fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode) {
     uint64 t_start = time_ns()
+    set_target_arch(arch)
     import_init()
     import_check_file(input_path)
     import_process(input_path)
@@ -2848,6 +2849,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
 
     // === Compile x86_64 ELF (Linux) ===
     target_os = 0
+    set_target_arch(0)
     ast_init(262144)
     codegen_init(4194304, source, my_tokens)
     parser_init(my_tokens, saved_tcount)
@@ -2938,6 +2940,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     }
 
     // === Compile ARM64 ===
+    set_target_arch(1)
     // Reset codegen for ARM64 pass
     out_len = 0
     fn_count = 0
@@ -3042,6 +3045,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     }
 
     // === Compile x86_64 PE (Windows) ===
+    set_target_arch(0)
     target_os = 2
     out_len = 0
     fn_count = 0
@@ -3147,6 +3151,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
         pxi = pxi + 1
     }
 
+    set_target_arch(1)
     // === Compile ARM64 PE (Windows) ===
     out_len = 0
     fn_count = 0
@@ -3274,6 +3279,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
         pai = pai + 1
     }
 
+    set_target_arch(0)
     // === Compile x86_64 Mach-O (macOS) ===
     target_os = 1
     out_len = 0
@@ -3370,6 +3376,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
         unsafe { *(dp as uint8) = bb }
         mxi = mxi + 1
     }
+    set_target_arch(1)
 
     // === Compile ARM64 Mach-O (macOS) ===
     out_len = 0
@@ -3500,6 +3507,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
         unsafe { *(dp as uint8) = bb }
         mai = mai + 1
     }
+    set_target_arch(0)
 
     // === Compile x86_64 Android PIE ELF ===
     target_os = 3
@@ -3613,6 +3621,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
         uint8 bb = bv
         unsafe { *(dp as uint8) = bb }
         axi = axi + 1
+    set_target_arch(1)
     }
 
     // === Compile ARM64 Android PIE ELF ===
