@@ -8330,20 +8330,29 @@ fn gen_stmt(uint64 node) {
         uint32 arm_idx = ast_data1(node)
         uint64 warm = arm_idx
         while warm != 0 {
-            // Evaluate arm value
             uint32 val_idx = ast_data1(warm)
             uint64 wval = val_idx
-            gen_expr(wval)
-            // cmp scrutinee (in temp), arm_value (in rax)
-            // mov rcx, rax
-            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)
-            emit_load_rax_from_stack(match_temp)
-            // cmp rax, rcx
-            emit_byte(0x48); emit_byte(0x39); emit_byte(0xC8)
-            // jne skip_arm
-            emit_byte(0x0F); emit_byte(0x85)
-            uint64 jne_patch = out_len
-            emit_u32_le(0)
+            // Detect the wildcard pattern `_` — Ident whose text is a single
+            // underscore. For it we skip the compare and always take the arm.
+            uint64 is_wild = 0
+            uint32 vk = ast_kind(wval)
+            if vk == 32 {
+                uint32 wild_tok = ast_data1(wval)
+                uint64 wwt = wild_tok
+                if tok_matches(wwt, "_", 1) != 0 { is_wild = 1 }
+            }
+            uint64 jne_patch = 0
+            if is_wild == 0 {
+                gen_expr(wval)
+                // cmp scrutinee (in temp), arm_value (in rax)
+                emit_byte(0x48); emit_byte(0x89); emit_byte(0xC1)   // mov rcx, rax
+                emit_load_rax_from_stack(match_temp)
+                emit_byte(0x48); emit_byte(0x39); emit_byte(0xC8)   // cmp rax, rcx
+                // jne skip_arm
+                emit_byte(0x0F); emit_byte(0x85)
+                jne_patch = out_len
+                emit_u32_le(0)
+            }
             // Execute arm body
             uint32 body_idx = ast_data2(warm)
             uint64 wbody = body_idx
@@ -8360,9 +8369,11 @@ fn gen_stmt(uint64 node) {
             uint32 ep32 = end_patch
             unsafe { *(bf as uint32) = ep32 }
             break_fixup_count = break_fixup_count + 1
-            // Patch jne to here (skip this arm)
-            uint64 skip_target = out_len
-            patch_u32(jne_patch, (skip_target - jne_patch - 4) & 0xFFFFFFFF)
+            // Patch jne to skip past the body (only for non-wildcard arms).
+            if is_wild == 0 {
+                uint64 skip_target = out_len
+                patch_u32(jne_patch, (skip_target - jne_patch - 4) & 0xFFFFFFFF)
+            }
             uint32 next_arm = ast_next(warm)
             warm = next_arm
         }

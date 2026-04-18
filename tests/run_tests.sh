@@ -1461,6 +1461,21 @@ run_test "for_range_no_in_inclusive" 'fn main() { uint64 s = 0; for i 0..=5 { s 
 run_test "for_range_ident_end"  'fn main() { u64 n = 5; u64 s = 0; for i 0..n { s = s + i }; exit(s) }' 10
 run_test "for_range_ident_both" 'fn main() { u64 a = 2; u64 b = 7; u64 s = 0; for i a..b { s = s + i }; exit(s) }' 20
 run_test "loop_break" 'fn main() { u64 n = 0; loop { n = n + 1; if n >= 42 { break } }; exit(n) }' 42
+run_test "match_wildcard_miss" 'fn main() {
+    u64 x = 999
+    match x {
+        1 => { exit(1) }
+        5 => { exit(55) }
+        _ => { exit(42) }
+    }
+}' 42
+run_test "match_wildcard_hit_first" 'fn main() {
+    u64 x = 5
+    match x {
+        5 => { exit(50) }
+        _ => { exit(42) }
+    }
+}' 50
 run_test "loop_nested_break" 'fn main() {
     u64 total = 0
     u64 outer = 0

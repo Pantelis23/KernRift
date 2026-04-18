@@ -3007,13 +3007,27 @@ fn ir_lower_stmt(uint64 node) {
             if ak == 20 {
                 uint32 val_expr = ast_data1(warm)
                 uint32 body_block = ast_data2(warm)
-                uint64 val_v = ir_lower_expr(val_expr)
-                uint64 cmp_v = ir_new_vreg()
-                ir_emit(IR_CMP_EQ, cmp_v, scrut_v, val_v, 0, ir_current_bb)
+                // Wildcard: Ident named "_" — always matches. Bypass the
+                // compare / BR_COND and just lower the body in place.
+                uint64 is_wild = 0
+                uint32 vak = ast_kind(val_expr)
+                if vak == 32 {
+                    uint32 wild_tok = ast_data1(val_expr)
+                    uint64 wwt = wild_tok
+                    if tok_matches(wwt, "_", 1) != 0 { is_wild = 1 }
+                }
                 uint64 bb_body = ir_new_bb()
                 uint64 bb_next = ir_new_bb()
-                ir_emit(IR_BR_COND, 0, cmp_v, 0, bb_body, ir_current_bb)
-                ir_bb_set_succ(ir_current_bb, bb_next, bb_body)
+                if is_wild == 0 {
+                    uint64 val_v = ir_lower_expr(val_expr)
+                    uint64 cmp_v = ir_new_vreg()
+                    ir_emit(IR_CMP_EQ, cmp_v, scrut_v, val_v, 0, ir_current_bb)
+                    ir_emit(IR_BR_COND, 0, cmp_v, 0, bb_body, ir_current_bb)
+                    ir_bb_set_succ(ir_current_bb, bb_next, bb_body)
+                } else {
+                    ir_emit(IR_BR, 0, 0, 0, bb_body, ir_current_bb)
+                    ir_bb_set_succ(ir_current_bb, bb_body, 0xFFFFFFFF)
+                }
                 // Restore variable map to pre-match state for this arm
                 mi = 0
                 while mi < match_snap_count {

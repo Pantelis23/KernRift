@@ -4462,13 +4462,23 @@ fn gen_stmt_a64(uint64 node) {
         while warm != 0 {
             uint32 val_idx = ast_data1(warm)
             uint64 wval = val_idx
-            gen_expr_a64(wval)
-            emit_a64_mov(9, 0)
-            emit_a64_load_x0(match_temp)
-            emit_a64_cmp(0, 9)
-            // B.NE skip_arm (placeholder)
-            uint64 bne_patch = out_len
-            emit_a64(0x54000001)  // B.NE +0 (patched)
+            uint64 is_wild = 0
+            uint32 vk = ast_kind(wval)
+            if vk == 32 {
+                uint32 wild_tok = ast_data1(wval)
+                uint64 wwt = wild_tok
+                if tok_matches(wwt, "_", 1) != 0 { is_wild = 1 }
+            }
+            uint64 bne_patch = 0
+            if is_wild == 0 {
+                gen_expr_a64(wval)
+                emit_a64_mov(9, 0)
+                emit_a64_load_x0(match_temp)
+                emit_a64_cmp(0, 9)
+                // B.NE skip_arm (placeholder)
+                bne_patch = out_len
+                emit_a64(0x54000001)  // B.NE +0 (patched)
+            }
             // Execute body
             uint32 body_idx = ast_data2(warm)
             uint64 wbody = body_idx
@@ -4480,9 +4490,10 @@ fn gen_stmt_a64(uint64 node) {
             uint32 ep32 = end_patch
             unsafe { *(bf as uint32) = ep32 }
             break_fixup_count = break_fixup_count + 1
-            // Patch B.NE to here
-            uint64 skip_off = (out_len - bne_patch) >> 2
-            patch_u32(bne_patch, 0x54000001 | (skip_off << 5))
+            if is_wild == 0 {
+                uint64 skip_off = (out_len - bne_patch) >> 2
+                patch_u32(bne_patch, 0x54000001 | (skip_off << 5))
+            }
             uint32 next_arm = ast_next(warm)
             warm = next_arm
         }
