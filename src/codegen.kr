@@ -12194,3 +12194,37 @@ fn codegen_write_output(uint64 output_path) {
 fn codegen_output_len() -> uint64 {
     return out_len
 }
+
+// Scan the output buffer backward from out_len for the last non-zero
+// byte. Returns the offset of (one past) that byte — i.e., the length
+// of a prefix that covers every non-zero byte. If the buffer is all
+// zeros (or empty), returns 0.
+//
+// Used by BSS-segment optimisation: when all the trailing bytes of
+// the last PT_LOAD / section are zero static-array fill, the output
+// file can be truncated to this length while the loader zero-fills
+// up to the segment's in-memory size (p_memsz or VirtualSize).
+@export
+fn codegen_last_nonzero_end() -> uint64 {
+    uint64 p = out_len
+    while p > 0 {
+        uint64 bp = out_buf + p - 1
+        uint64 b = 0
+        unsafe { *(bp as uint8) -> b }
+        if b != 0 { return p }
+        p = p - 1
+    }
+    return 0
+}
+
+// Truncate the output buffer to the given length. Used by the BSS
+// optimisation path to drop trailing zero bytes from the emitted
+// file without touching segment p_memsz. Caller is responsible for
+// patching segment headers so the ELF/PE loader zero-fills the
+// truncated region.
+@export
+fn codegen_truncate(uint64 new_len) {
+    if new_len <= out_len {
+        out_len = new_len
+    }
+}

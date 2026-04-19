@@ -2300,10 +2300,26 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
         resolve_fnaddr_fixups_a64()
     }
 
-    // Emit static + string data. Align to 8 bytes on arm64 so the 64-bit
-    // LDR (imm12 scaled by 8) can encode any slot offset exactly — without
-    // padding, a static at a non-8-aligned offset silently rounds down and
-    // reads trailing code bytes instead of its own value.
+    // Emit string data BEFORE static data so trailing zero bytes from
+    // uninitialised static arrays end up at the tail of the file — the
+    // BSS optimisation below can then truncate them. (Ordering affects
+    // only byte layout; resolve_*_fixups is called with its start
+    // offset so either order works.)
+    // Align to 8 bytes on arm64 first so the 64-bit LDR (imm12 scaled
+    // by 8) can encode any slot offset exactly — without padding, a
+    // static at a non-8-aligned offset silently rounds down and reads
+    // trailing code bytes instead of its own value.
+    if arch == 1 {
+        while (codegen_output_len() & 7) != 0 { emit_byte(0) }
+    }
+    uint64 str_start = codegen_output_len()
+    emit_string_data()
+    if arch == 0 {
+        resolve_string_fixups(str_start)
+    } else {
+        resolve_string_fixups_a64(str_start)
+    }
+    // Re-align to 8 bytes on arm64 between strings and statics.
     if arch == 1 {
         while (codegen_output_len() & 7) != 0 { emit_byte(0) }
     }
@@ -2313,13 +2329,6 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
         resolve_static_fixups(data_start)
     } else {
         resolve_static_fixups_a64(data_start)
-    }
-    uint64 str_start = codegen_output_len()
-    emit_string_data()
-    if arch == 0 {
-        resolve_string_fixups(str_start)
-    } else {
-        resolve_string_fixups_a64(str_start)
     }
 
     uint64 text_size = codegen_output_len() - text_start
@@ -2398,8 +2407,26 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
         patch_u32(24, entry_va & 0xFFFFFFFF)
         patch_u32(28, (entry_va >> 32) & 0xFFFFFFFF)
         uint64 total_size = header_size + text_size
-        patch_u32(96, total_size & 0xFFFFFFFF)
-        patch_u32(100, (total_size >> 32) & 0xFFFFFFFF)
+        // BSS optimisation: trailing zeros from uninitialised static
+        // arrays don't need to live in the file. Scan for the last
+        // non-zero byte; if the gap is worth it, truncate the output
+        // and keep p_memsz at the full size so the ELF loader zero-
+        // fills the rest at load time. Skip when DWARF is enabled —
+        // debug sections get emitted after this patch and reject
+        // truncation of the main load segment.
+        uint64 p_filesz = total_size
+        if debug_info_mode == 0 {
+            uint64 tail_start = codegen_last_nonzero_end()
+            uint64 bss_bytes = total_size - tail_start
+            // 4 KB page threshold — anything smaller isn't worth the
+            // extra segment bookkeeping.
+            if bss_bytes >= 4096 {
+                codegen_truncate(tail_start)
+                p_filesz = tail_start
+            }
+        }
+        patch_u32(96, p_filesz & 0xFFFFFFFF)
+        patch_u32(100, (p_filesz >> 32) & 0xFFFFFFFF)
         patch_u32(104, total_size & 0xFFFFFFFF)
         patch_u32(108, (total_size >> 32) & 0xFFFFFFFF)
         // Emit DWARF debug sections if -g active
