@@ -2155,19 +2155,35 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
     cdbg = "M16 after import_init\n"
     write(2, cdbg, 22)
     import_check_file(input_path)
+    cdbg = "M17 after import_check_file\n"
+    write(2, cdbg, 28)
     import_process(input_path)
+    cdbg = "M18 after import_process\n"
+    write(2, cdbg, 25)
     uint64 source = import_buf
     uint64 size = import_buf_len
 
     uint64 max_tok = 262144
     uint64 my_tokens = alloc(max_tok * 16)
+    cdbg = "M19 after tokens alloc\n"
+    write(2, cdbg, 23)
     lexer_init(source, size, my_tokens, max_tok)
     uint64 tcount = lexer_run()
+    cdbg = "M20 after lexer_run\n"
+    write(2, cdbg, 20)
 
     ast_init(262144)
+    cdbg = "M21 after ast_init\n"
+    write(2, cdbg, 19)
     codegen_init(4194304, source, my_tokens)
+    cdbg = "M22 after codegen_init\n"
+    write(2, cdbg, 23)
     parser_init(my_tokens, tcount)
+    cdbg = "M23 after parser_init\n"
+    write(2, cdbg, 22)
     uint64 root = parse_module()
+    cdbg = "M24 after parse_module\n"
+    write(2, cdbg, 23)
 
     // Semantic validation: check arg counts, missing returns, duplicate functions
     uint64 sema_errs = run_semantic_checks(root, source, my_tokens)
