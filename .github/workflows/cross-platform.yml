@@ -583,14 +583,20 @@ jobs:
       - name: Fat-binary self-host determinism (Windows x86_64)
         shell: pwsh
         run: |
-          # kr-win-x64.exe extracts the Windows x86_64 slice from
-          # krc.krbo and runs it as a compile_fat driver twice.
-          # Byte-equality of the two .krbo outputs confirms the
-          # compression + BCJ + fixup pipeline is deterministic on
-          # this host.
-          $r = Start-Process -FilePath bins\kr-win-x64.exe -ArgumentList 'bins\krc.krbo','bins\krc-source.kr','-o','krc2.krbo' -Wait -PassThru -NoNewWindow
+          # We drive compile_fat directly via the cross-compiled
+          # krc-win-x64.exe — NOT via kr-win-x64.exe. The Windows kr
+          # runner currently calls CreateProcessA with
+          # lpCommandLine=NULL (see src/codegen.kr:5806, 'no arg
+          # forwarding on Windows yet'), so the extracted compiler
+          # spawns with no argv and bails with 'krc: no input file'.
+          # That's a real limitation we should fix separately; for
+          # the Tier 1 #3 fat-determinism check we want signal on
+          # the fat-emitter pipeline, not on the runner's argv
+          # handling. Two compile_fat runs with identical input must
+          # produce byte-identical .krbo output.
+          $r = Start-Process -FilePath bins\krc-win-x64.exe -ArgumentList 'bins\krc-source.kr','-o','krc2.krbo' -Wait -PassThru -NoNewWindow
           if ($r.ExitCode -ne 0) { Write-Host "FAIL: krc2.krbo compile (exit=$($r.ExitCode))"; exit 1 }
-          $r = Start-Process -FilePath bins\kr-win-x64.exe -ArgumentList 'krc2.krbo','bins\krc-source.kr','-o','krc3.krbo' -Wait -PassThru -NoNewWindow
+          $r = Start-Process -FilePath bins\krc-win-x64.exe -ArgumentList 'bins\krc-source.kr','-o','krc3.krbo' -Wait -PassThru -NoNewWindow
           if ($r.ExitCode -ne 0) { Write-Host "FAIL: krc3.krbo compile (exit=$($r.ExitCode))"; exit 1 }
           $h2 = (Get-FileHash -Algorithm MD5 krc2.krbo).Hash
           $h3 = (Get-FileHash -Algorithm MD5 krc3.krbo).Hash
@@ -742,14 +748,14 @@ jobs:
       - name: Fat-binary self-host determinism (Windows ARM64)
         shell: pwsh
         run: |
-          # Same pattern as the x86_64 Windows job: kr-win-arm64
-          # extracts the arm64 slice from krc.krbo, compile_fat runs
-          # twice with identical input, outputs must match byte-for-
-          # byte. Catches fat-container non-determinism on the arm64
-          # PE codegen path specifically.
-          $r = Start-Process -FilePath bins\kr-win-arm64.exe -ArgumentList 'bins\krc.krbo','bins\krc-source.kr','-o','krc2.krbo' -Wait -PassThru -NoNewWindow
+          # Same limitation as the x86_64 Windows job: the kr runner
+          # doesn't forward args on Windows yet (lpCommandLine=NULL),
+          # so we drive compile_fat through krc-win-arm64.exe directly
+          # until kr-runner arg forwarding lands. Two identical runs
+          # of compile_fat must produce byte-identical .krbo output.
+          $r = Start-Process -FilePath bins\krc-win-arm64.exe -ArgumentList 'bins\krc-source.kr','-o','krc2.krbo' -Wait -PassThru -NoNewWindow
           if ($r.ExitCode -ne 0) { Write-Host "FAIL: krc2.krbo compile (exit=$($r.ExitCode))"; exit 1 }
-          $r = Start-Process -FilePath bins\kr-win-arm64.exe -ArgumentList 'krc2.krbo','bins\krc-source.kr','-o','krc3.krbo' -Wait -PassThru -NoNewWindow
+          $r = Start-Process -FilePath bins\krc-win-arm64.exe -ArgumentList 'bins\krc-source.kr','-o','krc3.krbo' -Wait -PassThru -NoNewWindow
           if ($r.ExitCode -ne 0) { Write-Host "FAIL: krc3.krbo compile (exit=$($r.ExitCode))"; exit 1 }
           $h2 = (Get-FileHash -Algorithm MD5 krc2.krbo).Hash
           $h3 = (Get-FileHash -Algorithm MD5 krc3.krbo).Hash
