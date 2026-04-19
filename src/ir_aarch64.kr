@@ -1632,33 +1632,28 @@ fn ir_emit_arm64_insn(uint64 ii) {
             }
             emit_a64_mov_imm(9, 104)
             emit_a64_str32(9, 31, 0x40)
-            // ---- Build quoted cmdline at sp+0xD0 ----
+            // ---- Build space-separated cmdline at sp+0xD0 ----
+            // No quoting — our child parser splits on 0x20 without
+            // stripping quotes (src/main.kr:21 win_init_args).
             // x9 = write ptr, x20 = argv walk, x10 = arg*, x11 = byte
             emit_a64_add_imm(9, 31, 0xD0)
-            // L_outer (+0): ldr x10,[x20]; cbz x10,L_done (+72)
+            // L_outer (+0): ldr x10,[x20]; cbz x10,L_done (+48)
             emit_a64_ldr(10, 20, 0)
-            emit_a64_cbz(10, 72)
-            // Open quote
-            emit_a64_mov_imm(11, 0x22)
-            emit_a64_strb(11, 9, 0)
-            emit_a64_add_imm(9, 9, 1)
-            // L_inner (+20): ldrb w11,[x10]; cbz x11,L_end_copy (+20)
+            emit_a64_cbz(10, 48)
+            // L_inner (+8): ldrb w11,[x10]; cbz x11,L_end_copy (+20)
             emit_a64_ldrb(11, 10, 0)
             emit_a64_cbz(11, 20)
             emit_a64_strb(11, 9, 0)
             emit_a64_add_imm(10, 10, 1)
             emit_a64_add_imm(9, 9, 1)
             emit_a64(0x17FFFFFB)                // b L_inner (-20)
-            // L_end_copy (+44): close quote + space
-            emit_a64_mov_imm(11, 0x22)
-            emit_a64_strb(11, 9, 0)
-            emit_a64_add_imm(9, 9, 1)
+            // L_end_copy (+32): space + advance
             emit_a64_mov_imm(11, 0x20)
             emit_a64_strb(11, 9, 0)
             emit_a64_add_imm(9, 9, 1)
             emit_a64_add_imm(20, 20, 8)
-            emit_a64(0x17FFFFEE)                // b L_outer (-72)
-            // L_done (+76): null-terminate
+            emit_a64(0x17FFFFF4)                // b L_outer (-48)
+            // L_done (+52): null-terminate
             emit_a64_strb(31, 9, 0)
             // ---- CreateProcessA ----
             emit_a64_mov(0, 19)                 // x0 = path

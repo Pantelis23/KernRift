@@ -2804,17 +2804,16 @@ fn gen_expr_a64(uint64 node) {
                 // STARTUPINFOA.cb = 104
                 emit_a64_mov_imm(9, 104)
                 emit_a64(0xB90060E9)                // str w9, [sp, #0x60]
-                // ---- Build quoted cmdline at sp+0xE0 ----
+                // ---- Build space-separated cmdline at sp+0xE0 ----
+                // No quoting — our child parser (win_init_args) splits on
+                // 0x20 and doesn't strip quotes, so quoted tokens would
+                // arrive in argv[i] with literal " bytes.
                 // x9 = write ptr; x20 = argv walk ptr; x10 = current arg*; x11 = byte scratch
                 emit_a64_add_imm(9, 31, 0xE0)
-                // L_outer (+0): ldr x10,[x20]; cbz x10,L_done (+72)
+                // L_outer (+0): ldr x10,[x20]; cbz x10,L_done (+48)
                 emit_a64_ldr(10, 20, 0)
-                emit_a64_cbz(10, 72)
-                // Open quote: mov w11,'"'; strb w11,[x9]; add x9,x9,1
-                emit_a64_mov_imm(11, 0x22)
-                emit_a64_strb(11, 9, 0)
-                emit_a64_add_imm(9, 9, 1)
-                // L_inner (+20): ldrb w11,[x10]; cbz x11,L_end_copy (+20)
+                emit_a64_cbz(10, 48)
+                // L_inner (+8): ldrb w11,[x10]; cbz x11,L_end_copy (+20)
                 emit_a64_ldrb(11, 10, 0)
                 emit_a64_cbz(11, 20)
                 // strb w11,[x9]; add x10,x10,1; add x9,x9,1; b L_inner (-20)
@@ -2822,17 +2821,13 @@ fn gen_expr_a64(uint64 node) {
                 emit_a64_add_imm(10, 10, 1)
                 emit_a64_add_imm(9, 9, 1)
                 emit_a64(0x17FFFFFB)
-                // L_end_copy (+44): close quote + space
-                emit_a64_mov_imm(11, 0x22)
-                emit_a64_strb(11, 9, 0)
-                emit_a64_add_imm(9, 9, 1)
+                // L_end_copy (+32): space + advance
                 emit_a64_mov_imm(11, 0x20)
                 emit_a64_strb(11, 9, 0)
                 emit_a64_add_imm(9, 9, 1)
-                // add x20,x20,8; b L_outer (-72)
                 emit_a64_add_imm(20, 20, 8)
-                emit_a64(0x17FFFFEE)
-                // L_done (+76): strb wzr, [x9]
+                emit_a64(0x17FFFFF4)                // b L_outer (-48)
+                // L_done (+52): strb wzr, [x9]
                 emit_a64_strb(31, 9, 0)
                 // ---- CreateProcessA(path, cmdline, NULL, NULL, 0, 0, NULL, NULL, &si, &pi) ----
                 emit_a64_mov(0, 19)                 // x0 = path
