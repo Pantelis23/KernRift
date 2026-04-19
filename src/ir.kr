@@ -8711,44 +8711,71 @@ fn ir_emit_x86_function(uint64 fn_node) {
                 }
             }
             if last_op == 41 {
-                // Conditional branch. Two paths:
-                //   Fused: preceding CMP was folded — emit `0F <jcc> disp32`
-                //          directly on the flags the cmp left behind.
-                //   Plain: compute cond into a reg then test+jnz as before.
-                if ir_fused_jcc_code != 0 {
-                    emit_byte(0x0F)
-                    uint8 jcc = ir_fused_jcc_code
-                    emit_byte(jcc)
+                // Conditional branch emission. Four BB-layout cases for the
+                // (target_true, target_false) pair and the next emitted BB:
+                //   A: both == bi+1 → neither branch needed, plain fallthrough
+                //   B: true == bi+1, false elsewhere → invert condition, one jcc
+                //   C: true elsewhere, false == bi+1 → jcc, no trailing jmp
+                //   D: both elsewhere → jcc + jmp (worst case)
+                // Case B saves one 5-byte jmp compared to the naive C/D pattern
+                // the emitter used before, which is a very common shape for
+                // `if (!cond) else_path` / `while (cond) body` layouts.
+                uint64 target_true  = ir_insn_imm(last)
+                uint64 target_false = ir_bb_succ0(bi)
+                uint64 true_next  = 0
+                if target_true  == bi + 1 { true_next  = 1 }
+                uint64 false_next = 0
+                if target_false == bi + 1 { false_next = 1 }
+
+                if true_next != 0 && false_next != 0 {
+                    // Case A: plain fallthrough; emit nothing. The cmp flags
+                    // (fused) or the cond register (plain) are simply unused.
+                    // We still need to consume the fused jcc token so a later
+                    // BB doesn't inherit it.
                     ir_fused_jcc_code = 0
                 } else {
-                    uint64 cond_v = ir_insn_src1(last)
-                    uint64 cond_r = ir_resolve_src(cond_v, 0)
-                    ir_emit_test_r64_r64(cond_r, cond_r)
-                    emit_byte(0x0F)
-                    emit_byte(0x85)
-                }
-                // Record fixup for jnz -> true target
-                uint64 target_true = ir_insn_imm(last)
-                uint64 fp = ir_br_fixups + ir_br_fixup_count * 8
-                uint32 po = out_len
-                unsafe { *(fp as uint32) = po }
-                uint64 fp4 = fp + 4
-                uint32 tb = target_true
-                unsafe { *(fp4 as uint32) = tb }
-                ir_br_fixup_count = ir_br_fixup_count + 1
-                emit_u32_le(0)
-                // Emit jmp to false target (succ0) if not fall-through
-                uint64 target_false = ir_bb_succ0(bi)
-                if target_false != 0xFFFFFFFF && target_false != bi + 1 {
-                    emit_byte(0xE9)
-                    uint64 fp2 = ir_br_fixups + ir_br_fixup_count * 8
-                    uint32 po2 = out_len
-                    unsafe { *(fp2 as uint32) = po2 }
-                    uint64 fp24 = fp2 + 4
-                    uint32 tb2 = target_false
-                    unsafe { *(fp24 as uint32) = tb2 }
+                    uint64 invert = 0
+                    if true_next != 0 { invert = 1 }
+                    // Emit the single jcc (inverted when invert != 0).
+                    if ir_fused_jcc_code != 0 {
+                        emit_byte(0x0F)
+                        uint8 jcc = ir_fused_jcc_code
+                        if invert != 0 { jcc = jcc ^ 1 }
+                        emit_byte(jcc)
+                        ir_fused_jcc_code = 0
+                    } else {
+                        uint64 cond_v = ir_insn_src1(last)
+                        uint64 cond_r = ir_resolve_src(cond_v, 0)
+                        ir_emit_test_r64_r64(cond_r, cond_r)
+                        emit_byte(0x0F)
+                        if invert != 0 { emit_byte(0x84) }    // je  (cond == 0)
+                        else           { emit_byte(0x85) }    // jne (cond != 0)
+                    }
+                    uint64 branch_target = target_true
+                    if invert != 0 { branch_target = target_false }
+                    uint64 fp = ir_br_fixups + ir_br_fixup_count * 8
+                    uint32 po = out_len
+                    unsafe { *(fp as uint32) = po }
+                    uint64 fp4 = fp + 4
+                    uint32 tb = branch_target
+                    unsafe { *(fp4 as uint32) = tb }
                     ir_br_fixup_count = ir_br_fixup_count + 1
                     emit_u32_le(0)
+                    // Trailing unconditional jmp is only needed when NEITHER
+                    // target fell through (case D). Case B (invert) already
+                    // falls through to true_target; case C falls through to
+                    // false_target.
+                    if invert == 0 && false_next == 0 && target_false != 0xFFFFFFFF {
+                        emit_byte(0xE9)
+                        uint64 fp2 = ir_br_fixups + ir_br_fixup_count * 8
+                        uint32 po2 = out_len
+                        unsafe { *(fp2 as uint32) = po2 }
+                        uint64 fp24 = fp2 + 4
+                        uint32 tb2 = target_false
+                        unsafe { *(fp24 as uint32) = tb2 }
+                        ir_br_fixup_count = ir_br_fixup_count + 1
+                        emit_u32_le(0)
+                    }
                 }
             }
         }
