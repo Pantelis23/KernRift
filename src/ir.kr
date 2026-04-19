@@ -4836,8 +4836,16 @@ fn ir_emit_x86_win_syscall(uint64 abstract_nr, uint64 dest_v, uint64 dst_r) {
         ir_emit_mov_r64_imm64(2, 0x80000000)  // default: GENERIC_READ
         // test rsi, rsi; if nonzero, use GENERIC_WRITE
         emit_byte(0x48); emit_byte(0x85); emit_byte(0xF6)  // test rsi, rsi
-        emit_byte(0x74); emit_byte(0x0A)  // jz +10 (skip mov r64 imm64)
+        // jz rel8 — skip the GENERIC_WRITE override. Patched after the
+        // mov emits so this survives changes to mov r64 imm64's encoding
+        // (e.g., the compact imm32 form that fits uint32 values in 5 bytes).
+        emit_byte(0x74)
+        uint64 co_jz_patch = out_len
+        emit_byte(0)                            // rel8 placeholder
         ir_emit_mov_r64_imm64(2, 0x40000000)  // GENERIC_WRITE
+        uint8 co_jz_disp = out_len - co_jz_patch - 1
+        uint64 co_jz_p = out_buf + co_jz_patch
+        unsafe { *(co_jz_p as uint8) = co_jz_disp }
         // r8 = FILE_SHARE_READ (1)
         ir_emit_mov_r64_imm64(8, 1)
         // r9 = NULL (security attrs)
