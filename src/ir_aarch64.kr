@@ -236,12 +236,21 @@ fn ir_emit_arm64_win_syscall(uint64 abstract_nr, uint64 dest_v, uint64 dst_r) {
         emit_a64(0x14000002)              // B +2 (skip NOP, land on common path)
         // skip_getstdhandle: fd > 2, x0 already holds the native handle
         emit_a64(0xD503201F)              // NOP (landing pad for B.HI)
-        // WriteFile(handle=x0, buf=x1, len=x2, &written=x3=NULL, overlapped=x4=NULL)
-        emit_a64_mov_imm(4, 0)
-        emit_a64_mov_imm(3, 0)
+        // WriteFile(handle=x0, buf=x1, len=x2, &written=x3, overlapped=x4=NULL).
+        // MSDN: lpNumberOfBytesWritten may be NULL only when lpOverlapped is
+        // non-NULL. We do synchronous writes, so a real scratch slot is
+        // required. Allocate 16 bytes on the stack for alignment, pre-zero
+        // the DWORD slot, and point x3 at it; the value isn't read back
+        // because write() ignores its return count for now.
+        emit_a64_sub_sp_imm(16)           // sub sp, sp, #16
+        emit_a64_mov_imm(9, 0)
+        emit_a64(0xF90003E9)              // str x9, [sp]   — pre-zero
+        emit_a64(0x910003E3)              // add x3, sp, #0 (&written)
+        emit_a64_mov_imm(4, 0)            // x4 = NULL (overlapped)
         emit_a64_mov(2, 12)               // x2 = len
         emit_a64_mov(1, 11)               // x1 = buf
         emit_a64_win_call_iat(2)          // WriteFile
+        emit_a64_add_sp_imm(16)           // add sp, sp, #16
     }
 
     if abstract_nr == 0 {
@@ -260,12 +269,21 @@ fn ir_emit_arm64_win_syscall(uint64 abstract_nr, uint64 dest_v, uint64 dst_r) {
         emit_a64_win_call_iat(1)          // GetStdHandle -> x0 = handle
         emit_a64(0x14000002)              // B +2 (skip NOP, land on common path)
         emit_a64(0xD503201F)              // NOP (landing pad for B.HI)
-        // ReadFile(handle=x0, buf=x1, len=x2, &bytesRead=x3=NULL, overlapped=x4=NULL)
-        emit_a64_mov_imm(4, 0)
-        emit_a64_mov_imm(3, 0)
+        // ReadFile(handle=x0, buf=x1, len=x2, &bytesRead=x3, overlapped=x4=NULL).
+        // The 4th arg MUST be a real DWORD*: ReadFile returns BOOL in x0, and
+        // without an out-slot we'd hand that BOOL back as file_read's byte
+        // count (which made the CI test read 1 instead of 8 on ARM64 Windows).
+        // Use [sp,#0] as an aligned 8-byte scratch slot for the DWORD.
+        emit_a64_sub_sp_imm(16)           // sub sp, sp, #16
+        emit_a64_mov_imm(9, 0)
+        emit_a64(0xF90003E9)              // str x9, [sp]   — pre-zero the slot
+        emit_a64(0x910003E3)              // add x3, sp, #0 (&bytesRead)
+        emit_a64_mov_imm(4, 0)            // x4 = NULL (overlapped)
         emit_a64_mov(2, 12)               // x2 = len
         emit_a64_mov(1, 11)               // x1 = buf
         emit_a64_win_call_iat(4)          // ReadFile
+        emit_a64(0xB94003E0)              // ldr w0, [sp]   — bytesRead (zero-extends)
+        emit_a64_add_sp_imm(16)           // add sp, sp, #16
     }
 
     if abstract_nr == 2 {
@@ -837,8 +855,13 @@ fn ir_emit_arm64_insn(uint64 ii) {
             emit_a64_add_imm(1, size_reg, 8)
             // x2 = PROT_READ|PROT_WRITE = 3
             emit_a64_mov_imm(2, 3)
-            // x3 = MAP_PRIVATE|MAP_ANON = 0x22
-            emit_a64_mov_imm(3, 0x22)
+            // x3 = MAP_PRIVATE|MAP_ANON — 0x22 on Linux, 0x1002 on macOS. The
+            // old hardcoded 0x22 made every mmap on macOS ARM64 return an
+            // invalid pointer, which is what SIGSEGV'd the alloc/fileio tests
+            // and every self-compile on native arm64 macOS CI.
+            uint64 a64_mmap_flags = 0x22
+            if target_os == 1 { a64_mmap_flags = 0x1002 }
+            emit_a64_mov_imm(3, a64_mmap_flags)
             // x4 = -1 (fd)
             emit_a64_mov_imm(4, 0xFFFFFFFFFFFFFFFF)
             // x5 = 0 (offset)
