@@ -401,6 +401,36 @@ fn main() {
     f64 v = str_to_float("-3e1")
     exit(f64_to_int(int_to_f64(0) - v))
 }' 30
+# Regression: float static initialisers used to silently drop their value
+# (parser only handled int literal kinds 2/4/77/78 — FloatLit kind 5 fell
+# through the skip branch). Now `static f64 x = 20.0` retains 20.0.
+run_test "static_float_init" '
+static f64 tau_m = 20.0
+static f64 V_rest = -70.0
+fn main() {
+    exit(f64_to_int(tau_m - V_rest))   // 20 - (-70) = 90
+}' 90
+# Regression: reads of static f64 and f64 array elements used to lose
+# their f64 type-flow through arithmetic, so `a + b` emitted integer ops
+# instead of IR_FADD. Now the static_fkinds table propagates fkind from
+# declaration through IR_STATIC_LOAD and array Index.
+run_test "static_f64_type_flow" '
+static f64 a = 3.0
+static f64 b = 4.0
+fn main() {
+    f64 c = a + b    // direct-read arithmetic — used to produce -0.0
+    exit(f64_to_int(c))
+}' 7
+run_test "static_f64_array_type_flow" '
+static f64[4] arr
+fn main() {
+    arr[0] = 1.5
+    arr[1] = 2.5
+    arr[2] = 3.5
+    arr[3] = 4.5
+    f64 s = arr[0] + arr[1] + arr[2] + arr[3]
+    exit(f64_to_int(s))
+}' 12
 run_test "utf8_decode_ascii" 'import "std/string.kr"
 fn main() {
     uint64[1] w

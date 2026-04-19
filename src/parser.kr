@@ -1841,6 +1841,11 @@ fn parse_module() -> uint64 {
                 if wstk == 83 || wstk == 87 { elem_sz = 8 }
                 static_declare_array(name_tok, stsz_val * elem_sz)
                 static_set_elem_size_last(elem_sz)
+                // Record fkind so index reads propagate f64/f32 type-flow.
+                // KwFloat16=94, KwFloat32=95, KwFloat64=96.
+                if wstk == 96 { static_set_fkind_last(1) }
+                else if wstk == 95 { static_set_fkind_last(2) }
+                else if wstk == 94 { static_set_fkind_last(3) }
                 // Optional initializer — skip for now (zero-initialized by BSS)
                 if eat(34) != 0 {
                     while cur_kind() != 60 && cur_kind() != 71 && cur_kind() != 72 && cur_kind() != 73 && cur_kind() != 21 && cur_kind() != 89 && cur_kind() != 0 {
@@ -1852,6 +1857,13 @@ fn parse_module() -> uint64 {
                 uint64 name_tok = expect(1)
                 // Register the static variable
                 static_declare(name_tok)
+                // Record fkind so reads propagate f64/f32 type-flow.
+                // KwFloat16=94, KwFloat32=95, KwFloat64=96.
+                uint32 stk_s = tok_kind_at(stype_tok)
+                uint64 wstk_s = stk_s
+                if wstk_s == 96 { static_set_fkind_last(1) }
+                else if wstk_s == 95 { static_set_fkind_last(2) }
+                else if wstk_s == 94 { static_set_fkind_last(3) }
                 // Capture literal initializer if present
                 if eat(34) != 0 {
                     uint64 sinit_neg = 0
@@ -1865,6 +1877,59 @@ fn parse_module() -> uint64 {
                         if sinit_neg != 0 { sinit_val = 0 - sinit_val }
                         if sinit_inv != 0 { sinit_val = ~sinit_val }
                         static_set_init_last(sinit_val)
+                    } else if sinit_kind == 5 {
+                        // FloatLit: parse digits+dot into int_val, frac_val,
+                        // frac_divisor; compute as f64; pack bits via the
+                        // unsafe memory-cast trick. Mirrors the runtime
+                        // IR FloatLit lowering in src/ir.kr.
+                        uint64 flit_tok = advance_tok()
+                        uint64 wft = flit_tok
+                        uint64 ft_start = tok_start_at(wft)
+                        uint64 ft_len = tok_len_at(wft)
+                        uint64 fint = 0
+                        uint64 ffrac = 0
+                        uint64 fdiv = 1
+                        uint64 fpast = 0
+                        uint64 fi2 = 0
+                        while fi2 < ft_len {
+                            uint64 fbp = src_ptr + ft_start + fi2
+                            uint64 fch = 0
+                            unsafe { *(fbp as uint8) -> fch }
+                            if fch == 46 { fpast = 1 }
+                            else if fch == 102 { }   // trailing 'f' — narrowing is driven by the static's declared type, not the literal suffix
+                            else if fch >= 48 && fch <= 57 {
+                                if fpast == 0 {
+                                    fint = fint * 10 + (fch - 48)
+                                } else {
+                                    ffrac = ffrac * 10 + (fch - 48)
+                                    fdiv = fdiv * 10
+                                }
+                            }
+                            fi2 = fi2 + 1
+                        }
+                        // Compute f64 value.
+                        f64 fv = int_to_f64(fint) + int_to_f64(ffrac) / int_to_f64(fdiv)
+                        if sinit_neg != 0 { fv = 0.0 - fv }
+                        // Pack bits according to the static's declared type.
+                        // emit_static_data writes 8 bytes per scalar slot; for
+                        // f32 the runtime load is 4-byte movss, so the f32
+                        // bits must sit in the low 4 bytes (and we zero the
+                        // high 4 bytes by passing a uint64 with high zero).
+                        uint64 fbits_buf = alloc(8)
+                        uint64 fbits = 0
+                        if wstk_s == 95 {
+                            // f32 static: narrow then pack as 32-bit IEEE-754.
+                            f32 fv32 = f64_to_f32(fv)
+                            unsafe { *(fbits_buf as f32) = fv32 }
+                            uint32 fbits32 = 0
+                            unsafe { *(fbits_buf as uint32) -> fbits32 }
+                            fbits = fbits32
+                        } else {
+                            // f64 (or other) static: store the full 8 bytes.
+                            unsafe { *(fbits_buf as f64) = fv }
+                            unsafe { *(fbits_buf as uint64) -> fbits }
+                        }
+                        static_set_init_last(fbits)
                     } else {
                         while cur_kind() != 60 && cur_kind() != 71 && cur_kind() != 72 && cur_kind() != 73 && cur_kind() != 21 && cur_kind() != 89 && cur_kind() != 0 {
                             advance_tok()

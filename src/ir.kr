@@ -1027,6 +1027,11 @@ fn ir_lower_expr(uint64 node) -> uint64 {
         if st_off != 0xFFFFFFFF {
             uint64 dest = ir_new_vreg()
             ir_emit(IR_STATIC_LOAD, dest, 0, 0, st_off, ir_current_bb)
+            // Propagate f64/f32 type-flow from the static's declared
+            // type so downstream `+`, `*` etc. lower to IR_FADD/FMUL
+            // rather than integer ops.
+            uint64 sfk = static_fkind_of(wt)
+            if sfk != 0 { ir_vreg_fkind_set(dest, sfk) }
             return dest
         }
         // Unknown identifier — report error
@@ -2561,6 +2566,10 @@ fn ir_lower_expr(uint64 node) -> uint64 {
         // Load element
         uint64 dest = ir_new_vreg()
         ir_emit(IR_LOAD, dest, addr_v, 0, elem_sz, ir_current_bb)
+        // Propagate f64/f32 type-flow from the declared array element
+        // type so `arr[i] + x` lowers as float arithmetic.
+        uint64 afk = static_fkind_of(warrt)
+        if afk != 0 { ir_vreg_fkind_set(dest, afk) }
         return dest
     }
 
