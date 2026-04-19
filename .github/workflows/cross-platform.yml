@@ -267,6 +267,26 @@ jobs:
             exit 1
           fi
 
+      - name: Full krc self-host fixed point (macOS x86_64 via Rosetta)
+        run: |
+          # krc3 → krc4 → krc5 on actual macOS hardware. krc4 == krc5
+          # byte-equality is the real test; a 1-line exit(42) program
+          # stresses almost none of the compiler's codegen surface.
+          set +e
+          chmod +x bins/krc-macos-x64
+          ./bins/krc-macos-x64 --arch=x86_64 --emit=macho bins/krc-source.kr -o krc4
+          if [ $? -ne 0 ]; then echo "FAIL: krc4 compile"; exit 1; fi
+          chmod +x krc4
+          ./krc4 --arch=x86_64 --emit=macho bins/krc-source.kr -o krc5
+          if [ $? -ne 0 ]; then echo "FAIL: krc5 compile"; exit 1; fi
+          chmod +x krc5
+          if cmp -s krc4 krc5; then
+            echo "PASS: macOS x86_64 fixed point ($(wc -c < krc4) bytes)"
+          else
+            echo "FAIL: macOS x86_64 fixed point — krc4 ($(wc -c < krc4)) != krc5 ($(wc -c < krc5))"
+            exit 1
+          fi
+
   test-macos-arm:
     name: macOS ARM64
     needs: build
@@ -511,6 +531,28 @@ jobs:
             exit 1
           }
 
+      - name: Bootstrap fixed point on Windows x86_64
+        shell: pwsh
+        run: |
+          # krc-self1 was built on Windows by the cross-compiled krc3.
+          # Now have krc-self1 compile the source again → krc-self2.
+          # If the Windows-native codegen is deterministic, krc-self1
+          # and krc-self2 must be byte-identical. Drift here would
+          # point at non-deterministic PE emission (timestamp-like
+          # fields, uninitialised header bytes).
+          $r = Start-Process -FilePath .\krc-self1.exe -ArgumentList '--emit=pe','bins\krc-source.kr','-o','krc-self2.exe' -Wait -PassThru -NoNewWindow
+          if ($r.ExitCode -ne 0) { Write-Host "FAIL: self-compile stage 2 (exit=$($r.ExitCode))"; exit 1 }
+          $h1 = (Get-FileHash -Algorithm MD5 krc-self1.exe).Hash
+          $h2 = (Get-FileHash -Algorithm MD5 krc-self2.exe).Hash
+          $s1 = (Get-Item krc-self1.exe).Length
+          $s2 = (Get-Item krc-self2.exe).Length
+          if ($h1 -eq $h2) {
+            Write-Host "PASS: Windows x86_64 fixed point ($s1 bytes, md5=$h1)"
+          } else {
+            Write-Host "FAIL: Windows x86_64 fixed point — krc-self1 ($s1, $h1) != krc-self2 ($s2, $h2)"
+            exit 1
+          }
+
   test-windows-arm64:
     name: Windows ARM64
     needs: build
@@ -616,11 +658,33 @@ jobs:
           if ($r3r.ExitCode -ne 42) { Write-Host "FAIL: stage 3 run (exit=$($r3r.ExitCode))"; exit 1 }
           Write-Host "Stage 3: PASS (krc4 compiles test, runs with exit 42)"
 
-          # Stage 4: compare krc3 and krc4 output (bootstrap fixed point)
+          # Stage 4: compare test-s1 and test-s3 output (the tiny test program
+          # compiled by krc3 vs krc4). Won't always match because krc3 was
+          # cross-compiled on Linux and krc4 was self-compiled on Windows, but
+          # if they DO match that's a nice confirmation.
           $h1 = (Get-FileHash test-s1.exe).Hash
           $h3 = (Get-FileHash test-s3.exe).Hash
           if ($h1 -eq $h3) {
             Write-Host "PASS: krc3 and krc4 produce identical output (bootstrap verified)"
           } else {
             Write-Host "INFO: krc3 and krc4 output differs (expected — different compiler binaries)"
+          }
+
+          # Stage 5: true fixed point. krc4 self-compiles → krc5.
+          # Both were built on this Windows-arm64 host with arm64-PE
+          # codegen, so krc4 and krc5 must be byte-identical if the
+          # emitter is deterministic. This is the check that catches
+          # any PE-header non-determinism (timestamps, padding, etc.)
+          # specific to the arm64 path.
+          $r5 = Start-Process -FilePath .\krc4.exe -ArgumentList '--emit=pe','bins\krc-source.kr','-o','krc5.exe' -Wait -PassThru -NoNewWindow
+          if ($r5.ExitCode -ne 0) { Write-Host "FAIL: stage 5 self-compile (exit=$($r5.ExitCode))"; exit 1 }
+          $h4 = (Get-FileHash -Algorithm MD5 krc4.exe).Hash
+          $h5 = (Get-FileHash -Algorithm MD5 krc5.exe).Hash
+          $s4 = (Get-Item krc4.exe).Length
+          $s5 = (Get-Item krc5.exe).Length
+          if ($h4 -eq $h5) {
+            Write-Host "PASS: Windows ARM64 fixed point ($s4 bytes, md5=$h4)"
+          } else {
+            Write-Host "FAIL: Windows ARM64 fixed point — krc4 ($s4, $h4) != krc5 ($s5, $h5)"
+            exit 1
           }

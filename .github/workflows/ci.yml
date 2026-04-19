@@ -172,6 +172,25 @@ jobs:
           set +e; /lib64/ld-linux-x86-64.so.2 /tmp/androidx-static; CODE=$?; set -e
           [ "$CODE" -eq 3 ] && echo "PASS: Android x86_64 statics (exit=3)" || { echo "FAIL: expected 3, got $CODE"; exit 1; }
 
+          # Full Android x86_64 self-compile + fixed point. Uses the
+          # glibc loader directly since we don't have bionic on the CI
+          # box. krc-androidx compiles the full source → krc-androidx-2;
+          # byte-equality is the deterministic-codegen test.
+          ./build/krc2 --arch=x86_64 --emit=android build/krc.kr -o /tmp/krc-androidx
+          chmod +x /tmp/krc-androidx
+          set +e
+          /lib64/ld-linux-x86-64.so.2 /tmp/krc-androidx --arch=x86_64 --emit=android build/krc.kr -o /tmp/krc-androidx-2
+          COMP=$?
+          set -e
+          [ "$COMP" -eq 0 ] && echo "PASS: Android x86_64 full self-compile" || { echo "FAIL: Android x86_64 self-compile (exit=$COMP)"; exit 1; }
+          chmod +x /tmp/krc-androidx-2
+          if cmp -s /tmp/krc-androidx /tmp/krc-androidx-2; then
+            echo "PASS: Android x86_64 fixed point ($(wc -c < /tmp/krc-androidx) bytes)"
+          else
+            echo "FAIL: Android x86_64 fixed point — krc-androidx ($(wc -c < /tmp/krc-androidx)) != krc-androidx-2 ($(wc -c < /tmp/krc-androidx-2))"
+            exit 1
+          fi
+
       - name: Android ARM64 execution test (QEMU)
         run: |
           sudo apt-get update -qq >/dev/null 2>&1
@@ -205,6 +224,25 @@ jobs:
           chmod +x /tmp/android-selfout
           set +e; qemu-aarch64-static /tmp/android-selfout; CODE=$?; set -e
           [ "$CODE" -eq 99 ] && echo "PASS: Android self-compiled binary runs (exit=99)" || { echo "FAIL: expected 99, got $CODE"; exit 1; }
+
+          # Test 4: Android ARM64 bootstrap fixed point under qemu. Have
+          # krc-android compile the full krc source → krc-android-2, then
+          # diff bytes. This catches Android-specific codegen non-
+          # determinism that a trivial exit(99) test can't see. Slow
+          # (~25s on qemu emulation) but covers the scenario the Redmi
+          # Note 8 Pro phone runs in production.
+          set +e
+          qemu-aarch64-static /tmp/krc-android --emit=android build/krc.kr -o /tmp/krc-android-2
+          COMP=$?
+          set -e
+          [ "$COMP" -eq 0 ] && echo "PASS: Android full self-compile" || { echo "FAIL: Android self-compile (exit=$COMP)"; exit 1; }
+          chmod +x /tmp/krc-android-2
+          if cmp -s /tmp/krc-android /tmp/krc-android-2; then
+            echo "PASS: Android ARM64 fixed point ($(wc -c < /tmp/krc-android) bytes)"
+          else
+            echo "FAIL: Android ARM64 fixed point — krc-android ($(wc -c < /tmp/krc-android)) != krc-android-2 ($(wc -c < /tmp/krc-android-2))"
+            exit 1
+          fi
 
       - name: Fat binary runner (kr) test
         run: |
@@ -497,6 +535,33 @@ jobs:
           set +e; /tmp/sc_test_mac; CODE=$?; set -e
           echo "exit: $CODE"
           [ "$CODE" -eq 42 ] && echo "PASS: macOS ARM64 self-compile" || { echo "FAIL: macOS ARM64 self-compile (got $CODE)"; exit 1; }
+
+      - name: Full krc self-host fixed point on macOS ARM64 (native)
+        run: |
+          # Extract the macOS arm64 slice and compile the full compiler
+          # source with it — the real self-host test. krc3 is the fat-
+          # extracted binary; krc4 is krc3 compiling krc-source.kr; krc5
+          # is krc4 doing the same. krc4 must equal krc5 byte-for-byte
+          # (the fixed point). Catches arm64-native codegen divergence
+          # that a 10-line exit(42) test can't see.
+          chmod +x /tmp/fatbin/kr-runners/kr-macos-arm64
+          cp /tmp/fatbin/krc-source.kr /tmp/krc-source.kr
+          /tmp/fatbin/kr-runners/kr-macos-arm64 /tmp/fatbin/krc.krbo --arch=arm64 --emit=macho /tmp/krc-source.kr -o /tmp/krc4
+          chmod +x /tmp/krc4
+          /tmp/krc4 --arch=arm64 --emit=macho /tmp/krc-source.kr -o /tmp/krc5
+          chmod +x /tmp/krc5
+          if cmp -s /tmp/krc4 /tmp/krc5; then
+            echo "PASS: macOS ARM64 fixed point ($(wc -c < /tmp/krc4) bytes)"
+          else
+            echo "FAIL: macOS ARM64 fixed point — krc4 ($(wc -c < /tmp/krc4)) != krc5 ($(wc -c < /tmp/krc5))"
+            exit 1
+          fi
+          # Sanity: krc5 should compile a trivial program the same way as krc4
+          echo 'fn main() { exit(77) }' > /tmp/fp_test.kr
+          /tmp/krc5 --arch=arm64 --emit=macho /tmp/fp_test.kr -o /tmp/fp_out
+          chmod +x /tmp/fp_out
+          set +e; /tmp/fp_out; CODE=$?; set -e
+          [ "$CODE" -eq 77 ] && echo "PASS: macOS ARM64 krc5 runs" || { echo "FAIL: krc5 run (got $CODE)"; exit 1; }
 
   test-windows-x64:
     name: Test (Windows x86_64)
