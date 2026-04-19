@@ -1025,6 +1025,19 @@ fn ir_lower_expr(uint64 node) -> uint64 {
         uint64 wt = tok
         uint64 st_off = static_lookup(wt)
         if st_off != 0xFFFFFFFF {
+            // Static arrays decay to their base address when used as
+            // an rvalue (bare identifier), matching C semantics. This
+            // lets callers pass arrays to helper functions as uint64
+            // pointers — `vec_f64_decay_inplace(buf, n, f)` with
+            // `static f64[N] buf` now Just Works. Indexing `arr[i]`
+            // uses a separate AST kind (Index=37) that has always
+            // emitted IR_STATIC_ADDR, so that path stays unchanged.
+            uint64 sasz = static_array_size_of(wt)
+            if sasz != 0 && sasz != 0xFFFFFFFF {
+                uint64 addr_dest = ir_new_vreg()
+                ir_emit(IR_STATIC_ADDR, addr_dest, 0, 0, st_off, ir_current_bb)
+                return addr_dest
+            }
             uint64 dest = ir_new_vreg()
             ir_emit(IR_STATIC_LOAD, dest, 0, 0, st_off, ir_current_bb)
             // Propagate f64/f32 type-flow from the static's declared
@@ -3287,6 +3300,14 @@ fn ir_lower_stmt(uint64 node) {
         uint64 addr_v = ir_lower_expr(addr_expr)
         uint64 dest_v = ir_new_vreg()
         ir_emit(IR_LOAD, dest_v, addr_v, type_size, 0, ir_current_bb)
+        // Propagate f64/f32 type-flow from the `as TYPE` clause. The
+        // parser stashed the fkind in data3 (1=f64, 2=f32, 3=f16,
+        // 0=int). Without this, `unsafe { *(p as f64) -> v }` leaves
+        // v untyped at the IR level and downstream `v + x` emits
+        // integer arithmetic instead of IR_FADD.
+        uint32 fk32 = ast_data3(node)
+        uint64 fk = fk32
+        if fk != 0 { ir_vreg_fkind_set(dest_v, fk) }
         // Bind dest variable
         uint32 dest_tok = ast_data2(node)
         ir_var_set(dest_tok, dest_v)

@@ -1281,6 +1281,19 @@ fn parse_stmt() -> uint64 {
             ast_set_child(node, ae)
             uint32 dt = dest_tok
             ast_set_data2(node, dt)
+            // Stash fkind in data3 so IR lowering can mark the
+            // destination vreg with f64/f32 type. Otherwise
+            // `unsafe { *(p as f64) -> v }` produces a vreg the
+            // IR treats as integer, breaking downstream float math.
+            //   1 = f64 (KwFloat64 = 96)
+            //   2 = f32 (KwFloat32 = 95)
+            //   3 = f16 (KwFloat16 = 94)
+            //   0 = integer / other
+            uint32 fk = 0
+            if type_kind == 96 { fk = 1 }
+            else if type_kind == 95 { fk = 2 }
+            else if type_kind == 94 { fk = 3 }
+            ast_set_data3(node, fk)
             return node
         }
         if cur_kind() == 34 {
