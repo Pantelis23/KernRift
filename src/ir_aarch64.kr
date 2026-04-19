@@ -332,9 +332,14 @@ fn ir_emit_arm64_win_syscall(uint64 abstract_nr, uint64 dest_v, uint64 dst_r) {
         emit_a64_mov(1, 11)
         // x0 = handle (already in place)
         emit_a64_win_call_iat(8)          // GetFileSizeEx
+        // x11 is caller-saved (x0..x18) and is clobbered by the IAT call.
+        // Recompute it from SP before loading the result — otherwise the
+        // ldr dereferences whatever GetFileSizeEx left in x11 and the
+        // process segfaults deep inside compile() the moment anyone calls
+        // file_size() on Windows ARM64.
+        emit_a64_add_imm(11, 31, ir_a64_scratch_off)
         // Load size from [X11]
         emit_a64_ldr(0, 11, 0)
-        // SP restore removed
     }
 
     // Move result to dest

@@ -473,18 +473,10 @@ fn import_check_file(uint64 path) {
 }
 
 fn import_process(uint64 file_path) {
-    uint64 ipdbg = "IP1 enter\n"
-    write(2, ipdbg, 10)
     if import_is_seen(file_path) != 0 { return }
-    ipdbg = "IP2 not seen\n"
-    write(2, ipdbg, 13)
     import_mark_seen(file_path)
-    ipdbg = "IP3 marked\n"
-    write(2, ipdbg, 11)
 
     uint64 fd = file_open(file_path, 0)
-    ipdbg = "IP4 after file_open\n"
-    write(2, ipdbg, 20)
     // If not found, try ~/.local/share/kernrift/ as fallback
     if fd >= 0xFFFFFFFF {
         uint64 fallback = import_resolve_stdlib(file_path)
@@ -501,20 +493,10 @@ fn import_process(uint64 file_path) {
         // This allows the parser to report the actual error
         return
     }
-    ipdbg = "IP5 fd valid\n"
-    write(2, ipdbg, 13)
     uint64 size = file_size(fd)
-    ipdbg = "IP6 after file_size\n"
-    write(2, ipdbg, 20)
     uint64 tmp = alloc(size + 1)
-    ipdbg = "IP7 after alloc\n"
-    write(2, ipdbg, 16)
     file_read(fd, tmp, size)
-    ipdbg = "IP8 after file_read\n"
-    write(2, ipdbg, 20)
     file_close(fd)
-    ipdbg = "IP9 after file_close\n"
-    write(2, ipdbg, 21)
 
     // Scan for import lines at the beginning
     uint64 pos = 0
@@ -2161,47 +2143,23 @@ fn time_ns() -> uint64 {
 // arch: 0=x86_64, 1=arm64
 // emit: 0=elfexe, 1=machoexe, 2=peexe, 3=obj (ELF relocatable), 5=asm listing, 6=ir dump
 fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode) {
-    uint64 cdbg = "M13 compile() enter\n"
-    write(2, cdbg, 20)
     uint64 t_start = time_ns()
-    cdbg = "M14 after time_ns\n"
-    write(2, cdbg, 18)
     set_target_arch(arch)
-    cdbg = "M15 after set_target_arch\n"
-    write(2, cdbg, 26)
     import_init()
-    cdbg = "M16 after import_init\n"
-    write(2, cdbg, 22)
     import_check_file(input_path)
-    cdbg = "M17 after import_check_file\n"
-    write(2, cdbg, 28)
     import_process(input_path)
-    cdbg = "M18 after import_process\n"
-    write(2, cdbg, 25)
     uint64 source = import_buf
     uint64 size = import_buf_len
 
     uint64 max_tok = 262144
     uint64 my_tokens = alloc(max_tok * 16)
-    cdbg = "M19 after tokens alloc\n"
-    write(2, cdbg, 23)
     lexer_init(source, size, my_tokens, max_tok)
     uint64 tcount = lexer_run()
-    cdbg = "M20 after lexer_run\n"
-    write(2, cdbg, 20)
 
     ast_init(262144)
-    cdbg = "M21 after ast_init\n"
-    write(2, cdbg, 19)
     codegen_init(4194304, source, my_tokens)
-    cdbg = "M22 after codegen_init\n"
-    write(2, cdbg, 23)
     parser_init(my_tokens, tcount)
-    cdbg = "M23 after parser_init\n"
-    write(2, cdbg, 22)
     uint64 root = parse_module()
-    cdbg = "M24 after parse_module\n"
-    write(2, cdbg, 23)
 
     // Semantic validation: check arg counts, missing returns, duplicate functions
     uint64 sema_errs = run_semantic_checks(root, source, my_tokens)
@@ -4140,15 +4098,9 @@ fn parse_uint_arg(uint64 s) -> uint64 {
 
 @export
 fn main() {
-    uint64 dbg_msg = "M0\n"
-    write(2, dbg_msg, 3)
     // Windows: parse raw GetCommandLineA result into argc/argv
     if cli_argc == 0xFFFFFFFF {
-        dbg_msg = "M1 win_init_args\n"
-        write(2, dbg_msg, 17)
         win_init_args()
-        dbg_msg = "M2 after win_init_args\n"
-        write(2, dbg_msg, 23)
     }
 
     uint64 input_path = 0
@@ -4159,32 +4111,18 @@ fn main() {
     uint64 arch_set = 0
     uint64 emit_set = 0
 
-    dbg_msg = "M3 before arg loop\n"
-    write(2, dbg_msg, 19)
     if cli_argc > 1 {
-        dbg_msg = "M4 entered arg loop\n"
-        write(2, dbg_msg, 20)
         uint64 i = 1
         while i < cli_argc {
-            dbg_msg = "M5 iter\n"
-            write(2, dbg_msg, 8)
             uint64 arg_ptr = cli_argv + i * 8
             uint64 arg = 0
             unsafe { *(arg_ptr as uint64) -> arg }
-            dbg_msg = "M6 loaded arg ptr\n"
-            write(2, dbg_msg, 18)
             if str_starts_with(arg, "-o", 2) != 0 {
-                dbg_msg = "M7 -o branch\n"
-                write(2, dbg_msg, 13)
                 uint64 arg_len = str_len(arg)
-                dbg_msg = "M8 after str_len\n"
-                write(2, dbg_msg, 17)
                 if arg_len == 2 {
                     i = i + 1
                     uint64 next_ptr = cli_argv + i * 8
                     unsafe { *(next_ptr as uint64) -> output_path }
-                    dbg_msg = "M9 loaded output_path\n"
-                    write(2, dbg_msg, 22)
                 } else {
                     output_path = arg + 2
                 }
@@ -4358,8 +4296,6 @@ fn main() {
 
 
 
-    dbg_msg = "M10 past arg loop\n"
-    write(2, dbg_msg, 18)
     // Auto-set target_os from emit_mode if not explicitly set
     if emit_mode == 1 && target_os == 0 { target_os = 1 }
     if emit_mode == 2 && target_os == 0 { target_os = 2 }
@@ -4564,20 +4500,14 @@ fn main() {
     }
 
     // Default: produce fat binary unless --arch or --emit specified.
-    dbg_msg = "M11 before dispatch\n"
-    write(2, dbg_msg, 20)
     // On Windows / macOS: default to the host's native format so that
     // `krc hello.kr` just works without flags. The user can still
     // explicitly request a fat binary with `krc hello.kr -o hello.krbo`
     // via --emit=... if they want cross-platform output.
     // --targets=<list> always forces fat-binary emission (custom slice set).
     if target_mask != 0 || (arch_set == 0 && emit_set == 0 && cli_argc > 0) {
-        dbg_msg = "M12a calling compile_fat\n"
-        write(2, dbg_msg, 25)
         compile_fat(input_path, output_path)
     } else {
-        dbg_msg = "M12b calling compile\n"
-        write(2, dbg_msg, 21)
         compile(input_path, output_path, arch, emit_mode)
     }
     exit(0)
