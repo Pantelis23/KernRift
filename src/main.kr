@@ -4132,11 +4132,17 @@ fn main() {
             dbg_msg = "M6 loaded arg ptr\n"
             write(2, dbg_msg, 18)
             if str_starts_with(arg, "-o", 2) != 0 {
+                dbg_msg = "M7 -o branch\n"
+                write(2, dbg_msg, 13)
                 uint64 arg_len = str_len(arg)
+                dbg_msg = "M8 after str_len\n"
+                write(2, dbg_msg, 17)
                 if arg_len == 2 {
                     i = i + 1
                     uint64 next_ptr = cli_argv + i * 8
                     unsafe { *(next_ptr as uint64) -> output_path }
+                    dbg_msg = "M9 loaded output_path\n"
+                    write(2, dbg_msg, 22)
                 } else {
                     output_path = arg + 2
                 }
@@ -4310,6 +4316,8 @@ fn main() {
 
 
 
+    dbg_msg = "M10 past arg loop\n"
+    write(2, dbg_msg, 18)
     // Auto-set target_os from emit_mode if not explicitly set
     if emit_mode == 1 && target_os == 0 { target_os = 1 }
     if emit_mode == 2 && target_os == 0 { target_os = 2 }
