@@ -177,6 +177,19 @@ static uint64 ir_vreg_next = 0      // next vreg number to allocate
 static uint64 ir_vreg_fkind_buf = 0  // array of uint8, indexed by vreg
 static uint64 ir_vreg_fkind_cap = 0
 
+// Per-vreg use count (saturates at 255). Populated in ir_compute_use_count.
+// Used by the CMP+JCC fusion peephole to prove a cmp result is single-use
+// (so its materialization can be elided in favour of a direct jcc).
+static uint64 ir_use_count_buf = 0
+static uint64 ir_use_count_cap = 0
+
+// Fused-cmp handoff: when a CMP in the current BB is the last non-terminator
+// and is single-use by the terminator BR_COND, the emitter elides setcc/movzx/
+// mov and stores the matching short-jcc opcode (0x84..0x8F) here. The block
+// terminator then emits `0F <jcc> disp32` directly instead of test+jne.
+// 0 = not fused. Reset at the start of each BB.
+static uint64 ir_fused_jcc_code = 0
+
 // ---------------------------------------------------------------------------
 // Initialisation and reset
 // ---------------------------------------------------------------------------
@@ -210,6 +223,13 @@ fn ir_init() {
     // so stale bytes from a prior function would mislabel a vreg as float.
     memset(ir_vreg_fkind_buf, 0, ir_vreg_fkind_cap)
 
+    if ir_use_count_buf == 0 {
+        ir_use_count_cap = 65536
+        ir_use_count_buf = alloc(ir_use_count_cap)
+    }
+    memset(ir_use_count_buf, 0, ir_use_count_cap)
+    ir_fused_jcc_code = 0
+
     if ir_loop_exit_stack == 0 {
         ir_loop_exit_stack = alloc(32 * 8)
         ir_loop_header_stack = alloc(32 * 8)
@@ -234,6 +254,10 @@ fn ir_reset() {
     if ir_vreg_fkind_buf != 0 {
         memset(ir_vreg_fkind_buf, 0, ir_vreg_fkind_cap)
     }
+    if ir_use_count_buf != 0 {
+        memset(ir_use_count_buf, 0, ir_use_count_cap)
+    }
+    ir_fused_jcc_code = 0
 }
 
 // ---------------------------------------------------------------------------
@@ -4094,6 +4118,103 @@ fn ir_compute_liveness() {
     }
 }
 
+// Populate ir_use_count_buf with saturating (0..255) counts of how many
+// times each vreg is read. Uses the same "is src a vreg?" filter as
+// ir_compute_liveness so we don't spuriously count token IDs or immediate
+// fields. Runs once per function before x86 emission and is consumed by
+// the CMP+JCC fusion peephole.
+fn ir_compute_use_count() {
+    if ir_use_count_buf == 0 { return }
+    memset(ir_use_count_buf, 0, ir_use_count_cap)
+    uint64 i = 0
+    while i < ir_insn_count {
+        uint64 op = ir_insn_opcode(i)
+        uint64 s1 = ir_insn_src1(i)
+        if s1 != 0 && s1 < ir_vreg_next && s1 < ir_use_count_cap && op != 1 {
+            uint64 p = ir_use_count_buf + s1
+            uint8 c = 0
+            unsafe { *(p as uint8) -> c }
+            if c < 255 {
+                uint64 nc = c
+                nc = nc + 1
+                uint8 nc8 = nc
+                unsafe { *(p as uint8) = nc8 }
+            }
+        }
+        uint64 s2 = ir_insn_src2(i)
+        if s2 != 0 && s2 < ir_vreg_next && s2 < ir_use_count_cap && op != 1 && op != 12 && op != 13 && op != 30 && op != 42 && op != 61 {
+            uint64 p = ir_use_count_buf + s2
+            uint8 c = 0
+            unsafe { *(p as uint8) -> c }
+            if c < 255 {
+                uint64 nc = c
+                nc = nc + 1
+                uint8 nc8 = nc
+                unsafe { *(p as uint8) = nc8 }
+            }
+        }
+        if op == 72 || op == 76 || op == 83 || op == 93 || op == 98 {
+            uint64 s3 = ir_insn_imm(i)
+            if s3 != 0 && s3 < ir_vreg_next && s3 < ir_use_count_cap {
+                uint64 p = ir_use_count_buf + s3
+                uint8 c = 0
+                unsafe { *(p as uint8) -> c }
+                if c < 255 {
+                    uint64 nc = c
+                    nc = nc + 1
+                    uint8 nc8 = nc
+                    unsafe { *(p as uint8) = nc8 }
+                }
+            }
+        }
+        i = i + 1
+    }
+}
+
+fn ir_use_count_get(uint64 vreg) -> uint64 {
+    if vreg >= ir_use_count_cap { return 255 }
+    uint64 p = ir_use_count_buf + vreg
+    uint8 c = 0
+    unsafe { *(p as uint8) -> c }
+    return c
+}
+
+// Returns the short-jcc opcode (0x84..0x8F) if the CMP instruction at
+// `cmp_idx` should be fused into a direct conditional branch with the
+// BB terminator. Returns 0 if no fusion is possible. Conditions:
+//   - cmp_idx's opcode is IR_CMP_EQ..IR_CMP_GE (14..19) or
+//     IR_SCMP_LT..IR_SCMP_GE (120..123)
+//   - The next instruction in the BB is the terminator, opcode 41
+//     (IR_BR_COND), and its src1 equals the cmp's destination
+//   - The cmp result has exactly one use (i.e., this BR_COND)
+fn ir_cmp_fuse_code(uint64 cmp_idx) -> uint64 {
+    uint64 op = ir_insn_opcode(cmp_idx)
+    if (op < 14 || op > 19) && (op < 120 || op > 123) { return 0 }
+    uint64 nxt = ir_insn_next(cmp_idx)
+    if nxt == 0xFFFFFFFF { return 0 }
+    uint64 nop = ir_insn_opcode(nxt)
+    if nop != 41 { return 0 }
+    uint64 dst = ir_insn_dest(cmp_idx)
+    uint64 cond_v = ir_insn_src1(nxt)
+    if cond_v != dst { return 0 }
+    if ir_use_count_get(dst) != 1 { return 0 }
+    // Map cmp opcode → short jcc opcode (second byte after 0x0F).
+    // Unsigned:  EQ(14)→0x84, NE(15)→0x85, LT(16)→0x82, LE(17)→0x86,
+    //            GT(18)→0x87, GE(19)→0x83
+    // Signed:    LT(120)→0x8C, LE(121)→0x8E, GT(122)→0x8F, GE(123)→0x8D
+    if op == 14  { return 0x84 }
+    if op == 15  { return 0x85 }
+    if op == 16  { return 0x82 }
+    if op == 17  { return 0x86 }
+    if op == 18  { return 0x87 }
+    if op == 19  { return 0x83 }
+    if op == 120 { return 0x8C }
+    if op == 121 { return 0x8E }
+    if op == 122 { return 0x8F }
+    if op == 123 { return 0x8D }
+    return 0
+}
+
 // ---------------------------------------------------------------------------
 // Register allocator — greedy coloring
 // ---------------------------------------------------------------------------
@@ -5123,6 +5244,14 @@ fn ir_emit_x86_insn(uint64 ii) {
         uint64 a_reg = ir_resolve_src(s1_v, 0)
         uint64 b_reg = ir_resolve_src(s2_v, 1)
         ir_emit_cmp_r64_r64(a_reg, b_reg)
+        // Fusion path: if this cmp feeds the BB's BR_COND terminator with a
+        // single use, stash the jcc code and stop here. The terminator will
+        // emit `0F <jcc> disp32` directly on the flags we just set.
+        uint64 fuse = ir_cmp_fuse_code(ii)
+        if fuse != 0 {
+            ir_fused_jcc_code = fuse
+            return
+        }
         // setcc al: 0F xx C0
         emit_byte(0x0F)
         if op == 14 { emit_byte(0x94) }  // sete
@@ -5151,6 +5280,11 @@ fn ir_emit_x86_insn(uint64 ii) {
         uint64 a_reg = ir_resolve_src(s1_v, 0)
         uint64 b_reg = ir_resolve_src(s2_v, 1)
         ir_emit_cmp_r64_r64(a_reg, b_reg)
+        uint64 fuse_s = ir_cmp_fuse_code(ii)
+        if fuse_s != 0 {
+            ir_fused_jcc_code = fuse_s
+            return
+        }
         emit_byte(0x0F)
         if op == 120 { emit_byte(0x9C) }  // setl  (signed <)
         if op == 121 { emit_byte(0x9E) }  // setle (signed <=)
@@ -8430,6 +8564,9 @@ fn ir_emit_x86_function(uint64 fn_node) {
     // 4a. Snapshot the function's var map for DWARF (if -g)
     ir_snapshot_debug_vars()
 
+    // 4b. Per-vreg use count — consumed by the CMP+JCC fusion peephole.
+    ir_compute_use_count()
+
     // 5a. For main(): set up argc/argv BEFORE prologue modifies RSP
     uint32 fn_name_tok = ast_data1(fn_node)
     if tok_matches(fn_name_tok, "main", 4) != 0 && freestanding == 0 && target_os == 2 {
@@ -8537,6 +8674,10 @@ fn ir_emit_x86_function(uint64 fn_node) {
         // the spill-reload peephole's "nothing happened between" check
         // must restart from this point.
         ir_peephole_reset()
+        // Fusion handoff is strictly intra-BB: a cmp in BB A must not
+        // bleed a stale jcc code into BB B's terminator. Reset here so
+        // each block's terminator independently decides fused vs. plain.
+        ir_fused_jcc_code = 0
 
         // Emit non-terminator instructions
         uint64 ii = ir_bb_first_insn(bi)
@@ -8570,12 +8711,22 @@ fn ir_emit_x86_function(uint64 fn_node) {
                 }
             }
             if last_op == 41 {
-                // Conditional branch: test + jnz true_target + jmp false_target
-                uint64 cond_v = ir_insn_src1(last)
-                uint64 cond_r = ir_resolve_src(cond_v, 0)
-                ir_emit_test_r64_r64(cond_r, cond_r)
-                emit_byte(0x0F)
-                emit_byte(0x85)
+                // Conditional branch. Two paths:
+                //   Fused: preceding CMP was folded — emit `0F <jcc> disp32`
+                //          directly on the flags the cmp left behind.
+                //   Plain: compute cond into a reg then test+jnz as before.
+                if ir_fused_jcc_code != 0 {
+                    emit_byte(0x0F)
+                    uint8 jcc = ir_fused_jcc_code
+                    emit_byte(jcc)
+                    ir_fused_jcc_code = 0
+                } else {
+                    uint64 cond_v = ir_insn_src1(last)
+                    uint64 cond_r = ir_resolve_src(cond_v, 0)
+                    ir_emit_test_r64_r64(cond_r, cond_r)
+                    emit_byte(0x0F)
+                    emit_byte(0x85)
+                }
                 // Record fixup for jnz -> true target
                 uint64 target_true = ir_insn_imm(last)
                 uint64 fp = ir_br_fixups + ir_br_fixup_count * 8
