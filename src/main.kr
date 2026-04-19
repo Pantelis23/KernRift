@@ -2814,6 +2814,7 @@ fn compress_pair_best(
 }
 
 fn compile_fat(uint64 input_path, uint64 output_path) {
+    uint64 t_start_fat = time_ns()
     import_init()
     import_check_file(input_path)
     import_process(input_path)
@@ -4036,8 +4037,33 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     write(1, msg, 5)
     uint64 olen = str_len(output_path)
     write(1, output_path, olen)
-    msg = "\n"
-    write(1, msg, 1)
+    // Same "(X.XX ms)" timer as single-file compile(). Gated on t_start_fat
+    // having landed as non-zero — older target_os paths that stub time_ns()
+    // to 0 just fall back to the plain newline.
+    uint64 t_end_fat = time_ns()
+    if t_start_fat != 0 {
+        uint64 elapsed_fat = t_end_fat - t_start_fat
+        uint64 ms_whole_f = elapsed_fat / 1000000
+        uint64 ms_hund_f  = (elapsed_fat / 10000) % 100
+        msg = "  ("
+        write(1, msg, 3)
+        uint64 w_len_f = fmt_uint(nb, ms_whole_f)
+        write(1, nb, w_len_f)
+        msg = "."
+        write(1, msg, 1)
+        uint8[2] hb_f
+        uint8 d0_f = 48 + (ms_hund_f / 10)
+        uint8 d1_f = 48 + (ms_hund_f % 10)
+        unsafe { *(hb_f as uint8) = d0_f }
+        uint64 hb_f1 = hb_f + 1
+        unsafe { *(hb_f1 as uint8) = d1_f }
+        write(1, hb_f, 2)
+        msg = " ms)\n"
+        write(1, msg, 5)
+    } else {
+        msg = "\n"
+        write(1, msg, 1)
+    }
 }
 
 // Statics set by _start trampoline
