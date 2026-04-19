@@ -1,0 +1,17 @@
+// Bitwise ops: and/or/xor/shl/shr/not. Exercises the IR's bitwise
+// opcode set separate from arithmetic — the x86 and ARM64 emitters
+// have distinct instruction encodings per op.
+fn main() {
+    uint64 a = 0xF0F0F0F0F0F0F0F0
+    uint64 b = 0x0F0F0F0F0F0F0F0F
+    println(a & b)                    // 0
+    println(a | b)                    // 0xFFFFFFFFFFFFFFFF
+    println(a ^ b)                    // 0xFFFFFFFFFFFFFFFF
+    println(~a)                       // b
+    println(a >> 4)                   // 0x0F0F0F0F0F0F0F0F
+    println(b << 4)                   // 0xF0F0F0F0F0F0F0F0
+    println((a & b) | (a ^ b))         // 0xFFFFFFFFFFFFFFFF
+    println(1 << 35)                  // 34359738368
+    println(0xFFFF & 0xF00F)           // 0xF00F
+    exit(0)
+}

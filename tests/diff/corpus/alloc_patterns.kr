@@ -1,0 +1,30 @@
+// Dynamic alloc patterns: pointer arithmetic, varying sizes, re-use
+// of the same slot. Any divergence in how IR vs legacy track pointer
+// provenance across calls would show up here.
+fn main() {
+    uint64 buf = alloc(1024)
+    uint64 i = 0
+    while i < 128 {
+        uint64 p = buf + i * 8
+        unsafe { *(p as uint64) = i * i }
+        i = i + 1
+    }
+    uint64 sum = 0
+    i = 0
+    while i < 128 {
+        uint64 p = buf + i * 8
+        uint64 v = 0
+        unsafe { *(p as uint64) -> v }
+        sum = sum + v
+        i = i + 1
+    }
+    println(sum)     // 0^2 + 1^2 + ... + 127^2 = 690880
+
+    // Second alloc to verify allocator state across calls
+    uint64 buf2 = alloc(64)
+    unsafe { *(buf2 as uint64) = 12345 }
+    uint64 v2 = 0
+    unsafe { *(buf2 as uint64) -> v2 }
+    println(v2)
+    exit(0)
+}

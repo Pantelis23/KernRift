@@ -1,0 +1,25 @@
+// Static array reads + writes + inline iteration. Exercises the
+// static-data fixup pass (ADRP / RIP-relative) on both backends.
+static uint64[16] counters = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+static uint64[8] seeds = [3, 5, 7, 11, 13, 17, 19, 23]
+
+fn main() {
+    uint64 i = 0
+    while i < 8 {
+        counters[i] = seeds[i] * seeds[i]
+        i = i + 1
+    }
+    i = 0
+    uint64 sum = 0
+    while i < 16 {
+        sum = sum + counters[i]
+        i = i + 1
+    }
+    println(sum)
+
+    // In-place update + re-read
+    counters[3] = 999
+    println(counters[3])
+    println(counters[4])
+    exit(0)
+}

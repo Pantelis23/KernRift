@@ -1,0 +1,19 @@
+// Unsigned integer arithmetic edge cases: overflow wrap, zero, powers of 2,
+// and operator interleaving. Prints one u64 per line.
+fn main() {
+    uint64 a = 0
+    uint64 b = 1
+    uint64 c = 0xFFFFFFFFFFFFFFFF
+    println(a + b)
+    println(b + b)
+    println(c + 1)             // expect 0 (wrap)
+    println(c - 1)
+    println((1 << 32) - 1)     // 4294967295
+    println((1 << 63))         // 9223372036854775808
+    println(a * 7 + 3)
+    println(b * b)
+    println((1 + 2) * (3 + 4)) // 21
+    println(100 / 7)
+    println(100 - (100 / 7) * 7)
+    exit(0)
+}

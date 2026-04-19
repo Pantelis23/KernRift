@@ -1,0 +1,27 @@
+// Function with 9–12 parameters. AAPCS64 passes x0..x7 in regs then
+// spills to the caller stack; SysV AMD64 passes rdi/rsi/rdx/rcx/r8/r9
+// then spills. Both have had miscompiles in the past (R1).
+fn add12(uint64 a, uint64 b, uint64 c, uint64 d, uint64 e, uint64 f, uint64 g, uint64 h, uint64 i, uint64 j, uint64 k, uint64 l) -> uint64 {
+    return a + b + c + d + e + f + g + h + i + j + k + l
+}
+
+fn mix10(uint64 a, uint64 b, uint64 c, uint64 d, uint64 e, uint64 f, uint64 g, uint64 h, uint64 i, uint64 j) -> uint64 {
+    uint64 r = 0
+    r = r + a * 1
+    r = r + b * 10
+    r = r + c * 100
+    r = r + d * 1000
+    r = r + e * 10000
+    r = r + f * 100000
+    r = r + g * 1000000
+    r = r + h * 10000000
+    r = r + i * 100000000
+    r = r + j * 1000000000
+    return r
+}
+
+fn main() {
+    println(add12(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12))   // 78
+    println(mix10(1, 2, 3, 4, 5, 6, 7, 8, 9, 0))             // 987654321
+    exit(0)
+}

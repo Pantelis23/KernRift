@@ -56,6 +56,12 @@ jobs:
           sudo apt-get install -y -qq qemu-user-static
           KRC=./build/krc2 KRC_FLAGS="--arch=arm64" SMOKE_RUNNER=qemu-aarch64-static bash tests/smoke/run.sh
 
+      - name: Differential harness (legacy vs IR, Linux x86_64)
+        run: KRC=./build/krc2 bash tests/diff/run.sh
+
+      - name: Differential harness (IR x86_64 vs IR arm64 via qemu)
+        run: DIFF_MODE=crossarch KRC=./build/krc2 bash tests/diff/run.sh
+
       - name: Bootstrap verification (krc3 == krc4)
         run: make bootstrap
 

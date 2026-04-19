@@ -1,0 +1,23 @@
+// Struct with u64 fields. Field offsets are computed identically by
+// IR and legacy (both use the same struct metadata), but the load/
+// store codegen differs and a broken offset would show up here.
+struct Point {
+    uint64 x
+    uint64 y
+}
+
+fn main() {
+    Point p
+    p.x = 3
+    p.y = 4
+    println(p.x)
+    println(p.y)
+    println(p.x * p.x + p.y * p.y)   // 25
+
+    Point q
+    q.x = p.x + 10
+    q.y = p.y + 10
+    println(q.x)
+    println(q.y)
+    exit(0)
+}

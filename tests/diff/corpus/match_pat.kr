@@ -1,0 +1,29 @@
+// Match patterns: integer literals, ranges, wildcards. The legacy
+// and IR backends lower match independently; a divergence in jump-
+// table layout or range-check emission would surface here.
+fn classify(uint64 x) -> uint64 {
+    match x {
+        0 => { return 100 }
+        1, 2, 3 => { return 101 }
+        10..=20 => { return 102 }
+        100 => { return 103 }
+        _ => { return 0 }
+    }
+    return 0   // sema's path analysis doesn't yet see the `_` arm as
+               // terminal, so spell the fallthrough out explicitly
+}
+
+fn main() {
+    println(classify(0))
+    println(classify(1))
+    println(classify(2))
+    println(classify(3))
+    println(classify(4))
+    println(classify(10))
+    println(classify(15))
+    println(classify(20))
+    println(classify(21))
+    println(classify(100))
+    println(classify(999))
+    exit(0)
+}

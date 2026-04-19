@@ -1,0 +1,27 @@
+// Mutual + direct recursion. Exercises prologue/epilogue and the
+// callee-save register set (differs slightly between IR and legacy
+// since IR picks via graph-coloring regalloc).
+fn is_even(uint64 n) -> uint64 {
+    if n == 0 { return 1 }
+    return is_odd(n - 1)
+}
+
+fn is_odd(uint64 n) -> uint64 {
+    if n == 0 { return 0 }
+    return is_even(n - 1)
+}
+
+fn fib(uint64 n) -> uint64 {
+    if n < 2 { return n }
+    return fib(n - 1) + fib(n - 2)
+}
+
+fn main() {
+    println(is_even(12))   // 1
+    println(is_even(13))   // 0
+    println(is_odd(7))      // 1
+    println(fib(10))        // 55
+    println(fib(15))        // 610
+    println(fib(20))        // 6765
+    exit(0)
+}

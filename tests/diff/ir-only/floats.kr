@@ -1,0 +1,18 @@
+// f64 ops + int/float conversion. Different codegen paths (SSE on
+// x86, ASIMD on ARM64), and exercise fmt_f64 precision.
+fn main() {
+    f64 a = 3.14
+    f64 b = 2.0
+    f64 c = a + b
+    f64 d = a * b
+    f64 e = a / b
+    println(c)
+    println(d)
+    println(e)
+    println(a - a)
+    println(1.5 + 0.25)
+    println(int_to_f64(42))
+    println(f64_to_int(3.999))   // 3 (truncating)
+    println(f64_to_int(-3.1))     // -3
+    exit(0)
+}

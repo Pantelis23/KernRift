@@ -1,0 +1,13 @@
+// Signed arithmetic via signed_lt/gt builtins. The default comparison
+// operators in KernRift are unsigned, so this exercises the signed-
+// compare intrinsics the optimizer treats differently from unsigned ones.
+fn main() {
+    uint64 a = 0xFFFFFFFFFFFFFFF6   // -10 as signed
+    uint64 b = 5
+    if signed_lt(a, b) != 0 { println(1) } else { println(0) }
+    if signed_gt(a, b) != 0 { println(1) } else { println(0) }
+    if signed_le(a, a) != 0 { println(1) } else { println(0) }
+    if signed_ge(b, b) != 0 { println(1) } else { println(0) }
+    if signed_lt(b, a) != 0 { println(1) } else { println(0) }   // 5 < -10 unsigned = 0
+    exit(0)
+}

@@ -1,0 +1,12 @@
+// f-string interpolation. IR has its own lowering path for f-strings
+// (builds a string at compile time of parts + expressions), differs
+// from legacy's direct-emit pattern.
+fn main() {
+    uint64 n = 42
+    uint64 m = 7
+    println(f"n = {n}, m = {m}")
+    println(f"sum = {n + m}")
+    println(f"prod = {n * m}, quot = {n / m}")
+    println(f"bool = {n > m}")
+    exit(0)
+}

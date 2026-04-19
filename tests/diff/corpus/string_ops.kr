@@ -1,0 +1,21 @@
+// String operations: println, str_len, str_eq_full, character access.
+// Legacy and IR backends emit different code for string-pointer moves
+// and for the byte-load-then-compare loop that underlies str_eq.
+fn main() {
+    uint64 s1 = "hello, world"
+    uint64 s2 = "hello, world"
+    uint64 s3 = "goodbye"
+    println(str_len(s1))        // 12
+    println(str_len(s3))         // 7
+    println(str_eq(s1, s2))       // 1
+    println(str_eq(s1, s3))       // 0
+
+    // Character access
+    uint64 c0 = 0; uint64 c5 = 0
+    unsafe { *(s1 as uint8) -> c0 }
+    uint64 s1p5 = s1 + 5
+    unsafe { *(s1p5 as uint8) -> c5 }
+    println(c0)    // 104 = 'h'
+    println(c5)    // 44  = ','
+    exit(0)
+}
