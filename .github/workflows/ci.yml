@@ -89,6 +89,10 @@ jobs:
           # krc.krbo — 8-slice fat binary of the compiler
           ./build/krc2 build/krc.kr -o /tmp/krc.krbo
           ls -la /tmp/krc.krbo
+          # Ship the concatenated source alongside so the Tier-1 #3
+          # self-host fixed-point tests on macOS/Windows/Android have
+          # something to feed back into krc4.
+          cp build/krc.kr /tmp/krc-source.kr
           # kr runner for every platform (one source, seven slices)
           cat src/bcj.kr src/runner.kr > /tmp/kr.kr
           mkdir -p /tmp/kr-runners
@@ -126,6 +130,7 @@ jobs:
           path: |
             /tmp/krc.krbo
             /tmp/kr-runners/
+            /tmp/krc-source.kr
 
       - name: Cross-compile macOS and Windows
         run: |
