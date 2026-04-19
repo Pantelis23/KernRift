@@ -7042,28 +7042,40 @@ fn ir_emit_x86_insn(uint64 ii) {
             emit_byte(0x4C); emit_byte(0x01); emit_byte(0xD0)
             // add rsp, 0x30
             emit_byte(0x48); emit_byte(0x83); emit_byte(0xC4); emit_byte(0x30)
+        } else if target_os == 1 {
+            // macOS x86_64: gettimeofday(rdi=&tv, rsi=NULL) via syscall
+            // 0x2000074. Darwin's clock_gettime isn't 228 the way Linux's
+            // is — syscall 228 on macOS dispatches to some unrelated BSD
+            // entry point that silently returns 0 in rax, which is what
+            // made time_ns() come back zero on every arm64 and x86_64
+            // macOS build until today.
+            emit_byte(0x48); emit_byte(0x83); emit_byte(0xEC); emit_byte(16)       // sub rsp, 16
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xE7)                      // mov rdi, rsp
+            emit_byte(0x31); emit_byte(0xF6)                                       // xor esi, esi
+            ir_emit_mov_r64_imm64(0, 0x2000074)                                    // mov rax, gettimeofday
+            emit_byte(0x0F); emit_byte(0x05)                                       // syscall
+            emit_byte(0x48); emit_byte(0x8B); emit_byte(0x04); emit_byte(0x24)     // mov rax, [rsp]
+            emit_byte(0x48); emit_byte(0x69); emit_byte(0xC0)                      // imul rax, rax, 1e9
+            emit_u32_le(1000000000)
+            // macOS x86_64 tv_usec is i32 — load 32-bit and zero-extend
+            emit_byte(0x8B); emit_byte(0x4C); emit_byte(0x24); emit_byte(8)        // mov ecx, [rsp+8]
+            emit_byte(0x48); emit_byte(0x69); emit_byte(0xC9)                      // imul rcx, rcx, 1000
+            emit_u32_le(1000)
+            emit_byte(0x48); emit_byte(0x01); emit_byte(0xC8)                      // add rax, rcx
+            emit_byte(0x48); emit_byte(0x83); emit_byte(0xC4); emit_byte(16)       // add rsp, 16
         } else {
-            // sub rsp, 16
+            // Linux / Android x86_64: clock_gettime(CLOCK_MONOTONIC, &ts)
             emit_byte(0x48); emit_byte(0x83); emit_byte(0xEC); emit_byte(16)
-            // mov edi, 1 (CLOCK_MONOTONIC)
             emit_byte(0xBF); emit_byte(1); emit_byte(0); emit_byte(0); emit_byte(0)
-            // mov rsi, rsp
             emit_byte(0x48); emit_byte(0x89); emit_byte(0xE6)
-            // mov eax, 228 (clock_gettime) — OS-aware
             uint64 cgt_nr = ir_x86_syscall_nr(228)
             ir_emit_mov_r64_imm64(0, cgt_nr)
-            // syscall
             emit_byte(0x0F); emit_byte(0x05)
-            // mov rax, [rsp] (seconds)
             emit_byte(0x48); emit_byte(0x8B); emit_byte(0x04); emit_byte(0x24)
-            // imul rax, rax, 1000000000
             emit_byte(0x48); emit_byte(0x69); emit_byte(0xC0)
             emit_u32_le(1000000000)
-            // mov rcx, [rsp+8] (nanoseconds)
             emit_byte(0x48); emit_byte(0x8B); emit_byte(0x4C); emit_byte(0x24); emit_byte(8)
-            // add rax, rcx
             emit_byte(0x48); emit_byte(0x01); emit_byte(0xC8)
-            // add rsp, 16
             emit_byte(0x48); emit_byte(0x83); emit_byte(0xC4); emit_byte(16)
         }
         if dst_r != 0xFFFFFFFF && dst_r != 0 {
