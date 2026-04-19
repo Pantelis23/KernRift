@@ -2143,9 +2143,17 @@ fn time_ns() -> uint64 {
 // arch: 0=x86_64, 1=arm64
 // emit: 0=elfexe, 1=machoexe, 2=peexe, 3=obj (ELF relocatable), 5=asm listing, 6=ir dump
 fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode) {
+    uint64 cdbg = "M13 compile() enter\n"
+    write(2, cdbg, 20)
     uint64 t_start = time_ns()
+    cdbg = "M14 after time_ns\n"
+    write(2, cdbg, 18)
     set_target_arch(arch)
+    cdbg = "M15 after set_target_arch\n"
+    write(2, cdbg, 26)
     import_init()
+    cdbg = "M16 after import_init\n"
+    write(2, cdbg, 22)
     import_check_file(input_path)
     import_process(input_path)
     uint64 source = import_buf
@@ -4522,14 +4530,20 @@ fn main() {
     }
 
     // Default: produce fat binary unless --arch or --emit specified.
+    dbg_msg = "M11 before dispatch\n"
+    write(2, dbg_msg, 20)
     // On Windows / macOS: default to the host's native format so that
     // `krc hello.kr` just works without flags. The user can still
     // explicitly request a fat binary with `krc hello.kr -o hello.krbo`
     // via --emit=... if they want cross-platform output.
     // --targets=<list> always forces fat-binary emission (custom slice set).
     if target_mask != 0 || (arch_set == 0 && emit_set == 0 && cli_argc > 0) {
+        dbg_msg = "M12a calling compile_fat\n"
+        write(2, dbg_msg, 25)
         compile_fat(input_path, output_path)
     } else {
+        dbg_msg = "M12b calling compile\n"
+        write(2, dbg_msg, 21)
         compile(input_path, output_path, arch, emit_mode)
     }
     exit(0)
