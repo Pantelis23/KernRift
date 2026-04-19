@@ -3457,16 +3457,43 @@ fn gen_expr(uint64 node) {
                 uint32 opk_lea = 0
                 unsafe { *(opl as uint32) -> opk_lea }
                 if opk_lea == 30 || opk_lea == 31 {
-                    // Parse the integer literal
+                    // Parse the integer literal. Pick the narrowest LEA
+                    // encoding that losslessly represents the signed disp.
+                    // The old code unconditionally used disp8 — truncating
+                    // and sign-extending a uint64 into an 8-bit field —
+                    // so `x + 181` came out as `x + (-75)` and quietly
+                    // miscompiled every arithmetic expression with a
+                    // literal in [128, 255]. Found by tests/fuzz.
                     uint32 rhs_tok = ast_data1(wrhs)
                     uint64 imm_val = parse_int_token(rhs_tok)
                     uint64 disp = imm_val
                     if opk_lea == 31 { disp = 0 - imm_val }
-                    // lea rax, [rbx + disp8]: 48 8D 43 <disp8>
-                    uint8 d8 = disp
-                    emit_byte(0x48); emit_byte(0x8D); emit_byte(0x43); emit_byte(d8)
-                    rax_cache = 0
-                    used_lea = 1
+                    // disp fits in signed int8 if its top 57 bits match
+                    // the sign bit (all 0 for [0..127], all 1 for [-128..-1]).
+                    uint64 top = disp >> 7
+                    uint64 fits_i8 = 0
+                    if top == 0 { fits_i8 = 1 }
+                    if top == 0x1FFFFFFFFFFFFFF { fits_i8 = 1 }
+                    uint64 top32 = disp >> 31
+                    uint64 fits_i32 = 0
+                    if top32 == 0 { fits_i32 = 1 }
+                    if top32 == 0x1FFFFFFFF { fits_i32 = 1 }
+                    if fits_i8 != 0 {
+                        // lea rax, [rbx + disp8]: 48 8D 43 <disp8>
+                        uint8 d8 = disp
+                        emit_byte(0x48); emit_byte(0x8D); emit_byte(0x43); emit_byte(d8)
+                        rax_cache = 0
+                        used_lea = 1
+                    } else if fits_i32 != 0 {
+                        // lea rax, [rbx + disp32]: 48 8D 83 <disp32>
+                        emit_byte(0x48); emit_byte(0x8D); emit_byte(0x83)
+                        emit_u32_le(disp & 0xFFFFFFFF)
+                        rax_cache = 0
+                        used_lea = 1
+                    }
+                    // imm doesn't fit in int32 — fall through to the
+                    // general arithmetic path below, which materialises
+                    // the 64-bit constant explicitly.
                 }
             }
         }

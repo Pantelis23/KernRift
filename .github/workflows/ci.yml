@@ -62,6 +62,9 @@ jobs:
       - name: Differential harness (IR x86_64 vs IR arm64 via qemu)
         run: DIFF_MODE=crossarch KRC=./build/krc2 bash tests/diff/run.sh
 
+      - name: Fuzz harness (Tier 2 — random programs, Python oracle)
+        run: KRC=./build/krc2 FUZZ_COUNT=50 FUZZ_SEED=3735928559 bash tests/fuzz/run.sh
+
       - name: Bootstrap verification (krc3 == krc4)
         run: make bootstrap
 
