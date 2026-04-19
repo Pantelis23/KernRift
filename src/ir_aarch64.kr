@@ -1707,32 +1707,48 @@ fn ir_emit_arm64_insn(uint64 ii) {
 
     // ----- IR_TIME_NS (119): clock_gettime -> nanoseconds -----
     if op == 119 {
-        if target_os == 0 || target_os == 1 || target_os == 3 {
-            // Use scratchpad for timespec {tv_sec, tv_nsec} (16 bytes)
-            // x1 = SP + ir_a64_scratch_off (buffer address)
+        if target_os == 0 || target_os == 3 {
+            // Linux / Android arm64: clock_gettime(CLOCK_MONOTONIC=1, &ts)
+            // via syscall 113. Returns {tv_sec, tv_nsec} into a 16-byte
+            // scratchpad slot.
             emit_a64_mov_imm(1, ir_a64_scratch_off)
             ir_a64_add_sp_reg(1, 1)
-            // x0 = 1 (CLOCK_MONOTONIC)
             emit_a64_mov_imm(0, 1)
-            // syscall clock_gettime
             uint64 cgt_nr = ir_a64_syscall_nr(228)
             emit_a64_syscall_nr(cgt_nr)
             emit_a64_svc()
-            // Load results from scratchpad
-            // x9 = tv_sec
             emit_a64_mov_imm(11, ir_a64_scratch_off)
             ir_a64_add_sp_reg(11, 11)
             emit_a64_ldr(9, 11, 0)
-            // x10 = tv_nsec
             emit_a64_ldr(10, 11, 8)
-            // x11 = 1_000_000_000
             emit_a64_mov_imm(11, 1000000000)
-            // x9 = tv_sec * 1_000_000_000
             emit_a64_mul(9, 9, 11)
-            // x0 = x9 + x10
+            emit_a64_add(0, 9, 10)
+        } else if target_os == 1 {
+            // macOS arm64: gettimeofday(&tv, NULL), x16=116, svc #0x80.
+            // timeval = { tv_sec: i64, tv_usec: i64 }. Matches the
+            // legacy codegen at src/codegen_aarch64.kr:3539. Without
+            // this, the IR path was issuing clock_gettime-as-Linux
+            // syscall 228 on Darwin, which is an invalid syscall that
+            // silently returned 0 in x0 — so every time_ns() on
+            // native arm64 macOS came back zero and the compiler's
+            // '(X.XX ms)' self-timer stayed hidden.
+            emit_a64_mov_imm(0, ir_a64_scratch_off)
+            ir_a64_add_sp_reg(0, 0)
+            emit_a64_mov_imm(1, 0)
+            emit_a64_mov_imm(16, 116)
+            emit_a64_svc()
+            emit_a64_mov_imm(11, ir_a64_scratch_off)
+            ir_a64_add_sp_reg(11, 11)
+            emit_a64_ldr(9, 11, 0)
+            emit_a64_ldr(10, 11, 8)
+            emit_a64_mov_imm(11, 1000000000)
+            emit_a64_mul(9, 9, 11)
+            emit_a64_mov_imm(11, 1000)
+            emit_a64_mul(10, 10, 11)
             emit_a64_add(0, 9, 10)
         } else {
-            // Non-Linux/macOS: return 0
+            // Windows arm64 (target_os==2): not yet wired via IAT.
             emit_a64_mov_imm(0, 0)
         }
         if dst_r != 0xFFFFFFFF && dst_r != 0 {
