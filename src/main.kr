@@ -2880,10 +2880,15 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     dce_init()
     dce_scan(root)
 
-    uint64 x86_buf = alloc(1048576)
+    // Generate x86_64 ELF into temp buffer.
+    // The per-slice buffer is allocated AFTER codegen (same pattern as the
+    // arm64 / pe / macho / android slices below) because the 1 MB upfront
+    // allocation the code used to make silently overflowed once the slice
+    // grew past that size — harmlessly on Linux (the overflow lands in
+    // mapped heap pages) but as a SIGSEGV on Windows, where VirtualAlloc
+    // leaves guard pages between reservations.
     uint64 x86_len = 0
 
-    // Generate x86_64 ELF into temp buffer
     emit_elf_header()
     emit_program_header(0)
     uint64 text_start = codegen_output_len()
@@ -2937,6 +2942,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
 
     // Copy x86_64 output to temp buffer
     x86_len = codegen_output_len()
+    uint64 x86_buf = alloc(x86_len)
     uint64 xi = 0
     while xi < x86_len {
         uint64 sp = out_buf + xi
