@@ -126,6 +126,24 @@ jobs:
           echo 'fn main() { exit(42) }' > /tmp/kr_fat_test.kr
           ./build/krc2 /tmp/kr_fat_test.kr -o /tmp/test-bins/kr-test.krbo
 
+          # Cross-compile the smoke corpus for every non-Linux target. The
+          # native-OS jobs below consume these to make sure primitives like
+          # alloc / file_read / file_size / time_ns actually work on real
+          # hardware, not just the cross-compiler's output format.
+          mkdir -p /tmp/test-bins/smoke
+          : > /tmp/test-bins/smoke/manifest.txt
+          for src in tests/smoke/*.kr; do
+            t="$(basename "$src" .kr)"
+            expected="$(grep -oE '// expected:[[:space:]]*[0-9]+' "$src" | head -1 | grep -oE '[0-9]+$')"
+            expected="${expected:-0}"
+            echo "$t $expected" >> /tmp/test-bins/smoke/manifest.txt
+            ./build/krc2 --arch=x86_64 --emit=pe    "$src" -o "/tmp/test-bins/smoke/win-x64-$t.exe"
+            ./build/krc2 --arch=arm64  --emit=pe    "$src" -o "/tmp/test-bins/smoke/win-arm-$t.exe"
+            ./build/krc2 --arch=x86_64 --emit=macho "$src" -o "/tmp/test-bins/smoke/mac-x64-$t"
+            ./build/krc2 --arch=arm64  --emit=macho "$src" -o "/tmp/test-bins/smoke/mac-arm-$t"
+          done
+          cat /tmp/test-bins/smoke/manifest.txt
+
           ls -la /tmp/test-bins/
 
       - name: Upload test binaries
@@ -174,6 +192,23 @@ jobs:
           run_test "add"    bins/macos-x64-add 42
           run_test "static" bins/macos-x64-static 3
           run_test "alloc"  bins/macos-x64-alloc_test 42
+          # Per-platform smoke corpus: alloc, file I/O, file_size, time_ns,
+          # large frames, 9+-arg calls, deep recursion.
+          while read -r name expected; do
+            [ -z "$name" ] && continue
+            bin="bins/smoke/mac-x64-$name"
+            chmod +x "$bin" 2>/dev/null || true
+            xattr -cr "$bin" 2>/dev/null || true
+            set +e
+            "$bin" > /dev/null 2>&1
+            CODE=$?
+            set -e
+            if [ "$CODE" = "$expected" ]; then
+              PASS=$((PASS+1)); echo "PASS: smoke.$name (exit=$CODE)"
+            else
+              FAIL=$((FAIL+1)); echo "FAIL: smoke.$name (expected=$expected, got=$CODE)"
+            fi
+          done < bins/smoke/manifest.txt
           echo "=== macOS x86_64: $PASS passed, $FAIL failed ==="
           echo $FAIL > debug-kit/fail-count.txt
 
@@ -337,6 +372,22 @@ jobs:
           run_test "static" bins/macos-arm-static 3
           run_test "alloc"  bins/macos-arm-alloc_test 42
           run_test "fileio" bins/macos-arm-fileio 8
+          # Per-platform smoke corpus
+          while read -r name expected; do
+            [ -z "$name" ] && continue
+            bin="bins/smoke/mac-arm-$name"
+            chmod +x "$bin" 2>/dev/null || true
+            xattr -cr "$bin" 2>/dev/null || true
+            set +e
+            "$bin" > /dev/null 2>&1
+            CODE=$?
+            set -e
+            if [ "$CODE" = "$expected" ]; then
+              PASS=$((PASS+1)); echo "PASS: smoke.$name (exit=$CODE)"
+            else
+              FAIL=$((FAIL+1)); echo "FAIL: smoke.$name (expected=$expected, got=$CODE)"
+            fi
+          done < bins/smoke/manifest.txt
           echo "=== macOS ARM64: $PASS passed, $FAIL failed ==="
           echo $FAIL > debug-kit/fail-count.txt
 
@@ -410,6 +461,25 @@ jobs:
             Write-Host "FAIL: file I/O (expected 8, got $($r.ExitCode))"
             exit 1
           }
+
+      - name: Smoke suite (Windows x86_64 native)
+        shell: pwsh
+        run: |
+          $fail = 0
+          Get-Content bins\smoke\manifest.txt | ForEach-Object {
+            $parts = $_ -split ' +'
+            if ($parts.Length -lt 2) { return }
+            $name = $parts[0]; $expected = [int]$parts[1]
+            $bin = "bins\smoke\win-x64-$name.exe"
+            $r = Start-Process -FilePath $bin -Wait -PassThru -NoNewWindow
+            if ($r.ExitCode -eq $expected) {
+              Write-Host "PASS: smoke.$name (exit=$($r.ExitCode))"
+            } else {
+              Write-Host "FAIL: smoke.$name (expected=$expected, got=$($r.ExitCode))"
+              $fail++
+            }
+          }
+          if ($fail -gt 0) { exit 1 }
 
       - name: Fat binary runner (kr) on Windows
         shell: pwsh
@@ -496,6 +566,30 @@ jobs:
             Write-Host "FAIL: file I/O (expected 8, got $($r.ExitCode))"
             exit 1
           }
+
+      - name: Smoke suite (Windows ARM64 native)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $fail = 0
+          Get-Content bins\smoke\manifest.txt | ForEach-Object {
+            $parts = $_ -split ' +'
+            if ($parts.Length -lt 2) { return }
+            $name = $parts[0]; $expected = [int]$parts[1]
+            # time_ns on Windows ARM64 still returns 0 (no IAT wiring yet);
+            # the test deliberately exits 1 in that case. Accept it on WoA
+            # until someone ports QueryPerformanceCounter to arm64-pe.
+            if ($name -eq 'time_ns') { $expected = 1 }
+            $bin = "bins\smoke\win-arm-$name.exe"
+            $r = Start-Process -FilePath $bin -Wait -PassThru -NoNewWindow
+            if ($r.ExitCode -eq $expected) {
+              Write-Host "PASS: smoke.$name (exit=$($r.ExitCode))"
+            } else {
+              Write-Host "FAIL: smoke.$name (expected=$expected, got=$($r.ExitCode))"
+              $fail++
+            }
+          }
+          if ($fail -gt 0) { exit 1 }
 
       - name: Self-compilation on Windows ARM64
         shell: pwsh

@@ -1,0 +1,16 @@
+// expected: 16
+// Smoke test: query file size via file_size() (GetFileSizeEx on Windows,
+// lseek(SEEK_END) on Unix).
+// Catches: Windows ARM64 IR's scratchpad pointer getting clobbered across
+// the IAT call (the x11-caller-saved-then-reloaded-as-kernel-garbage
+// class of bug).
+fn main() {
+    uint64 wfd = file_open("krc_smoke_size.tmp", 1)
+    uint64 payload = "0123456789abcdef"
+    file_write(wfd, payload, 16)
+    file_close(wfd)
+    uint64 rfd = file_open("krc_smoke_size.tmp", 0)
+    uint64 sz = file_size(rfd)
+    file_close(rfd)
+    exit(sz)
+}

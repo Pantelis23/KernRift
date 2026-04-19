@@ -1,0 +1,26 @@
+// expected: 0
+// Smoke test: alloc with a ~1 MB request + sequential writes + checksum.
+// Catches: small-vs-large allocation sizing bugs, VirtualAlloc MEM_COMMIT
+// issues, and kernel-side zero-fill misbehavior.
+fn main() {
+    uint64 n = 131072
+    uint64 buf = alloc(n * 8)
+    uint64 i = 0
+    while i < n {
+        uint64 slot = buf + i * 8
+        unsafe { *(slot as uint64) = i }
+        i = i + 1
+    }
+    uint64 sum = 0
+    i = 0
+    while i < n {
+        uint64 slot = buf + i * 8
+        uint64 v = 0
+        unsafe { *(slot as uint64) -> v }
+        sum = sum + v
+        i = i + 1
+    }
+    // sum = 0 + 1 + ... + (n-1) = n*(n-1)/2 = 131072 * 131071 / 2 = 8589869056
+    if sum == 8589869056 { exit(0) }
+    exit(1)
+}

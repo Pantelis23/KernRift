@@ -1,0 +1,12 @@
+// expected: 0
+// Smoke test: many consecutive println calls. Catches IAT-call per-line
+// thrashing bugs, stack corruption from WriteFile clobbering a shared
+// register (x11 on ARM64, rax on x86_64), and output-buffering issues.
+fn main() {
+    uint64 i = 0
+    while i < 32 {
+        println(i)
+        i = i + 1
+    }
+    exit(0)
+}

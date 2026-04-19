@@ -1,0 +1,15 @@
+// expected: 8
+// Smoke test: write a file, close it, open it for read, read it back.
+// Catches: Windows ARM64 ReadFile passing &bytesRead = NULL (returns BOOL
+// instead of byte count), any file_open / file_write / file_read ABI bug.
+fn main() {
+    uint64 wfd = file_open("krc_smoke_rw.tmp", 1)
+    uint64 payload = "KernRift"
+    file_write(wfd, payload, 8)
+    file_close(wfd)
+    uint64 buf = alloc(32)
+    uint64 rfd = file_open("krc_smoke_rw.tmp", 0)
+    uint64 n = file_read(rfd, buf, 32)
+    file_close(rfd)
+    exit(n)
+}

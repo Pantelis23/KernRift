@@ -1,0 +1,13 @@
+// expected: 7
+// Smoke test: allocate a buffer, then do an IAT call (println), then
+// dereference the buffer. Catches the exact shape of the Windows ARM64
+// file_size bug — a caller-saved register used to hold a stack pointer
+// across an IAT call, and the post-call load reads kernel garbage.
+fn main() {
+    uint64 buf = alloc(32)
+    unsafe { *(buf as uint64) = 7 }
+    println("across-IAT")
+    uint64 v = 0
+    unsafe { *(buf as uint64) -> v }
+    exit(v)
+}

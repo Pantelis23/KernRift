@@ -1,0 +1,14 @@
+// expected: 0
+// Smoke test: signed/unsigned div + mod edge cases, including the
+// "div-by-large-divisor" shape that tripped Windows ARM64 in the
+// v2.8.14 time_ns implementation (counter % freq then * 1e9 / freq
+// with secs recombination).
+fn main() {
+    uint64 a = 1000000007
+    uint64 b = 10000000
+    uint64 q = a / b       // 100
+    uint64 r = a - q * b    // 7
+    if q != 100 { exit(1) }
+    if r != 7 { exit(2) }
+    exit(0)
+}

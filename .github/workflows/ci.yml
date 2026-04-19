@@ -44,6 +44,18 @@ jobs:
           chmod +x /tmp/krc-test
           KRC=/tmp/krc-test bash tests/run_tests.sh
 
+      - name: Smoke suite (Linux x86_64 IR)
+        run: KRC=./build/krc2 bash tests/smoke/run.sh
+
+      - name: Smoke suite (Linux x86_64 legacy)
+        run: KRC=./build/krc2 KRC_FLAGS="--legacy --arch=x86_64" bash tests/smoke/run.sh
+
+      - name: Smoke suite (Linux ARM64 via qemu)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-user-static
+          KRC=./build/krc2 KRC_FLAGS="--arch=arm64" SMOKE_RUNNER=qemu-aarch64-static bash tests/smoke/run.sh
+
       - name: Bootstrap verification (krc3 == krc4)
         run: make bootstrap
 

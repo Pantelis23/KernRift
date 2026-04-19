@@ -1,0 +1,22 @@
+// expected: 36
+// Smoke test: deep recursive call chain with float + int work at each
+// level. Catches stack-frame sizing regressions (the compile_fat-buffer-
+// overflow class of bugs, but for per-function frames).
+fn rec(uint64 n) -> uint64 {
+    uint64 buf = alloc(128)
+    unsafe { *(buf as uint64) = n }
+    if n == 0 {
+        uint64 v = 0
+        unsafe { *(buf as uint64) -> v }
+        return v
+    }
+    uint64 sub = rec(n - 1)
+    uint64 v = 0
+    unsafe { *(buf as uint64) -> v }
+    return v + sub
+}
+
+fn main() {
+    // 0 + 1 + ... + 8 = 36
+    exit(rec(8))
+}

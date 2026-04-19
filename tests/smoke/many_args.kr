@@ -1,0 +1,12 @@
+// expected: 42
+// Smoke test: a call with 9+ args (exercises AAPCS64 stack-spill and SysV
+// AMD64 stack-arg path). Catches the R1-class miscompile that used to
+// SIGSEGV IR ARM64 on Android.
+fn add9(uint64 a, uint64 b, uint64 c, uint64 d, uint64 e, uint64 f, uint64 g, uint64 h, uint64 i) -> uint64 {
+    return a + b + c + d + e + f + g + h + i
+}
+
+fn main() {
+    uint64 s = add9(1, 2, 3, 4, 5, 6, 7, 8, 6)
+    exit(s)
+}

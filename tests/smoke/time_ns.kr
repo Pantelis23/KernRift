@@ -1,0 +1,12 @@
+// expected: 0
+// Smoke test: time_ns() returns a non-zero monotonic counter.
+// Catches: Windows PE time_ns() returning 0 (which silently broke the
+// compiler's self-reported '(X.XX ms)' tail for months), ARM64 Windows
+// still returning 0 after that's wired up.
+fn main() {
+    uint64 t = time_ns()
+    // On hosts that don't implement time_ns the value stays 0 and we exit
+    // with 1 — the CI step can then whitelist that per-target if needed.
+    if t == 0 { exit(1) }
+    exit(0)
+}

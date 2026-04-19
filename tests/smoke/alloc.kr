@@ -1,0 +1,11 @@
+// expected: 42
+// Smoke test: alloc returns a writable/readable pointer.
+// Catches: macOS ARM64 IR_ALLOC using the wrong MAP_ANON flag (0x22 vs 0x1002),
+// Windows ARM64 VirtualAlloc regressions, any mmap-returns-garbage class of bug.
+fn main() {
+    uint64 buf = alloc(64)
+    unsafe { *(buf as uint64) = 42 }
+    uint64 v = 0
+    unsafe { *(buf as uint64) -> v }
+    exit(v)
+}
