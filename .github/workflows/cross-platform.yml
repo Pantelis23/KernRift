@@ -119,12 +119,18 @@ jobs:
 
           # Build kr runners for each platform
           cat src/bcj.kr src/runner.kr > /tmp/kr_src.kr
-          ./build/krc2 --arch=x86_64 --emit=pe /tmp/kr_src.kr -o /tmp/test-bins/kr-win-x64.exe
+          ./build/krc2 --arch=x86_64 --emit=pe    /tmp/kr_src.kr -o /tmp/test-bins/kr-win-x64.exe
+          ./build/krc2 --arch=arm64  --emit=pe    /tmp/kr_src.kr -o /tmp/test-bins/kr-win-arm64.exe
           ./build/krc2 --arch=x86_64 --emit=macho /tmp/kr_src.kr -o /tmp/test-bins/kr-macos-x64
+          ./build/krc2 --arch=arm64  --emit=macho /tmp/kr_src.kr -o /tmp/test-bins/kr-macos-arm64
 
-          # Build a fat binary test program
+          # Build a fat binary test program + ship the compiler's own
+          # fat binary so the native-OS jobs can exercise fat-compile
+          # determinism (Tier 1 #3 extended to the .krbo container).
           echo 'fn main() { exit(42) }' > /tmp/kr_fat_test.kr
           ./build/krc2 /tmp/kr_fat_test.kr -o /tmp/test-bins/kr-test.krbo
+          ./build/krc2 build/krc.kr -o /tmp/test-bins/krc.krbo
+          ls -la /tmp/test-bins/krc.krbo
 
           # Cross-compile the smoke corpus for every non-Linux target. The
           # native-OS jobs below consume these to make sure primitives like
@@ -284,6 +290,27 @@ jobs:
             echo "PASS: macOS x86_64 fixed point ($(wc -c < krc4) bytes)"
           else
             echo "FAIL: macOS x86_64 fixed point — krc4 ($(wc -c < krc4)) != krc5 ($(wc -c < krc5))"
+            exit 1
+          fi
+
+      - name: Fat-binary self-host determinism (macOS x86_64 via Rosetta)
+        run: |
+          # kr-macos-x64 extracts the macOS x86_64 slice from krc.krbo
+          # and runs it as a compile_fat driver. Two runs with the same
+          # input must produce byte-identical output; drift here is
+          # non-deterministic compression / BCJ filtering / fixup
+          # ordering that only surfaces in the fat container.
+          set +e
+          chmod +x bins/kr-macos-x64
+          ./bins/kr-macos-x64 bins/krc.krbo bins/krc-source.kr -o /tmp/krc2.krbo
+          if [ $? -ne 0 ]; then echo "FAIL: krc2.krbo compile"; exit 1; fi
+          ./bins/kr-macos-x64 /tmp/krc2.krbo bins/krc-source.kr -o /tmp/krc3.krbo
+          if [ $? -ne 0 ]; then echo "FAIL: krc3.krbo compile"; exit 1; fi
+          s2=$(wc -c < /tmp/krc2.krbo); s3=$(wc -c < /tmp/krc3.krbo)
+          if cmp -s /tmp/krc2.krbo /tmp/krc3.krbo; then
+            echo "PASS: macOS x86_64 fat self-host determinism ($s2 bytes)"
+          else
+            echo "FAIL: macOS x86_64 fat self-host — krc2.krbo ($s2) != krc3.krbo ($s3)"
             exit 1
           fi
 
@@ -553,6 +580,29 @@ jobs:
             exit 1
           }
 
+      - name: Fat-binary self-host determinism (Windows x86_64)
+        shell: pwsh
+        run: |
+          # kr-win-x64.exe extracts the Windows x86_64 slice from
+          # krc.krbo and runs it as a compile_fat driver twice.
+          # Byte-equality of the two .krbo outputs confirms the
+          # compression + BCJ + fixup pipeline is deterministic on
+          # this host.
+          $r = Start-Process -FilePath bins\kr-win-x64.exe -ArgumentList 'bins\krc.krbo','bins\krc-source.kr','-o','krc2.krbo' -Wait -PassThru -NoNewWindow
+          if ($r.ExitCode -ne 0) { Write-Host "FAIL: krc2.krbo compile (exit=$($r.ExitCode))"; exit 1 }
+          $r = Start-Process -FilePath bins\kr-win-x64.exe -ArgumentList 'krc2.krbo','bins\krc-source.kr','-o','krc3.krbo' -Wait -PassThru -NoNewWindow
+          if ($r.ExitCode -ne 0) { Write-Host "FAIL: krc3.krbo compile (exit=$($r.ExitCode))"; exit 1 }
+          $h2 = (Get-FileHash -Algorithm MD5 krc2.krbo).Hash
+          $h3 = (Get-FileHash -Algorithm MD5 krc3.krbo).Hash
+          $s2 = (Get-Item krc2.krbo).Length
+          $s3 = (Get-Item krc3.krbo).Length
+          if ($h2 -eq $h3) {
+            Write-Host "PASS: Windows x86_64 fat self-host determinism ($s2 bytes, md5=$h2)"
+          } else {
+            Write-Host "FAIL: Windows x86_64 fat self-host — krc2.krbo ($s2, $h2) != krc3.krbo ($s3, $h3)"
+            exit 1
+          }
+
   test-windows-arm64:
     name: Windows ARM64
     needs: build
@@ -686,5 +736,28 @@ jobs:
             Write-Host "PASS: Windows ARM64 fixed point ($s4 bytes, md5=$h4)"
           } else {
             Write-Host "FAIL: Windows ARM64 fixed point — krc4 ($s4, $h4) != krc5 ($s5, $h5)"
+            exit 1
+          }
+
+      - name: Fat-binary self-host determinism (Windows ARM64)
+        shell: pwsh
+        run: |
+          # Same pattern as the x86_64 Windows job: kr-win-arm64
+          # extracts the arm64 slice from krc.krbo, compile_fat runs
+          # twice with identical input, outputs must match byte-for-
+          # byte. Catches fat-container non-determinism on the arm64
+          # PE codegen path specifically.
+          $r = Start-Process -FilePath bins\kr-win-arm64.exe -ArgumentList 'bins\krc.krbo','bins\krc-source.kr','-o','krc2.krbo' -Wait -PassThru -NoNewWindow
+          if ($r.ExitCode -ne 0) { Write-Host "FAIL: krc2.krbo compile (exit=$($r.ExitCode))"; exit 1 }
+          $r = Start-Process -FilePath bins\kr-win-arm64.exe -ArgumentList 'krc2.krbo','bins\krc-source.kr','-o','krc3.krbo' -Wait -PassThru -NoNewWindow
+          if ($r.ExitCode -ne 0) { Write-Host "FAIL: krc3.krbo compile (exit=$($r.ExitCode))"; exit 1 }
+          $h2 = (Get-FileHash -Algorithm MD5 krc2.krbo).Hash
+          $h3 = (Get-FileHash -Algorithm MD5 krc3.krbo).Hash
+          $s2 = (Get-Item krc2.krbo).Length
+          $s3 = (Get-Item krc3.krbo).Length
+          if ($h2 -eq $h3) {
+            Write-Host "PASS: Windows ARM64 fat self-host determinism ($s2 bytes, md5=$h2)"
+          } else {
+            Write-Host "FAIL: Windows ARM64 fat self-host — krc2.krbo ($s2, $h2) != krc3.krbo ($s3, $h3)"
             exit 1
           }

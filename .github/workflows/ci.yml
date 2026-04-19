@@ -123,6 +123,25 @@ jobs:
           fi
           echo "PASS: fat-binary self-test on Linux x86_64"
 
+      - name: Fat-binary self-host determinism (Linux x86_64)
+        run: |
+          # Pure fat-container determinism check: kr → compile_fat →
+          # krc2.krbo → repeat → krc3.krbo, byte-compare. Extracts and
+          # runs the Linux x86_64 slice from krc.krbo to drive the
+          # compile; output is a new fat bundle with all 8 slices.
+          # Byte-equality proves compile_fat itself (BCJ + LZ-Rift +
+          # fixup ordering + slice concatenation) is deterministic on
+          # this host.
+          /tmp/kr-runners/kr-linux-x86_64 /tmp/krc.krbo /tmp/krc-source.kr -o /tmp/krc2.krbo
+          /tmp/kr-runners/kr-linux-x86_64 /tmp/krc.krbo /tmp/krc-source.kr -o /tmp/krc3.krbo
+          s2=$(wc -c < /tmp/krc2.krbo); s3=$(wc -c < /tmp/krc3.krbo)
+          if cmp -s /tmp/krc2.krbo /tmp/krc3.krbo; then
+            echo "PASS: Linux x86_64 fat self-host determinism ($s2 bytes)"
+          else
+            echo "FAIL: Linux x86_64 fat self-host — krc2.krbo ($s2) != krc3.krbo ($s3)"
+            exit 1
+          fi
+
       - name: Upload krc.krbo + kr runners
         uses: actions/upload-artifact@v4
         with:
@@ -567,6 +586,32 @@ jobs:
           chmod +x /tmp/fp_out
           set +e; /tmp/fp_out; CODE=$?; set -e
           [ "$CODE" -eq 77 ] && echo "PASS: macOS ARM64 krc5 runs" || { echo "FAIL: krc5 run (got $CODE)"; exit 1; }
+
+      - name: Fat-binary self-host determinism on macOS ARM64
+        run: |
+          # kr runner extracts the macOS arm64 slice from krc.krbo,
+          # which then compiles krc-source.kr into a NEW fat bundle
+          # (krc2.krbo — 8 slices compressed together). A second pass
+          # with krc2.krbo must produce krc3.krbo byte-equal to
+          # krc2.krbo. This catches compile_fat non-determinism
+          # specific to the macOS arm64 compiler slice: BCJ filter
+          # state leakage, LZ-Rift hash-table drift, ordering of
+          # static-fixup resolution, etc. Slice-level fixed point
+          # (above) already covers the native-emitter deterministic
+          # output; this covers the fat container around it.
+          chmod +x /tmp/fatbin/kr-runners/kr-macos-arm64
+          /tmp/fatbin/kr-runners/kr-macos-arm64 /tmp/fatbin/krc.krbo /tmp/fatbin/krc-source.kr -o /tmp/krc2.krbo
+          /tmp/fatbin/kr-runners/kr-macos-arm64 /tmp/krc2.krbo /tmp/fatbin/krc-source.kr -o /tmp/krc3.krbo
+          s2=$(wc -c < /tmp/krc2.krbo)
+          s3=$(wc -c < /tmp/krc3.krbo)
+          if cmp -s /tmp/krc2.krbo /tmp/krc3.krbo; then
+            echo "PASS: macOS ARM64 fat self-host determinism ($s2 bytes)"
+          else
+            echo "FAIL: macOS ARM64 fat self-host — krc2.krbo ($s2) != krc3.krbo ($s3)"
+            # Show which byte first diverges for diagnosis
+            cmp /tmp/krc2.krbo /tmp/krc3.krbo || true
+            exit 1
+          fi
 
   test-windows-x64:
     name: Test (Windows x86_64)
