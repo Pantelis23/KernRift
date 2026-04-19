@@ -1616,8 +1616,14 @@ fn ir_emit_arm64_insn(uint64 ii) {
         uint64 path_r = ir_a64_resolve_src(s1_v, 9)
         uint64 argv_r = ir_a64_resolve_src(s2_v, 10)
         if target_os == 2 {
-            // Windows ARM64: same CreateProcessA sequence as IR_EXEC (argv ignored)
-            emit_a64_sub_sp_imm(0xD0)
+            // Windows ARM64: build quoted cmdline from argv and pass as
+            // lpCommandLine. Frame extends the existing 0xD0 layout by
+            // 0x400 for the cmdline buffer at sp+0xD0.
+            // Stash path & argv in x19/x20 BEFORE sub sp — regalloc scratch
+            // regs would be clobbered by the zero-init and cmdline loop.
+            emit_a64_mov(19, path_r)
+            emit_a64_mov(20, argv_r)
+            emit_a64_sub_sp_imm(0x4D0)
             emit_a64_mov_imm(9, 0)
             uint64 zi2 = 0
             while zi2 < 16 {
@@ -1626,8 +1632,37 @@ fn ir_emit_arm64_insn(uint64 ii) {
             }
             emit_a64_mov_imm(9, 104)
             emit_a64_str32(9, 31, 0x40)
-            emit_a64_mov(0, path_r)
-            emit_a64_mov_imm(1, 0)
+            // ---- Build quoted cmdline at sp+0xD0 ----
+            // x9 = write ptr, x20 = argv walk, x10 = arg*, x11 = byte
+            emit_a64_add_imm(9, 31, 0xD0)
+            // L_outer (+0): ldr x10,[x20]; cbz x10,L_done (+72)
+            emit_a64_ldr(10, 20, 0)
+            emit_a64_cbz(10, 72)
+            // Open quote
+            emit_a64_mov_imm(11, 0x22)
+            emit_a64_strb(11, 9, 0)
+            emit_a64_add_imm(9, 9, 1)
+            // L_inner (+20): ldrb w11,[x10]; cbz x11,L_end_copy (+20)
+            emit_a64_ldrb(11, 10, 0)
+            emit_a64_cbz(11, 20)
+            emit_a64_strb(11, 9, 0)
+            emit_a64_add_imm(10, 10, 1)
+            emit_a64_add_imm(9, 9, 1)
+            emit_a64(0x17FFFFFB)                // b L_inner (-20)
+            // L_end_copy (+44): close quote + space
+            emit_a64_mov_imm(11, 0x22)
+            emit_a64_strb(11, 9, 0)
+            emit_a64_add_imm(9, 9, 1)
+            emit_a64_mov_imm(11, 0x20)
+            emit_a64_strb(11, 9, 0)
+            emit_a64_add_imm(9, 9, 1)
+            emit_a64_add_imm(20, 20, 8)
+            emit_a64(0x17FFFFEE)                // b L_outer (-72)
+            // L_done (+76): null-terminate
+            emit_a64_strb(31, 9, 0)
+            // ---- CreateProcessA ----
+            emit_a64_mov(0, 19)                 // x0 = path
+            emit_a64_add_imm(1, 31, 0xD0)       // x1 = cmdline
             emit_a64_mov_imm(2, 0)
             emit_a64_mov_imm(3, 0)
             emit_a64_mov_imm(4, 0)
@@ -1646,7 +1681,7 @@ fn ir_emit_arm64_insn(uint64 ii) {
             emit_a64_add_imm(1, 31, 0x20)
             emit_a64_win_call_iat(11)
             emit_a64_ldr32(0, 31, 0x20)
-            emit_a64_add_sp_imm(0xD0)
+            emit_a64_add_sp_imm(0x4D0)
             emit_a64_win_call_iat(0)
             return
         }

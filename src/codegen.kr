@@ -5830,19 +5830,61 @@ fn gen_expr(uint64 node) {
             gen_expr(wsa_a)
             emit_store_rax_to_stack(temp_slot_1)
             if target_os == 2 {
-                // Windows: CreateProcessA ignores the caller-built argv
-                // (no arg forwarding on Windows yet — same behavior as the
-                // plain exec_process builtin). Inline the same sequence.
+                // Windows: build a quoted space-separated cmdline from argv[]
+                // and pass it as lpCommandLine. Frame layout:
+                //   0x000-0x01F: shadow
+                //   0x020-0x04F: stack args
+                //   0x050-0x0B7: STARTUPINFOA (104)
+                //   0x0B8-0x0CF: PROCESS_INFORMATION (24)
+                //   0x0D0-0x4CF: cmdline buffer (1024)
                 emit_load_rax_from_stack(temp_slot_0)
                 emit_store_rax_to_stack(temp_slot_0)
-                emit_byte(0x48); emit_byte(0x81); emit_byte(0xEC); emit_u32_le(0xD0)
+                // sub rsp, 0x4D0
+                emit_byte(0x48); emit_byte(0x81); emit_byte(0xEC); emit_u32_le(0x4D0)
+                // Zero STARTUPINFO: lea rdi, [rsp+0x50]; xor eax,eax; mov ecx,128; rep stosb
                 emit_byte(0x48); emit_byte(0x8D); emit_byte(0x7C); emit_byte(0x24); emit_byte(0x50)
                 emit_byte(0x31); emit_byte(0xC0)
                 emit_byte(0xB9); emit_u32_le(128)
                 emit_byte(0xF3); emit_byte(0xAA)
+                // STARTUPINFOA.cb = 104
                 emit_byte(0xC7); emit_byte(0x44); emit_byte(0x24); emit_byte(0x50); emit_u32_le(104)
-                emit_byte(0x48); emit_byte(0x8B); emit_byte(0x8C); emit_byte(0x24); emit_u32_le(temp_slot_0 + 0xD0)
-                emit_byte(0x48); emit_byte(0x31); emit_byte(0xD2)
+                // ---- Build quoted cmdline at [rsp+0xD0] ----
+                // lea rdi, [rsp+0xD0]   (write pointer)
+                emit_byte(0x48); emit_byte(0x8D); emit_byte(0xBC); emit_byte(0x24); emit_u32_le(0xD0)
+                // mov r9, [rsp + temp_slot_1 + 0x4D0]  (argv pointer)
+                emit_byte(0x4C); emit_byte(0x8B); emit_byte(0x8C); emit_byte(0x24); emit_u32_le(temp_slot_1 + 0x4D0)
+                // L_outer: mov rsi,[r9]; test rsi,rsi; jz L_done
+                emit_byte(0x49); emit_byte(0x8B); emit_byte(0x31)
+                emit_byte(0x48); emit_byte(0x85); emit_byte(0xF6)
+                emit_byte(0x74); emit_byte(0x28)
+                // mov byte [rdi], '"' ; inc rdi
+                emit_byte(0xC6); emit_byte(0x07); emit_byte(0x22)
+                emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC7)
+                // L_inner: mov al,[rsi]; test al,al; jz L_end_copy
+                emit_byte(0x8A); emit_byte(0x06)
+                emit_byte(0x84); emit_byte(0xC0)
+                emit_byte(0x74); emit_byte(0x0A)
+                // mov [rdi],al; inc rsi; inc rdi; jmp L_inner (-16)
+                emit_byte(0x88); emit_byte(0x07)
+                emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC6)
+                emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC7)
+                emit_byte(0xEB); emit_byte(0xF0)
+                // L_end_copy: mov byte [rdi],'"'; inc rdi; mov byte [rdi],' '; inc rdi
+                emit_byte(0xC6); emit_byte(0x07); emit_byte(0x22)
+                emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC7)
+                emit_byte(0xC6); emit_byte(0x07); emit_byte(0x20)
+                emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC7)
+                // add r9,8; jmp L_outer (-48)
+                emit_byte(0x49); emit_byte(0x83); emit_byte(0xC1); emit_byte(0x08)
+                emit_byte(0xEB); emit_byte(0xD0)
+                // L_done: mov byte [rdi], 0
+                emit_byte(0xC6); emit_byte(0x07); emit_byte(0x00)
+                // ---- CreateProcessA setup ----
+                // rcx = path (lpApplicationName)
+                emit_byte(0x48); emit_byte(0x8B); emit_byte(0x8C); emit_byte(0x24); emit_u32_le(temp_slot_0 + 0x4D0)
+                // lea rdx, [rsp+0xD0] (lpCommandLine = our cmdline)
+                emit_byte(0x48); emit_byte(0x8D); emit_byte(0x94); emit_byte(0x24); emit_u32_le(0xD0)
+                // r8 = NULL (lpProcessAttributes); r9 = NULL (lpThreadAttributes)
                 emit_byte(0x4D); emit_byte(0x31); emit_byte(0xC0)
                 emit_byte(0x4D); emit_byte(0x31); emit_byte(0xC9)
                 emit_byte(0x48); emit_byte(0xC7); emit_byte(0x44); emit_byte(0x24); emit_byte(0x20); emit_u32_le(0)
@@ -5861,7 +5903,7 @@ fn gen_expr(uint64 node) {
                 emit_byte(0x48); emit_byte(0x8D); emit_byte(0x54); emit_byte(0x24); emit_byte(0x20)
                 emit_win_call_iat(11)
                 emit_byte(0x8B); emit_byte(0x4C); emit_byte(0x24); emit_byte(0x20)
-                emit_byte(0x48); emit_byte(0x81); emit_byte(0xC4); emit_u32_le(0xD0)
+                emit_byte(0x48); emit_byte(0x81); emit_byte(0xC4); emit_u32_le(0x4D0)
                 emit_win_alloc_stack(0x20)
                 emit_win_call_iat(0)
             } else {

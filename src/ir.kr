@@ -6893,21 +6893,57 @@ fn ir_emit_x86_insn(uint64 ii) {
 
     if op == 114 {
         // IR_EXEC_ARGV: execve(path, argv, envp) on Linux/macOS
-        // On Windows: same CreateProcessA pattern as IR_EXEC (argv ignored)
+        // On Windows: CreateProcessA with argv joined into a quoted cmdline
         uint64 path_r = ir_resolve_src(s1_v, 0)
         uint64 argv_r = ir_resolve_src(s2_v, 1)
         if target_os == 2 {
-            // Windows: same as IR_EXEC — CreateProcessA+Wait+ExitProcess
-            ir_emit_mov_r64_r64(7, path_r)
-            emit_byte(0x48); emit_byte(0x81); emit_byte(0xEC); emit_u32_le(0xD0)
+            // Stash both in callee-ish scratch regs that survive the sub rsp
+            // + rep stosb sequence (zero-init only clobbers rax/rcx/rdi).
+            ir_emit_mov_r64_r64(10, path_r)      // r10 = path
+            ir_emit_mov_r64_r64(11, argv_r)      // r11 = argv
+            // sub rsp, 0x4D0 (extra 0x400 for cmdline buffer at [rsp+0xD0])
+            emit_byte(0x48); emit_byte(0x81); emit_byte(0xEC); emit_u32_le(0x4D0)
+            // Zero STARTUPINFO: lea rdi,[rsp+0x50]; xor eax,eax; mov ecx,128; rep stosb
             emit_byte(0x48); emit_byte(0x8D); emit_byte(0x7C); emit_byte(0x24); emit_byte(0x50)
             emit_byte(0x31); emit_byte(0xC0)
             emit_byte(0xB9); emit_u32_le(128)
             emit_byte(0xF3); emit_byte(0xAA)
-            uint64 path_r2b = ir_resolve_src(s1_v, 0)
+            // STARTUPINFOA.cb = 104
             emit_byte(0xC7); emit_byte(0x44); emit_byte(0x24); emit_byte(0x50); emit_u32_le(104)
-            ir_emit_mov_r64_r64(1, path_r2b)
-            emit_byte(0x48); emit_byte(0x31); emit_byte(0xD2)
+            // Build quoted cmdline at [rsp+0xD0] using r11 as argv walk ptr.
+            // lea rdi, [rsp+0xD0]
+            emit_byte(0x48); emit_byte(0x8D); emit_byte(0xBC); emit_byte(0x24); emit_u32_le(0xD0)
+            // L_outer: mov rsi,[r11]; test rsi,rsi; jz L_done (+40)
+            emit_byte(0x49); emit_byte(0x8B); emit_byte(0x33)
+            emit_byte(0x48); emit_byte(0x85); emit_byte(0xF6)
+            emit_byte(0x74); emit_byte(0x28)
+            // mov byte [rdi],'"'; inc rdi
+            emit_byte(0xC6); emit_byte(0x07); emit_byte(0x22)
+            emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC7)
+            // L_inner: mov al,[rsi]; test al,al; jz L_end_copy (+10)
+            emit_byte(0x8A); emit_byte(0x06)
+            emit_byte(0x84); emit_byte(0xC0)
+            emit_byte(0x74); emit_byte(0x0A)
+            // mov [rdi],al; inc rsi; inc rdi; jmp L_inner (-16)
+            emit_byte(0x88); emit_byte(0x07)
+            emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC6)
+            emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC7)
+            emit_byte(0xEB); emit_byte(0xF0)
+            // L_end_copy: mov byte[rdi],'"'; inc rdi; mov byte[rdi],' '; inc rdi
+            emit_byte(0xC6); emit_byte(0x07); emit_byte(0x22)
+            emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC7)
+            emit_byte(0xC6); emit_byte(0x07); emit_byte(0x20)
+            emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC7)
+            // add r11,8; jmp L_outer (-48)
+            emit_byte(0x49); emit_byte(0x83); emit_byte(0xC3); emit_byte(0x08)
+            emit_byte(0xEB); emit_byte(0xD0)
+            // L_done: mov byte [rdi], 0
+            emit_byte(0xC6); emit_byte(0x07); emit_byte(0x00)
+            // ---- CreateProcessA ----
+            // rcx = path (from r10)
+            emit_byte(0x4C); emit_byte(0x89); emit_byte(0xD1)
+            // lea rdx, [rsp+0xD0]  (lpCommandLine)
+            emit_byte(0x48); emit_byte(0x8D); emit_byte(0x94); emit_byte(0x24); emit_u32_le(0xD0)
             emit_byte(0x4D); emit_byte(0x31); emit_byte(0xC0)
             emit_byte(0x4D); emit_byte(0x31); emit_byte(0xC9)
             emit_byte(0x48); emit_byte(0xC7); emit_byte(0x44); emit_byte(0x24); emit_byte(0x20); emit_u32_le(0)
@@ -6926,7 +6962,7 @@ fn ir_emit_x86_insn(uint64 ii) {
             emit_byte(0x48); emit_byte(0x8D); emit_byte(0x54); emit_byte(0x24); emit_byte(0x20)
             emit_win_call_iat(11)
             emit_byte(0x8B); emit_byte(0x4C); emit_byte(0x24); emit_byte(0x20)
-            emit_byte(0x48); emit_byte(0x81); emit_byte(0xC4); emit_u32_le(0xD0)
+            emit_byte(0x48); emit_byte(0x81); emit_byte(0xC4); emit_u32_le(0x4D0)
             emit_win_alloc_stack(0x20)
             emit_win_call_iat(0)
             return
