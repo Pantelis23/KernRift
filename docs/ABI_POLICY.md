@@ -4,7 +4,7 @@ This document defines what "ABI compatibility" means in KernRift, which
 versions are compatible with which, and what we promise not to break
 between releases.
 
-The current release is **v2.8.13**. KernRift is pre-1.0. The policy below
+The current release is **v2.8.14**. KernRift is pre-1.0. The policy below
 describes what we do today; it will tighten at 1.0.
 
 ## Scope of the ABI
@@ -87,7 +87,7 @@ minor-version bump.
 
 KernRift uses MAJOR.MINOR.PATCH.
 
-- **PATCH** (2.8.13 → 2.8.14) — bugfixes, new stdlib symbols, new IR opcodes
+- **PATCH** (2.8.14 → 2.8.15) — bugfixes, new stdlib symbols, new IR opcodes
   (IR is not stable), doc fixes. No removals. Existing programs keep
   compiling and running unchanged.
 - **MINOR** (2.8.x → 2.9.0) — intentional breaking changes: removed stdlib

@@ -2,6 +2,88 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## v2.8.14 — 2026-04-19
+
+### Fixed
+- **`compile_fat` x86_64 slice buffer overflow.** The slice's temp
+  buffer was a hardcoded 1 MB `alloc()` at the top of `compile_fat`,
+  but the ELF x86_64 slice has been ~1.18 MB for months. The copy loop
+  wrote ~180 KB past the buffer end every fat compile. Linux's mmap
+  heap absorbed it silently; Windows's VirtualAlloc guard pages turned
+  it into a SIGSEGV on every `krc *.kr -o *.krbo` on a Windows host.
+  Fixed by allocating *after* codegen, sized to the actual slice
+  length — the pattern every other slice already uses.
+- **Windows x86_64 `file_open` read-then-write hardcoded jump.** After
+  the compact-imm MOV optimisation landed in v2.8.13, `mov r64, imm64`
+  dropped from 10 bytes to 5 bytes for uint32-fitting constants. A
+  `jz +10` in the Windows `file_open` lowering that assumed the old
+  size overshot by 5 bytes on every read-after-write. Fixed to patch
+  the rel8 displacement after the mov emits.
+- **macOS ARM64 `alloc()` SIGSEGV.** The IR ARM64 backend hardcoded
+  Linux's `MAP_PRIVATE|MAP_ANON = 0x22` for every non-Windows target;
+  macOS's value is `0x1002`. Every `alloc()` on native arm64 macOS
+  CI was dereferencing a MAP_FAILED pointer. Legacy codegen already
+  did this correctly; IR now matches.
+- **Windows ARM64 `ReadFile` / `WriteFile` out-count pointer.** The IR
+  ARM64 path passed `&lpNumberOfBytesRead = NULL` to the kernel32 IAT
+  entry. ReadFile returned its BOOL success code in `x0`, which we
+  then used as the "bytes read" count — so `file_read()` returned `1`
+  regardless of how many bytes landed in the buffer. Fixed to allocate
+  a DWORD scratch slot, pass its address, and load the real count
+  back after the call.
+- **Windows ARM64 `file_size()` scratchpad clobber.** The IR path
+  computed `&scratch` into `x11`, called `GetFileSizeEx` through the
+  IAT, then loaded the size back from `[x11]`. `x11` is caller-saved
+  (x0..x18 per AAPCS64), so the IAT call legally trashed it and the
+  follow-up LDR dereferenced kernel garbage. Fixed by recomputing
+  `x11` from SP after the call. This was blocking every Windows ARM64
+  self-compile.
+
+### Changed
+- **Fat-binary codegen defaults to IR.** `compile_fat` used to route
+  every slice through the legacy direct-walking emitters; now it
+  routes through IR by default, matching what direct `--arch=…`
+  compiles already did. Legacy is retained behind `--legacy` for an
+  explicit opt-out. Net fat-binary size: 4.09 MB → 3.82 MB (-6.7%).
+  Per-slice wins are largest on ARM64 / PE / Mach-O (-15 to -18%).
+- **Windows PE `time_ns()` implemented.** Previously a stub returning
+  `0`, which silently disabled the parenthesised compile-time tail
+  (`(X.XX ms)`) on Windows. Wired through the IAT as
+  `QueryPerformanceCounter + QueryPerformanceFrequency`, with an
+  overflow-safe split-and-recombine so counter × 1e9 doesn't wrap
+  after ~29 days of uptime. ARM64 Windows still returns 0 (no WoA
+  test hardware available); the print-gate falls back gracefully.
+- **Fat-binary compile also prints `(X.XX ms)`.** `compile_fat` now
+  tail-reports its total wall time the same way single-file compile
+  already did, so you don't need to wrap with external `time` /
+  `Measure-Command` to measure fat output.
+
+### Performance (IR x86_64 backend)
+- **Compact imm encoding.** `mov r64, imm64` now uses 5-byte
+  `B8+r imm32` (zero-extend) or 7-byte `REX.W C7 /0 imm32` (sign-
+  extend) when the constant fits — a 10-byte `movabsq` was emitted
+  unconditionally before. -9.1% on x86_64 ELF self-compile.
+- **CMP + BR_COND fusion.** When a CMP's result is used solely as
+  a branch condition (the common `if a == b { … }` pattern), emit
+  `cmp; jcc disp32` directly instead of materialising the bool and
+  testing it. 14 bytes → 6 bytes per conditional. Guarded by a
+  per-vreg use-count so fusion only fires when safe. -6.6%.
+- **BR_COND inversion on fallthrough-true.** Emit one inverted jcc
+  to the false target and fall through to true when true-target
+  is the next BB, instead of `jcc true; jmp false`. -1.5%.
+
+Cumulative x86 self-compile deltas (dist/krc-linux-x86_64 v2.8.13
+vs current):
+  linux x86_64 ELF      1 422 772 → 1 184 947 B  (-16.7 %)
+  macOS x86_64 Mach-O   1 429 504 → 1 191 936 B  (-16.6 %)
+  windows x86_64 PE     1 479 168 → 1 244 672 B  (-15.9 %)
+  android x86_64 ELF    1 507 328 → 1 310 720 B  (-13.0 %)
+
+### CI
+First fully-green cross-platform + ci since 2026-04-17. All 4
+pipelines (Linux x86_64/ARM64, macOS x86_64/ARM64, Windows x86_64/
+ARM64 native, cross-compile test matrix) pass on this release tag.
+
 ## v2.8.13 — 2026-04-18
 
 ### Added

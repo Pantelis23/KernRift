@@ -7,7 +7,7 @@ per shape of failure** so the standard library, example code, and every
 future stdlib addition stay consistent.
 
 The three patterns below cover every error-returning function in the
-stdlib as of v2.8.13.
+stdlib as of v2.8.14.
 
 ---
 

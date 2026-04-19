@@ -1,8 +1,8 @@
-# KernRift Benchmarks — v2.8.13
+# KernRift Benchmarks — v2.8.14
 
 **Run date:** 2026-04-19
 **Host:** AMD Ryzen 9 7900X, 64 GB DDR5, Linux 6.17 (x86_64)
-**Compilers compared:** krc 2.8.13 (self-hosted), gcc 13.3.0, rustc 1.93.0
+**Compilers compared:** krc 2.8.14 (self-hosted), gcc 13.3.0, rustc 1.93.0
 
 Reproduce locally with `KRC=build/krc2 bash benchmarks/run_benchmarks.sh`. Native Android ARM64 results come from a Redmi Note 8 Pro via ADB; native Windows x86_64 results come from an Intel Core Ultra 9 275HX laptop via SSH. macOS numbers aren't collected here (no host available); macOS cross-compilation is validated by CI.
 
