@@ -333,7 +333,14 @@ fn codegen_init(uint64 capacity, uint64 source, uint64 tokens) {
 // ---------------------------------------------------------------------------
 
 fn emit_byte(uint8 b) {
-    if out_len >= out_cap { return }
+    if out_len >= out_cap {
+        // Silent truncation produced mysterious SIGSEGVs in generated
+        // binaries that over-ran the 4 MB default (large static arrays).
+        // Fail loudly so the next program that hits the ceiling sees
+        // a diagnostic and can bump the cap in codegen_init.
+        write(2, "codegen: output buffer overflow (out_cap exceeded)\n", 51)
+        exit(1)
+    }
     uint64 p = out_buf + out_len
     unsafe { *(p as uint8) = b }
     out_len = out_len + 1

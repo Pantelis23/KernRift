@@ -2157,7 +2157,7 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
     uint64 tcount = lexer_run()
 
     ast_init(262144)
-    codegen_init(4194304, source, my_tokens)
+    codegen_init(67108864, source, my_tokens)
     parser_init(my_tokens, tcount)
     uint64 root = parse_module()
 
@@ -2862,7 +2862,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     target_os = 0
     set_target_arch(0)
     ast_init(262144)
-    codegen_init(4194304, source, my_tokens)
+    codegen_init(67108864, source, my_tokens)
     parser_init(my_tokens, saved_tcount)
     uint64 root = parse_module()
 
