@@ -4117,12 +4117,20 @@ fn main() {
     uint64 arch_set = 0
     uint64 emit_set = 0
 
+    dbg_msg = "M3 before arg loop\n"
+    write(2, dbg_msg, 19)
     if cli_argc > 1 {
+        dbg_msg = "M4 entered arg loop\n"
+        write(2, dbg_msg, 20)
         uint64 i = 1
         while i < cli_argc {
+            dbg_msg = "M5 iter\n"
+            write(2, dbg_msg, 8)
             uint64 arg_ptr = cli_argv + i * 8
             uint64 arg = 0
             unsafe { *(arg_ptr as uint64) -> arg }
+            dbg_msg = "M6 loaded arg ptr\n"
+            write(2, dbg_msg, 18)
             if str_starts_with(arg, "-o", 2) != 0 {
                 uint64 arg_len = str_len(arg)
                 if arg_len == 2 {
