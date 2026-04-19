@@ -674,10 +674,6 @@ jobs:
             $parts = $_ -split ' +'
             if ($parts.Length -lt 2) { return }
             $name = $parts[0]; $expected = [int]$parts[1]
-            # time_ns on Windows ARM64 still returns 0 (no IAT wiring yet);
-            # the test deliberately exits 1 in that case. Accept it on WoA
-            # until someone ports QueryPerformanceCounter to arm64-pe.
-            if ($name -eq 'time_ns') { $expected = 1 }
             $bin = "bins\smoke\win-arm-$name.exe"
             $r = Start-Process -FilePath $bin -Wait -PassThru -NoNewWindow
             if ($r.ExitCode -eq $expected) {

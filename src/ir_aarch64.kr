@@ -1747,8 +1747,37 @@ fn ir_emit_arm64_insn(uint64 ii) {
             emit_a64_mov_imm(11, 1000)
             emit_a64_mul(10, 10, 11)
             emit_a64_add(0, 9, 10)
+        } else if target_os == 2 {
+            // Windows arm64: QueryPerformanceFrequency(&freq),
+            // QueryPerformanceCounter(&counter), then counter * 1e9 / freq
+            // computed as (counter / freq) * 1e9 + ((counter % freq) * 1e9) / freq
+            // so the multiplication can't overflow uint64 (counter on a
+            // box with ~29 days of uptime × 1e9 already wraps).
+            // Reserve 16 bytes on the scratchpad for the two qwords that
+            // QueryPerformance* writes. Same layout the legacy codegen
+            // uses — ir_a64_scratch_off points past the spill slots.
+            emit_a64_mov_imm(1, ir_a64_scratch_off)
+            ir_a64_add_sp_reg(1, 1)               // x1 = &scratch
+            emit_a64_mov(0, 1)                    // x0 = &scratch (freq)
+            emit_a64_win_call_iat(15)             // QueryPerformanceFrequency
+            emit_a64_mov_imm(1, ir_a64_scratch_off + 8)
+            ir_a64_add_sp_reg(1, 1)               // x1 = &scratch+8
+            emit_a64_mov(0, 1)                    // x0 = &scratch+8 (counter)
+            emit_a64_win_call_iat(14)             // QueryPerformanceCounter
+            // x11 = &scratch, reload after the IAT clobber (same pattern
+            // that bit us in daa1689's file_size fix).
+            emit_a64_mov_imm(11, ir_a64_scratch_off)
+            ir_a64_add_sp_reg(11, 11)
+            emit_a64_ldr(12, 11, 0)               // x12 = freq
+            emit_a64_ldr(13, 11, 8)               // x13 = counter
+            emit_a64_udiv(9, 13, 12)              // x9  = counter / freq (secs)
+            emit_a64_msub(10, 9, 12, 13)          // x10 = counter - secs*freq (frac)
+            emit_a64_mov_imm(14, 1000000000)
+            emit_a64_mul(9, 9, 14)                // x9  = secs * 1e9
+            emit_a64_mul(10, 10, 14)              // x10 = frac * 1e9
+            emit_a64_udiv(10, 10, 12)             // x10 = frac*1e9 / freq
+            emit_a64_add(0, 9, 10)                // x0  = secs*1e9 + frac*1e9/freq
         } else {
-            // Windows arm64 (target_os==2): not yet wired via IAT.
             emit_a64_mov_imm(0, 0)
         }
         if dst_r != 0xFFFFFFFF && dst_r != 0 {
