@@ -1771,17 +1771,22 @@ fn ir_lower_expr(uint64 node) -> uint64 {
             uint64 path_v = ir_lower_expr(arg1)
             uint32 arg2 = ast_next(arg1)
             uint64 mode_v = ir_lower_expr(arg2)
-            // mode: 0=read(O_RDONLY), 1=write(O_WRONLY|O_CREAT|O_TRUNC = 0x241)
-            // flags = mode == 0 ? 0 : 0x241
+            // mode: 0=read(O_RDONLY), 1=write(O_WRONLY|O_CREAT|O_TRUNC).
+            // Flags differ per OS — 0x241 on Linux/Android, 0x601 on macOS
+            // (O_CREAT=0x40 vs 0x200, O_TRUNC=0x200 vs 0x400). On Windows
+            // the IR syscall-2 handler only tests zero/nonzero, so either
+            // value works there. Baking a single constant here and relying
+            // on the backend was the macOS file_open bug.
+            uint64 write_flags = 577          // 0x241 — Linux/Android
+            if target_os == 1 { write_flags = 1537 }   // 0x601 — macOS
             uint64 flags_v = ir_new_vreg()
             uint64 zero_v = ir_new_vreg()
             ir_emit(IR_CONST, zero_v, 0, 0, 0, ir_current_bb)
             uint64 cmp_v = ir_new_vreg()
             ir_emit(IR_CMP_EQ, cmp_v, mode_v, zero_v, 0, ir_current_bb)
-            // if mode==0, flags=0; else flags=0x241
-            // Simple approach: flags = mode * 0x241
+            // flags = mode * write_flags  (mode=0 → 0, mode=1 → write_flags)
             uint64 magic_v = ir_new_vreg()
-            ir_emit(IR_CONST, magic_v, 0, 0, 577, ir_current_bb)
+            ir_emit(IR_CONST, magic_v, 0, 0, write_flags, ir_current_bb)
             ir_emit(IR_MUL, flags_v, mode_v, magic_v, 0, ir_current_bb)
             // syscall 2 = open(path, flags, 0644)
             uint64 perm_v = ir_new_vreg()
