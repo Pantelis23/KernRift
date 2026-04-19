@@ -473,10 +473,18 @@ fn import_check_file(uint64 path) {
 }
 
 fn import_process(uint64 file_path) {
+    uint64 ipdbg = "IP1 enter\n"
+    write(2, ipdbg, 10)
     if import_is_seen(file_path) != 0 { return }
+    ipdbg = "IP2 not seen\n"
+    write(2, ipdbg, 13)
     import_mark_seen(file_path)
+    ipdbg = "IP3 marked\n"
+    write(2, ipdbg, 11)
 
     uint64 fd = file_open(file_path, 0)
+    ipdbg = "IP4 after file_open\n"
+    write(2, ipdbg, 20)
     // If not found, try ~/.local/share/kernrift/ as fallback
     if fd >= 0xFFFFFFFF {
         uint64 fallback = import_resolve_stdlib(file_path)
@@ -493,10 +501,20 @@ fn import_process(uint64 file_path) {
         // This allows the parser to report the actual error
         return
     }
+    ipdbg = "IP5 fd valid\n"
+    write(2, ipdbg, 13)
     uint64 size = file_size(fd)
+    ipdbg = "IP6 after file_size\n"
+    write(2, ipdbg, 20)
     uint64 tmp = alloc(size + 1)
+    ipdbg = "IP7 after alloc\n"
+    write(2, ipdbg, 16)
     file_read(fd, tmp, size)
+    ipdbg = "IP8 after file_read\n"
+    write(2, ipdbg, 20)
     file_close(fd)
+    ipdbg = "IP9 after file_close\n"
+    write(2, ipdbg, 21)
 
     // Scan for import lines at the beginning
     uint64 pos = 0
