@@ -4098,9 +4098,15 @@ fn parse_uint_arg(uint64 s) -> uint64 {
 
 @export
 fn main() {
+    uint64 dbg_msg = "M0\n"
+    write(2, dbg_msg, 3)
     // Windows: parse raw GetCommandLineA result into argc/argv
     if cli_argc == 0xFFFFFFFF {
+        dbg_msg = "M1 win_init_args\n"
+        write(2, dbg_msg, 17)
         win_init_args()
+        dbg_msg = "M2 after win_init_args\n"
+        write(2, dbg_msg, 23)
     }
 
     uint64 input_path = 0
