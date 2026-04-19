@@ -6999,29 +6999,73 @@ fn ir_emit_x86_insn(uint64 ii) {
     }
 
     if op == 119 {
-        // IR_TIME_NS: clock_gettime(CLOCK_MONOTONIC=1, &ts) via syscall 228
-        // sub rsp, 16
-        emit_byte(0x48); emit_byte(0x83); emit_byte(0xEC); emit_byte(16)
-        // mov edi, 1 (CLOCK_MONOTONIC)
-        emit_byte(0xBF); emit_byte(1); emit_byte(0); emit_byte(0); emit_byte(0)
-        // mov rsi, rsp
-        emit_byte(0x48); emit_byte(0x89); emit_byte(0xE6)
-        // mov eax, 228 (clock_gettime) — OS-aware
-        uint64 cgt_nr = ir_x86_syscall_nr(228)
-        ir_emit_mov_r64_imm64(0, cgt_nr)
-        // syscall
-        emit_byte(0x0F); emit_byte(0x05)
-        // mov rax, [rsp] (seconds)
-        emit_byte(0x48); emit_byte(0x8B); emit_byte(0x04); emit_byte(0x24)
-        // imul rax, rax, 1000000000
-        emit_byte(0x48); emit_byte(0x69); emit_byte(0xC0)
-        emit_u32_le(1000000000)
-        // mov rcx, [rsp+8] (nanoseconds)
-        emit_byte(0x48); emit_byte(0x8B); emit_byte(0x4C); emit_byte(0x24); emit_byte(8)
-        // add rax, rcx
-        emit_byte(0x48); emit_byte(0x01); emit_byte(0xC8)
-        // add rsp, 16
-        emit_byte(0x48); emit_byte(0x83); emit_byte(0xC4); emit_byte(16)
+        // IR_TIME_NS: monotonic nanosecond counter.
+        //   Linux/Android x86_64: clock_gettime(CLOCK_MONOTONIC, &ts) syscall 228
+        //   macOS         x86_64: clock_gettime → syscall 0x20000E4 (same layout)
+        //   Windows       x86_64: QueryPerformanceCounter + QueryPerformanceFrequency
+        //                         via IAT, combined as counter*1e9/freq using a
+        //                         64-bit-overflow-safe split-and-recombine.
+        // On Windows, the raw `syscall` instruction must never execute — issuing
+        // a Linux-style syscall number on Windows used to silently land in the
+        // NT dispatcher and return arbitrary stack garbage, which happened to be
+        // zero often enough that the bug went unnoticed for a while.
+        if target_os == 2 {
+            // sub rsp, 0x30  (shadow 0x20 + freq@0x20 + counter@0x28)
+            emit_byte(0x48); emit_byte(0x83); emit_byte(0xEC); emit_byte(0x30)
+            // lea rcx, [rsp+0x20]
+            emit_byte(0x48); emit_byte(0x8D); emit_byte(0x4C); emit_byte(0x24); emit_byte(0x20)
+            emit_win_call_iat(15)                                               // QueryPerformanceFrequency
+            // lea rcx, [rsp+0x28]
+            emit_byte(0x48); emit_byte(0x8D); emit_byte(0x4C); emit_byte(0x24); emit_byte(0x28)
+            emit_win_call_iat(14)                                               // QueryPerformanceCounter
+            // mov rax, [rsp+0x28]   ; counter
+            emit_byte(0x48); emit_byte(0x8B); emit_byte(0x44); emit_byte(0x24); emit_byte(0x28)
+            // mov r11, [rsp+0x20]   ; freq
+            emit_byte(0x4C); emit_byte(0x8B); emit_byte(0x5C); emit_byte(0x24); emit_byte(0x20)
+            // xor edx, edx
+            emit_byte(0x31); emit_byte(0xD2)
+            // div r11               ; rax = counter/freq, rdx = counter%freq
+            emit_byte(0x49); emit_byte(0xF7); emit_byte(0xF3)
+            // mov r10, rax          ; r10 = seconds
+            emit_byte(0x49); emit_byte(0x89); emit_byte(0xC2)
+            // mov rax, rdx          ; rax = fractional ticks
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xD0)
+            // mov r9, 1000000000
+            emit_byte(0x49); emit_byte(0xC7); emit_byte(0xC1); emit_u32_le(1000000000)
+            // mul r9                ; rdx:rax = fractional * 1e9
+            emit_byte(0x49); emit_byte(0xF7); emit_byte(0xE1)
+            // div r11               ; rax = fractional * 1e9 / freq
+            emit_byte(0x49); emit_byte(0xF7); emit_byte(0xF3)
+            // imul r10, r9          ; r10 = seconds * 1e9
+            emit_byte(0x4D); emit_byte(0x0F); emit_byte(0xAF); emit_byte(0xD1)
+            // add rax, r10
+            emit_byte(0x4C); emit_byte(0x01); emit_byte(0xD0)
+            // add rsp, 0x30
+            emit_byte(0x48); emit_byte(0x83); emit_byte(0xC4); emit_byte(0x30)
+        } else {
+            // sub rsp, 16
+            emit_byte(0x48); emit_byte(0x83); emit_byte(0xEC); emit_byte(16)
+            // mov edi, 1 (CLOCK_MONOTONIC)
+            emit_byte(0xBF); emit_byte(1); emit_byte(0); emit_byte(0); emit_byte(0)
+            // mov rsi, rsp
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xE6)
+            // mov eax, 228 (clock_gettime) — OS-aware
+            uint64 cgt_nr = ir_x86_syscall_nr(228)
+            ir_emit_mov_r64_imm64(0, cgt_nr)
+            // syscall
+            emit_byte(0x0F); emit_byte(0x05)
+            // mov rax, [rsp] (seconds)
+            emit_byte(0x48); emit_byte(0x8B); emit_byte(0x04); emit_byte(0x24)
+            // imul rax, rax, 1000000000
+            emit_byte(0x48); emit_byte(0x69); emit_byte(0xC0)
+            emit_u32_le(1000000000)
+            // mov rcx, [rsp+8] (nanoseconds)
+            emit_byte(0x48); emit_byte(0x8B); emit_byte(0x4C); emit_byte(0x24); emit_byte(8)
+            // add rax, rcx
+            emit_byte(0x48); emit_byte(0x01); emit_byte(0xC8)
+            // add rsp, 16
+            emit_byte(0x48); emit_byte(0x83); emit_byte(0xC4); emit_byte(16)
+        }
         if dst_r != 0xFFFFFFFF && dst_r != 0 {
             ir_emit_mov_r64_r64(dst_r, 0)
         }

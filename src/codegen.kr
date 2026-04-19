@@ -6571,6 +6571,31 @@ fn gen_expr(uint64 node) {
                 emit_u32_le(1000)
                 emit_byte(0x48); emit_byte(0x01); emit_byte(0xC8)  // add rax, rcx
                 emit_byte(0x48); emit_byte(0x83); emit_byte(0xC4); emit_byte(16) // add rsp, 16
+            } else if target_os == 2 {
+                // Windows x86_64: QueryPerformanceCounter(&counter),
+                //                 QueryPerformanceFrequency(&freq).
+                // return counter * 1e9 / freq, computed as
+                //   (counter / freq) * 1e9 + ((counter % freq) * 1e9) / freq
+                // to avoid the overflow that counter * 1e9 hits once the system
+                // has been up long enough (counter grows ~10M/sec on most boxes).
+                // Stack: shadow (0x20) + freq@[rsp+0x20] + counter@[rsp+0x28]
+                emit_byte(0x48); emit_byte(0x83); emit_byte(0xEC); emit_byte(0x30)   // sub rsp, 0x30
+                emit_byte(0x48); emit_byte(0x8D); emit_byte(0x4C); emit_byte(0x24); emit_byte(0x20)  // lea rcx, [rsp+0x20]
+                emit_win_call_iat(15)                                                // QueryPerformanceFrequency
+                emit_byte(0x48); emit_byte(0x8D); emit_byte(0x4C); emit_byte(0x24); emit_byte(0x28)  // lea rcx, [rsp+0x28]
+                emit_win_call_iat(14)                                                // QueryPerformanceCounter
+                emit_byte(0x48); emit_byte(0x8B); emit_byte(0x44); emit_byte(0x24); emit_byte(0x28)  // mov rax, [rsp+0x28]
+                emit_byte(0x4C); emit_byte(0x8B); emit_byte(0x5C); emit_byte(0x24); emit_byte(0x20)  // mov r11, [rsp+0x20]
+                emit_byte(0x31); emit_byte(0xD2)                                                     // xor edx, edx
+                emit_byte(0x49); emit_byte(0xF7); emit_byte(0xF3)                                    // div r11
+                emit_byte(0x49); emit_byte(0x89); emit_byte(0xC2)                                    // mov r10, rax (secs)
+                emit_byte(0x48); emit_byte(0x89); emit_byte(0xD0)                                    // mov rax, rdx (frac)
+                emit_byte(0x49); emit_byte(0xC7); emit_byte(0xC1); emit_u32_le(1000000000)           // mov r9, 1e9
+                emit_byte(0x49); emit_byte(0xF7); emit_byte(0xE1)                                    // mul r9
+                emit_byte(0x49); emit_byte(0xF7); emit_byte(0xF3)                                    // div r11
+                emit_byte(0x4D); emit_byte(0x0F); emit_byte(0xAF); emit_byte(0xD1)                   // imul r10, r9
+                emit_byte(0x4C); emit_byte(0x01); emit_byte(0xD0)                                    // add rax, r10
+                emit_byte(0x48); emit_byte(0x83); emit_byte(0xC4); emit_byte(0x30)                   // add rsp, 0x30
             } else {
                 emit_mov_rax_imm(0)
             }

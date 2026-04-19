@@ -29,16 +29,19 @@ static uint64 IAT_WaitForSingleObject = 10
 static uint64 IAT_GetExitCodeProcess = 11
 static uint64 IAT_GetModuleFileNameA = 12
 static uint64 IAT_VirtualFree = 13
-static uint64 IAT_ENTRY_COUNT = 14
+static uint64 IAT_QueryPerformanceCounter = 14
+static uint64 IAT_QueryPerformanceFrequency = 15
+static uint64 IAT_ENTRY_COUNT = 16
 
 // Compute .idata section size
 fn pe_idata_size() -> uint64 {
     // IDT: 1 entry (20 bytes) + null terminator (20 bytes) = 40
-    // ILT: 9 entries × 8 + null (8) = 80
-    // IAT: same = 80
-    // Hint/Name table: 9 × 20 = 180
-    // DLL name: "kernel32.dll\0" = 16
-    // Total: 40 + 80 + 80 + 180 + 16 = 396, round up to 0x200 = 512
+    // ILT: 16 entries × 8 + null (8) = 136
+    // IAT: same = 136
+    // Hint/Name table: 16 × 32 = 512  (32-byte slots accommodate the longest
+    //   kernel32 names we import, QueryPerformanceFrequency at 25 chars)
+    // DLL name: "kernel32.dll\0" = 13
+    // Total: 40 + 136 + 136 + 512 + 13 = 837, padded to 1024
     return 1024
 }
 
@@ -48,12 +51,12 @@ fn pe_idata_size() -> uint64 {
 fn emit_pe_idata(uint64 idata_rva) -> uint64 {
     uint64 base = out_len
 
-    // Layout offsets within .idata (9 IAT entries, 20-byte hint/name slots):
+    // Layout offsets within .idata (16 IAT entries, 32-byte hint/name slots):
     uint64 idt_off = 0
     uint64 ilt_off = 40
-    uint64 iat_off = 160
-    uint64 hints_off = 280
-    uint64 dllname_off = 616
+    uint64 iat_off = 176
+    uint64 hints_off = 312
+    uint64 dllname_off = 824
 
     // IDT entry for kernel32.dll (20 bytes)
     emit_u32_le(idata_rva + ilt_off)     // OriginalFirstThunk → ILT
@@ -66,141 +69,165 @@ fn emit_pe_idata(uint64 idata_rva) -> uint64 {
     uint64 z = 0
     while z < 20 { emit_byte(0); z = z + 1 }
 
-    // ILT: 14 entries + null (each is 8 bytes = RVA to hint/name)
+    // ILT: 16 entries + null (each is 8 bytes = RVA to hint/name)
     uint64 h = 0
-    while h < 14 {
-        emit_u64_le(idata_rva + hints_off + h * 24)
+    while h < 16 {
+        emit_u64_le(idata_rva + hints_off + h * 32)
         h = h + 1
     }
     emit_u64_le(0)  // null terminator
 
     // IAT: identical to ILT (loader patches this at runtime)
     h = 0
-    while h < 14 {
-        emit_u64_le(idata_rva + hints_off + h * 24)
+    while h < 16 {
+        emit_u64_le(idata_rva + hints_off + h * 32)
         h = h + 1
     }
     emit_u64_le(0)
 
-    // Hint/Name entries (16 bytes each, padded)
-    // Hint/Name entries (20 bytes each, padded)
-    // 0: ExitProcess (11 chars) — 2+12+10=24
+    // Hint/Name entries (32 bytes each, padded)
+    // 0: ExitProcess
     emit_u16_le(0)
     emit_byte(69); emit_byte(120); emit_byte(105); emit_byte(116)
     emit_byte(80); emit_byte(114); emit_byte(111); emit_byte(99)
     emit_byte(101); emit_byte(115); emit_byte(115); emit_byte(0)
-    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
-    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    uint64 pe_pad_i = 0
+    while pe_pad_i < 18 { emit_byte(0); pe_pad_i = pe_pad_i + 1 }
 
-    // 1: GetStdHandle (12 chars) — 2+13+9=24
+    // 1: GetStdHandle
     emit_u16_le(0)
     emit_byte(71); emit_byte(101); emit_byte(116); emit_byte(83)
     emit_byte(116); emit_byte(100); emit_byte(72); emit_byte(97)
-    emit_byte(110); emit_byte(100); emit_byte(108); emit_byte(101)
-    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
-    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_byte(110); emit_byte(100); emit_byte(108); emit_byte(101); emit_byte(0)
+    pe_pad_i = 0
+    while pe_pad_i < 17 { emit_byte(0); pe_pad_i = pe_pad_i + 1 }
 
-    // 2: WriteFile (9 chars) — 2+10+12=24
+    // 2: WriteFile
     emit_u16_le(0)
     emit_byte(87); emit_byte(114); emit_byte(105); emit_byte(116)
     emit_byte(101); emit_byte(70); emit_byte(105); emit_byte(108)
     emit_byte(101); emit_byte(0)
-    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
-    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    pe_pad_i = 0
+    while pe_pad_i < 20 { emit_byte(0); pe_pad_i = pe_pad_i + 1 }
 
-    // 3: CreateFileA (11 chars) — 2+12+10=24
+    // 3: CreateFileA
     emit_u16_le(0)
     emit_byte(67); emit_byte(114); emit_byte(101); emit_byte(97)
     emit_byte(116); emit_byte(101); emit_byte(70); emit_byte(105)
     emit_byte(108); emit_byte(101); emit_byte(65); emit_byte(0)
-    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
-    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    pe_pad_i = 0
+    while pe_pad_i < 18 { emit_byte(0); pe_pad_i = pe_pad_i + 1 }
 
-    // 4: ReadFile (8 chars) — 2+9+13=24
+    // 4: ReadFile
     emit_u16_le(0)
     emit_byte(82); emit_byte(101); emit_byte(97); emit_byte(100)
-    emit_byte(70); emit_byte(105); emit_byte(108); emit_byte(101)
-    emit_byte(0); emit_byte(0)
-    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
-    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_byte(70); emit_byte(105); emit_byte(108); emit_byte(101); emit_byte(0)
+    pe_pad_i = 0
+    while pe_pad_i < 21 { emit_byte(0); pe_pad_i = pe_pad_i + 1 }
 
-    // 5: CloseHandle (11 chars) — 2+12+10=24
+    // 5: CloseHandle
     emit_u16_le(0)
     emit_byte(67); emit_byte(108); emit_byte(111); emit_byte(115)
     emit_byte(101); emit_byte(72); emit_byte(97); emit_byte(110)
     emit_byte(100); emit_byte(108); emit_byte(101); emit_byte(0)
-    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
-    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    pe_pad_i = 0
+    while pe_pad_i < 18 { emit_byte(0); pe_pad_i = pe_pad_i + 1 }
 
-    // 6: VirtualAlloc (12 chars) — 2+13+9=24
+    // 6: VirtualAlloc
     emit_u16_le(0)
     emit_byte(86); emit_byte(105); emit_byte(114); emit_byte(116)
     emit_byte(117); emit_byte(97); emit_byte(108); emit_byte(65)
-    emit_byte(108); emit_byte(108); emit_byte(111); emit_byte(99)
-    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
-    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    emit_byte(108); emit_byte(108); emit_byte(111); emit_byte(99); emit_byte(0)
+    pe_pad_i = 0
+    while pe_pad_i < 17 { emit_byte(0); pe_pad_i = pe_pad_i + 1 }
 
-    // 7: GetCommandLineA (15 chars) — 2+16+6=24
+    // 7: GetCommandLineA
     emit_u16_le(0)
     emit_byte(71); emit_byte(101); emit_byte(116); emit_byte(67)
     emit_byte(111); emit_byte(109); emit_byte(109); emit_byte(97)
     emit_byte(110); emit_byte(100); emit_byte(76); emit_byte(105)
     emit_byte(110); emit_byte(101); emit_byte(65); emit_byte(0)
-    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    pe_pad_i = 0
+    while pe_pad_i < 14 { emit_byte(0); pe_pad_i = pe_pad_i + 1 }
 
-    // 8: GetFileSizeEx (13 chars) — 2+14+8=24
+    // 8: GetFileSizeEx
     emit_u16_le(0)
     emit_byte(71); emit_byte(101); emit_byte(116); emit_byte(70)
     emit_byte(105); emit_byte(108); emit_byte(101); emit_byte(83)
     emit_byte(105); emit_byte(122); emit_byte(101); emit_byte(69)
     emit_byte(120); emit_byte(0)
-    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
-    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
+    pe_pad_i = 0
+    while pe_pad_i < 16 { emit_byte(0); pe_pad_i = pe_pad_i + 1 }
 
-    // 9: CreateProcessA (14 chars) — 2+15+7=24
+    // 9: CreateProcessA
     emit_u16_le(0)
     emit_byte(67); emit_byte(114); emit_byte(101); emit_byte(97)
     emit_byte(116); emit_byte(101); emit_byte(80); emit_byte(114)
     emit_byte(111); emit_byte(99); emit_byte(101); emit_byte(115)
     emit_byte(115); emit_byte(65); emit_byte(0)
-    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
-    emit_byte(0); emit_byte(0); emit_byte(0)
+    pe_pad_i = 0
+    while pe_pad_i < 15 { emit_byte(0); pe_pad_i = pe_pad_i + 1 }
 
-    // 10: WaitForSingleObject (19 chars) — 2+20+2=24
+    // 10: WaitForSingleObject
     emit_u16_le(0)
     emit_byte(87); emit_byte(97); emit_byte(105); emit_byte(116)
     emit_byte(70); emit_byte(111); emit_byte(114); emit_byte(83)
     emit_byte(105); emit_byte(110); emit_byte(103); emit_byte(108)
     emit_byte(101); emit_byte(79); emit_byte(98); emit_byte(106)
     emit_byte(101); emit_byte(99); emit_byte(116); emit_byte(0)
-    emit_byte(0); emit_byte(0)
+    pe_pad_i = 0
+    while pe_pad_i < 10 { emit_byte(0); pe_pad_i = pe_pad_i + 1 }
 
-    // 11: GetExitCodeProcess (18 chars) — 2+19+3=24
+    // 11: GetExitCodeProcess
     emit_u16_le(0)
     emit_byte(71); emit_byte(101); emit_byte(116); emit_byte(69)
     emit_byte(120); emit_byte(105); emit_byte(116); emit_byte(67)
     emit_byte(111); emit_byte(100); emit_byte(101); emit_byte(80)
     emit_byte(114); emit_byte(111); emit_byte(99); emit_byte(101)
     emit_byte(115); emit_byte(115); emit_byte(0)
-    emit_byte(0); emit_byte(0); emit_byte(0)
+    pe_pad_i = 0
+    while pe_pad_i < 11 { emit_byte(0); pe_pad_i = pe_pad_i + 1 }
 
-    // 12: GetModuleFileNameA (18 chars) — 2+19+3=24
+    // 12: GetModuleFileNameA
     emit_u16_le(0)
     emit_byte(71); emit_byte(101); emit_byte(116); emit_byte(77)
     emit_byte(111); emit_byte(100); emit_byte(117); emit_byte(108)
     emit_byte(101); emit_byte(70); emit_byte(105); emit_byte(108)
     emit_byte(101); emit_byte(78); emit_byte(97); emit_byte(109)
     emit_byte(101); emit_byte(65); emit_byte(0)
-    emit_byte(0); emit_byte(0); emit_byte(0)
+    pe_pad_i = 0
+    while pe_pad_i < 11 { emit_byte(0); pe_pad_i = pe_pad_i + 1 }
 
-    // 13: VirtualFree (11 chars) — 2+12+10=24
+    // 13: VirtualFree
     emit_u16_le(0)
-    emit_byte(86); emit_byte(105); emit_byte(114); emit_byte(116)   // Virt
-    emit_byte(117); emit_byte(97); emit_byte(108); emit_byte(70)    // ualF
-    emit_byte(114); emit_byte(101); emit_byte(101); emit_byte(0)    // ree\0
-    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
-    emit_byte(0); emit_byte(0); emit_byte(0); emit_byte(0)
-    emit_byte(0); emit_byte(0)
+    emit_byte(86); emit_byte(105); emit_byte(114); emit_byte(116)
+    emit_byte(117); emit_byte(97); emit_byte(108); emit_byte(70)
+    emit_byte(114); emit_byte(101); emit_byte(101); emit_byte(0)
+    pe_pad_i = 0
+    while pe_pad_i < 18 { emit_byte(0); pe_pad_i = pe_pad_i + 1 }
+
+    // 14: QueryPerformanceCounter
+    emit_u16_le(0)
+    emit_byte(81); emit_byte(117); emit_byte(101); emit_byte(114)
+    emit_byte(121); emit_byte(80); emit_byte(101); emit_byte(114)
+    emit_byte(102); emit_byte(111); emit_byte(114); emit_byte(109)
+    emit_byte(97); emit_byte(110); emit_byte(99); emit_byte(101)
+    emit_byte(67); emit_byte(111); emit_byte(117); emit_byte(110)
+    emit_byte(116); emit_byte(101); emit_byte(114); emit_byte(0)
+    pe_pad_i = 0
+    while pe_pad_i < 6 { emit_byte(0); pe_pad_i = pe_pad_i + 1 }
+
+    // 15: QueryPerformanceFrequency
+    emit_u16_le(0)
+    emit_byte(81); emit_byte(117); emit_byte(101); emit_byte(114)
+    emit_byte(121); emit_byte(80); emit_byte(101); emit_byte(114)
+    emit_byte(102); emit_byte(111); emit_byte(114); emit_byte(109)
+    emit_byte(97); emit_byte(110); emit_byte(99); emit_byte(101)
+    emit_byte(70); emit_byte(114); emit_byte(101); emit_byte(113)
+    emit_byte(117); emit_byte(101); emit_byte(110); emit_byte(99)
+    emit_byte(121); emit_byte(0)
+    pe_pad_i = 0
+    while pe_pad_i < 4 { emit_byte(0); pe_pad_i = pe_pad_i + 1 }
 
     // DLL name: "kernel32.dll\0"
     emit_byte(107); emit_byte(101); emit_byte(114); emit_byte(110)
