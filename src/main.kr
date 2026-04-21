@@ -2319,10 +2319,14 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
     } else {
         resolve_string_fixups_a64(str_start)
     }
-    // Re-align to 8 bytes on arm64 between strings and statics.
-    if arch == 1 {
-        while (codegen_output_len() & 7) != 0 { emit_byte(0) }
-    }
+    // Align the static-data section base to 8 bytes on both arches.
+    // Without this, static uint64[N] arrays whose logical offset within
+    // the section is 0 land on whatever bit-level offset the preceding
+    // strings/code happened to end on — and a mis-aligned `uint64*`
+    // breaks the Linux futex uaddr check (EINVAL) and AMD split-lock
+    // detection on newer kernels.
+    while (codegen_output_len() & 7) != 0 { emit_byte(0) }
+    while (codegen_output_len() & 7) != 0 { emit_byte(0) }
     uint64 data_start = codegen_output_len()
     emit_static_data()
     if arch == 0 {
@@ -2461,6 +2465,7 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
             uint64 m_textsz = total_aligned - 16384
             patch_u32(216, m_textsz & 0xFFFFFFFF)
             patch_u32(220, (m_textsz >> 32) & 0xFFFFFFFF)
+            while (codegen_output_len() & 7) != 0 { emit_byte(0) }
             uint64 m_dfoff = codegen_output_len()
             emit_static_data()
             uint64 m_draw = codegen_output_len() - m_dfoff
@@ -2519,6 +2524,7 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
             text_aligned = (text_size + 0x1FF) & ~0x1FF
             while codegen_output_len() < header_size + text_aligned { emit_byte(0) }
             // Emit .data section: re-emit statics
+            while (codegen_output_len() & 7) != 0 { emit_byte(0) }
             uint64 data_file_off = codegen_output_len()
             emit_static_data()
             uint64 data_raw_size = codegen_output_len() - data_file_off
@@ -2613,6 +2619,7 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
         uint64 rx_aligned = (rx_size + 0xFFFF) & ~0xFFFF
         while codegen_output_len() < rx_aligned { emit_byte(0) }
         // Emit data segment (statics)
+        while (codegen_output_len() & 7) != 0 { emit_byte(0) }
         uint64 a_dfoff = codegen_output_len()
         emit_static_data()
         uint64 a_draw = codegen_output_len() - a_dfoff
@@ -2946,6 +2953,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     }
     resolve_fixups()
     resolve_fnaddr_fixups()
+    while (codegen_output_len() & 7) != 0 { emit_byte(0) }
     uint64 data_start = codegen_output_len()
     emit_static_data()
     resolve_static_fixups(data_start)
@@ -3055,6 +3063,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     }
     resolve_fixups_a64()
     resolve_fnaddr_fixups_a64()
+    while (codegen_output_len() & 7) != 0 { emit_byte(0) }
     uint64 data_start_a64 = codegen_output_len()
     emit_static_data()
     resolve_static_fixups_a64(data_start_a64)
@@ -3151,6 +3160,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     }
     resolve_fixups()
     resolve_fnaddr_fixups()
+    while (codegen_output_len() & 7) != 0 { emit_byte(0) }
     uint64 data_start3 = codegen_output_len()
     emit_static_data()
     resolve_static_fixups(data_start3)
@@ -3257,6 +3267,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     }
     resolve_fixups_a64()
     resolve_fnaddr_fixups_a64()
+    while (codegen_output_len() & 7) != 0 { emit_byte(0) }
     uint64 data_start4 = codegen_output_len()
     emit_static_data()
     resolve_static_fixups_a64(data_start4)
@@ -3272,6 +3283,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     // ARM64 PE: separate .data section (W^X)
     uint64 text_aligned4 = (text_size4 + 0x1FF) & ~0x1FF
     while codegen_output_len() < header4 + text_aligned4 { emit_byte(0) }
+    while (codegen_output_len() & 7) != 0 { emit_byte(0) }
     uint64 data_file_off4 = codegen_output_len()
     emit_static_data()
     uint64 data_raw_size4 = codegen_output_len() - data_file_off4
@@ -3385,6 +3397,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     }
     resolve_fixups()
     resolve_fnaddr_fixups()
+    while (codegen_output_len() & 7) != 0 { emit_byte(0) }
     uint64 data_start5 = codegen_output_len()
     emit_static_data()
     resolve_static_fixups(data_start5)
@@ -3482,6 +3495,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     }
     resolve_fixups_a64()
     resolve_fnaddr_fixups_a64()
+    while (codegen_output_len() & 7) != 0 { emit_byte(0) }
     uint64 data_start6 = codegen_output_len()
     emit_static_data()
     resolve_static_fixups_a64(data_start6)
@@ -3494,6 +3508,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     uint64 total_aligned6 = (total_file6 + 16383) & ~16383
     while codegen_output_len() < total_aligned6 { emit_byte(0) }
     // Emit __DATA segment
+    while (codegen_output_len() & 7) != 0 { emit_byte(0) }
     uint64 dfoff6 = codegen_output_len()
     emit_static_data()
     uint64 draw6 = codegen_output_len() - dfoff6
@@ -3614,6 +3629,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     }
     resolve_fixups()
     resolve_fnaddr_fixups()
+    while (codegen_output_len() & 7) != 0 { emit_byte(0) }
     uint64 data_start8 = codegen_output_len()
     emit_static_data()
     resolve_static_fixups(data_start8)
@@ -3632,6 +3648,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     patch_u32(220, (androidx_rx >> 32) & 0xFFFFFFFF)
     uint64 androidx_rx_aligned = (androidx_rx + 0xFFFF) & ~0xFFFF
     while codegen_output_len() < androidx_rx_aligned { emit_byte(0) }
+    while (codegen_output_len() & 7) != 0 { emit_byte(0) }
     uint64 ax_dfoff = codegen_output_len()
     emit_static_data()
     uint64 ax_draw = codegen_output_len() - ax_dfoff
@@ -3732,6 +3749,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     // Align to 8 bytes on arm64 (matches direct compile() path) so static
     // data LDR (imm12 scaled by 8) can encode any slot offset exactly.
     while (codegen_output_len() & 7) != 0 { emit_byte(0) }
+    while (codegen_output_len() & 7) != 0 { emit_byte(0) }
     uint64 data_start7 = codegen_output_len()
     emit_static_data()
     resolve_static_fixups_a64(data_start7)
@@ -3753,6 +3771,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     uint64 android_rx_aligned = (android_rx + 0xFFFF) & ~0xFFFF
     while codegen_output_len() < android_rx_aligned { emit_byte(0) }
     // Emit data segment (statics)
+    while (codegen_output_len() & 7) != 0 { emit_byte(0) }
     uint64 a7_dfoff = codegen_output_len()
     emit_static_data()
     uint64 a7_draw = codegen_output_len() - a7_dfoff
@@ -4245,7 +4264,7 @@ fn main() {
                 write(1, "  fmt <file.kr>     auto-format source\n", 39)
                 exit(0)
             } else if str_starts_with(arg, "--version", 9) != 0 {
-                uint64 msg = "krc 2.8.14 (KernRift self-hosted compiler)\n"
+                uint64 msg = "krc 2.8.16 (KernRift self-hosted compiler)\n"
                 write(1, msg, 42)
                 exit(0)
             } else if str_starts_with(arg, "--freestanding", 14) != 0 {

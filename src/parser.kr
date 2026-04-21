@@ -1903,6 +1903,9 @@ fn parse_module() -> uint64 {
                         uint64 ffrac = 0
                         uint64 fdiv = 1
                         uint64 fpast = 0
+                        uint64 fin_exp = 0
+                        uint64 fexp_neg = 0
+                        uint64 fexp_val = 0
                         uint64 fi2 = 0
                         while fi2 < ft_len {
                             uint64 fbp = src_ptr + ft_start + fi2
@@ -1910,8 +1913,23 @@ fn parse_module() -> uint64 {
                             unsafe { *(fbp as uint8) -> fch }
                             if fch == 46 { fpast = 1 }
                             else if fch == 102 { }   // trailing 'f' — narrowing is driven by the static's declared type, not the literal suffix
+                            else if fch == 101 || fch == 69 {
+                                // 'e' / 'E' — switch to exponent mode.
+                                fin_exp = 1
+                                fi2 = fi2 + 1
+                                if fi2 < ft_len {
+                                    uint64 sbp = src_ptr + ft_start + fi2
+                                    uint64 sch = 0
+                                    unsafe { *(sbp as uint8) -> sch }
+                                    if sch == 45 { fexp_neg = 1; fi2 = fi2 + 1 }
+                                    else if sch == 43 { fi2 = fi2 + 1 }
+                                }
+                                continue
+                            }
                             else if fch >= 48 && fch <= 57 {
-                                if fpast == 0 {
+                                if fin_exp != 0 {
+                                    fexp_val = fexp_val * 10 + (fch - 48)
+                                } else if fpast == 0 {
                                     fint = fint * 10 + (fch - 48)
                                 } else {
                                     ffrac = ffrac * 10 + (fch - 48)
@@ -1922,6 +1940,21 @@ fn parse_module() -> uint64 {
                         }
                         // Compute f64 value.
                         f64 fv = int_to_f64(fint) + int_to_f64(ffrac) / int_to_f64(fdiv)
+                        if fexp_val != 0 {
+                            if fexp_val > 18 {
+                                write(2, "error: float exponent too large (max 1e18)\n", 44)
+                                exit(1)
+                            }
+                            uint64 fpow10 = 1
+                            uint64 fei = 0
+                            while fei < fexp_val {
+                                fpow10 = fpow10 * 10
+                                fei = fei + 1
+                            }
+                            f64 fscale = int_to_f64(fpow10)
+                            if fexp_neg != 0 { fv = fv / fscale }
+                            else { fv = fv * fscale }
+                        }
                         if sinit_neg != 0 { fv = 0.0 - fv }
                         // Pack bits according to the static's declared type.
                         // emit_static_data writes 8 bytes per scalar slot; for

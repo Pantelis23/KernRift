@@ -556,7 +556,11 @@ fn lex_one_token() {
             while pos < src_len && is_digit(peek()) != 0 {
                 advance()
             }
-            // Check for decimal point → float literal
+            // Float literal: `digits . digits [exp] [f]` OR `digits exp [f]`.
+            // Scientific-notation exponent (e|E)(+|-)?digits enables the
+            // ML-style constant surface (1e-3, 5.5e-4, 3.14E+10) without
+            // forcing users to spell every small number as 0.001.
+            uint64 is_float = 0
             if pos < src_len && peek() == 46 {
                 uint64 after_dot = peek_at(1)
                 if after_dot >= 48 && after_dot <= 57 {
@@ -564,12 +568,32 @@ fn lex_one_token() {
                     while pos < src_len && is_digit(peek()) != 0 {
                         advance()
                     }
-                    if pos < src_len && peek() == 102 {
+                    is_float = 1
+                }
+            }
+            if pos < src_len && (peek() == 101 || peek() == 69) {
+                // Only consume `e`/`E` if a digit (optionally preceded by
+                // + or -) actually follows — otherwise we'd eat the 'e'
+                // out of identifiers like `42exit`.
+                uint64 exp_probe = 1
+                uint64 c1 = peek_at(exp_probe)
+                if c1 == 43 || c1 == 45 {
+                    exp_probe = exp_probe + 1
+                    c1 = peek_at(exp_probe)
+                }
+                if c1 >= 48 && c1 <= 57 {
+                    advance()
+                    if peek() == 43 || peek() == 45 { advance() }
+                    while pos < src_len && is_digit(peek()) != 0 {
                         advance()
                     }
-                    emit_token(TokenKind.FloatLit, start, pos - start, tok_line)
-                    return
+                    is_float = 1
                 }
+            }
+            if is_float != 0 {
+                if pos < src_len && peek() == 102 { advance() }
+                emit_token(TokenKind.FloatLit, start, pos - start, tok_line)
+                return
             }
         }
         emit_token(TokenKind.IntLit, start, pos - start, tok_line)
