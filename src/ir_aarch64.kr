@@ -2507,7 +2507,7 @@ fn ir_emit_arm64_function(uint64 fn_node) {
         // Pair them with STP — halves the instruction count vs per-reg
         // STRs. STP's offset is imm7 scaled by 8, capped at 504; fall
         // back to individual STR for large frames to stay correct.
-        uint64 cs_base = IR_A64_OVERFLOW_RESERVE + spill_size + scratch_size
+        uint64 cs_base = IR_A64_OVERFLOW_RESERVE + spill_size + ir_stack_array_bytes + scratch_size
         uint64 fp_off = cs_base + 80
         if fp_off + 8 <= 504 {
             ir_a64_stp_sp(19, 20, cs_base)
@@ -2688,7 +2688,7 @@ fn ir_emit_arm64_function(uint64 fn_node) {
         }
         // Restore callee-saved registers. Mirror the prologue: LDP
         // pairs when the frame fits, individual LDRs otherwise.
-        uint64 cs_base_e = IR_A64_OVERFLOW_RESERVE + spill_size + scratch_size
+        uint64 cs_base_e = IR_A64_OVERFLOW_RESERVE + spill_size + ir_stack_array_bytes + scratch_size
         uint64 fp_off_e = cs_base_e + 80
         if fp_off_e + 8 <= 504 {
             ir_a64_ldp_sp(19, 20, cs_base_e)
