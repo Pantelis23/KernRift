@@ -668,10 +668,13 @@ fn ir_emit_arm64_insn(uint64 ii) {
 
     // ----- IR_STACK_ADDR (32): compute address of stack slot -----
     if op == 32 {
-        // imm = offset from frame base (spill area start)
+        // imm = offset within the stack-array region (placed directly
+        // above spill slots in the frame). Absolute SP offset:
+        //   IR_A64_OVERFLOW_RESERVE + ir_spill_count*8 + imm
+        uint64 base_off = IR_A64_OVERFLOW_RESERVE + ir_spill_count * 8 + imm
         uint64 d = dst_r
         if d == 0xFFFFFFFF { d = 9 }
-        emit_a64_add_imm(d, 31, imm)
+        emit_a64_add_imm(d, 31, base_off)
         if dst_r == 0xFFFFFFFF {
             ir_a64_emit_store_spill(9, dest_v)
         }
@@ -2409,22 +2412,23 @@ fn ir_emit_arm64_function(uint64 fn_node) {
     // clock_gettime timespec, execve argv, etc). Using a fixed offset avoids
     // dynamic SP shifts that invalidate spill slot addresses.
     uint64 scratch_size = 32
-    // Total frame = spill + scratch + callee save, must be 16-aligned
+    // Total frame = spill + stack arrays + scratch + callee save, must be 16-aligned.
     // Layout from SP upward:
-    //   [SP + 0 .. IR_A64_OVERFLOW_RESERVE)  — stack slots for outgoing calls' args 9+
+    //   [SP + 0 .. IR_A64_OVERFLOW_RESERVE)   — stack slots for outgoing calls' args 9+
     //   [spills ...]
+    //   [stack arrays ...]                    — compile-time-sized local arrays (IR_STACK_ADDR)
     //   [scratchpad ...]
     //   [saved callee regs]
     // With the overflow reserve at the bottom, the caller can STR
     // outgoing args to [SP + offset] without any SUB — the callee
     // reads [SP + callee_frame + (idx-8)*8] = caller's arg slots.
-    uint64 total_frame = IR_A64_OVERFLOW_RESERVE + spill_size + scratch_size + callee_save_size
+    uint64 total_frame = IR_A64_OVERFLOW_RESERVE + spill_size + ir_stack_array_bytes + scratch_size + callee_save_size
     if (total_frame & 15) != 0 { total_frame = total_frame + 16 - (total_frame & 15) }
     if is_naked != 0 { total_frame = 0 }
 
     ir_frame_size = total_frame
-    // Scratchpad sits right after spill slots (which start at the overflow reserve).
-    ir_a64_scratch_off = IR_A64_OVERFLOW_RESERVE + spill_size
+    // Scratchpad sits right after the stack-array region.
+    ir_a64_scratch_off = IR_A64_OVERFLOW_RESERVE + spill_size + ir_stack_array_bytes
 
     // 5a. For main(): set up argc/argv BEFORE prologue
     uint32 fn_name_tok = ast_data1(fn_node)

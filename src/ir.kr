@@ -2853,13 +2853,25 @@ fn ir_lower_stmt(uint64 node) {
         uint32 struct_marker = ast_data4(node)
         uint64 wsm = struct_marker
         if was != 0 && wsm == 0 {
-            // Array: allocate N bytes on heap, bind pointer to name
+            // Array: bind pointer to name. Small compile-time-sized arrays
+            // get stack storage (IR_STACK_ADDR) — a per-call IR_ALLOC is an
+            // mmap/VirtualAlloc syscall and was ~2 µs per invocation on hot
+            // scratch patterns like a uint64[1] atomic-add trampoline.
             uint64 arr_size = parse_int_token(was)
             uint32 type_tok_v = ast_data1(node)
             uint64 elem_size_v = type_tok_elem_size(type_tok_v)
             uint64 total_bytes = arr_size * elem_size_v
             uint64 buf_v = ir_new_vreg()
-            ir_emit(IR_ALLOC, buf_v, 0, 0, total_bytes, ir_current_bb)
+            if arr_size > 0 && total_bytes <= 4096 {
+                uint64 rel_off = ir_stack_array_bytes
+                // Pad to 8-byte alignment so subsequent arrays stay aligned
+                uint64 padded = total_bytes
+                if (padded & 7) != 0 { padded = padded + 8 - (padded & 7) }
+                ir_stack_array_bytes = ir_stack_array_bytes + padded
+                ir_emit(IR_STACK_ADDR, buf_v, 0, 0, rel_off, ir_current_bb)
+            } else {
+                ir_emit(IR_ALLOC, buf_v, 0, 0, total_bytes, ir_current_bb)
+            }
             // Zero-initialize the buffer
             uint64 zero_v = ir_new_vreg()
             ir_emit(IR_CONST, zero_v, 0, 0, 0, ir_current_bb)
@@ -3986,6 +3998,7 @@ fn ir_lower_function(uint64 fn_node) {
     ir_reset()
     ir_var_map_init()
     ir_defer_reset()
+    ir_stack_array_bytes = 0
     ir_current_bb = ir_new_bb()  // entry block
 
     // Register parameters
@@ -5054,6 +5067,102 @@ fn ir_emit_x86_win_syscall(uint64 abstract_nr, uint64 dest_v, uint64 dst_r) {
 // Per-instruction emitter
 // ---------------------------------------------------------------------------
 
+// Emit a contiguous group of IR_ARG instructions with imm >= 100 starting at
+// `start_ii`. These arise from `in(var -> reg)` asm-block constraints. Using
+// push/pop avoids the register-shuffle problem that a naive sequential
+// `mov target, src` pattern would introduce when a later move's source was
+// allocated to an earlier move's target register.
+//
+// Layout:
+//   Phase A — push every source (loading spilled sources through rax with
+//             rsp-offset adjustment since rsp decreases between pushes).
+//   Phase B — pop into each destination in reverse order.
+//
+// All subsequent IR_ARG instructions in the group are nop-marked (opcode 0)
+// so the main loop's later iterations do not re-emit them.
+fn ir_emit_asm_in_group(uint64 start_ii) {
+    uint64 start_bb = ir_insn_bb(start_ii)
+    // Fixed cap: real-world asm blocks carry handfuls of constraints.
+    uint64[16] mv_dst
+    uint64[16] mv_src_v
+    uint64 mv_count = 0
+
+    uint64 ci = start_ii
+    while ci < ir_insn_count {
+        uint64 cop = ir_insn_opcode(ci)
+        if cop != 51 { break }
+        uint64 cimm = ir_insn_imm(ci)
+        if cimm < 100 { break }
+        if ir_insn_bb(ci) != start_bb { break }
+        if mv_count >= 16 {
+            write(2, "error: too many asm in() constraints (max 16)\n", 46)
+            exit(1)
+        }
+        uint64 dpv = cimm - 100
+        uint64 spv = ir_insn_src1(ci)
+        uint64 dp = mv_dst + mv_count * 8
+        uint64 sp = mv_src_v + mv_count * 8
+        unsafe { *(dp as uint64) = dpv }
+        unsafe { *(sp as uint64) = spv }
+        mv_count = mv_count + 1
+        // Leave start_ii's opcode alone — its handler returns after this helper.
+        if ci != start_ii { ir_insn_set_opcode(ci, 0) }
+        ci = ci + 1
+    }
+
+    // Phase A: push sources.
+    uint64 k = 0
+    while k < mv_count {
+        uint64 sp_k = mv_src_v + k * 8
+        uint64 s_v = 0
+        unsafe { *(sp_k as uint64) -> s_v }
+        uint64 s_reg = ir_get_phys_reg(s_v)
+        if s_reg == 0xFFFFFFFF {
+            // Spilled: load from [rsp + orig_off + k*8] into rax, then push rax.
+            // rsp has moved down by k*8 from the k prior pushes.
+            uint64 orig_off = ir_spill_offset(s_v)
+            uint64 adj_off = orig_off + k * 8
+            emit_byte(0x48); emit_byte(0x8B)
+            if adj_off < 128 {
+                emit_byte(0x44); emit_byte(0x24)
+                uint8 o8 = adj_off
+                emit_byte(o8)
+            } else {
+                emit_byte(0x84); emit_byte(0x24)
+                emit_u32_le(adj_off)
+            }
+            emit_byte(0x50)
+        } else {
+            if s_reg >= 8 {
+                emit_byte(0x41)
+                uint8 po = 0x50 | (s_reg & 7)
+                emit_byte(po)
+            } else {
+                uint8 po = 0x50 | s_reg
+                emit_byte(po)
+            }
+        }
+        k = k + 1
+    }
+
+    // Phase B: pop into destinations in reverse order so pushes[k] lands in dst[k].
+    uint64 k2 = mv_count
+    while k2 > 0 {
+        k2 = k2 - 1
+        uint64 dp_k = mv_dst + k2 * 8
+        uint64 d_reg = 0
+        unsafe { *(dp_k as uint64) -> d_reg }
+        if d_reg >= 8 {
+            emit_byte(0x41)
+            uint8 po = 0x58 | (d_reg & 7)
+            emit_byte(po)
+        } else {
+            uint8 po = 0x58 | d_reg
+            emit_byte(po)
+        }
+    }
+}
+
 fn ir_emit_x86_insn(uint64 ii) {
     uint64 op = ir_insn_opcode(ii)
     uint64 dest_v = ir_insn_dest(ii)
@@ -5106,6 +5215,37 @@ fn ir_emit_x86_insn(uint64 ii) {
             ir_emit_mov_r64_imm64(dst_r, imm)
         } else {
             ir_emit_mov_r64_imm64(0, imm)
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 32 {
+        // IR_STACK_ADDR: dst = &[rsp + spill_count*8 + imm].
+        // imm is the offset within the stack-array region, which
+        // sits directly above the spill slots in the prologue's frame.
+        uint64 base_off = ir_spill_count * 8 + imm
+        uint64 lea_dst = dst_r
+        if lea_dst == 0xFFFFFFFF { lea_dst = 0 }
+        uint8 lea_rex = 0x48
+        if lea_dst >= 8 { lea_rex = lea_rex | 4 }
+        emit_byte(lea_rex)
+        emit_byte(0x8D)
+        if base_off < 128 {
+            uint64 mv = 0x44 | ((lea_dst & 7) << 3)
+            uint8 modrm = mv
+            emit_byte(modrm)
+            emit_byte(0x24)
+            uint8 o8 = base_off
+            emit_byte(o8)
+        } else {
+            uint64 mv = 0x84 | ((lea_dst & 7) << 3)
+            uint8 modrm = mv
+            emit_byte(modrm)
+            emit_byte(0x24)
+            emit_u32_le(base_off)
+        }
+        if dst_r == 0xFFFFFFFF {
             ir_emit_store_spill(0, dest_v)
         }
         return
@@ -6265,10 +6405,14 @@ fn ir_emit_x86_insn(uint64 ii) {
             ir_emit_mov_r64_r64(target, src_reg)
         }
         if imm >= 100 {
-            // Direct register target (used by ASM I/O constraints)
-            uint64 phys_target = imm - 100
-            uint64 src_reg = ir_resolve_src(s1_v, 0)
-            ir_emit_mov_r64_r64(phys_target, src_reg)
+            // ASM input constraint: `in(var -> reg)`. A contiguous run of these
+            // needs a shuffle-safe emission order — a naive sequential
+            // `mov target, src_reg` clobbers a source register before a later
+            // move reads it (e.g. `in(a -> rdi), in(b -> rsi)` where b's vreg
+            // was allocated to rdi). Emit the whole group via push/pop so the
+            // ordering is bulletproof regardless of what regalloc chose.
+            ir_emit_asm_in_group(ii)
+            return
         } else if imm >= 6 {
             // Overflow arg: save vreg to overflow buffer for IR_CALL to handle
             uint64 oi = imm - 6
@@ -8200,6 +8344,14 @@ static uint64 ir_overflow_arg_count = 0
 // Frame size for current function (used by overflow param loads)
 static uint64 ir_frame_size = 0
 
+// Fixed-size local arrays (`uint64[N] x` inside a fn body) get stack
+// storage instead of a per-call IR_ALLOC (which is a heap / mmap call
+// and ran ~2 µs per invocation when used in hot scratch patterns).
+// Each array bumps `ir_stack_array_bytes` during lowering and records
+// a relative offset inside the function's stack-array region; the
+// region sits above the spill slots in the prologue's frame.
+static uint64 ir_stack_array_bytes = 0
+
 // ---------------------------------------------------------------------------
 // IR optimization passes
 // ---------------------------------------------------------------------------
@@ -8920,7 +9072,10 @@ fn ir_emit_x86_function(uint64 fn_node) {
     }
 
     // sub rsp, frame_size
-    uint64 frame_size = ir_spill_count * 8
+    // Layout (from RSP up): [spill slots | stack arrays]
+    // IR_STACK_ADDR offsets are relative to the start of the stack-array
+    // region, so the x86 emitter adds ir_spill_count*8 to resolve them.
+    uint64 frame_size = ir_spill_count * 8 + ir_stack_array_bytes
     // Alignment: 5 pushes = 40 bytes + 8 (ret addr) = 48. 48 mod 16 = 0.
     // If frame_size mod 16 != 0, add 8 for alignment.
     if frame_size > 0 && (frame_size & 15) != 0 { frame_size = frame_size + 8 }
