@@ -1192,6 +1192,25 @@ fn ir_lower_expr(uint64 node) -> uint64 {
         // Check if LHS is float-typed
         uint64 cmp_fk = ir_vreg_fkind_get(lhs)
         if cmp_fk != 0 {
+            // Float compare: operands must share an fkind or ucomiss/ucomisd
+            // reads the wrong bit width. `f32 a == 1.0` previously compared
+            // a 32-bit f32 (0x3F800000) against the low 32 bits of an f64
+            // (which are zero for 1.0), so the equality always failed.
+            // Widen the narrower side to f64 — no loss, and it matches the
+            // C-style promotion users expect.
+            uint64 rhs_fk = ir_vreg_fkind_get(rhs)
+            if cmp_fk == 2 && rhs_fk == 1 {
+                uint64 lhs_w = ir_new_vreg()
+                ir_emit(IR_F32TOF64, lhs_w, lhs, 0, 0, ir_current_bb)
+                ir_vreg_fkind_set(lhs_w, 1)
+                lhs = lhs_w
+                cmp_fk = 1
+            } else if cmp_fk == 1 && rhs_fk == 2 {
+                uint64 rhs_w = ir_new_vreg()
+                ir_emit(IR_F32TOF64, rhs_w, rhs, 0, 0, ir_current_bb)
+                ir_vreg_fkind_set(rhs_w, 1)
+                rhs = rhs_w
+            }
             uint64 ir_op = IR_FCMP_EQ
             if op_kind == 35 { ir_op = IR_FCMP_EQ }  // ==
             if op_kind == 36 { ir_op = IR_FCMP_NE }  // !=
