@@ -66,6 +66,23 @@ jobs:
           ./build/krc2 --emit=android build/kr.kr -o dist/kr-android-arm64
           ./build/krc2 --arch=x86_64 --emit=android build/kr.kr -o dist/kr-android-x86_64
 
+      - name: Bundle Windows krc+kr zips
+        # One zip per architecture, each containing krc.exe + kr.exe at
+        # the archive root (renamed from the per-arch artifact names).
+        # Consumed by the winget NestedInstaller manifest below so a
+        # single `winget install Pantelis23.KernRift` drops both
+        # binaries into PATH.
+        run: |
+          cd dist
+          mkdir -p _bundle_x64 _bundle_arm64
+          cp krc-windows-x86_64.exe _bundle_x64/krc.exe
+          cp kr-windows-x86_64.exe  _bundle_x64/kr.exe
+          cp krc-windows-arm64.exe  _bundle_arm64/krc.exe
+          cp kr-windows-arm64.exe   _bundle_arm64/kr.exe
+          (cd _bundle_x64   && zip -q ../krc-windows-x86_64.zip krc.exe kr.exe)
+          (cd _bundle_arm64 && zip -q ../krc-windows-arm64.zip  krc.exe kr.exe)
+          rm -rf _bundle_x64 _bundle_arm64
+
       - name: Verify binaries
         run: |
           echo "=== Distribution ==="
@@ -76,6 +93,7 @@ jobs:
           cd dist
           sha256sum krc-linux-x86_64 krc-linux-arm64 \
                     krc-windows-x86_64.exe krc-windows-arm64.exe \
+                    krc-windows-x86_64.zip krc-windows-arm64.zip \
                     krc-macos-x86_64 krc-macos-arm64 \
                     krc-android-arm64 krc-android-x86_64 \
                     kr-linux-x86_64 kr-linux-arm64 \
@@ -92,6 +110,8 @@ jobs:
             dist/krc-linux-arm64
             dist/krc-windows-x86_64.exe
             dist/krc-windows-arm64.exe
+            dist/krc-windows-x86_64.zip
+            dist/krc-windows-arm64.zip
             dist/krc-macos-x86_64
             dist/krc-macos-arm64
             dist/krc-android-arm64
@@ -110,19 +130,131 @@ jobs:
           generate_release_notes: true
 
   winget-release:
-    name: Submit winget manifest
+    # Submits a hand-crafted winget manifest with a zip InstallerType +
+    # NestedInstallerFiles so one `winget install Pantelis23.KernRift`
+    # drops both krc.exe and kr.exe into PATH. The previous iteration
+    # used vedantmgoyal9/winget-releaser which only supports portable
+    # single-binary manifests — it shipped krc but silently dropped kr.
+    name: Submit winget manifest (nested zip)
     needs: build-release
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Fetch release zip SHAs
+        id: shas
+        run: |
+          set -euo pipefail
+          V="${{ github.ref_name }}"
+          # Release-upload can be eventually consistent; retry briefly.
+          for url in \
+            "https://github.com/Pantelis23/KernRift/releases/download/$V/krc-windows-x86_64.zip" \
+            "https://github.com/Pantelis23/KernRift/releases/download/$V/krc-windows-arm64.zip"; do
+            for i in 1 2 3 4 5; do
+              if curl -fsSL -o "/tmp/$(basename "$url")" "$url"; then break; fi
+              sleep 10
+            done
+          done
+          echo "x64=$(sha256sum /tmp/krc-windows-x86_64.zip | awk '{print toupper($1)}')"   >> "$GITHUB_OUTPUT"
+          echo "arm64=$(sha256sum /tmp/krc-windows-arm64.zip | awk '{print toupper($1)}')" >> "$GITHUB_OUTPUT"
 
-      - name: Submit to winget-pkgs
-        uses: vedantmgoyal9/winget-releaser@v2
-        with:
-          identifier: Pantelis23.KernRift
-          version: ${{ github.ref_name }}
-          release-tag: ${{ github.ref_name }}
-          installers-regex: 'krc-windows-(x86_64|arm64)\.exe$'
-          token: ${{ secrets.WINGET_TOKEN }}
+      - name: Generate manifests + open winget-pkgs PR
+        env:
+          GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          VERSION: ${{ github.ref_name }}
+          X64_SHA: ${{ steps.shas.outputs.x64 }}
+          ARM64_SHA: ${{ steps.shas.outputs.arm64 }}
+        run: |
+          set -euo pipefail
+          TODAY=$(date -u +%Y-%m-%d)
+          WORK=$(mktemp -d)
+          MDIR="$WORK/pkg/manifests/p/Pantelis23/KernRift/$VERSION"
+          mkdir -p "$MDIR"
+
+          cat > "$MDIR/Pantelis23.KernRift.yaml" <<EOF
+          # yaml-language-server: \$schema=https://aka.ms/winget-manifest.version.1.6.0.schema.json
+          PackageIdentifier: Pantelis23.KernRift
+          PackageVersion: $VERSION
+          DefaultLocale: en-US
+          ManifestType: version
+          ManifestVersion: 1.6.0
+          EOF
+
+          cat > "$MDIR/Pantelis23.KernRift.installer.yaml" <<EOF
+          # yaml-language-server: \$schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+          PackageIdentifier: Pantelis23.KernRift
+          PackageVersion: $VERSION
+          InstallerType: zip
+          NestedInstallerType: portable
+          NestedInstallerFiles:
+            - RelativeFilePath: krc.exe
+              PortableCommandAlias: krc
+            - RelativeFilePath: kr.exe
+              PortableCommandAlias: kr
+          ReleaseDate: $TODAY
+          Installers:
+            - Architecture: x64
+              InstallerUrl: https://github.com/Pantelis23/KernRift/releases/download/$VERSION/krc-windows-x86_64.zip
+              InstallerSha256: $X64_SHA
+            - Architecture: arm64
+              InstallerUrl: https://github.com/Pantelis23/KernRift/releases/download/$VERSION/krc-windows-arm64.zip
+              InstallerSha256: $ARM64_SHA
+          ManifestType: installer
+          ManifestVersion: 1.6.0
+          EOF
+
+          cat > "$MDIR/Pantelis23.KernRift.locale.en-US.yaml" <<EOF
+          # yaml-language-server: \$schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+          PackageIdentifier: Pantelis23.KernRift
+          PackageVersion: $VERSION
+          PackageLocale: en-US
+          Publisher: Pantelis Christou
+          PublisherUrl: https://github.com/Pantelis23
+          PackageName: KernRift
+          PackageUrl: https://github.com/Pantelis23/KernRift
+          License: MIT
+          LicenseUrl: https://github.com/Pantelis23/KernRift/blob/main/LICENSE
+          ShortDescription: Self-hosted bare-metal compiler for the KernRift language.
+          Description: |-
+            KernRift is a zero-dependency self-hosted compiler. The package
+            installs two portable command-line tools: krc (the compiler) and
+            kr (the fat-binary runner).
+          Tags:
+            - compiler
+            - self-hosted
+            - bare-metal
+            - aot
+            - language
+          Moniker: kernrift
+          ReleaseNotesUrl: https://github.com/Pantelis23/KernRift/releases/tag/$VERSION
+          ManifestType: defaultLocale
+          ManifestVersion: 1.6.0
+          EOF
+
+          git config --global user.email "release-bot@users.noreply.github.com"
+          git config --global user.name  "kernrift-release-bot"
+
+          USER=$(gh api user --jq .login)
+          # Ensure the fork exists under the token holder's account.
+          gh repo fork microsoft/winget-pkgs --clone=false --remote=false >/dev/null 2>&1 || true
+
+          cd "$WORK"
+          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/$USER/winget-pkgs.git" fork
+          cd fork
+          git remote add upstream https://github.com/microsoft/winget-pkgs.git
+          git fetch --depth 1 upstream master
+          git reset --hard upstream/master
+
+          BRANCH="Pantelis23.KernRift-$VERSION"
+          git checkout -b "$BRANCH"
+          mkdir -p "manifests/p/Pantelis23/KernRift/$VERSION"
+          cp "$MDIR"/*.yaml "manifests/p/Pantelis23/KernRift/$VERSION/"
+          git add "manifests/p/Pantelis23/KernRift/$VERSION"
+          git commit -m "New version: Pantelis23.KernRift $VERSION"
+          git push --force-with-lease origin "$BRANCH"
+
+          gh pr create \
+            --repo microsoft/winget-pkgs \
+            --title "New version: Pantelis23.KernRift $VERSION" \
+            --body  "Automated submission. Zip installer with NestedInstallerFiles so both \`krc\` and \`kr\` land in PATH after one \`winget install\`." \
+            --head  "$USER:$BRANCH" \
+            --base  master
