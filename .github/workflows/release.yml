@@ -179,23 +179,33 @@ jobs:
           ManifestVersion: 1.6.0
           EOF
 
+          # NestedInstallerType / NestedInstallerFiles must be nested inside
+          # each Installers entry (the 1.6.0 schema places them per-installer
+          # since different architectures can ship different archive layouts).
+          # Matches the pattern used by UPX.UPX and other zip+portable packages.
           cat > "$MDIR/Pantelis23.KernRift.installer.yaml" <<EOF
           # yaml-language-server: \$schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
           PackageIdentifier: Pantelis23.KernRift
           PackageVersion: $VERSION
           InstallerType: zip
-          NestedInstallerType: portable
-          NestedInstallerFiles:
-            - RelativeFilePath: krc.exe
-              PortableCommandAlias: krc
-            - RelativeFilePath: kr.exe
-              PortableCommandAlias: kr
           ReleaseDate: $TODAY
           Installers:
             - Architecture: x64
+              NestedInstallerType: portable
+              NestedInstallerFiles:
+                - RelativeFilePath: krc.exe
+                  PortableCommandAlias: krc
+                - RelativeFilePath: kr.exe
+                  PortableCommandAlias: kr
               InstallerUrl: https://github.com/Pantelis23/KernRift/releases/download/$VERSION/krc-windows-x86_64.zip
               InstallerSha256: $X64_SHA
             - Architecture: arm64
+              NestedInstallerType: portable
+              NestedInstallerFiles:
+                - RelativeFilePath: krc.exe
+                  PortableCommandAlias: krc
+                - RelativeFilePath: kr.exe
+                  PortableCommandAlias: kr
               InstallerUrl: https://github.com/Pantelis23/KernRift/releases/download/$VERSION/krc-windows-arm64.zip
               InstallerSha256: $ARM64_SHA
           ManifestType: installer
