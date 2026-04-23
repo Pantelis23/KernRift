@@ -171,52 +171,54 @@ jobs:
           mkdir -p "$MDIR"
 
           cat > "$MDIR/Pantelis23.KernRift.yaml" <<EOF
-          # yaml-language-server: \$schema=https://aka.ms/winget-manifest.version.1.6.0.schema.json
+          # yaml-language-server: \$schema=https://aka.ms/winget-manifest.version.1.10.0.schema.json
           PackageIdentifier: Pantelis23.KernRift
           PackageVersion: $VERSION
           DefaultLocale: en-US
           ManifestType: version
-          ManifestVersion: 1.6.0
+          ManifestVersion: 1.10.0
           EOF
 
-          # NestedInstallerType / NestedInstallerFiles must be nested inside
-          # each Installers entry (the 1.6.0 schema places them per-installer
-          # since different architectures can ship different archive layouts).
-          # Matches the pattern used by UPX.UPX and other zip+portable packages.
+          # NestedInstallerType lives at the TOP LEVEL (it's the same
+          # across architectures), and only NestedInstallerFiles varies
+          # per-Installer entry. Matches UPX.UPX 5.0.1 and every other
+          # zip+portable package currently accepted by winget-pkgs at
+          # ManifestVersion 1.10.0.
           cat > "$MDIR/Pantelis23.KernRift.installer.yaml" <<EOF
-          # yaml-language-server: \$schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+          # yaml-language-server: \$schema=https://aka.ms/winget-manifest.installer.1.10.0.schema.json
           PackageIdentifier: Pantelis23.KernRift
           PackageVersion: $VERSION
           InstallerType: zip
+          NestedInstallerType: portable
+          FileExtensions:
+          - exe
           ReleaseDate: $TODAY
           Installers:
-            - Architecture: x64
-              NestedInstallerType: portable
-              NestedInstallerFiles:
-                - RelativeFilePath: krc.exe
-                  PortableCommandAlias: krc
-                - RelativeFilePath: kr.exe
-                  PortableCommandAlias: kr
-              InstallerUrl: https://github.com/Pantelis23/KernRift/releases/download/$VERSION/krc-windows-x86_64.zip
-              InstallerSha256: $X64_SHA
-            - Architecture: arm64
-              NestedInstallerType: portable
-              NestedInstallerFiles:
-                - RelativeFilePath: krc.exe
-                  PortableCommandAlias: krc
-                - RelativeFilePath: kr.exe
-                  PortableCommandAlias: kr
-              InstallerUrl: https://github.com/Pantelis23/KernRift/releases/download/$VERSION/krc-windows-arm64.zip
-              InstallerSha256: $ARM64_SHA
+          - Architecture: x64
+            NestedInstallerFiles:
+            - RelativeFilePath: krc.exe
+              PortableCommandAlias: krc
+            - RelativeFilePath: kr.exe
+              PortableCommandAlias: kr
+            InstallerUrl: https://github.com/Pantelis23/KernRift/releases/download/$VERSION/krc-windows-x86_64.zip
+            InstallerSha256: $X64_SHA
+          - Architecture: arm64
+            NestedInstallerFiles:
+            - RelativeFilePath: krc.exe
+              PortableCommandAlias: krc
+            - RelativeFilePath: kr.exe
+              PortableCommandAlias: kr
+            InstallerUrl: https://github.com/Pantelis23/KernRift/releases/download/$VERSION/krc-windows-arm64.zip
+            InstallerSha256: $ARM64_SHA
           ManifestType: installer
-          ManifestVersion: 1.6.0
+          ManifestVersion: 1.10.0
           EOF
 
           # Locale metadata — matches the set of fields the winget-pkgs bot
           # flags as "Manifest-Metadata-Consistency" inconsistencies when
           # comparing against the previously-published version. Keep parity.
           cat > "$MDIR/Pantelis23.KernRift.locale.en-US.yaml" <<EOF
-          # yaml-language-server: \$schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+          # yaml-language-server: \$schema=https://aka.ms/winget-manifest.defaultLocale.1.10.0.schema.json
           PackageIdentifier: Pantelis23.KernRift
           PackageVersion: $VERSION
           PackageLocale: en-US
@@ -246,7 +248,7 @@ jobs:
           ReleaseNotesUrl: https://github.com/Pantelis23/KernRift/releases/tag/$VERSION
           InstallationNotes: The install directory is added to PATH automatically by winget (portable nested installer). Run 'krc --version' and 'kr --version' to verify.
           ManifestType: defaultLocale
-          ManifestVersion: 1.6.0
+          ManifestVersion: 1.10.0
           EOF
 
           git config --global user.email "release-bot@users.noreply.github.com"
