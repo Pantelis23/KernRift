@@ -1215,6 +1215,12 @@ fn parse_stmt() -> uint64 {
         if type_kind == 81 || type_kind == 85 { type_size = 2 }
         if type_kind == 82 || type_kind == 86 { type_size = 4 }
         if type_kind == 83 || type_kind == 87 { type_size = 8 }
+        // Float casts: KwFloat16=94 (size 2), KwFloat32=95 (size 4), KwFloat64=96 (size 8).
+        // Without these, `unsafe { *(p as f32) = v }` fell through to the u64
+        // default and emitted an 8-byte store, clobbering addr+4..+7.
+        if type_kind == 94 { type_size = 2 }
+        if type_kind == 95 { type_size = 4 }
+        if type_kind == 96 { type_size = 8 }
         expect(11)
         if cur_kind() == 20 {
             advance_tok()
@@ -1266,6 +1272,12 @@ fn parse_stmt() -> uint64 {
         if type_kind == 81 || type_kind == 85 { type_size = 2 }
         if type_kind == 82 || type_kind == 86 { type_size = 4 }
         if type_kind == 83 || type_kind == 87 { type_size = 8 }
+        // Float casts: KwFloat16=94 (size 2), KwFloat32=95 (size 4), KwFloat64=96 (size 8).
+        // Without these, `unsafe { *(p as f32) = v }` fell through to the u64
+        // default and emitted an 8-byte store, clobbering addr+4..+7.
+        if type_kind == 94 { type_size = 2 }
+        if type_kind == 95 { type_size = 4 }
+        if type_kind == 96 { type_size = 8 }
         expect(11)
 
         if cur_kind() == 20 {
