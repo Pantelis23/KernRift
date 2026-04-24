@@ -192,6 +192,9 @@ jobs:
           NestedInstallerType: portable
           FileExtensions:
           - exe
+          Commands:
+          - krc
+          - kr
           ReleaseDate: $TODAY
           Installers:
           - Architecture: x64
