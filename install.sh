@@ -89,21 +89,15 @@ chmod +x "$INSTALL_DIR/krc"
 
 echo "Downloading $KR_ASSET..."
 if [ "$IS_TERMUX" = "1" ]; then
-    # Termux: SELinux blocks raw execve from PIE binaries.
-    # Install kr-bin (the real binary) and kr (a shell wrapper).
+    # Termux on Android 14+ denies raw execve of files in
+    # /data/data/com.termux/. The runner extracts the slice and exits 120;
+    # the canonical packaging/kr.sh shell wrapper catches that and re-execs
+    # ./kr-exec from the user's shell context (where Termux's libc
+    # LD_PRELOAD makes execve succeed). Install both kr-bin and kr.
     curl -sL -o "$INSTALL_DIR/kr-bin" "$BASE/$KR_ASSET"
     chmod +x "$INSTALL_DIR/kr-bin"
-    cat > "$INSTALL_DIR/kr" << 'KRWRAP'
-#!/data/data/com.termux/files/usr/bin/sh
-kr-bin "$@"
-rc=$?
-if [ $rc -eq 120 ]; then
-    ./kr-exec
-    rc=$?
-    rm -f ./kr-exec
-fi
-exit $rc
-KRWRAP
+    curl -sL -o "$INSTALL_DIR/kr" \
+        "https://raw.githubusercontent.com/$REPO/main/packaging/kr.sh"
     chmod +x "$INSTALL_DIR/kr"
 else
     curl -sL -o "$INSTALL_DIR/kr" "$BASE/$KR_ASSET"
