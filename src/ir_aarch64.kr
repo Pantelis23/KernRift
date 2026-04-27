@@ -800,6 +800,11 @@ fn ir_emit_arm64_insn(uint64 ii) {
 
     // ----- IR_RET_VOID (43): branch to epilogue -----
     if op == 43 {
+        // Default the return register to 0 so `fn main() { ... }` (void
+        // main) exits with status 0 instead of whatever was last in x0
+        // when the auto-inserted exit syscall fires. Function-local void
+        // returns are unaffected: caller doesn't read x0.
+        emit_a64_mov_imm(0, 0)
         uint64 rfp = ir_ret_fixups + ir_ret_fixup_count * 4
         uint32 rpo = out_len
         unsafe { *(rfp as uint32) = rpo }
@@ -2730,16 +2735,15 @@ fn ir_emit_arm64_function(uint64 fn_node) {
 
     // 11. Epilogue (skip for @naked)
     if is_naked == 0 {
-        // For main(): auto-insert exit(0) syscall. Without this, returning
-        // from main() jumps to an undefined LR -> segfault.
+        // For main(): auto-insert exit syscall. Without this, returning
+        // from main() jumps to an undefined LR -> segfault. Use the
+        // current x0 as the exit code: IR_RET writes the return value
+        // there, IR_RET_VOID writes zero — so `return N` from main
+        // produces exit status N.
         if tok_matches(fn_name_tok, "main", 4) != 0 && freestanding == 0 {
             if target_os == 2 {
-                // Windows: ExitProcess(0) via IAT slot 0
-                emit_a64_mov_imm(0, 0)
                 emit_a64_win_call_iat(0)
             } else {
-                // Linux/macOS/Android: exit(0)
-                emit_a64_mov_imm(0, 0)
                 if target_os == 1 { emit_a64_syscall_nr(1) } else { emit_a64_syscall_nr(93) }
                 emit_a64_svc()
             }

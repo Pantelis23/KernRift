@@ -5172,6 +5172,12 @@ fn gen_function_a64(uint64 fn_node) {
         }
     }
 
+    // Default x0 to 0 at start of main's body so void main / implicit
+    // fall-through exits with status 0. Explicit `return N` overwrites.
+    if tok_matches(wnt_a64, "main", 4) != 0 && freestanding == 0 {
+        emit_a64_mov_imm(0, 0)
+    }
+
     // Clear per-function slice table
     slice_len_count = 0
 
@@ -5401,11 +5407,12 @@ fn gen_function_a64(uint64 fn_node) {
         return
     }
 
-    // For main: auto-insert exit(0) so programs don't segfault on return
-    // Skip when in freestanding mode
+    // For main: auto-insert exit syscall so programs don't segfault on
+    // return. The exit code comes from x0 — explicit `return N` in main
+    // leaves N there; the implicit-zero default is set at the start of
+    // main's body. Skip in freestanding mode.
     uint64 wnt_ep = name_tok
     if tok_matches(wnt_ep, "main", 4) != 0 && freestanding == 0 {
-        emit_a64_mov_imm(0, 0)
         if target_os == 2 {
             emit_a64_win_call_iat(0)
         } else {

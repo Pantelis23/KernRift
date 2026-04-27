@@ -9200,6 +9200,13 @@ fn gen_function(uint64 fn_node) {
         }
     }
 
+    // Default rax to 0 at start of main's body so void main / implicit
+    // fall-through exits with status 0. Explicit `return N` overwrites.
+    if tok_matches(wnt, "main", 4) != 0 && freestanding == 0 {
+        // xor eax, eax
+        emit_byte(0x31); emit_byte(0xC0)
+    }
+
     // Clear per-function slice table
     slice_len_count = 0
 
@@ -9875,17 +9882,19 @@ fn gen_function(uint64 fn_node) {
         write(2, "'\n", 2)
     }
 
-    // For main: auto-insert exit(0) so programs don't segfault on return
-    // Skip when in freestanding mode
+    // For main: auto-insert exit syscall so programs don't segfault on
+    // return. The exit code comes from rax — explicit `return N` in
+    // main leaves N there; the implicit-zero default is set at the
+    // start of main's body. Skip in freestanding mode.
     uint64 wnt_ep = name_tok
     if tok_matches(wnt_ep, "main", 4) != 0 && freestanding == 0 {
-        // mov edi, 0 (exit code)
-        emit_mov_rax_imm(0)
         if target_os == 2 {
+            // Windows: ExitProcess(rax) — DWORD arg in rcx
             emit_mov_rcx_rax()
             emit_win_alloc_stack(0x20)
             emit_win_call_iat(0)
         } else {
+            // Linux/macOS: exit(rax) — copy rax→rdi, then set syscall nr
             emit_mov_rdi_rax()
             if target_os == 1 { emit_mov_rax_imm(0x2000001) } else { emit_mov_rax_imm(231) }
             emit_byte(0x0F); emit_byte(0x05)

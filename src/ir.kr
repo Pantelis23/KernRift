@@ -6557,7 +6557,10 @@ fn ir_emit_x86_insn(uint64 ii) {
     }
 
     if op == 43 {
-        // IR_RET_VOID: jmp to epilogue
+        // IR_RET_VOID: zero rax (default exit code for void main) then
+        // jmp to epilogue. Function-local void returns are unaffected:
+        // the caller doesn't read rax.
+        emit_byte(0x48); emit_byte(0x31); emit_byte(0xC0)   // xor rax, rax
         emit_byte(0xE9)
         uint64 rfp = ir_ret_fixups + ir_ret_fixup_count * 4
         uint32 rpo = out_len
@@ -9504,17 +9507,22 @@ fn ir_emit_x86_function(uint64 fn_node) {
 
     // 10. Epilogue (skip for @naked functions)
     if is_naked == 0 {
-        // For main(): auto-insert exit(0) so programs without explicit exit()
-        // don't segfault on return. Matches the legacy codegen behavior.
+        // For main(): auto-insert exit syscall so programs without
+        // explicit exit() don't segfault on return. The exit status
+        // comes from rax — IR_RET writes the return value there,
+        // IR_RET_VOID zeros it — so `fn main() -> int32 { return N }`
+        // produces exit status N as expected.
         if tok_matches(fn_name_tok, "main", 4) != 0 && freestanding == 0 {
             if target_os == 2 {
-                // Windows: ExitProcess(0) via IAT slot 0
-                emit_byte(0xB9); emit_u32_le(0)
+                // Windows: ExitProcess(rax) via IAT slot 0
+                // mov ecx, eax (32-bit DWORD ABI argument is in ecx)
+                emit_byte(0x89); emit_byte(0xC1)
                 emit_win_alloc_stack(0x20)
                 emit_win_call_iat(0)
             } else {
-                // Linux/macOS/Android: exit(0) syscall
-                emit_byte(0xBF); emit_u32_le(0)
+                // Linux/macOS/Android: exit(rax) syscall — copy rax→rdi
+                // mov rdi, rax: 48 89 C7
+                emit_byte(0x48); emit_byte(0x89); emit_byte(0xC7)
                 if target_os == 1 { emit_byte(0xB8); emit_u32_le(0x2000001) }
                 else { emit_byte(0xB8); emit_u32_le(231) }
                 emit_byte(0x0F); emit_byte(0x05)

@@ -2,6 +2,23 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## v2.8.20 — 2026-04-28
+
+### Fixed
+- **`return N` from `main` was silently ignored.** The auto-inserted
+  exit syscall at the end of `main` clobbered the return register
+  (`rax` on x86_64, `x0` on aarch64) with a hardcoded `0` immediately
+  before the syscall — so `fn main() -> int32 { return 42 }` exited
+  with status 0, not 42, on every backend (legacy and IR, both
+  arches). Found while debugging `while 1 == 1 { ... if cond { return
+  42 } }` which exhibited the same symptom for the obvious reason.
+  Existing examples like `hello.kr` were unaffected because they call
+  `exit(0)` explicitly. Fixed by removing the clobber and instead
+  zeroing the return register at the start of `main`'s body (legacy
+  backends) / inside `IR_RET_VOID` (IR backends), so the
+  implicit-zero default is preserved for `fn main() { ... }` while
+  explicit `return N` flows through to the exit status as expected.
+
 ## v2.8.19 — 2026-04-28
 
 ### Fixed
