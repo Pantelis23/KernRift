@@ -138,6 +138,9 @@ static uint64 IR_ICACHE_INV = 128   // I-cache invalidate by VA (ARM64 IC IVAU; 
 static uint64 IR_DSB = 129          // data-sync barrier (ARM64 DSB SY; x86 MFENCE)
 static uint64 IR_DMB = 130          // data-memory barrier (ARM64 DMB ISH; x86 MFENCE)
 static uint64 IR_ARR_CHECK = 131    // bounds check: trap if s1_v (idx) >= imm (count)
+static uint64 IR_SDIV = 132         // dest = src1 / src2 (signed): cqo + idiv on x86, sdiv on a64
+static uint64 IR_SMOD = 133         // dest = src1 % src2 (signed): cqo + idiv (rdx) on x86, sdiv+msub on a64
+static uint64 IR_SAR = 134          // dest = src1 >> src2 (arithmetic): SAR (modrm /7) on x86, ASR on a64
 
 // ---------------------------------------------------------------------------
 // Instruction arena
@@ -176,6 +179,13 @@ static uint64 ir_vreg_next = 0      // next vreg number to allocate
 // Float-kind per vreg: 0=int, 1=f64, 2=f32
 static uint64 ir_vreg_fkind_buf = 0  // array of uint8, indexed by vreg
 static uint64 ir_vreg_fkind_cap = 0
+
+// Signed-int flag per vreg: 1 = declared as int8/16/32/64 (signed),
+// 0 = unsigned/unknown. Compare lowering reads this to choose
+// IR_SCMP_* instead of unsigned IR_CMP_* — without it, `int64 x < 0`
+// always reads as huge-positive on x86 setb / aarch64 LO.
+static uint64 ir_vreg_signed_buf = 0
+static uint64 ir_vreg_signed_cap = 0
 
 // Per-vreg use count (saturates at 255). Populated in ir_compute_use_count.
 // Used by the CMP+JCC fusion peephole to prove a cmp result is single-use
@@ -223,6 +233,12 @@ fn ir_init() {
     // so stale bytes from a prior function would mislabel a vreg as float.
     memset(ir_vreg_fkind_buf, 0, ir_vreg_fkind_cap)
 
+    if ir_vreg_signed_buf == 0 {
+        ir_vreg_signed_cap = 65536
+        ir_vreg_signed_buf = alloc(ir_vreg_signed_cap)
+    }
+    memset(ir_vreg_signed_buf, 0, ir_vreg_signed_cap)
+
     if ir_use_count_buf == 0 {
         ir_use_count_cap = 65536
         ir_use_count_buf = alloc(ir_use_count_cap)
@@ -253,6 +269,9 @@ fn ir_reset() {
     ir_loop_depth = 0
     if ir_vreg_fkind_buf != 0 {
         memset(ir_vreg_fkind_buf, 0, ir_vreg_fkind_cap)
+    }
+    if ir_vreg_signed_buf != 0 {
+        memset(ir_vreg_signed_buf, 0, ir_vreg_signed_cap)
     }
     if ir_use_count_buf != 0 {
         memset(ir_use_count_buf, 0, ir_use_count_cap)
@@ -289,6 +308,24 @@ fn ir_vreg_fkind_set(uint64 vreg, uint64 fk) {
 fn ir_vreg_fkind_get(uint64 vreg) -> uint64 {
     if vreg < ir_vreg_fkind_cap {
         uint64 p = ir_vreg_fkind_buf + vreg
+        uint64 b = 0
+        unsafe { *(p as uint8) -> b }
+        return b
+    }
+    return 0
+}
+
+fn ir_vreg_signed_set(uint64 vreg, uint64 s) {
+    if vreg < ir_vreg_signed_cap {
+        uint64 p = ir_vreg_signed_buf + vreg
+        uint8 b = s
+        unsafe { *(p as uint8) = b }
+    }
+}
+
+fn ir_vreg_signed_get(uint64 vreg) -> uint64 {
+    if vreg < ir_vreg_signed_cap {
+        uint64 p = ir_vreg_signed_buf + vreg
         uint64 b = 0
         unsafe { *(p as uint8) -> b }
         return b
@@ -1115,7 +1152,24 @@ fn ir_lower_expr(uint64 node) -> uint64 {
         // Check if LHS is float-typed
         uint64 lhs_fk = ir_vreg_fkind_get(lhs)
         if lhs_fk != 0 {
-            // Float arithmetic
+            // Float arithmetic: operands must share an fkind. ADDSS/SUBSS/
+            // MULSS/DIVSS read only the low 32 bits of XMM, so an f64
+            // literal like 1.0 (whose low 32 bits are 0x00000000) silently
+            // becomes 0.0 if paired with an f32 var. Widen the narrower
+            // side to f64 — exact mirror of the FCMP fix below.
+            uint64 rhs_fk = ir_vreg_fkind_get(rhs)
+            if lhs_fk == 2 && rhs_fk == 1 {
+                uint64 lhs_w = ir_new_vreg()
+                ir_emit(IR_F32TOF64, lhs_w, lhs, 0, 0, ir_current_bb)
+                ir_vreg_fkind_set(lhs_w, 1)
+                lhs = lhs_w
+                lhs_fk = 1
+            } else if lhs_fk == 1 && rhs_fk == 2 {
+                uint64 rhs_w = ir_new_vreg()
+                ir_emit(IR_F32TOF64, rhs_w, rhs, 0, 0, ir_current_bb)
+                ir_vreg_fkind_set(rhs_w, 1)
+                rhs = rhs_w
+            }
             uint64 ir_op = IR_FADD
             if op_kind == 30 || op_kind == 45 { ir_op = IR_FADD }   // + +=
             if op_kind == 31 || op_kind == 46 { ir_op = IR_FSUB }   // - -=
@@ -1125,18 +1179,43 @@ fn ir_lower_expr(uint64 node) -> uint64 {
             ir_vreg_fkind_set(dest, lhs_fk)
             return dest
         }
+        // Signed-aware DIV/MOD. Unsigned div on a negative two's-complement
+        // bit pattern returns a huge positive — wrong for `int64 a = -10;
+        // a / 3` which should be -3. Pick IR_SDIV/IR_SMOD if either side
+        // carries the signed flag. ADD/SUB/MUL produce identical bits in
+        // two's complement, so they don't need a signed variant.
+        uint64 bin_lhs_signed = ir_vreg_signed_get(lhs)
+        uint64 bin_rhs_signed = ir_vreg_signed_get(rhs)
+        uint64 bin_use_signed = 0
+        if bin_lhs_signed != 0 { bin_use_signed = 1 }
+        if bin_rhs_signed != 0 { bin_use_signed = 1 }
         uint64 ir_op = IR_ADD
         if op_kind == 30 || op_kind == 45 { ir_op = IR_ADD }     // + +=
         if op_kind == 31 || op_kind == 46 { ir_op = IR_SUB }     // - -=
         if op_kind == 22 || op_kind == 47 { ir_op = IR_MUL }     // * *=
-        if op_kind == 32 || op_kind == 48 { ir_op = IR_DIV }     // / /=
-        if op_kind == 33 || op_kind == 49 { ir_op = IR_MOD }     // % %=
+        if op_kind == 32 || op_kind == 48 {
+            if bin_use_signed != 0 { ir_op = IR_SDIV } else { ir_op = IR_DIV }
+        }
+        if op_kind == 33 || op_kind == 49 {
+            if bin_use_signed != 0 { ir_op = IR_SMOD } else { ir_op = IR_MOD }
+        }
         if op_kind == 23 || op_kind == 50 { ir_op = IR_AND }     // & &=
         if op_kind == 24 || op_kind == 51 { ir_op = IR_OR }      // | |=
         if op_kind == 25 || op_kind == 52 { ir_op = IR_XOR }     // ^ ^=
         if op_kind == 43 || op_kind == 53 { ir_op = IR_SHL }     // << <<=
-        if op_kind == 44 || op_kind == 54 { ir_op = IR_SHR }     // >> >>=
+        if op_kind == 44 || op_kind == 54 {
+            // Arithmetic vs logical right shift: signed → SAR (sign-extends),
+            // unsigned → SHR (zero-fills). `int64 a = -8; a >> 1` should yield
+            // -4, not 0x7FFFFFFFFFFFFFFC.
+            if bin_use_signed != 0 { ir_op = IR_SAR } else { ir_op = IR_SHR }
+        }
         ir_emit(ir_op, dest, lhs, rhs, 0, ir_current_bb)
+        // ADD/SUB/MUL produce identical bits in two's complement, so the
+        // signed flag is just metadata — propagate it so subsequent
+        // compares like `(x - 1) < 0` still pick SCMP.
+        if ir_vreg_signed_get(lhs) != 0 || ir_vreg_signed_get(rhs) != 0 {
+            ir_vreg_signed_set(dest, 1)
+        }
         return dest
     }
 
@@ -1221,13 +1300,29 @@ fn ir_lower_expr(uint64 node) -> uint64 {
             ir_emit(ir_op, dest, lhs, rhs, cmp_fk, ir_current_bb)
             return dest
         }
+        // Signed-aware ordering compares. Equality stays bitwise (signedness
+        // doesn't change == / !=). For <, <=, >, >=, if either side carries
+        // the signed flag, emit IR_SCMP_* — otherwise unsigned IR_CMP_*.
+        uint64 lhs_signed = ir_vreg_signed_get(lhs)
+        uint64 rhs_signed = ir_vreg_signed_get(rhs)
+        uint64 use_signed = 0
+        if lhs_signed != 0 { use_signed = 1 }
+        if rhs_signed != 0 { use_signed = 1 }
         uint64 ir_op = IR_CMP_EQ
         if op_kind == 35 { ir_op = IR_CMP_EQ }  // ==
         if op_kind == 36 { ir_op = IR_CMP_NE }  // !=
-        if op_kind == 37 { ir_op = IR_CMP_LT }  // <
-        if op_kind == 38 { ir_op = IR_CMP_LE }  // <=
-        if op_kind == 39 { ir_op = IR_CMP_GT }  // >
-        if op_kind == 40 { ir_op = IR_CMP_GE }  // >=
+        if op_kind == 37 {
+            if use_signed != 0 { ir_op = IR_SCMP_LT } else { ir_op = IR_CMP_LT }
+        }
+        if op_kind == 38 {
+            if use_signed != 0 { ir_op = IR_SCMP_LE } else { ir_op = IR_CMP_LE }
+        }
+        if op_kind == 39 {
+            if use_signed != 0 { ir_op = IR_SCMP_GT } else { ir_op = IR_CMP_GT }
+        }
+        if op_kind == 40 {
+            if use_signed != 0 { ir_op = IR_SCMP_GE } else { ir_op = IR_CMP_GE }
+        }
         ir_emit(ir_op, dest, lhs, rhs, 0, ir_current_bb)
         return dest
     }
@@ -2231,6 +2326,9 @@ fn ir_lower_expr(uint64 node) -> uint64 {
             uint64 dest = ir_new_vreg()
             ir_emit(IR_FTOI, dest, src_v, 0, 0, ir_current_bb)
             ir_vreg_fkind_set(dest, 0)
+            // cvttsd2si is signed truncation, so the result is logically
+            // a signed int — tag it so `if f64_to_int(x) < 0` works.
+            ir_vreg_signed_set(dest, 1)
             return dest
         }
 
@@ -2959,6 +3057,13 @@ fn ir_lower_stmt(uint64 node) {
         if vd_type_kind == 95 { vd_fk = 2 }
         if vd_type_kind == 98 { vd_fk = 3 }
         if vd_type_kind == 99 { vd_fk = 4 }
+        // int8..int64 (lexer kinds 84..87) are signed. Used by Compare
+        // lowering to pick IR_SCMP_* over unsigned IR_CMP_*.
+        uint64 vd_signed = 0
+        if vd_type_kind == 84 { vd_signed = 1 }
+        if vd_type_kind == 85 { vd_signed = 1 }
+        if vd_type_kind == 86 { vd_signed = 1 }
+        if vd_type_kind == 87 { vd_signed = 1 }
         if winit != 0 {
             uint64 val = ir_lower_expr(winit)
             uint64 fk_from_val = ir_vreg_fkind_get(val)
@@ -3008,11 +3113,18 @@ fn ir_lower_stmt(uint64 node) {
             } else if fk_from_val != 0 {
                 ir_vreg_fkind_set(fresh_val, fk_from_val)
             }
+            // Carry signed flag from declared type, else inherit from RHS.
+            if vd_signed != 0 {
+                ir_vreg_signed_set(fresh_val, 1)
+            } else if ir_vreg_signed_get(val) != 0 {
+                ir_vreg_signed_set(fresh_val, 1)
+            }
             ir_var_set(name_tok, fresh_val)
         } else {
             uint64 zero = ir_new_vreg()
             ir_emit(IR_CONST, zero, 0, 0, 0, ir_current_bb)
             if vd_fk != 0 { ir_vreg_fkind_set(zero, vd_fk) }
+            if vd_signed != 0 { ir_vreg_signed_set(zero, 1) }
             ir_var_set(name_tok, zero)
         }
         return
@@ -3040,7 +3152,29 @@ fn ir_lower_stmt(uint64 node) {
                     ir_emit(IR_ITOF, f64v, val, 0, 0, ir_current_bb)
                     ir_vreg_fkind_set(f64v, 1)
                     val = f64v
+                    val_fk = 1
                 }
+            }
+            // f64 → f32 narrow on assignment to f32 var (mirrors VarDecl).
+            // Without this, `f32 t = ...; t = a - 1.0` stores f64 bits
+            // into the f32 slot — later cvtss2sd reinterprets them.
+            if lhs_fk == 2 && val_fk == 1 {
+                uint64 f32v = ir_new_vreg()
+                ir_emit(IR_F64TOF32, f32v, val, 0, 0, ir_current_bb)
+                ir_vreg_fkind_set(f32v, 2)
+                val = f32v
+            }
+            // f32 → f64 widen on assignment to f64 var.
+            if lhs_fk == 1 && val_fk == 2 {
+                uint64 f64v = ir_new_vreg()
+                ir_emit(IR_F32TOF64, f64v, val, 0, 0, ir_current_bb)
+                ir_vreg_fkind_set(f64v, 1)
+                val = f64v
+            }
+            // Inherit the LHS local's signed flag onto the rvalue vreg so a
+            // later `int64 x = ...; x = x - 1; if x < 0` still picks SCMP.
+            if ir_vreg_signed_get(local_vreg) != 0 {
+                ir_vreg_signed_set(val, 1)
             }
             ir_var_set(name_tok, val)
             return
@@ -3836,6 +3970,9 @@ fn ir_opcode_name(uint64 op) -> uint64 {
     if op == 129 { return "dsb" }
     if op == 130 { return "dmb" }
     if op == 131 { return "arr_check" }
+    if op == 132 { return "sdiv" }
+    if op == 133 { return "smod" }
+    if op == 134 { return "sar" }
     if op == 120 { return "scmp_lt" }
     if op == 121 { return "scmp_le" }
     if op == 122 { return "scmp_gt" }
@@ -5389,6 +5526,61 @@ fn ir_emit_x86_insn(uint64 ii) {
         return
     }
 
+    if op == 132 {
+        // IR_SDIV: signed 64-bit divide. mov rax, dividend; cqo (sign-extend
+        // rax into rdx:rax); idiv b_reg (REX.W F7 /7). Quotient in rax.
+        uint64 a_reg = ir_resolve_src(s1_v, 0)
+        uint64 b_reg = ir_resolve_src(s2_v, 1)
+        ir_emit_mov_r64_r64(0, a_reg)
+        // cqo: 48 99
+        emit_byte(0x48)
+        emit_byte(0x99)
+        if b_reg == 0 || b_reg == 2 {
+            ir_emit_mov_r64_r64(1, b_reg)
+            b_reg = 1
+        }
+        uint8 sdiv_rex = 0x48
+        if b_reg >= 8 { sdiv_rex = sdiv_rex | 1 }
+        emit_byte(sdiv_rex)
+        emit_byte(0xF7)
+        // /7 = idiv: ModRM = 0xF8 | (reg & 7)
+        uint64 sdiv_modrm = 0xF8 | (b_reg & 7)
+        uint8 sdiv_m = sdiv_modrm
+        emit_byte(sdiv_m)
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, 0)
+        } else {
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 133 {
+        // IR_SMOD: signed 64-bit remainder. cqo + idiv; remainder in rdx.
+        uint64 a_reg = ir_resolve_src(s1_v, 0)
+        uint64 b_reg = ir_resolve_src(s2_v, 1)
+        ir_emit_mov_r64_r64(0, a_reg)
+        emit_byte(0x48)
+        emit_byte(0x99)
+        if b_reg == 0 || b_reg == 2 {
+            ir_emit_mov_r64_r64(1, b_reg)
+            b_reg = 1
+        }
+        uint8 smod_rex = 0x48
+        if b_reg >= 8 { smod_rex = smod_rex | 1 }
+        emit_byte(smod_rex)
+        emit_byte(0xF7)
+        uint64 smod_modrm = 0xF8 | (b_reg & 7)
+        uint8 smod_m = smod_modrm
+        emit_byte(smod_m)
+        if dst_r != 0xFFFFFFFF {
+            ir_emit_mov_r64_r64(dst_r, 2)
+        } else {
+            ir_emit_store_spill(2, dest_v)
+        }
+        return
+    }
+
     if op == 7 {
         // IR_AND (commutative — swap if dst==src2)
         uint64 a_reg = ir_resolve_src(s1_v, 0)
@@ -5517,6 +5709,39 @@ fn ir_emit_x86_insn(uint64 ii) {
             emit_byte(0x48)
             emit_byte(0xD3)
             emit_byte(0xE8)
+            ir_emit_store_spill(0, dest_v)
+        }
+        return
+    }
+
+    if op == 134 {
+        // IR_SAR: arithmetic shift right (sign-extending). Same encoding as
+        // SHR but ModRM /7 (base 0xF8) instead of /5 (base 0xE8).
+        uint64 a_reg = ir_resolve_src(s1_v, 0)
+        uint64 b_reg = ir_resolve_src(s2_v, 1)
+        if b_reg != 1 { ir_emit_mov_r64_r64(1, b_reg) }
+        if dst_r != 0xFFFFFFFF {
+            if dst_r == 1 && a_reg != 1 {
+                ir_emit_mov_r64_r64(0, a_reg)
+                emit_byte(0x48)
+                emit_byte(0xD3)
+                emit_byte(0xF8)
+                ir_emit_mov_r64_r64(dst_r, 0)
+            } else {
+                ir_emit_mov_r64_r64(dst_r, a_reg)
+                uint8 sar_rex = 0x48
+                if dst_r >= 8 { sar_rex = sar_rex | 1 }
+                emit_byte(sar_rex)
+                emit_byte(0xD3)
+                uint64 sar_modrm = 0xF8 | (dst_r & 7)
+                uint8 sar_m = sar_modrm
+                emit_byte(sar_m)
+            }
+        } else {
+            ir_emit_mov_r64_r64(0, a_reg)
+            emit_byte(0x48)
+            emit_byte(0xD3)
+            emit_byte(0xF8)
             ir_emit_store_spill(0, dest_v)
         }
         return

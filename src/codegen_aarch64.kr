@@ -299,9 +299,21 @@ fn emit_a64_lsr(uint64 rd, uint64 rn, uint64 rm) {
     emit_a64(insn)
 }
 
+// ASR Xd, Xn, Xm (alias for ASRV) — arithmetic (sign-extending) shift right.
+fn emit_a64_asr(uint64 rd, uint64 rn, uint64 rm) {
+    uint64 insn = 0x9AC02800 | (rm << 16) | (rn << 5) | rd
+    emit_a64(insn)
+}
+
 // UDIV Xd, Xn, Xm
 fn emit_a64_udiv(uint64 rd, uint64 rn, uint64 rm) {
     uint64 insn = 0x9AC00800 | (rm << 16) | (rn << 5) | rd
+    emit_a64(insn)
+}
+
+// SDIV Xd, Xn, Xm (signed). Same encoding as UDIV with bit 10 set.
+fn emit_a64_sdiv(uint64 rd, uint64 rn, uint64 rm) {
+    uint64 insn = 0x9AC00C00 | (rm << 16) | (rn << 5) | rd
     emit_a64(insn)
 }
 

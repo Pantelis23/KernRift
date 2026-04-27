@@ -2,6 +2,70 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## v2.8.19 — 2026-04-28
+
+### Fixed
+- **Termux on Android 14+ couldn't run `.krbo` fat binaries.** Three
+  bugs stacked. (1) Termux's exec wrapper duplicates `argv[0]` and
+  `argv[1]` (both = path-to-self), but the runner's linker-shift
+  detection only matched `/system/bin/linker64` and Android's apex
+  linker — so `--version` got parsed as a `.krbo` path, the runner
+  fell through to file-open + exec of garbage data, and SIGBUS'd on
+  the corrupted binary. The detection now also fires when
+  `argv[0] == argv[1]` (a pattern no normal shell invocation can
+  reproduce). (2) `runner.kr` references `filter_aarch64_bcj` and
+  `filter_x86_64_bcj` from `bcj.kr`, but the source files weren't
+  concatenated before compile when building the runner standalone, so
+  the generated binary had unresolved BCJ calls. The "exec" of the
+  undefined function landed somewhere arbitrary and silently corrupted
+  every extracted slice (entry-point bytes clobbered → SIGBUS at
+  startup). New `kr-runner` Make target concatenates the two
+  explicitly. (3) Even with a correctly-extracted slice, raw `execve`
+  from the runner's app SELinux context fails with `EACCES`: Termux's
+  libc wraps `execve` via `LD_PRELOAD`, but our `svc 0` syscall
+  bypasses the wrapper. Tested `execve`, `execveat(AT_FDCWD)`, and
+  `execve` of bash — all denied. Solution: `kr` is now a small shell
+  wrapper (`packaging/kr.sh`) that catches the runner's exit-120
+  ("extract succeeded, exec was denied") and re-execs `./kr-exec`
+  from its own shell context where `LD_PRELOAD` is engaged. Verified
+  on Z Fold 5 / Android 16 / Termux: `kr program.krbo` now prints the
+  program's output and exits 0.
+- **Mixed f32/f64 arithmetic in `BinOp` and `Assign` paths.** When the
+  two sides of a float op had different `fkind`s, codegen emitted
+  `ADDSS/SUBSS/MULSS/DIVSS` against an f64 literal still in 64-bit
+  XMM layout — the f32 instruction reads only the low 32 bits, which
+  are `0x00000000` for round f64 values like `1.0`/`2.0`/`0.5`, so
+  `a + 1.0`, `a - 1.0`, `a * 2.0` quietly produced 0 / a / +Inf for
+  f32 vars. Now the narrower side is widened to f64 in float arith,
+  matching the existing FCMP fix; the assign path round-trips
+  `f32 t = ...; t = a - 1.0` via `F64TOF32` / `F32TOF64`.
+- **Signed integer comparisons.** `int64 var < 0` always evaluated
+  false (and the dual `>= 0` always true) because compare lowering
+  unconditionally emitted `IR_CMP_LT` etc, which codegen rendered as
+  unsigned `setb`/`setbe`/`seta`/`setae` on x86 (LO/LS/HI/HS on
+  aarch64). Heavy infrastructure was already there — `IR_SCMP_*`
+  opcodes wired through both backends, fused-cmp peephole maps,
+  `signed_lt`/`le`/`gt`/`ge` builtins as escape hatches — but the
+  frontend never reached them. Added a parallel byte-array
+  `ir_vreg_signed_buf` (mirroring `ir_vreg_fkind_buf`), tagged from
+  `int8`/`16`/`32`/`64` declarations, propagated through Assign and
+  the int path of BinOp, and let the f64-truncating `f64_to_int`
+  builtin emit it (cvttsd2si is signed). `uint*` stays unsigned, so
+  pointer math comparing to `0xFFFFFFFFFFFFF000` is untouched. The
+  legacy backend has no per-vreg metadata, so signedness is re-derived
+  from the AST via `legacy_node_is_signed` (Ident → declared type;
+  BinOp/UnaryNeg/Call recursing).
+- **Signed `/`, `%`, `>>` for negative two's-complement values.**
+  After the compare fix, `int64 a = -10; a / 3` still returned
+  `(2^64 - 10) / 3` as unsigned because `IR_DIV` codegen always
+  emitted `xor rdx, rdx; div r/m64`, and `>>` always emitted `shr`.
+  Added `IR_SDIV = 132` (`mov rax, _; cqo; idiv` on x86; `sdiv` on
+  aarch64), `IR_SMOD = 133` (the same plus `msub`), `IR_SAR = 134`
+  (ModRM `/7` on x86; `asr` on aarch64). BinOp lowering picks the
+  signed variant when either operand carries the signed flag from
+  the previous fix. Mirrored in the legacy backend with inline
+  `cqo + idiv` for div/mod and ModRM `0xF8` vs `0xE8` for SAR/SHR.
+
 ## v2.8.14 — 2026-04-19
 
 ### Fixed

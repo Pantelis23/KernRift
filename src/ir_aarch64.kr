@@ -496,6 +496,51 @@ fn ir_emit_arm64_insn(uint64 ii) {
         return
     }
 
+    // ----- IR_SDIV (132): signed divide -----
+    if op == 132 {
+        uint64 a_reg = ir_a64_resolve_src(s1_v, 9)
+        uint64 b_reg = ir_a64_resolve_src(s2_v, 10)
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        if debug_mode != 0 {
+            uint64 dz_cbnz = out_len
+            emit_a64(0xB5000000 | (b_reg & 0x1F))
+            emit_a64_mov_imm(0, 1)
+            emit_a64_mov_imm(8, 93)
+            emit_a64_svc()
+            uint64 dz_delta = (out_len - dz_cbnz) / 4
+            patch_u32(dz_cbnz, 0xB5000000 | ((dz_delta & 0x7FFFF) << 5) | (b_reg & 0x1F))
+        }
+        emit_a64_sdiv(d, a_reg, b_reg)
+        if dst_r == 0xFFFFFFFF {
+            ir_a64_emit_store_spill(9, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_SMOD (133): signed remainder = a - (a sdiv b) * b -----
+    if op == 133 {
+        uint64 a_reg = ir_a64_resolve_src(s1_v, 9)
+        uint64 b_reg = ir_a64_resolve_src(s2_v, 10)
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        if debug_mode != 0 {
+            uint64 dz_cbnz = out_len
+            emit_a64(0xB5000000 | (b_reg & 0x1F))
+            emit_a64_mov_imm(0, 1)
+            emit_a64_mov_imm(8, 93)
+            emit_a64_svc()
+            uint64 dz_delta = (out_len - dz_cbnz) / 4
+            patch_u32(dz_cbnz, 0xB5000000 | ((dz_delta & 0x7FFFF) << 5) | (b_reg & 0x1F))
+        }
+        emit_a64_sdiv(11, a_reg, b_reg)
+        emit_a64_msub(d, 11, b_reg, a_reg)
+        if dst_r == 0xFFFFFFFF {
+            ir_a64_emit_store_spill(9, dest_v)
+        }
+        return
+    }
+
     // ----- IR_AND (7) -----
     if op == 7 {
         uint64 a_reg = ir_a64_resolve_src(s1_v, 9)
@@ -555,6 +600,19 @@ fn ir_emit_arm64_insn(uint64 ii) {
         uint64 d = dst_r
         if d == 0xFFFFFFFF { d = 9 }
         emit_a64_lsr(d, a_reg, b_reg)
+        if dst_r == 0xFFFFFFFF {
+            ir_a64_emit_store_spill(9, dest_v)
+        }
+        return
+    }
+
+    // ----- IR_SAR (134): arithmetic (sign-extending) shift right -----
+    if op == 134 {
+        uint64 a_reg = ir_a64_resolve_src(s1_v, 9)
+        uint64 b_reg = ir_a64_resolve_src(s2_v, 10)
+        uint64 d = dst_r
+        if d == 0xFFFFFFFF { d = 9 }
+        emit_a64_asr(d, a_reg, b_reg)
         if dst_r == 0xFFFFFFFF {
             ir_a64_emit_store_spill(9, dest_v)
         }

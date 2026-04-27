@@ -16,12 +16,40 @@ SRCS = src/lexer.kr src/ast.kr src/parser.kr src/codegen.kr \
        src/format_archive.kr src/format_android.kr src/bcj.kr src/analysis.kr src/living.kr \
        src/runtime.kr src/formatter.kr src/main.kr
 
-.PHONY: all build test install dist clean bootstrap
+.PHONY: all build kr-runner test install dist clean bootstrap
 
-all: build
+all: build kr-runner
 
 # Build from the self-hosted compiler (no Rust needed)
 build: build/krc2
+
+# Build the .krbo runner. runner.kr references filter_aarch64_bcj /
+# filter_x86_64_bcj from bcj.kr, so the two must be concatenated before
+# compile — otherwise the runner builds with unresolved BCJ calls and
+# silently corrupts every extracted slice (entry-point bytes get
+# clobbered, slice bus-errors at startup).
+#
+# `kr` is a shell wrapper (packaging/kr.sh) that catches exit 120 from
+# kr-bin and re-execs the extracted ./kr-exec — needed on Termux/Android
+# where raw execve from app data dirs is SELinux-denied. Other hosts hit
+# the wrapper's `exit $status` line as a no-op since the runner exec's
+# the slice directly.
+kr-runner: build/kr build/kr-bin
+
+build/kr-runner.kr: src/runner.kr src/bcj.kr
+	@mkdir -p build
+	cat src/runner.kr src/bcj.kr > build/kr-runner.kr
+
+build/kr-bin: build/kr-runner.kr build/krc2
+	./build/krc2 --arch=x86_64 build/kr-runner.kr -o build/kr-bin
+	chmod +x build/kr-bin
+	@echo "Built build/kr-bin (host-native runner binary)"
+
+build/kr: packaging/kr.sh
+	@mkdir -p build
+	cp packaging/kr.sh build/kr
+	chmod +x build/kr
+	@echo "Built build/kr (shell wrapper for kr-bin)"
 
 build/krc.kr: $(SRCS)
 	@mkdir -p build

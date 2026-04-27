@@ -216,12 +216,17 @@ fn main() {
     // then the kernel passes the linker its own argv starting at the
     // linker path, so our main() sees argv[0]="/system/bin/linker64",
     // argv[1]="./kr", argv[2]="test.krbo", ... — every slot shifted by
-    // one. Modern Android's PT_INTERP exec path does NOT shift, nor
-    // does Linux or macOS. We must only compensate when argv[0] is
-    // literally one of Android's known dynamic-linker paths; doing
-    // anything looser (e.g. "argv[0] starts with /") misfires on every
-    // normal shell invocation because Bash resolves `kr` to its
-    // absolute path via PATH, making every Linux run look like Android.
+    // one. Termux's exec wrapper does the same shift but uses its own
+    // (non-system) linker, AND duplicates the binary path so argv[0]
+    // and argv[1] are both equal to the executable path. Detect that
+    // by checking argv[0] == argv[1] string-equal — a normal shell
+    // invocation never reproduces that.
+    // Modern Android's PT_INTERP exec path does NOT shift, nor does
+    // Linux or macOS. We must only compensate when argv[0] is one of
+    // the known shifted forms; doing anything looser (e.g. "argv[0]
+    // starts with /") misfires on every normal shell invocation
+    // because Bash resolves `kr` to its absolute path via PATH,
+    // making every Linux run look like Android.
     uint64 arg_offset = 8
     if cli_argc >= 2 {
         uint64 argv0_p = 0
@@ -231,6 +236,16 @@ fn main() {
                 arg_offset = 16
             } else if str_eq_r(argv0_p, "/apex/com.android.runtime/bin/linker64") != 0 {
                 arg_offset = 16
+            } else {
+                // Termux pattern: argv[0] == argv[1] (both = path-to-self).
+                uint64 argv1_slot = cli_argv + 8
+                uint64 argv1_p = 0
+                unsafe { *(argv1_slot as uint64) -> argv1_p }
+                if argv1_p != 0 {
+                    if str_eq_r(argv0_p, argv1_p) != 0 {
+                        arg_offset = 16
+                    }
+                }
             }
         }
     }
@@ -240,7 +255,7 @@ fn main() {
     if arg_offset == 16 { eff_argc = cli_argc - 1 }
 
     if eff_argc < 2 {
-        write(1, "kr 2.8.18 (KernRift fat binary runner)\n", 39)
+        write(1, "kr 2.8.19 (KernRift fat binary runner)\n", 39)
         write(1, "usage: kr <program.krbo> [args...]\n\n", 36)
         write(1, "Runs .krbo fat binaries (BCJ+LZ4-compressed, 7 platform slices).\n", 65)
         write(1, "Auto-detects host architecture and extracts the matching native binary.\n\n", 73)
@@ -268,12 +283,12 @@ fn main() {
             unsafe { *(kp2 as uint8) -> tc }
             if tc == 118 {
                 // --version
-                write(1, "kr 2.8.18 (KernRift fat binary runner)\n", 39)
+                write(1, "kr 2.8.19 (KernRift fat binary runner)\n", 39)
                 exit(0)
             }
             if tc == 104 {
                 // --help
-                write(1, "kr 2.8.18 (KernRift fat binary runner)\n", 39)
+                write(1, "kr 2.8.19 (KernRift fat binary runner)\n", 39)
                 write(1, "usage: kr <program.krbo> [args...]\n\n", 36)
                 write(1, "Runs .krbo fat binaries (BCJ+LZ4-compressed, 7 platform slices).\n", 65)
                 write(1, "Auto-detects host architecture and extracts the matching native binary.\n", 71)
@@ -498,6 +513,12 @@ fn main() {
             set_executable(tmp_path)
             store64(nargv, tmp_path)
             exec_process_argv(tmp_path, nargv)
+            // Termux app context (Android 14+) blocks raw execve of files
+            // in /data/data/com.termux/. The interactive shell can still
+            // exec them — Termux's libc wraps execve via LD_PRELOAD — but
+            // our raw `svc 0` syscall bypasses that wrapper. Exit 120 to
+            // tell the kr-launcher shell wrapper (packaging/kr.sh) to
+            // re-exec ./kr-exec from its own shell context.
             exit(120)
         }
         write(2, "kr: failed to create temp file\n", 31)
