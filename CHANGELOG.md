@@ -2,6 +2,37 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## v2.8.21 — 2026-04-29
+
+### Performance
+- **Self-host bootstrap shrinks 5.2%** (1,240,432 → 1,176,168 bytes) and
+  the `sort` benchmark drops **30%** (153 → 108 ms — krc now beats
+  gcc -O2 by 2.5×) from three IR-backend codegen wins:
+  1. **6th register colour (rbp).** The graph-colouring regalloc gained
+     one more callee-saved register, dropping spill rate across the
+     compiler. rbp had been left out historically; the lz4 / fat-archive
+     paths surfaced an off-by-one in stack-arg overflow loads (the old
+     `+48` hardcoded "5 pushes + ret addr" — replaced with
+     `ir_callee_save_bytes + 8`).
+  2. **Per-function used-callee-save prologue.** Functions only push
+     the colours regalloc actually assigned. fib's prologue dropped
+     from 5 pushes to 3, and most leaf-ish helpers drop to 0 or 1.
+     Variable alignment math (push_count parity decides whether
+     frame_size needs +8) keeps SP 16-aligned at every CALL.
+  3. **Cross-register spill-reload peephole.** `store rax,V` followed
+     by `load rcx,V` (different register) now emits `mov rcx, rax`
+     instead of a memory roundtrip. Catches the matmul-style pattern
+     where intermediate vregs flow through different scratch regs.
+
+  Runtime impact (Ryzen 9 7900X, AVX2-disabled bench programs):
+
+  | Bench  | v2.8.20 | v2.8.21 | gcc -O2 | Δ |
+  |---|---|---|---|---|
+  | fib    | 442 ms  | 427 ms  | 78 ms   | -3% |
+  | sort   | 153 ms  | **108 ms** | 270 ms | **-30%, 2.5× ahead of gcc -O2** |
+  | sieve  | 3 ms    | 3 ms    | 2 ms    | tied |
+  | matmul | 34 ms   | 33 ms   | 4 ms    | -3% |
+
 ## v2.8.20 — 2026-04-28
 
 ### Fixed

@@ -4532,12 +4532,22 @@ fn ir_cmp_fuse_code(uint64 cmp_idx) -> uint64 {
 // Register allocator — greedy coloring
 // ---------------------------------------------------------------------------
 
-static uint64 IR_NUM_REGS = 5
+static uint64 IR_NUM_REGS = 6
 
 // Map color index -> physical register code
-// Colors 0-4 -> rbx(3), r12(12), r13(13), r14(14), r15(15)
+// Colors 0-5 -> rbx(3), r12(12), r13(13), r14(14), r15(15), rbp(5)
 // Only callee-saved registers — safe across function calls.
 static uint64 ir_phys_regs = 0
+
+// Bitmask of callee-saved colours actually used by the current
+// function — populated by the prologue, consumed by the epilogue so
+// the pop sequence mirrors the push sequence.
+static uint64 ir_used_callee_mask = 0
+
+// Bytes pushed by the prologue's callee-save sequence (popcount(mask)*8).
+// Caller-arg overflow loads (param index >= 6) need to skip past these
+// bytes plus the return address to reach the caller's stack args.
+static uint64 ir_callee_save_bytes = 0
 
 fn ir_regalloc_init() {
     if ir_phys_regs == 0 { ir_phys_regs = alloc(10 * 8) }
@@ -4551,6 +4561,8 @@ fn ir_regalloc_init() {
     unsafe { *(p3 as uint64) = 14 }
     uint64 p4 = ir_phys_regs + 32
     unsafe { *(p4 as uint64) = 15 }
+    uint64 p5 = ir_phys_regs + 40
+    unsafe { *(p5 as uint64) = 5 }       // rbp
 }
 
 // Register assignment table: [color(4)] x vreg_count. 0xFFFFFFFF = spilled
@@ -4573,6 +4585,27 @@ fn ir_get_phys_reg(uint64 vreg) -> uint64 {
     uint64 phys = 0
     unsafe { *(rp as uint64) -> phys }
     return phys
+}
+
+// Used-callee-save mask. After regalloc, returns a 5-bit set with bit i
+// set iff some vreg got color i (= one of rbx/r12/r13/r14/r15). Lets the
+// prologue/epilogue push only what's actually used — fib(40) burns
+// ~330M calls, each with 5 push+pop pairs even when only 3 colours are
+// live. Trimming the prologue saves ~2 stack writes + 2 reads per call.
+fn ir_used_color_mask() -> uint64 {
+    uint64 mask = 0
+    uint64 v = 1
+    while v < ir_vreg_next {
+        uint64 p = ir_reg_assign + v * 4
+        uint32 color = 0
+        unsafe { *(p as uint32) -> color }
+        uint64 wc = color
+        if wc < IR_NUM_REGS {
+            mask = mask | (1 << wc)
+        }
+        v = v + 1
+    }
+    return mask
 }
 
 // Interference-based register allocator using liveness data.
@@ -4938,6 +4971,23 @@ fn ir_emit_load_spill(uint64 dst_reg, uint64 vreg) {
     // it, the value is still in dst_reg — skip the reload entirely.
     if vreg == ir_last_spill_vreg && dst_reg == ir_last_spill_reg && out_len == ir_last_spill_end {
         ir_last_spill_end = 0xFFFFFFFFFFFFFFFF   // one-shot: don't re-apply
+        return
+    }
+    // Same vreg, different reg — the value is in `ir_last_spill_reg`
+    // already; emit a reg-reg move instead of a memory load. Saves one
+    // memory cycle per spill round-trip in matmul-style hot paths
+    // where intermediate vregs flow through different scratch regs.
+    if vreg == ir_last_spill_vreg && out_len == ir_last_spill_end &&
+       ir_last_spill_reg != 0xFFFFFFFF && ir_last_spill_reg != dst_reg {
+        uint64 src_reg = ir_last_spill_reg
+        // Update ir_last_spill_end inside the helper would invalidate
+        // the next peephole check incorrectly — but we're emitting only
+        // one mov, so updating last_spill_reg to dst_reg keeps the
+        // chain "value lives in dst_reg" valid for any subsequent
+        // store_spill→load_spill pair targeting the same vreg.
+        ir_emit_mov_r64_r64(dst_reg, src_reg)
+        ir_last_spill_reg = dst_reg
+        ir_last_spill_end = out_len
         return
     }
     // mov dst_reg, [rsp + spill_offset]
@@ -6608,9 +6658,10 @@ fn ir_emit_x86_insn(uint64 ii) {
                     ir_emit_store_spill(0, dest_v)
                 }
             } else if imm >= 6 {
-                // Overflow parameter: load from caller's stack
-                // Stack layout: [rsp + frame_size + 40(pushes) + 8(ret_addr) + (imm-6)*8]
-                uint64 overflow_off = ir_frame_size + 48 + (imm - 6) * 8
+                // Overflow parameter: load from caller's stack.
+                // Stack layout: [rsp + frame_size + callee_save_bytes
+                //                    + 8(ret_addr) + (imm-6)*8]
+                uint64 overflow_off = ir_frame_size + ir_callee_save_bytes + 8 + (imm - 6) * 8
                 uint64 tgt = 0
                 if dst_r != 0xFFFFFFFF { tgt = dst_r }
                 // mov tgt, [rsp + overflow_off]
@@ -9303,29 +9354,63 @@ fn ir_emit_x86_function(uint64 fn_node) {
         }
     }
 
-    // 5. Emit prologue (skip for @naked functions)
+    // 5. Emit prologue (skip for @naked functions). Push only the
+    // callee-saved colours regalloc actually assigned — leaf-ish hot
+    // paths like fib end up with 3 live colours instead of 5.
+    uint64 used_mask = 0
+    uint64 push_count = 0
     if is_naked == 0 {
-    // push rbx
-    emit_byte(0x53)
-    // push r12..r15
-    emit_byte(0x41)
-    emit_byte(0x54)
-    emit_byte(0x41)
-    emit_byte(0x55)
-    emit_byte(0x41)
-    emit_byte(0x56)
-    emit_byte(0x41)
-    emit_byte(0x57)
+        used_mask = ir_used_color_mask()
+        // Color → physical reg encoding:
+        //   color 0 → rbx (0x53)
+        //   color 1 → r12 (0x41 0x54)
+        //   color 2 → r13 (0x41 0x55)
+        //   color 3 → r14 (0x41 0x56)
+        //   color 4 → r15 (0x41 0x57)
+        if (used_mask & 1) != 0 {
+            emit_byte(0x53)                       // push rbx
+            push_count = push_count + 1
+        }
+        if (used_mask & 2) != 0 {
+            emit_byte(0x41); emit_byte(0x54)      // push r12
+            push_count = push_count + 1
+        }
+        if (used_mask & 4) != 0 {
+            emit_byte(0x41); emit_byte(0x55)      // push r13
+            push_count = push_count + 1
+        }
+        if (used_mask & 8) != 0 {
+            emit_byte(0x41); emit_byte(0x56)      // push r14
+            push_count = push_count + 1
+        }
+        if (used_mask & 16) != 0 {
+            emit_byte(0x41); emit_byte(0x57)      // push r15
+            push_count = push_count + 1
+        }
+        if (used_mask & 32) != 0 {
+            emit_byte(0x55)                       // push rbp
+            push_count = push_count + 1
+        }
     }
+    // Stash for the epilogue (which is emitted later but needs to mirror
+    // the same set of registers in reverse) and for stack-arg loads.
+    ir_used_callee_mask = used_mask
+    ir_callee_save_bytes = push_count * 8
 
     // sub rsp, frame_size
     // Layout (from RSP up): [spill slots | stack arrays]
     // IR_STACK_ADDR offsets are relative to the start of the stack-array
     // region, so the x86 emitter adds ir_spill_count*8 to resolve them.
     uint64 frame_size = ir_spill_count * 8 + ir_stack_array_bytes
-    // Alignment: 5 pushes = 40 bytes + 8 (ret addr) = 48. 48 mod 16 = 0.
-    // If frame_size mod 16 != 0, add 8 for alignment.
-    if frame_size > 0 && (frame_size & 15) != 0 { frame_size = frame_size + 8 }
+    // SysV: SP is 8 mod 16 at function entry (CALL pushed RET_ADDR).
+    // After N pushes SP is (N+1)*8 mod 16. Want frame_size + (N+1)*8
+    // ≡ 0 mod 16. So if push_count is odd we want frame_size 16-aligned;
+    // if even we want it ≡ 8 mod 16.
+    if (push_count & 1) != 0 {
+        if frame_size > 0 && (frame_size & 15) != 0 { frame_size = frame_size + 8 }
+    } else {
+        if (frame_size & 15) == 0 { frame_size = frame_size + 8 }
+    }
     if is_naked != 0 { frame_size = 0 }
     ir_spill_base = 0
     ir_frame_size = frame_size
@@ -9534,15 +9619,25 @@ fn ir_emit_x86_function(uint64 fn_node) {
             emit_byte(0xC4)
             emit_u32_le(frame_size)
         }
-        emit_byte(0x41)
-        emit_byte(0x5F)
-        emit_byte(0x41)
-        emit_byte(0x5E)
-        emit_byte(0x41)
-        emit_byte(0x5D)
-        emit_byte(0x41)
-        emit_byte(0x5C)
-        emit_byte(0x5B)
+        // Pop callee-saves in reverse of the prologue's push order.
+        if (ir_used_callee_mask & 32) != 0 {
+            emit_byte(0x5D)                       // pop rbp
+        }
+        if (ir_used_callee_mask & 16) != 0 {
+            emit_byte(0x41); emit_byte(0x5F)      // pop r15
+        }
+        if (ir_used_callee_mask & 8) != 0 {
+            emit_byte(0x41); emit_byte(0x5E)      // pop r14
+        }
+        if (ir_used_callee_mask & 4) != 0 {
+            emit_byte(0x41); emit_byte(0x5D)      // pop r13
+        }
+        if (ir_used_callee_mask & 2) != 0 {
+            emit_byte(0x41); emit_byte(0x5C)      // pop r12
+        }
+        if (ir_used_callee_mask & 1) != 0 {
+            emit_byte(0x5B)                       // pop rbx
+        }
         emit_byte(0xC3)
     }
 }
