@@ -2,6 +2,62 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## v2.8.22 — 2026-04-29
+
+### Infrastructure
+- **Loop-Invariant Code Motion (LICM)** lands in the IR optimiser as
+  correctness-first scaffolding for richer loop opts. Pure invariant
+  computations (arith, logic, cmp, float ops) get hoisted out of every
+  loop's body to its preheader; chains of invariants converge in up
+  to 8 fixed-point iterations per function. fib/sort/sieve/matmul are
+  all within noise of v2.8.21 (~0% to −3%) — the framework hoists the
+  invariants it can prove safe and profitable, but with current
+  conservatism the hot loops in these four benchmarks expose nothing
+  it can win on without regressing register pressure. Bootstrap binary
+  grows +0.5% (1,176,168 → 1,182,536 bytes); 439/439 tests pass; krc2
+  == krc3 byte-identical.
+
+  Two correctness/profitability tunings the implementation taught us:
+
+  - **Hoistability is stricter than CSE-purity.** CSE treats
+    `static_load` (op 77) as pure because intervening writes
+    invalidate its hash table within a BB; LICM cannot, because the
+    hoisted op runs *before* the loop ever observes those writes.
+    Excluding op 77 from the hoistable set fixed a self-host
+    miscompile where `dce_scan`'s inner loop (`while i < dce_count`,
+    body calls `dce_add` which mutates `dce_count`) became infinite
+    when the load of `dce_count` was hoisted to the preheader. (Found
+    by binary-searching a per-function bisect: MAX=65 OK, MAX=66
+    hangs → function 66 in LICM order = `dce_scan`.)
+  - **`IR_CONST` (op 1) is rematerialize-cheap, so don't hoist it.**
+    A `mov reg, imm32` is 5 bytes / 1 cycle inline; hoisting trades
+    that for register pressure across the whole loop, and if the
+    coloured set runs out (sort had ~6 small constants in a body
+    with 6 colours available), every hoisted constant spills to a
+    stack slot — strictly worse than rematerialization. (Found by
+    A/B benchmark: sort regressed 108 → 152 ms after enabling LICM,
+    disasm showed all the hoisted `mov rax, imm; mov [rsp+N], rax`
+    stores. Excluding op 1 restored sort to baseline.)
+
+  Implementation notes:
+  - Per-vreg "defining BB" map with a `0xFFFFFFFE` multi-def sentinel
+    — a vreg assigned in two or more BBs is conservatively treated as
+    varying, since one of those BBs may be inside the loop region.
+  - Per-loop body walk uses the BB linked-list (not an insn-index
+    range), so it stays correct after a previous LICM pass appends
+    hoisted insns at high indices.
+  - Static `ir_walk_stack` (65 536 × 4 B) replaces per-BB
+    alloc/dealloc, keeping LICM at O(insns) per pass.
+  - Liveness and the interference-graph builder now walk the BB
+    linked list rather than an insn-index range, so they stay correct
+    after LICM appends hoisted insns at non-consecutive indices.
+
+  Future profitability work (not in this release): hoist a constant
+  only when it feeds a long invariant chain that *also* hoists; proper
+  dominance analysis to cover CFG shapes the BB-index range model
+  misses; rematerialization on spill so even the hoisted-spilled case
+  isn't strictly worse than inline.
+
 ## v2.8.21 — 2026-04-29
 
 ### Performance

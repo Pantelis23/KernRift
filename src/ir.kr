@@ -254,6 +254,12 @@ fn ir_init() {
     }
     ir_loop_depth = 0
 
+    if ir_loops == 0 {
+        ir_loop_cap = 256
+        ir_loops = alloc(ir_loop_cap * 16)
+    }
+    ir_loop_count = 0
+
     if ir_overflow_args == 0 {
         ir_overflow_args = alloc(32 * 8)
     }
@@ -267,6 +273,7 @@ fn ir_reset() {
     ir_bb_count = 0
     ir_vreg_next = 1
     ir_loop_depth = 0
+    ir_loop_count = 0
     if ir_vreg_fkind_buf != 0 {
         memset(ir_vreg_fkind_buf, 0, ir_vreg_fkind_cap)
     }
@@ -631,6 +638,96 @@ fn ir_bb_set_succ(uint64 bb, uint64 succ0, uint64 succ1) {
 // Updates the block's first_insn/last_insn and the previous tail's
 // next pointer.
 @export
+// Remove the BB's currently-last instruction from the linked list so
+// it can be re-spliced elsewhere (LICM hoisting). Caller is responsible
+// for re-linking the orphan; we do not zero its `next` field.
+fn ir_bb_remove_last(uint64 bb) {
+    uint64 base = ir_bb_base(bb)
+    uint64 p_first = base
+    uint64 p_last = base + 4
+    uint32 first = 0
+    uint32 last = 0
+    unsafe { *(p_first as uint32) -> first }
+    unsafe { *(p_last as uint32) -> last }
+    if first == 0xFFFFFFFF { return }
+    if first == last {
+        // Only one insn — BB becomes empty.
+        uint32 sentinel = 0xFFFFFFFF
+        unsafe { *(p_first as uint32) = sentinel }
+        unsafe { *(p_last as uint32) = sentinel }
+        return
+    }
+    // Walk to the second-to-last, set its next to sentinel, update p_last.
+    uint64 cur = first
+    uint64 done = 0
+    while done == 0 {
+        uint32 nxt = 0
+        uint64 cur_next_ptr = ir_insn_base(cur) + 28
+        unsafe { *(cur_next_ptr as uint32) -> nxt }
+        if nxt == last {
+            uint32 sentinel = 0xFFFFFFFF
+            unsafe { *(cur_next_ptr as uint32) = sentinel }
+            uint32 cur32 = cur
+            unsafe { *(p_last as uint32) = cur32 }
+            done = 1
+        } else {
+            cur = nxt
+        }
+    }
+}
+
+// Splice an instruction into a BB just before its current last
+// instruction (which is the BB's terminator under our IR conventions).
+// Used by LICM: hoisted insns must be in the *executed* portion of the
+// preheader, not after the IR_BR — otherwise liveness analysis treats
+// them as dead code and the regalloc may over-coalesce their dests.
+fn ir_bb_insert_before_terminator(uint64 bb, uint64 insn_idx) {
+    uint64 base = ir_bb_base(bb)
+    uint64 p_first = base
+    uint64 p_last = base + 4
+
+    uint32 first = 0
+    uint32 last = 0
+    unsafe { *(p_first as uint32) -> first }
+    unsafe { *(p_last as uint32) -> last }
+
+    if first == 0xFFFFFFFF {
+        // BB is empty — fall back to plain append.
+        ir_bb_append_insn(bb, insn_idx)
+        return
+    }
+
+    // Make the new insn's next pointer point to the terminator.
+    uint64 new_next_ptr = ir_insn_base(insn_idx) + 28
+    uint32 last32 = last
+    unsafe { *(new_next_ptr as uint32) = last32 }
+
+    if first == last {
+        // Only insn in BB is the terminator. New insn becomes first;
+        // first → new → terminator.
+        uint32 idx32 = insn_idx
+        unsafe { *(p_first as uint32) = idx32 }
+        return
+    }
+
+    // Walk from first to find the predecessor of the terminator.
+    uint64 cur = first
+    uint64 done = 0
+    while done == 0 {
+        uint32 nxt = 0
+        uint64 cur_next_ptr = ir_insn_base(cur) + 28
+        unsafe { *(cur_next_ptr as uint32) -> nxt }
+        if nxt == last {
+            // cur is the predecessor: rewire cur → new → terminator.
+            uint32 idx32 = insn_idx
+            unsafe { *(cur_next_ptr as uint32) = idx32 }
+            done = 1
+        } else {
+            cur = nxt
+        }
+    }
+}
+
 fn ir_bb_append_insn(uint64 bb, uint64 insn_idx) {
     uint64 base = ir_bb_base(bb)
     uint64 p_first = base
@@ -842,6 +939,17 @@ static uint64 ir_current_bb = 0
 
 // Loop context stack for break/continue
 static uint64 ir_loop_exit_stack = 0       // bb indices for break targets
+
+// LICM bookkeeping: per-loop tuple (preheader_bb, header_bb,
+// body_first_bb) populated during `while` lowering. The body range
+// is [header_bb+1 .. ir_bb_count_at_loop_close-1] — recorded after
+// the body is fully emitted in `kind == 14` lowering.
+//
+// 16 bytes per loop: 4 u32 fields. 256 loops max in any one function
+// (way more than any sane KernRift source needs).
+static uint64 ir_loops = 0
+static uint64 ir_loop_count = 0
+static uint64 ir_loop_cap = 0
 static uint64 ir_loop_header_stack = 0     // bb indices for continue targets
 static uint64 ir_loop_hdr_buf_stack = 0    // header vreg snapshot pointers
 static uint64 ir_loop_hdr_count_stack = 0  // header vreg snapshot counts
@@ -3315,6 +3423,9 @@ fn ir_lower_stmt(uint64 node) {
 
     // While (14)
     if kind == 14 {
+        // Snapshot the preheader BB before any new BBs are created so
+        // LICM can hoist invariants right before the loop entry IR_BR.
+        uint64 licm_preheader = ir_current_bb
         uint64 bb_header = ir_new_bb()
         uint64 bb_body = ir_new_bb()
         uint64 bb_exit = ir_new_bb()
@@ -3369,6 +3480,25 @@ fn ir_lower_stmt(uint64 node) {
 
         // After body, emit COPY for any variables that changed since header.
         ir_emit_copy_to_snapshot(hdr_buf, hdr_count, ir_current_bb)
+        // Record the loop range [bb_body .. ir_bb_count-1] so LICM can
+        // walk every body BB. (bb_exit was allocated upfront but is
+        // logically AFTER the loop body in BB index, so it's excluded
+        // by the IR_BR back-edge.)
+        if ir_loop_count < ir_loop_cap {
+            uint64 le = ir_loops + ir_loop_count * 16
+            uint32 ph32 = licm_preheader
+            uint32 hd32 = bb_header
+            uint32 fb32 = bb_body
+            uint32 lb32 = ir_current_bb
+            unsafe { *(le as uint32) = ph32 }
+            uint64 le4 = le + 4
+            unsafe { *(le4 as uint32) = hd32 }
+            uint64 le8 = le + 8
+            unsafe { *(le8 as uint32) = fb32 }
+            uint64 le12 = le + 12
+            unsafe { *(le12 as uint32) = lb32 }
+            ir_loop_count = ir_loop_count + 1
+        }
         ir_emit(IR_BR, 0, 0, 0, bb_header, ir_current_bb)
         ir_bb_set_succ(ir_current_bb, bb_header, 0xFFFFFFFF)
         // Restore variable map to header vregs for code after the loop.
@@ -4282,6 +4412,7 @@ fn ir_live_test(uint64 base, uint64 bb, uint64 vreg) -> uint64 {
 // Check whether an instruction defines (produces) a vreg.
 fn ir_insn_has_def(uint64 ii) -> uint64 {
     uint64 op = ir_insn_opcode(ii)
+    if op == 0 { return 0 }    // NOP (used by LICM to elide hoisted insns)
     if op == 40 { return 0 }   // br
     if op == 41 { return 0 }   // br_cond
     if op == 43 { return 0 }   // ret_void
@@ -4346,16 +4477,29 @@ fn ir_compute_liveness() {
             }
 
             // Walk instructions in reverse order within this block.
-            // Instructions within a block have consecutive indices
-            // (first_insn .. last_insn), so we walk from last down to first.
+            // Used to assume consecutive indices (first_insn..last_insn),
+            // but LICM appends hoisted insns to the global tail and just
+            // splices them into the BB's linked list. Walk the actual
+            // linked list forward into a stack, then unwind.
             uint64 blk_first = ir_bb_first_insn(bi)
-            uint64 blk_last = ir_bb_last_insn(bi)
-            uint64 ri = blk_last
             uint64 lv_done = 0
-            if blk_last == 0xFFFFFFFF { lv_done = 1 }
-            while lv_done == 0 {
-                if ri == blk_first { lv_done = 1 }
-                uint64 cur_ii = ri
+            if blk_first == 0xFFFFFFFF { lv_done = 1 }
+            if ir_walk_stack == 0 { ir_walk_stack = alloc(65536 * 4) }
+            uint64 lv_stack_n = 0
+            uint64 lv_walk = blk_first
+            while lv_walk != 0xFFFFFFFF && lv_stack_n < 65536 {
+                uint64 sp_ent = ir_walk_stack + lv_stack_n * 4
+                uint32 lw32 = lv_walk
+                unsafe { *(sp_ent as uint32) = lw32 }
+                lv_stack_n = lv_stack_n + 1
+                lv_walk = ir_insn_next(lv_walk)
+            }
+            while lv_stack_n > 0 && lv_done == 0 {
+                lv_stack_n = lv_stack_n - 1
+                uint64 sp_ent = ir_walk_stack + lv_stack_n * 4
+                uint32 cur32 = 0
+                unsafe { *(sp_ent as uint32) -> cur32 }
+                uint64 cur_ii = cur32
 
                 // Remove def
                 if ir_insn_has_def(cur_ii) != 0 {
@@ -4373,6 +4517,10 @@ fn ir_compute_liveness() {
 
                 // Add src1 use
                 uint64 op = ir_insn_opcode(cur_ii)
+                if op == 0 {
+                    // LICM-elided slot — no def, no uses.
+                    continue
+                }
                 uint64 use1 = ir_insn_src1(cur_ii)
                 if use1 < ir_vreg_next && op != 1 {
                     uint64 uw = use1 / 64
@@ -4410,7 +4558,6 @@ fn ir_compute_liveness() {
                     }
                 }
 
-                if ri > blk_first { ri = ri - 1 }
             }
 
             // Check if live_in changed
@@ -4668,18 +4815,34 @@ fn ir_graph_color() {
             wi = wi + 1
         }
 
-        // Walk instructions in reverse order within this block
+        // Walk instructions in reverse order within this block.
+        // Walk linked list forward into a stack, then unwind — LICM
+        // hoists out-of-order in the global insn array, so consecutive
+        // index ranges don't reflect the BB membership.
         uint64 first = ir_bb_first_insn(bi)
-        uint64 last = ir_bb_last_insn(bi)
-        if last != 0xFFFFFFFF {
-            uint64 ii = last
+        if first != 0xFFFFFFFF {
+            if ir_walk_stack == 0 { ir_walk_stack = alloc(65536 * 4) }
+            uint64 ig_stack_n = 0
+            uint64 ig_walk = first
+            while ig_walk != 0xFFFFFFFF && ig_stack_n < 65536 {
+                uint64 sp_ent = ir_walk_stack + ig_stack_n * 4
+                uint32 lw32 = ig_walk
+                unsafe { *(sp_ent as uint32) = lw32 }
+                ig_stack_n = ig_stack_n + 1
+                ig_walk = ir_insn_next(ig_walk)
+            }
             uint64 ig_done = 0
-            while ig_done == 0 {
-                if ii == first { ig_done = 1 }
+            while ig_stack_n > 0 && ig_done == 0 {
+                ig_stack_n = ig_stack_n - 1
+                uint64 sp_ent = ir_walk_stack + ig_stack_n * 4
+                uint32 ii32 = 0
+                unsafe { *(sp_ent as uint32) -> ii32 }
+                uint64 ii = ii32
 
                 // At this instruction, the dest vreg interferes with
                 // everything currently live (except itself and copy sources)
                 uint64 op = ir_insn_opcode(ii)
+                if op == 0 { continue }   // LICM-elided slot
                 if ir_insn_has_def(ii) != 0 {
                     uint64 dv = ir_insn_dest(ii)
                     if dv > 0 && dv < vcount {
@@ -4765,7 +4928,6 @@ fn ir_graph_color() {
                     }
                 }
 
-                if ii > first { ii = ii - 1 }
             }
         }
         bi = bi + 1
@@ -9244,6 +9406,235 @@ fn ir_opt_cse() {
 }
 
 @export
+// ---------------------------------------------------------------------------
+// LICM (loop-invariant code motion)
+//
+// For each `while` loop recorded in ir_loops, walk every instruction in
+// the body BB range. An instruction is loop-invariant if (1) it's pure
+// (`ir_opt_cse_is_pure`) and (2) every source vreg is defined OUTSIDE
+// the body range (or undefined / 0). Invariant instructions are moved
+// to the preheader's terminator: we change the original slot to IR_NOP
+// (op 0) and append the same instruction with the preheader's BB tag.
+//
+// We iterate to fixpoint: hoisted insns sit in the preheader, which may
+// itself be inside an outer loop's body. The next pass invocation then
+// recognises them as invariant in the outer loop and hoists further out.
+// matmul's `i*N` flows from j-body → k-body → i-body's predecessor in
+// at most 3 iterations.
+//
+// The "is_invariant" check only requires knowing where each vreg is
+// defined. We build a per-vreg "defining BB" map up front; a vreg is
+// loop-invariant iff its defining BB is outside the loop's body range.
+// ---------------------------------------------------------------------------
+
+static uint64 ir_def_bb_buf = 0
+static uint64 ir_def_bb_cap = 0
+
+// Reusable BB-walk scratch — used by liveness and the interference-graph
+// builder. Walking the linked list forward into a stack and unwinding it
+// gives reverse order without requiring consecutive insn indices (which
+// LICM violates). Sized for the largest BB; we only need one buffer at a
+// time so the static lasts the entire compile.
+static uint64 ir_walk_stack = 0
+
+// Stricter than ir_opt_cse_is_pure: hoisting an op out of a loop is only
+// safe AND profitable if (a) its result depends solely on its source
+// vregs and on values that don't change inside the loop and (b) the
+// hoist actually saves work. CSE can treat memory-reads as pure because
+// intervening writes invalidate its hash table; LICM cannot, because
+// the hoisted op runs *before* the loop ever observes those writes. So
+// static_load (op 77) is excluded here even though CSE allows it. (See
+// dce_scan miscompile: hoisting `load dce_count` made the loop see a
+// stale count and run forever.) IR_CONST (op 1) is also excluded — a
+// `mov reg, imm32` is 5 bytes and 1 cycle, so hoisting trades nothing
+// for extra register pressure across the whole loop, and the spill
+// reload is strictly worse than rematerializing. (See sort: hoisting
+// the loop-body constants 1, 0xFF, 8 dropped sort 30% — they all
+// hoisted, mutually interfered, and spilled to stack slots.)
+fn ir_licm_is_hoistable(uint64 op) -> uint64 {
+    if op == 1 { return 0 }                // IR_CONST — rematerialize
+    if op >= 2 && op <= 19 { return 1 }    // arith, logic, cmp
+    if op >= 20 && op <= 27 { return 1 }   // float arith + conv
+    if op >= 97 && op <= 108 { return 1 }  // float ops
+    if op >= 120 && op <= 123 { return 1 } // signed cmp
+    if op == 79 { return 1 }  // str_const
+    if op == 84 { return 1 }  // static_addr
+    if op == 86 { return 1 }  // fn_addr
+    return 0
+}
+
+fn ir_licm_build_def_bb_map() {
+    if ir_def_bb_buf == 0 {
+        ir_def_bb_cap = 65536
+        ir_def_bb_buf = alloc(ir_def_bb_cap * 4)
+    }
+    if ir_vreg_next > ir_def_bb_cap {
+        // Quietly skip — out of capacity
+        return
+    }
+    // Sentinels:
+    //   0xFFFFFFFF = "undefined / external" (param or never assigned)
+    //   0xFFFFFFFE = "multi-def" (assigned in two or more BBs — must be
+    //                treated as non-invariant since one of those BBs may
+    //                be inside the loop region we're hoisting from)
+    uint64 i = 0
+    while i < ir_vreg_next {
+        uint64 p = ir_def_bb_buf + i * 4
+        uint32 v = 0xFFFFFFFF
+        unsafe { *(p as uint32) = v }
+        i = i + 1
+    }
+    i = 0
+    while i < ir_insn_count {
+        uint64 op = ir_insn_opcode(i)
+        if op != 0 {
+            uint64 dest = ir_insn_dest(i)
+            if dest != 0 && dest < ir_def_bb_cap {
+                uint64 bb = ir_insn_bb(i)
+                uint64 p = ir_def_bb_buf + dest * 4
+                uint32 prev = 0
+                unsafe { *(p as uint32) -> prev }
+                uint64 prev_w = prev
+                if prev_w == 0xFFFFFFFF {
+                    uint32 b32 = bb
+                    unsafe { *(p as uint32) = b32 }
+                } else if prev_w != bb {
+                    // A different BB already defines this vreg — multi-def.
+                    uint32 multi = 0xFFFFFFFE
+                    unsafe { *(p as uint32) = multi }
+                }
+                // Same-BB redef: keep the current single-BB tag (it's
+                // still safe to call invariant if that BB is outside
+                // the loop region).
+            }
+        }
+        i = i + 1
+    }
+}
+
+// Returns 1 iff vreg's defining BB is outside [body_first .. body_last]
+// inclusive, or vreg is undefined (treated as "external constant").
+// Multi-def vregs are conservatively NOT invariant — at least one of
+// their defs may be inside the loop region.
+fn ir_licm_is_invariant_vreg(uint64 vreg, uint64 body_first, uint64 body_last) -> uint64 {
+    if vreg == 0 { return 1 }
+    if vreg >= ir_def_bb_cap { return 0 }
+    uint64 p = ir_def_bb_buf + vreg * 4
+    uint32 b = 0
+    unsafe { *(p as uint32) -> b }
+    uint64 wb = b
+    if wb == 0xFFFFFFFF { return 1 }   // external / param
+    if wb == 0xFFFFFFFE { return 0 }   // multi-def — treat as varying
+    if wb >= body_first && wb <= body_last { return 0 }
+    return 1
+}
+
+fn ir_opt_licm_one_pass() -> uint64 {
+    uint64 changed = 0
+    ir_licm_build_def_bb_map()
+    uint64 li = 0
+    while li < ir_loop_count {
+        uint64 le = ir_loops + li * 16
+        uint32 ph32 = 0
+        uint32 hd32 = 0
+        uint32 fb32 = 0
+        uint32 lb32 = 0
+        unsafe { *(le as uint32) -> ph32 }
+        uint64 le4 = le + 4
+        unsafe { *(le4 as uint32) -> hd32 }
+        uint64 le8 = le + 8
+        uint64 le12 = le + 12
+        unsafe { *(le8 as uint32) -> fb32 }
+        unsafe { *(le12 as uint32) -> lb32 }
+        uint64 preheader = ph32
+        uint64 header = hd32
+        uint64 body_first = fb32
+        uint64 body_last = lb32
+        // The "loop region" for invariance includes the header BB —
+        // vregs defined there receive back-edge COPYs each iteration.
+        uint64 region_first = header
+        if body_first < region_first { region_first = body_first }
+        uint64 region_last = body_last
+
+        // Walk insns by BB linked list, body BBs only — replaces the
+        // original "walk all insns, filter by BB tag" loop which was
+        // O(loops × all_insns) and prohibitive at self-host scale.
+        uint64 cur_bb = body_first
+        while cur_bb <= body_last {
+            uint64 ii = ir_bb_first_insn(cur_bb)
+            while ii != 0xFFFFFFFF {
+                uint64 next_ii = ir_insn_next(ii)
+                uint64 op = ir_insn_opcode(ii)
+                if op == 0 { ii = next_ii; continue }
+                if ir_licm_is_hoistable(op) == 0 { ii = next_ii; continue }
+
+                // ops whose imm field actually holds a vreg
+                uint64 imm_is_vreg = 0
+                if op == 72 || op == 76 || op == 83 || op == 93 || op == 98 {
+                    imm_is_vreg = 1
+                }
+
+                uint64 s1 = ir_insn_src1(ii)
+                uint64 s2 = ir_insn_src2(ii)
+                uint64 imm = ir_insn_imm(ii)
+
+                if ir_licm_is_invariant_vreg(s1, region_first, region_last) == 0 { ii = next_ii; continue }
+                if ir_licm_is_invariant_vreg(s2, region_first, region_last) == 0 { ii = next_ii; continue }
+                if imm_is_vreg != 0 {
+                    if ir_licm_is_invariant_vreg(imm, region_first, region_last) == 0 { ii = next_ii; continue }
+                }
+
+                // The dest must be SINGLE-def — if some other BB also
+                // assigns this vreg (typically via a back-edge COPY),
+                // hoisting changes the value seen on the first iteration
+                // and breaks the loop.
+                uint64 dest = ir_insn_dest(ii)
+                if dest != 0 && dest < ir_def_bb_cap {
+                    uint64 dchk_p = ir_def_bb_buf + dest * 4
+                    uint32 dchk_v = 0
+                    unsafe { *(dchk_p as uint32) -> dchk_v }
+                    if dchk_v == 0xFFFFFFFE { ii = next_ii; continue }
+                }
+
+                // Hoist: clone the insn into the preheader, just before
+                // its terminator. The original slot is NOPed.
+                uint64 new_idx = ir_emit(op, dest, s1, s2, imm, preheader)
+                ir_bb_remove_last(preheader)
+                ir_bb_insert_before_terminator(preheader, new_idx)
+                // Update def-bb map. The original def site's BB tag (the
+                // body BB) was the only entry for this vreg before the
+                // hoist (we filtered to single-BB-defined vregs). After
+                // hoist, the only live def is in preheader.
+                if dest != 0 && dest < ir_def_bb_cap {
+                    uint64 dp = ir_def_bb_buf + dest * 4
+                    uint32 ph32_w = preheader
+                    unsafe { *(dp as uint32) = ph32_w }
+                }
+                ir_insn_set_opcode(ii, 0)
+                changed = 1
+                ii = next_ii
+            }
+            cur_bb = cur_bb + 1
+        }
+
+        li = li + 1
+    }
+    return changed
+}
+
+static uint64 ir_licm_enabled = 1
+
+fn ir_opt_licm() {
+    if ir_licm_enabled == 0 { return }
+    if ir_loop_count == 0 { return }
+    uint64 iter = 0
+    while iter < 8 {
+        uint64 changed = ir_opt_licm_one_pass()
+        if changed == 0 { return }
+        iter = iter + 1
+    }
+}
+
 fn ir_optimize() {
     if ir_const_values == 0 { ir_const_values = alloc(65536 * 8) }
     if ir_const_known == 0 { ir_const_known = alloc(65536) }
@@ -9254,6 +9645,16 @@ fn ir_optimize() {
     // CSE can leave the original computation alive only to feed a COPY that
     // then produces the same dest. If nothing else references the original
     // dest, a second DCE pass cleans it up.
+    ir_opt_dce()
+    // LICM after CSE: redundant computations are already merged, so LICM
+    // sees one canonical instance per invariant expression to hoist.
+    // Hoisted insns get appended to the global insn array (high indices)
+    // but are spliced into the preheader's linked list before its
+    // terminator. ir_compute_liveness and ir_graph_color walk the linked
+    // list (not consecutive index ranges) so the new defs/uses are seen
+    // and the interference graph is correct.
+    //
+    ir_opt_licm()
     ir_opt_dce()
 }
 
@@ -9290,6 +9691,7 @@ fn ir_emit_x86_function(uint64 fn_node) {
     // 3. Register allocation
     ir_regalloc_init()
     ir_graph_color()
+
 
     // 4. Compute spill count
     ir_spill_count = 0
