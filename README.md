@@ -78,39 +78,17 @@ All 8 targets self-compile. CI verifies bootstrap fixed point (krc3 == krc4) and
 
 ## Install
 
-**Linux / macOS** (installs `krc`, `kr`, and stdlib to `~/.local/`):
+**Linux / macOS / Android (Termux)** — install script:
 ```bash
 curl -sSf https://raw.githubusercontent.com/Pantelis23/KernRift/main/install.sh | sh
 ```
 
-**Homebrew** (macOS / Linux):
-```bash
-brew install kernrift
-```
-
-**Scoop** (Windows):
-```powershell
-scoop bucket add kernrift https://github.com/Pantelis23/KernRift
-scoop install kernrift
-```
-
-**Winget** (Windows):
+**Windows** — `winget` (recommended):
 ```powershell
 winget install Pantelis23.KernRift
 ```
 
-**Debian/Ubuntu** (.deb):
-```bash
-curl -sSLO https://github.com/Pantelis23/KernRift/releases/latest/download/kernrift_2.8.8_amd64.deb
-sudo dpkg -i kernrift_2.8.8_amd64.deb
-```
-
-**AUR** (Arch Linux):
-```bash
-yay -S kernrift
-```
-
-**Windows** (PowerShell):
+**Windows** — install script (alternative):
 ```powershell
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
@@ -121,7 +99,7 @@ cargo install --git https://github.com/Pantelis23/KernRift-bootstrap kernriftc
 make build && make install
 ```
 
-This installs `krc` and `kr` to `~/.local/bin/` and the standard library to `~/.local/share/kernrift/`. On Windows, `install.ps1` installs `krc.exe` and `kr.exe` to `%LOCALAPPDATA%\KernRift\`.
+This installs `krc` and `kr` to `~/.local/bin/` and the standard library to `~/.local/share/kernrift/`. On Windows, the installer puts `krc.exe` and `kr.exe` into `%LOCALAPPDATA%\KernRift\`.
 
 ## Language
 
