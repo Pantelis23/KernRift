@@ -2,6 +2,46 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## v2.8.23 — 2026-04-30
+
+### Performance
+- **Self-compile peak RSS drops 96–99 %.** Single-arch went from
+  806 MB → 33 MB; fat (8 slices) went from 6.3 GB → 87 MB. Wall-clock
+  improves ~30 % alongside (single-arch 1.52 s → 1.06 s, fat 11.9 s →
+  8.4 s on a Ryzen 9 7900X), and Pi 400 fat self-compile now actually
+  finishes — previously it triggered heavy swap and never completed.
+  Three fixes:
+
+  1. **`ir_emit_copy_to_snapshot` was leaking its `pairs` buffer**
+     (`ir.kr:898`). The function is called for every if/else, while,
+     and match merge — across the self-host's ~700 functions, that
+     was thousands of unfreed allocations. Added the missing
+     `dealloc(pairs)`.
+
+  2. **`ir_block_offsets` / `ir_br_fixups` / `ir_ret_fixups` were
+     re-allocated per emitted function** without freeing the previous
+     buffer (both `ir.kr` and `ir_aarch64.kr`). 52 KB × ~700 functions
+     × 8 slices = ~290 MB leaked per fat self-compile. Fixed with
+     grow-as-needed caps (`ir_block_offsets_cap`, etc.) so the
+     buffers are reused and only realloc when a function needs more
+     capacity than previously seen.
+
+  3. **`ir_compute_liveness` allocated a per-BB scratch set
+     (`tmp = alloc(set_bytes)`)** inside the dataflow loop and never
+     freed it. The dataflow loop iterates until convergence (typically
+     3–8 passes), each touching every BB, so total leak ≈
+     `passes × bb_count × set_bytes` per function. Hoisted the
+     allocation to a static `ir_live_tmp` (with a `_cap` companion);
+     the scratch is now reused across BBs *and* across iterations,
+     which also explains the wall-clock gain (no per-BB malloc/free
+     overhead).
+
+  Codegen output buffer's old 512 MB up-front cap was also reduced
+  to 4 MB initial with a doubling growth path in `emit_byte`. On
+  Linux this was mostly virtual reservation (lazy fault), but the
+  growable form removes the surprise on RAM-tight platforms and is
+  cleaner to reason about.
+
 ## v2.8.22 — 2026-04-29
 
 ### Infrastructure

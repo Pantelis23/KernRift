@@ -334,12 +334,18 @@ fn codegen_init(uint64 capacity, uint64 source, uint64 tokens) {
 
 fn emit_byte(uint8 b) {
     if out_len >= out_cap {
-        // Silent truncation produced mysterious SIGSEGVs in generated
-        // binaries that over-ran the 4 MB default (large static arrays).
-        // Fail loudly so the next program that hits the ceiling sees
-        // a diagnostic and can bump the cap in codegen_init.
-        write(2, "codegen: output buffer overflow (out_cap exceeded)\n", 51)
-        exit(1)
+        // Grow the output buffer geometrically — doubling the cap and
+        // memcpying the existing bytes — so callers can size codegen_init
+        // for the common case (a few MB per slice) without paying a 512
+        // MB virtual reservation up front. The Pi 400's 4 GB of RAM hits
+        // hard swap with the old fixed cap.
+        uint64 new_cap = out_cap * 2
+        if new_cap < 4096 { new_cap = 4096 }
+        uint64 new_buf = alloc(new_cap)
+        memcpy(new_buf, out_buf, out_len)
+        dealloc(out_buf)
+        out_buf = new_buf
+        out_cap = new_cap
     }
     uint64 p = out_buf + out_len
     unsafe { *(p as uint8) = b }

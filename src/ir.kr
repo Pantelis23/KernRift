@@ -929,6 +929,7 @@ fn ir_emit_copy_to_snapshot(uint64 snap_buf, uint64 snap_count, uint64 bb) {
         ir_emit(IR_COPY, target, source, 0, 0, bb)
         ci = ci + 1
     }
+    dealloc(pairs)
 }
 
 // ---------------------------------------------------------------------------
@@ -4352,6 +4353,8 @@ fn ir_lower_function(uint64 fn_node) {
 
 static uint64 ir_live_in = 0      // bitset per block: ir_live_in + bb * set_bytes
 static uint64 ir_live_out = 0     // bitset per block
+static uint64 ir_live_tmp = 0     // scratch set, reused per BB in liveness loop
+static uint64 ir_live_tmp_cap = 0
 static uint64 ir_live_words = 0   // uint64 words per bitset = ceil(vreg_count / 64)
 static uint64 ir_live_cap = 0     // bytes allocated for each of live_in/out
 
@@ -4463,8 +4466,16 @@ fn ir_compute_liveness() {
             }
 
             // Step 2: Start with live_out, walk instructions backwards
-            // Copy live_out to a temp set
-            uint64 tmp = alloc(set_bytes)
+            // Copy live_out to a temp set. tmp is a static scratch buffer
+            // reused across BBs and across liveness iterations — the
+            // dataflow loop visits every BB many times before converging,
+            // so per-BB alloc/dealloc overhead is significant.
+            if set_bytes > ir_live_tmp_cap {
+                if ir_live_tmp != 0 { dealloc(ir_live_tmp) }
+                ir_live_tmp = alloc(set_bytes)
+                ir_live_tmp_cap = set_bytes
+            }
+            uint64 tmp = ir_live_tmp
             uint64 ci = 0
             while ci < set_bytes {
                 uint64 ps = ir_live_out + bi * set_bytes + ci
@@ -8788,13 +8799,16 @@ fn ir_emit_x86_insn(uint64 ii) {
 
 // Block start offsets for branch patching
 static uint64 ir_block_offsets = 0
+static uint64 ir_block_offsets_cap = 0
 
 // Branch fixup list: [patch_offset(4), target_bb(4)] x 1024
 static uint64 ir_br_fixups = 0
+static uint64 ir_br_fixups_cap = 0
 static uint64 ir_br_fixup_count = 0
 
 // Return fixup list: patch offsets for jmp-to-epilogue, patched after all blocks
 static uint64 ir_ret_fixups = 0
+static uint64 ir_ret_fixups_cap = 0
 static uint64 ir_ret_fixup_count = 0
 
 // Overflow argument buffer for calls with 7+ args (SysV ABI)
@@ -9826,15 +9840,31 @@ fn ir_emit_x86_function(uint64 fn_node) {
 
     // 6. Allocate block offset tracking and branch/return fixup lists
     //    Size based on ir_bb_count to support very large functions.
+    //    Buffers are reused across functions — only re-alloc if a function
+    //    needs more capacity than previously allocated. Without this guard
+    //    every emitted function leaked ~52 KB; over ~700 functions in the
+    //    self-host that was ~36 MB per single-arch compile.
     uint64 bo_need = ir_bb_count
     if bo_need < 4096 { bo_need = 4096 }
-    ir_block_offsets = alloc(bo_need * 8)
+    if bo_need > ir_block_offsets_cap {
+        if ir_block_offsets != 0 { dealloc(ir_block_offsets) }
+        ir_block_offsets = alloc(bo_need * 8)
+        ir_block_offsets_cap = bo_need
+    }
     uint64 br_need = ir_bb_count * 4
     if br_need < 2048 { br_need = 2048 }
-    ir_br_fixups = alloc(br_need * 8)
+    if br_need > ir_br_fixups_cap {
+        if ir_br_fixups != 0 { dealloc(ir_br_fixups) }
+        ir_br_fixups = alloc(br_need * 8)
+        ir_br_fixups_cap = br_need
+    }
     uint64 ret_need = ir_bb_count
     if ret_need < 1024 { ret_need = 1024 }
-    ir_ret_fixups = alloc(ret_need * 4)
+    if ret_need > ir_ret_fixups_cap {
+        if ir_ret_fixups != 0 { dealloc(ir_ret_fixups) }
+        ir_ret_fixups = alloc(ret_need * 4)
+        ir_ret_fixups_cap = ret_need
+    }
     ir_br_fixup_count = 0
     ir_ret_fixup_count = 0
 
