@@ -4731,6 +4731,44 @@ static uint64 ir_ig_cap = 0
 static uint64 ir_color_tmp_buf = 0
 static uint64 ir_color_tmp_cap = 0
 
+// Union-find for copy coalescing. parent[v] == v means v is its own
+// representative; otherwise follow parent[v] to its rep. After
+// ir_graph_color, every vreg's color is propagated from its rep.
+//
+// `ir_coalesce_enabled` is a runtime gate. The aggressive Chaitin-style
+// pass below is correct for every isolated test in the suite (438/439
+// pass) but it diverges the bootstrap fixed-point check on a still-
+// unidentified pattern in the self-compile, so it ships off-by-default.
+// Set to 1 to opt in (e.g. for size experiments) once the regression is
+// localised.
+static uint64 ir_uf_parent = 0
+static uint64 ir_uf_cap = 0
+static uint64 ir_coalesce_enabled = 0
+
+fn ir_uf_find(uint64 v) -> uint64 {
+    uint64 cur = v
+    while 1 == 1 {
+        uint64 pp = ir_uf_parent + cur * 4
+        uint32 pw = 0
+        unsafe { *(pp as uint32) -> pw }
+        uint64 par = pw
+        if par == cur { break }
+        cur = par
+    }
+    // Path compression — flatten so future lookups are O(1).
+    uint64 walk = v
+    while walk != cur {
+        uint64 pp2 = ir_uf_parent + walk * 4
+        uint32 pw2 = 0
+        unsafe { *(pp2 as uint32) -> pw2 }
+        uint64 next = pw2
+        uint32 cw = cur
+        unsafe { *(pp2 as uint32) = cw }
+        walk = next
+    }
+    return cur
+}
+
 fn ir_get_phys_reg(uint64 vreg) -> uint64 {
     if vreg == 0 { return 0xFFFFFFFF }
     if vreg >= ir_vreg_next { return 0xFFFFFFFF }
@@ -4944,8 +4982,91 @@ fn ir_graph_color() {
         bi = bi + 1
     }
 
+    // ----- Copy coalescing (aggressive) -----
+    // For each IR_COPY (op 61) with a real src1 (i.e. reg-reg copy, not
+    // a param load), if dest and src1 don't already interfere, union
+    // them in ir_uf_parent so the greedy colorer assigns them the same
+    // colour. The redundant `mov rN, rN` is then dropped by
+    // ir_emit_mov_r64_r64's dst==src short-circuit (and the ARM64
+    // equivalent). Aggressive Chaitin-style: we only check for direct
+    // interference, no Briggs degree heuristic. If this ever triggers
+    // extra spills, switch to conservative coalescing here.
+    if ir_uf_cap < vcount {
+        if ir_uf_parent != 0 { dealloc(ir_uf_parent) }
+        ir_uf_cap = vcount
+        if ir_uf_cap < 64 { ir_uf_cap = 64 }
+        ir_uf_parent = alloc(ir_uf_cap * 4)
+    }
+    uint64 ufi = 0
+    while ufi < vcount {
+        uint64 ufp = ir_uf_parent + ufi * 4
+        uint32 ufv = ufi
+        unsafe { *(ufp as uint32) = ufv }
+        ufi = ufi + 1
+    }
+
+    uint64 cii = 0
+    while cii < ir_insn_count && ir_coalesce_enabled != 0 {
+        uint64 cop = ir_insn_opcode(cii)
+        if cop == 61 {
+            uint64 cdv = ir_insn_dest(cii)
+            uint64 csv = ir_insn_src1(cii)
+            if cdv != 0 && csv != 0 && cdv < vcount && csv < vcount {
+                uint64 crd = ir_uf_find(cdv)
+                uint64 crs = ir_uf_find(csv)
+                if crd != crs {
+                    // Test interference: bit (crs & 63) in row[crd] word (crs/64).
+                    uint64 cip = ig + crd * row_bytes + (crs / 64) * 8
+                    uint64 civ = 0
+                    unsafe { *(cip as uint64) -> civ }
+                    uint64 inter = (civ >> (crs & 63)) & 1
+                    if inter == 0 {
+                        // Merge: row[crd] |= row[crs]; for every neighbor
+                        // n in row[crs], set IG[n][crd] so foreign rows
+                        // also see crd as a neighbor of every node that
+                        // used to neighbor crs.
+                        uint64 mw = 0
+                        while mw < row_words {
+                            uint64 sa = ig + crs * row_bytes + mw * 8
+                            uint64 sav = 0
+                            unsafe { *(sa as uint64) -> sav }
+                            if sav != 0 {
+                                uint64 da = ig + crd * row_bytes + mw * 8
+                                uint64 dav = 0
+                                unsafe { *(da as uint64) -> dav }
+                                unsafe { *(da as uint64) = dav | sav }
+                                uint64 sb = sav
+                                while sb != 0 {
+                                    uint64 sp = 0
+                                    uint64 st = sb
+                                    while (st & 1) == 0 { st = st >> 1; sp = sp + 1 }
+                                    uint64 nidx = mw * 64 + sp
+                                    if nidx != crd && nidx < vcount {
+                                        uint64 nrp = ig + nidx * row_bytes + (crd / 64) * 8
+                                        uint64 nrv = 0
+                                        unsafe { *(nrp as uint64) -> nrv }
+                                        nrv = nrv | (1 << (crd & 63))
+                                        unsafe { *(nrp as uint64) = nrv }
+                                    }
+                                    sb = sb & ~(1 << sp)
+                                }
+                            }
+                            mw = mw + 1
+                        }
+                        // Union: parent[crs] = crd
+                        uint64 ufpp = ir_uf_parent + crs * 4
+                        uint32 ufpw = crd
+                        unsafe { *(ufpp as uint32) = ufpw }
+                    }
+                }
+            }
+        }
+        cii = cii + 1
+    }
+
     // Greedy coloring: for each vreg, assign the lowest color not used
-    // by any interfering neighbor.
+    // by any interfering neighbor. Followers (uf_find(vi) != vi) are
+    // skipped; their colour is propagated from their rep below.
     uint64 vi = 0
     while vi < vcount {
         uint64 rp = ir_reg_assign + vi * 4
@@ -4956,6 +5077,10 @@ fn ir_graph_color() {
 
     vi = 1
     while vi < vcount {
+        if ir_uf_find(vi) != vi {
+            vi = vi + 1
+            continue
+        }
         // Collect colors used by interfering neighbors
         uint64 used_colors = 0
         uint64 nw = 0
@@ -4969,7 +5094,10 @@ fn ir_graph_color() {
                 while (bt & 1) == 0 { bt = bt >> 1; bp = bp + 1 }
                 uint64 neighbor = nw * 64 + bp
                 if neighbor < vcount {
-                    uint64 nrp = ir_reg_assign + neighbor * 4
+                    // Look up rep's colour — followers haven't been
+                    // assigned yet but their rep may have been.
+                    uint64 nrep = ir_uf_find(neighbor)
+                    uint64 nrp = ir_reg_assign + nrep * 4
                     uint32 nc = 0
                     unsafe { *(nrp as uint32) -> nc }
                     uint64 wnc = nc
@@ -4994,6 +5122,21 @@ fn ir_graph_color() {
             color = color + 1
         }
 
+        vi = vi + 1
+    }
+
+    // Propagate rep colours to followers so ir_get_phys_reg works
+    // uniformly for every vreg.
+    vi = 1
+    while vi < vcount {
+        uint64 rep = ir_uf_find(vi)
+        if rep != vi {
+            uint64 rrp = ir_reg_assign + rep * 4
+            uint32 rc = 0
+            unsafe { *(rrp as uint32) -> rc }
+            uint64 frp = ir_reg_assign + vi * 4
+            unsafe { *(frp as uint32) = rc }
+        }
         vi = vi + 1
     }
 

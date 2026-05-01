@@ -3,6 +3,8 @@ import "ast.kr"
 import "parser.kr"
 import "codegen.kr"
 import "codegen_aarch64.kr"
+import "ir.kr"
+import "ir_aarch64.kr"
 import "format_macho.kr"
 import "format_pe.kr"
 import "format_archive.kr"
@@ -12,7 +14,6 @@ import "analysis.kr"
 import "living.kr"
 import "runtime.kr"
 import "formatter.kr"
-// formatter.kr is included via cat command, not import
 
 // KernRift self-hosted compiler — main
 

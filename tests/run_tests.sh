@@ -3670,6 +3670,42 @@ else
 fi
 rm -f "$REPO_ROOT/test_tmp_$$.kr" /tmp/krc_fat_all_$$ /tmp/krc_fat_two_$$
 
+# --- std/alloc.kr smoke ---
+echo ""
+echo "--- std/alloc arenas + pools ---"
+run_test "arena_bump" '
+import "std/alloc.kr"
+fn main() {
+    u64 a = arena_new(4096)
+    u64 p1 = arena_alloc(a, 64)
+    u64 p2 = arena_alloc(a, 128)
+    if p1 == 0 { exit(1) }
+    if p2 <= p1 { exit(2) }
+    if (p2 - p1) < 64 { exit(3) }
+    store64(p1, 0xCAFE)
+    if load64(p1) != 0xCAFE { exit(4) }
+    arena_reset(a)
+    u64 p3 = arena_alloc(a, 64)
+    if p3 != p1 { exit(5) }
+    arena_destroy(a)
+    exit(42)
+}' 42
+run_test "pool_alloc_free" '
+import "std/alloc.kr"
+fn main() {
+    u64 p = pool_new(64, 8)
+    u64 a = pool_alloc(p)
+    u64 b = pool_alloc(p)
+    if a == 0 { exit(1) }
+    if b == 0 { exit(2) }
+    if a == b { exit(3) }
+    pool_free(p, a)
+    u64 c = pool_alloc(p)
+    if c != a { exit(4) }   // free list reuses freed slot
+    pool_destroy(p)
+    exit(42)
+}' 42
+
 # --- IR dump test ---
 echo ""
 echo "--- IR dump test ---"
