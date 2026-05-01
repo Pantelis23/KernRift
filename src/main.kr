@@ -2175,12 +2175,16 @@ fn compile(uint64 input_path, uint64 output_path, uint64 arch, uint64 emit_mode)
     }
 
     // Function inlining: substitute pure single-expression callees at
-    // every call site. Runs before DCE so that inlined-out helpers
-    // become unreachable and get pruned automatically.
-    inline_pass(root, emit_mode)
+    // every call site. Runs before DCE; for translation-unit emit modes
+    // (.o / .s / IR dump) we tell DCE to seed every fn so the original
+    // definitions still appear in the output.
+    inline_pass(root)
 
     // Dead code elimination: scan AST for reachable functions
     dce_init()
+    if emit_mode == 3 || emit_mode == 5 || emit_mode == 6 {
+        dce_set_keep_all(1)
+    }
     dce_scan(root)
 
     // IR dump: lower each function to IR and print, then exit early
@@ -2920,7 +2924,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
 
     // Function inlining: must run before DCE so inlined-out helpers
     // become unreachable and get pruned.
-    inline_pass(root, 0)
+    inline_pass(root)
 
     // Dead code elimination
     dce_init()
@@ -3042,7 +3046,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     uint64 root2 = parse_module()
 
     // Re-run DCE for fresh AST
-    inline_pass(root2, 0)
+    inline_pass(root2)
     dce_init()
     dce_scan(root2)
 
@@ -3145,7 +3149,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     ast_init(262144)
     parser_init(my_tokens, saved_tcount)
     uint64 root3 = parse_module()
-    inline_pass(root3, 0)
+    inline_pass(root3)
     dce_init()
     dce_scan(root3)
 
@@ -3253,7 +3257,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     ast_init(262144)
     parser_init(my_tokens, saved_tcount)
     uint64 root4 = parse_module()
-    inline_pass(root4, 0)
+    inline_pass(root4)
     dce_init()
     dce_scan(root4)
 
@@ -3384,7 +3388,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     ast_init(262144)
     parser_init(my_tokens, saved_tcount)
     uint64 root5 = parse_module()
-    inline_pass(root5, 0)
+    inline_pass(root5)
     dce_init()
     dce_scan(root5)
 
@@ -3483,7 +3487,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     ast_init(262144)
     parser_init(my_tokens, saved_tcount)
     uint64 root6 = parse_module()
-    inline_pass(root6, 0)
+    inline_pass(root6)
     dce_init()
     dce_scan(root6)
 
@@ -3618,7 +3622,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     ast_init(262144)
     parser_init(my_tokens, saved_tcount)
     uint64 root8 = parse_module()
-    inline_pass(root8, 0)
+    inline_pass(root8)
     dce_init()
     dce_scan(root8)
 
@@ -3736,7 +3740,7 @@ fn compile_fat(uint64 input_path, uint64 output_path) {
     ast_init(262144)
     parser_init(my_tokens, saved_tcount)
     uint64 root7 = parse_module()
-    inline_pass(root7, 0)
+    inline_pass(root7)
     dce_init()
     dce_scan(root7)
 

@@ -10094,6 +10094,14 @@ static uint64 dce_fn_map_count = 0
 // DCE enabled flag (0 = disabled, 1 = enabled)
 static uint64 dce_enabled = 0
 
+// "Translation unit" mode: when set, dce_scan seeds every top-level
+// function as live, not just `main` + @export. Used by --emit=obj,
+// --emit=asm, --emit=ir-dump where every defined function is part of
+// the produced artifact (.o symbols for the linker, asm listing for
+// the user, IR dump for inspection). Inlining can still substitute
+// at call sites; the original definition just isn't pruned.
+static uint64 dce_keep_all = 0
+
 @export
 fn dce_init() {
     dce_table = alloc(2048 * 4)
@@ -10101,6 +10109,12 @@ fn dce_init() {
     dce_fn_map = alloc(1024 * 8)
     dce_fn_map_count = 0
     dce_enabled = 1
+    dce_keep_all = 0
+}
+
+@export
+fn dce_set_keep_all(uint64 v) {
+    dce_keep_all = v
 }
 
 // Check if a function name token is already in the live set
@@ -10353,16 +10367,20 @@ fn dce_scan(uint64 mod_node) {
         if ck == 2 {
             uint32 name_tok = ast_data1(wchild)
             dce_register_fn(name_tok, wchild)
-            // Seed with main and @export functions
             uint64 wnt = name_tok
-            if tok_matches(wnt, "main", 4) != 0 {
+            // Translation-unit mode keeps every fn alive — see comment
+            // on dce_keep_all. Otherwise only main + @export seed.
+            if dce_keep_all != 0 {
                 dce_add(wnt)
-            }
-            // Check if @export (data4 bit 2)
-            uint32 ann = ast_data4(wchild)
-            uint64 is_exp = ann & 4
-            if is_exp != 0 {
-                dce_add(wnt)
+            } else {
+                if tok_matches(wnt, "main", 4) != 0 {
+                    dce_add(wnt)
+                }
+                uint32 ann = ast_data4(wchild)
+                uint64 is_exp = ann & 4
+                if is_exp != 0 {
+                    dce_add(wnt)
+                }
             }
         }
         uint32 nxt = ast_next(wchild)
