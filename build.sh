@@ -17,6 +17,7 @@ cat \
     "$DIR/src/format_archive.kr" \
     "$DIR/src/format_android.kr" \
     "$DIR/src/analysis.kr" \
+    "$DIR/src/inliner.kr" \
     "$DIR/src/living.kr" \
     "$DIR/src/runtime.kr" \
     "$DIR/src/main.kr" \
