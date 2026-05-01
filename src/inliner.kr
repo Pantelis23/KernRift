@@ -570,11 +570,26 @@ fn inline_walk(uint64 node, uint64 root) {
     }
 }
 
+// True iff `emit_mode` produces a final binary where it's safe to
+// fold callees into their callers and let DCE prune the originals:
+//   0 = linux ELF, 1 = mach-o, 2 = PE, 4 = Android PIE
+// We deliberately disable for:
+//   3 = relocatable .o (definitions may be referenced by another TU)
+//   5 = asm listing  (the user wants to read source-level functions)
+//   6 = IR dump      (inspecting the lowered IR)
+fn inline_emit_allows(uint64 emit_mode) -> uint64 {
+    if emit_mode == 3 { return 0 }
+    if emit_mode == 5 { return 0 }
+    if emit_mode == 6 { return 0 }
+    return 1
+}
+
 // Top-level entry point. Call after sema has validated the AST and
 // before DCE / IR lowering. Idempotent — running twice is safe but
-// useless.
+// useless. `emit_mode` gates the pass: see inline_emit_allows.
 @export
-fn inline_pass(uint64 root) {
+fn inline_pass(uint64 root, uint64 emit_mode) {
+    if inline_emit_allows(emit_mode) == 0 { return }
     inline_init()
     inline_collect(root)
     if inline_table_count == 0 { return }

@@ -1200,7 +1200,7 @@ rm -f /tmp/krc_dce_unused_$$.kr /tmp/krc_dce_used_$$.kr /tmp/krc_dce_small_$$ /t
 echo ""
 echo "--- ELF relocatable (.o) test ---"
 TOTAL=$((TOTAL + 1))
-printf 'fn add(uint64 a, uint64 b) -> uint64 { uint64 r = a + b; return r }\nfn main() { exit(add(30, 12)) }\n' > /tmp/krc_obj_$$.kr
+printf 'fn add(uint64 a, uint64 b) -> uint64 { return a + b }\nfn main() { exit(add(30, 12)) }\n' > /tmp/krc_obj_$$.kr
 if $KRC $KRC_FLAGS --emit=obj /tmp/krc_obj_$$.kr -o /tmp/krc_obj_$$.o > /dev/null 2>&1; then
     # Check first 18 bytes: ELF magic (4) + class(1) + data(1) + version(1) + osabi(1) + padding(8) + e_type LE (2)
     # e_type at offset 16-17 should be 01 00 (ET_REL = 1, little-endian)
@@ -1691,7 +1691,7 @@ echo "--- emit=asm content tests ---"
 
 # Test asm output has function labels and mnemonics
 TOTAL=$((TOTAL + 1))
-echo 'fn add(uint64 a, uint64 b) -> uint64 { uint64 r = a + b; return r }
+echo 'fn add(uint64 a, uint64 b) -> uint64 { return a + b }
 fn main() { exit(add(1, 2)) }' > /tmp/krc_asm_test_$$.kr
 if $KRC $KRC_FLAGS --emit=asm /tmp/krc_asm_test_$$.kr -o /tmp/krc_asm_test_$$.s > /dev/null 2>&1; then
     if grep -q "add:" /tmp/krc_asm_test_$$.s && grep -q "main:" /tmp/krc_asm_test_$$.s && grep -q "ret" /tmp/krc_asm_test_$$.s; then
@@ -3696,25 +3696,26 @@ run_test "inline_section_kept" '@section(".text.init")
 fn boot() -> uint64 { return 42 }
 fn main() { exit(boot()) }' 42
 
-# Symbol-table check: a non-inlinable function (multi-statement body)
-# is preserved through DCE so it shows up in the .o symtab.
+# Symbol-table check: --emit=obj must NOT inline (the .o is meant to
+# be linked, so even a one-line `return a + b` helper has to stay in
+# the symtab).
 TOTAL=$((TOTAL + 1))
-printf 'fn helper(uint64 a, uint64 b) -> uint64 { uint64 r = a * b; return r }\nfn main() { exit(helper(6, 7)) }\n' > /tmp/krc_inl_obj_$$.kr
+printf 'fn helper(uint64 a, uint64 b) -> uint64 { return a + b }\nfn main() { exit(helper(6, 7)) }\n' > /tmp/krc_inl_obj_$$.kr
 if "$KRC" $KRC_FLAGS --emit=obj /tmp/krc_inl_obj_$$.kr -o /tmp/krc_inl_obj_$$.o > /dev/null 2>&1; then
     if command -v readelf > /dev/null 2>&1; then
         has_helper=$(readelf -s /tmp/krc_inl_obj_$$.o 2>/dev/null | grep -c "helper")
         if [ "$has_helper" -ge 1 ]; then
             PASS=$((PASS + 1))
-            echo "  inline_skip_multistmt_keeps_symbol: PASS"
+            echo "  inline_obj_keeps_symbol: PASS"
         else
-            echo "FAIL: inline_skip_multistmt_keeps_symbol (helper not in symtab)"; FAIL=$((FAIL + 1))
+            echo "FAIL: inline_obj_keeps_symbol (helper not in symtab)"; FAIL=$((FAIL + 1))
         fi
     else
         PASS=$((PASS + 1))
-        echo "  inline_skip_multistmt_keeps_symbol: SKIP (no readelf)"
+        echo "  inline_obj_keeps_symbol: SKIP (no readelf)"
     fi
 else
-    echo "FAIL: inline_skip_multistmt_keeps_symbol (compile failed)"; FAIL=$((FAIL + 1))
+    echo "FAIL: inline_obj_keeps_symbol (compile failed)"; FAIL=$((FAIL + 1))
 fi
 rm -f /tmp/krc_inl_obj_$$.kr /tmp/krc_inl_obj_$$.o
 
