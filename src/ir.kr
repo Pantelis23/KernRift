@@ -5075,7 +5075,9 @@ fn ir_graph_color() {
                         // >= K. If fewer than K such neighbours, the merged
                         // node is K-colourable on its own — safe to merge.
                         // Otherwise refuse: the merge would over-constrain
-                        // the colourer and likely force a spill.
+                        // the colourer and likely force a spill. Followers'
+                        // own deg slots are stale (zeroed at drop time), so
+                        // every degree lookup goes through ir_uf_find first.
                         uint64 hd = 0
                         uint64 bw = 0
                         while bw < row_words {
@@ -5095,7 +5097,8 @@ fn ir_graph_color() {
                                 while (st & 1) == 0 { st = st >> 1; sp = sp + 1 }
                                 uint64 nidx = bw * 64 + sp
                                 if nidx < vcount {
-                                    uint64 ndp = ir_uf_deg + nidx * 4
+                                    uint64 nrep = ir_uf_find(nidx)
+                                    uint64 ndp = ir_uf_deg + nrep * 4
                                     uint32 ndg32 = 0
                                     unsafe { *(ndp as uint32) -> ndg32 }
                                     if ndg32 >= IR_NUM_REGS { hd = hd + 1 }
@@ -5105,8 +5108,67 @@ fn ir_graph_color() {
                             bw = bw + 1
                         }
                         if hd >= IR_NUM_REGS {
-                            cii = cii + 1
-                            continue
+                            // George fallback: less conservative than Briggs.
+                            // Try both directions: for every neighbour t of A
+                            // (excluding B), t must interfere with B OR have
+                            // deg[t] < K. If either direction passes, the merge
+                            // is safe — neighbours of A either already saw a
+                            // K-colourable constraint via B, or are low-degree
+                            // and stay easy regardless of the new edge.
+                            //
+                            // Skip George when K is small (x86: K=6). Empirically
+                            // George's extra merges cost more in spills than they
+                            // save in elided MOVs once K drops below ~8 — the
+                            // colourer has too little slack to absorb the new
+                            // edges. ARM64 (K=10) sees ~800 B extra win from
+                            // George; x86 sees ~900 B regression.
+                            if IR_NUM_REGS < 8 {
+                                cii = cii + 1
+                                continue
+                            }
+                            uint64 g_a = keep; uint64 g_b = drop
+                            uint64 g_pass = 0
+                            uint64 g_try = 0
+                            while g_try < 2 {
+                                uint64 ok = 1
+                                uint64 gw = 0
+                                while gw < row_words {
+                                    uint64 gap = ig + g_a * row_bytes + gw * 8
+                                    uint64 gav = 0
+                                    unsafe { *(gap as uint64) -> gav }
+                                    uint64 gbp = ig + g_b * row_bytes + gw * 8
+                                    uint64 gbv = 0
+                                    unsafe { *(gbp as uint64) -> gbv }
+                                    if gw == g_b / 64 { gav = gav & ~(1 << (g_b & 63)) }
+                                    if gw == g_a / 64 { gav = gav & ~(1 << (g_a & 63)) }
+                                    while gav != 0 && ok != 0 {
+                                        uint64 sp = 0
+                                        uint64 st = gav
+                                        while (st & 1) == 0 { st = st >> 1; sp = sp + 1 }
+                                        uint64 nidx = gw * 64 + sp
+                                        if nidx < vcount {
+                                            uint64 in_b = (gbv >> sp) & 1
+                                            uint64 nrep = ir_uf_find(nidx)
+                                            uint64 ndp = ir_uf_deg + nrep * 4
+                                            uint32 ndg = 0
+                                            unsafe { *(ndp as uint32) -> ndg }
+                                            if in_b == 0 && ndg >= IR_NUM_REGS { ok = 0 }
+                                        }
+                                        gav = gav & ~(1 << sp)
+                                    }
+                                    if ok == 0 { gw = row_words } else { gw = gw + 1 }
+                                }
+                                if ok != 0 { g_pass = 1; g_try = 2 }
+                                else {
+                                    // swap A and B for the second attempt
+                                    g_a = drop; g_b = keep
+                                    g_try = g_try + 1
+                                }
+                            }
+                            if g_pass == 0 {
+                                cii = cii + 1
+                                continue
+                            }
                         }
 
                         // Merge: row[keep] |= row[drop]; for every neighbor
