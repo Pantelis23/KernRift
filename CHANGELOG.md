@@ -2,6 +2,51 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## v2.8.24 — 2026-05-04
+
+### Optimizations
+- **Briggs/George copy coalescing, on by default.** The graph-colouring
+  register allocator now collapses `vN = copy vM` pairs whose live
+  ranges don't interfere into a single colour, so the redundant
+  `mov rN, rN` is dropped at emit time. The coalescer is conservative
+  — Briggs counts neighbours of the merged class with degree ≥ K and
+  refuses if ≥ K such neighbours would remain (would force a spill).
+  When Briggs rejects, a George fallback (gated to K ≥ 8) tries either
+  direction: every neighbour t of one node must already interfere with
+  the other or have deg[t] < K. `--no-coalesce` disables.
+
+  krc.kr self-compile vs `--no-coalesce`:
+  - x86_64 (K=6, Briggs only): −72 B
+  - arm64  (K=10, Briggs+George): −1592 B
+
+  Two correctness items folded in:
+  1. Union always points high → low, so the rep is the lower-numbered
+     vreg and is coloured first in the sequential walk. Without this,
+     a neighbour of a follower would look up `uf_find(follower) = rep`
+     where rep ≥ vi and read an as-yet-unassigned colour, silently
+     dropping the constraint and allowing collisions at runtime.
+  2. Degree lookups consult `deg[ir_uf_find(n)]` since followers' own
+     degree slots are zeroed at drop time. Without the redirect, both
+     Briggs and George could accept merges that the rep's true degree
+     should have rejected.
+
+- **AST-level function inliner.** Pure single-expression callees
+  (`fn add(a, b) -> uint64 { return a + b }`) are folded into their
+  call sites via in-place `Call` node mutation. DCE then drops the
+  unused originals. For `--emit=obj`, `--emit=asm`, and `--emit=ir`
+  every top-level function is seeded as live so the original symbols
+  still appear in the linker symbol table / asm listing / IR dump.
+  Eligibility: param uses ≤ 1, no recursion, no `@section`, expression
+  body uses only basic kinds (binop / cmp / call / ident / literals).
+
+### Tooling
+- **`--help` rewritten** to cover every flag the parser handles —
+  output groups (`--arch` / `--target` / `--targets` / `--emit=…`),
+  code-gen toggles (`--ir` / `--legacy` / `--coalesce` / `--no-coalesce`
+  / `--O0` / `--freestanding` / `--debug` / `-g`), and the living
+  compiler subcommands. Previously `--legacy`, `--coalesce`, `--O0`,
+  and the `lc` proposal flags were undocumented.
+
 ## v2.8.23 — 2026-04-30
 
 ### Performance
