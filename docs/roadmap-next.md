@@ -1,6 +1,6 @@
 # KernRift Roadmap — Next Features
 
-Post-v2.8.8. Items below are listed roughly in priority order; "Status" records
+Post-v2.8.24. Items below are listed roughly in priority order; "Status" records
 what's currently blocking each one.
 
 ---
@@ -36,20 +36,26 @@ dropped from 996 KB → 879 KB (-12%).
 
 ---
 
-## R2: IR x86_64 size regression _(closes the 10–34 % gap vs legacy)_
+## R2: IR x86_64 size regression — ✅ RESOLVED v2.8.24
 
-IR-compiled x86_64 krc is 10–34 % larger than the legacy direct-walking
-codegen for the same source (see `benchmarks/BENCHMARKS.md`). Causes we
-know of:
+IR-compiled x86_64 krc was 10–34 % larger than legacy. Three landings
+closed and reversed the gap:
 
-- Extra MOVs inserted between interference-graph colors when parameter
-  pinning and spill coalescing don't pick the same register.
-- Unnecessary `rip`-relative reloads where the value is still live in a
-  callee-saved.
-- No peephole after emission — no `mov rax, X ; mov rcx, rax` →
-  `mov rcx, X`.
+- **v2.8.21 RA work:** partial used-callee-save prologue (only push the
+  callee-saves a function actually colors into) plus a cross-register
+  spill-reload peephole (`mov rax, [rsp+8] ; mov rcx, rax` →
+  `mov rcx, [rsp+8]`).
+- **v2.8.24 inliner:** AST-level pass folds pure single-expression
+  callees into call sites; DCE drops the unused originals (with a
+  `dce_keep_all` flag for `--emit=obj/asm/ir` so symbols still appear).
+- **v2.8.24 Briggs/George coalescer:** the graph-coloring RA collapses
+  `vN = copy vM` whose live ranges don't interfere; the redundant
+  `mov rN, rN` is dropped at emit time. Briggs is the conservative
+  gate; George is a less-conservative fallback gated to K ≥ 8.
 
-**Status:** Not started.
+Net result on krc.kr self-compile: IR is **smaller** than legacy on
+both architectures (linux x86_64: 1.15 MB IR vs 1.20 MB legacy;
+linux arm64: 0.83 MB IR vs 1.04 MB legacy).
 
 ---
 
@@ -174,6 +180,11 @@ the IR backend's in-memory buffer.
 - ~~Variadic `print` / `println`~~ — v2.8.3
 - ~~f-string interpolation~~ — v2.8.3
 - ~~`compile_fat` 18 GB RSS leak~~ — v2.8.6
+- ~~LICM (loop-invariant code motion)~~ — v2.8.22
+- ~~Partial used-callee-save prologue + spill-reload peephole~~ — v2.8.21
+- ~~Three IR memory leaks (RSS −96–99 %)~~ — v2.8.23
+- ~~AST-level function inliner~~ — v2.8.24
+- ~~Briggs/George copy coalescing~~ — v2.8.24
 
 ---
 

@@ -2,20 +2,19 @@
 
 **KernRift is a bare-metal systems programming language and compiler created by Pantelis Christou.**
 
-A self-hosted systems language compiler for kernel-first development. KernRift compiles itself — no Rust, no C, no LLVM, no external toolchain. It produces native executables for x86_64 and AArch64 on Linux, Windows, macOS, and Android, with BCJ+LZ-Rift-compressed fat binaries as the default output (8 platform slices per `.krbo`). The `kr` runner executes `.krbo` fat binaries on any supported platform. The compiler self-hosts on all 8 targets and is verified via CI on every push. The compiler ships with an **SSA-based IR backend** with liveness analysis, graph-coloring register allocation, and a constant-folding / DCE / CSE optimizer, producing native machine code for all targets directly from the IR — no assembler in the loop.
+A self-hosted systems language compiler for kernel-first development. KernRift compiles itself — no Rust, no C, no LLVM, no external toolchain. It produces native executables for x86_64 and AArch64 on Linux, Windows, macOS, and Android, with BCJ+LZ-Rift-compressed fat binaries as the default output (8 platform slices per `.krbo`). The `kr` runner executes `.krbo` fat binaries on any supported platform. The compiler self-hosts on all 8 targets and is verified via CI on every push. The compiler ships with an **SSA-based IR backend** with liveness analysis, graph-coloring register allocation, an AST-level function inliner, Briggs/George copy coalescing, LICM, constant folding, DCE, and CSE — producing native machine code for all targets directly from the IR, no assembler in the loop.
 
-**v2.8.8 highlights** (full details in [CHANGELOG.md](CHANGELOG.md)):
+**v2.8.24 highlights** (full details in [CHANGELOG.md](CHANGELOG.md)):
 
-- **Android fat-binary runner** now prefers `memfd_create` + `execveat(AT_EMPTY_PATH)` so `kr program.krbo` runs on Termux without touching the filesystem — no `kr-exec` file, no SELinux file-label transition, no chmod. Falls back to the file-based path on pre-3.17 kernels.
-- **IR `main()` now initializes `cli_envp`** — the IR backend previously left it at 0, forwarding `envp=NULL` to every child `exec_process()` spawned.
-- **compile_fat memory regression fixed** — a `uint64[1]` slot declared inside LZ4's match loop was leaking ~8 B per iteration; a self-compile hit 18 GB peak RSS before this release. Now ~1 GB, safely inside GitHub's 16 GB runner budget.
-- **Ten IR ARM64 miscompiles patched** — `str_eq` bytewise clobber, `atomic_*` OLD-vs-NEW return, `atomic_cas` branch offset, `memcmp`/struct-equality, `int_to_f32` / `f32_to_int` encoding, `println(0.0)` digit-count, `--debug` div-by-zero trap, and a handful of branch-offset imm19 `<<` bugs.
-- **Shipped ARM64 krc binaries route through legacy codegen** (Makefile + release.yml), while user-invoked `--arch=arm64` still defaults to IR. A separate compile_fat-on-IR-ARM64 segfault is tracked for the next release.
+- **Briggs/George copy coalescing, on by default.** The graph-colouring register allocator collapses `vN = copy vM` pairs whose live ranges don't interfere, so the redundant `mov rN, rN` is dropped at emit time. Briggs is the conservative gate (refuses if ≥ K neighbours of the merged class would have degree ≥ K); George is a less-conservative fallback gated to K ≥ 8. krc.kr self-compile vs `--no-coalesce`: x86_64 −72 B, arm64 −1592 B. `--no-coalesce` disables.
+- **AST-level function inliner.** Pure single-expression callees (`fn add(a, b) -> u64 { return a + b }`) are folded into their call sites; DCE then drops the unused originals. `--emit=obj` / `--emit=asm` / `--emit=ir` keep every top-level fn live so symbols still appear in the linker table / asm listing / IR dump.
+- **`--help` rewritten** to cover every flag the parser handles, grouped by output / code-gen / living-compiler / info. Previously `--legacy`, `--coalesce`, `--O0`, and the entire `lc` proposal surface were undocumented.
+- **IR ARM64 `compile_fat` fixed** (R1). The v2.8.7-era miscompile that forced a `--legacy --arch=arm64` shipping recipe is gone; ARM64 slices in fat binaries now go through IR by default. `--legacy` remains as an explicit opt-out, not a silent fallback.
 
 ## Features
 
 - **Self-hosting** — the compiler compiles itself to a fixed point. No Rust, no C, no LLVM in the build.
-- **SSA IR backend** — target-independent intermediate representation with liveness analysis and graph-coloring register allocation. Emits x86_64 and AArch64 machine code directly. `--legacy` falls back to the original direct codegen if needed.
+- **SSA IR backend** — target-independent intermediate representation with liveness analysis, graph-coloring register allocation with Briggs/George copy coalescing, an AST-level function inliner, LICM, constant folding, DCE, and CSE. Emits x86_64 and AArch64 machine code directly — no assembler, no linker in the loop. `--legacy` falls back to the original direct codegen.
 - **Cross-platform** — Linux, Windows, macOS, Android on x86_64 and ARM64 from a single source tree.
 - **Floating-point** — `f32` and `f64` types with full arithmetic, comparisons, conversions, and a math library (`sin`, `cos`, `exp`, `log`, `pow`, `sqrt`, `fmt_f64`). `f16` for storage. Hardware `sqrt`, software trig/exp/log.
 - **Multi-return** — `return (a, b)` and `(u64 x, u64 y) = call()` for 2-tuple destructuring.
@@ -58,23 +57,19 @@ krc check module.kr
 krc lc program.kr
 ```
 
-### Self-compilation (v2.8.8, ~204K tokens, ~128K AST nodes, ~1.5 MB source)
+### Self-compilation (v2.8.24, ~227K tokens, ~142K AST nodes, ~1.5 MB source)
 
-All 8 targets self-compile. CI verifies bootstrap fixed point (krc3 == krc4) and runs 335 tests on every push. Numbers below are on an AMD Ryzen 9 7900X — see [`benchmarks/BENCHMARKS.md`](benchmarks/BENCHMARKS.md) for the complete run including gcc / rustc comparisons.
+All 8 targets self-compile. CI verifies bootstrap fixed point (krc3 == krc4) and runs **448 tests** on every push. Numbers below are on an AMD Ryzen 9 7900X — see [`benchmarks/BENCHMARKS.md`](benchmarks/BENCHMARKS.md) for the complete run including gcc / rustc comparisons.
 
-| Target | Legacy codegen | IR codegen | IR is… |
-|--------|---------------:|-----------:|-------:|
-| linux   x86_64 ELF    |  249 ms / 1.12 MB | 1 600 ms / 1.50 MB | **+34 %** size |
-| linux   arm64  ELF    |  244 ms / 0.97 MB | 1 595 ms / 0.85 MB | **−12 %** size |
-| windows x86_64 PE     |  245 ms / 1.40 MB | 1 600 ms / 1.56 MB | +11 % size |
-| windows arm64  PE     |  244 ms / 1.01 MB | 1 606 ms / 0.91 MB | −10 % size |
-| macOS   x86_64 Mach-O |  249 ms / 1.13 MB | 1 605 ms / 1.51 MB | +33 % size |
-| macOS   arm64  Mach-O |  251 ms / 1.02 MB | 1 602 ms / 0.92 MB | −10 % size |
-| android x86_64 ELF    |  249 ms / 1.25 MB | 1 604 ms / 1.57 MB | +26 % size |
-| android arm64  ELF    |  244 ms / 1.05 MB | 1 597 ms / 0.98 MB |  −6 % size |
-| **Fat binary (all 8)**| **1 990 ms / 3.88 MB** | **1 982 ms / 3.87 MB** | same (hybrid default) |
+| Target | Legacy codegen | IR codegen (default) | IR vs legacy |
+|--------|---------------:|---------------------:|-------------:|
+| linux   x86_64 ELF    |  ~290 ms / 1.20 MB | ~1 135 ms / 1.15 MB | **−4 %** size |
+| linux   arm64  ELF    |  ~290 ms / 1.04 MB | ~1 130 ms / 0.83 MB | **−20 %** size |
+| **Fat binary (all 8)**| — | **~9.2 s / 3.84 MB** | (IR all 8 slices) |
 
-**Current defaults**: `--arch=x86_64` stays on IR (optimizer wins matter more on real programs than the straight-line size regression); `--arch=arm64` uses IR (consistently 10 % smaller). Fat-binary builds (`krc program.kr`) route ARM64 slices through legacy because the IR ARM64 backend still miscompiles `compile_fat` itself — tracked as the next release milestone. `--legacy` and `--ir` flags force the respective backends.
+The IR path now produces smaller binaries than legacy on both architectures. Two things landed since v2.8.8 to flip the size story: a partial used-callee-save prologue + cross-register spill-reload peephole (v2.8.21 RA work), and v2.8.24's Briggs/George copy coalescer. The function inliner (v2.8.24) also folds pure single-expression callees so DCE can drop the originals.
+
+`--legacy` is now an explicit opt-out, not a fallback. `--ir` forces IR (the default). `--no-coalesce` turns off the copy coalescer.
 
 ## Install
 
@@ -220,7 +215,7 @@ Compiler intrinsics — no imports needed.
 
 ## Standard Library
 
-17 modules (~2500+ lines) in `std/`:
+18 modules (~4 100 lines) in `std/`:
 
 | Module | Functions |
 |--------|-----------|
@@ -229,6 +224,7 @@ Compiler intrinsics — no imports needed.
 | `std/math.kr` | `min`, `max`, `abs`, `clamp`, `pow`, `sqrt_int`, `gcd`, `is_prime` |
 | `std/fmt.kr` | `fmt_hex`, `fmt_bin`, `pad_left`, `pad_right` |
 | `std/mem.kr` | `realloc`, `memcmp`, `memzero`, `arena_init`, `arena_alloc`, `arena_reset` |
+| `std/alloc.kr` | Bump arenas (`arena_new`, `arena_alloc`, `arena_reset`, `arena_free`) and fixed-block pools (`pool_new`, `pool_alloc`, `pool_free`) |
 | `std/vec.kr` | `vec_new`, `vec_push`, `vec_get`, `vec_set`, `vec_pop`, `vec_remove`, `vec_contains`, `vec_len`, `vec_cap`, `vec_last`, `vec_clear`, `vec_free` |
 | `std/map.kr` | `map_new`, `map_set`, `map_get`, `map_has`, `map_len`, `map_keys`, `map_vals`, `map_free` |
 | `std/color.kr` | Color utilities: `rgb`, `rgba`, `alpha_blend` |
@@ -257,22 +253,24 @@ See the [`examples/`](examples/) directory for runnable programs covering every 
 
 ## Architecture
 
-~40 000 lines of KernRift across 17 source files + 17 stdlib modules (204 K tokens, 128 K AST nodes on self-compile). Self-compiles to a 1.1 MB x86_64 native binary in ~249 ms (legacy) / ~1.6 s (IR), or an 8-slice fat binary (BCJ + LZ-Rift compression) in ~2 s on an AMD Ryzen 9 7900X. **335 tests** pass, bootstrap fixed point verified on all 8 targets — Linux, macOS, Windows, and Android on both x86_64 and ARM64. See [`benchmarks/BENCHMARKS.md`](benchmarks/BENCHMARKS.md) for micro-benchmarks vs gcc / rustc and peak-memory numbers.
+~45 700 lines of KernRift across 19 source files + 18 stdlib modules (227 K tokens, 142 K AST nodes on self-compile). Self-compiles to a 1.15 MB x86_64 native binary in ~1.1 s (IR, default), a 0.83 MB ARM64 binary, or an 8-slice fat binary (BCJ + LZ-Rift compression) in ~9.2 s on an AMD Ryzen 9 7900X. **448 tests** pass, bootstrap fixed point verified on all 8 targets — Linux, macOS, Windows, and Android on both x86_64 and ARM64. See [`benchmarks/BENCHMARKS.md`](benchmarks/BENCHMARKS.md) for micro-benchmarks vs gcc / rustc and peak-memory numbers.
 
 | File | Purpose |
 |------|---------|
 | `lexer.kr` | Tokenizer (90+ kinds) |
 | `parser.kr` | Recursive descent + Pratt precedence |
-| `ir.kr` | SSA IR + x86_64 emitter (Linux / macOS / Windows / Android) |
+| `ir.kr` | SSA IR + x86_64 emitter (Linux / macOS / Windows / Android), liveness, graph-colour RA, Briggs/George coalescer, LICM, CF/DCE/CSE |
 | `ir_aarch64.kr` | AArch64 emitter fed from the same IR |
+| `inliner.kr` | AST-level pass that folds pure single-expression callees into call sites |
 | `codegen.kr` | Legacy direct x86_64 codegen (`--legacy` fallback) |
 | `codegen_aarch64.kr` | Legacy direct AArch64 codegen |
 | `analysis.kr` | Safety passes (incl. undeclared identifier detection) |
 | `living.kr` | Pattern detection + fitness |
+| `formatter.kr` | `krc fmt` source formatter |
 | `bcj.kr` | BCJ filters (x86_64 + AArch64) for compression |
 | `format_*.kr` | ELF, Mach-O, PE, AR, KRBO, KrboFat |
 | `runner.kr` | `kr` — fat-binary slice extractor / launcher |
-| `std/*.kr` | Standard library (17 modules, ~2500+ lines) |
+| `std/*.kr` | Standard library (18 modules, ~4 100 lines) |
 
 ## Bootstrap
 
@@ -289,15 +287,13 @@ A released `krc` binary compiles the current source into the next `krc`. No Rust
 | Platform | Compile | Run | Self-host | File I/O | Bootstrap |
 |----------|---------|-----|-----------|----------|-----------|
 | Linux x86_64 | ✅ | ✅ | ✅ | ✅ | ✅ fixed point |
-| Linux ARM64 | ✅ | ✅ | ✅ | ✅ | ✅ fixed point (legacy-compiled krc) |
-| macOS ARM64 | ✅ | ✅ | ✅ | ✅ | ✅ fixed point (legacy-compiled krc) |
+| Linux ARM64 | ✅ | ✅ | ✅ | ✅ | ✅ fixed point |
+| macOS ARM64 | ✅ | ✅ | ✅ | ✅ | ✅ fixed point |
 | macOS x86_64 | ✅ | ✅ | ✅ | ✅ | ✅ (Rosetta) |
 | Windows x86_64 | ✅ | ✅ | ✅ | ✅ | ✅ fixed point |
-| Windows ARM64 | ✅ | ✅ | ✅ | ✅ | ✅ krc3==krc4 (legacy-compiled krc) |
-| Android ARM64 | ✅ | ✅ | ✅ | ✅ | ✅ self-compiled on phone (legacy-compiled krc) |
+| Windows ARM64 | ✅ | ✅ | ✅ | ✅ | ✅ fixed point |
+| Android ARM64 | ✅ | ✅ | ✅ | ✅ | ✅ self-compiled on phone |
 | Android x86_64 | ✅ | ✅ | ✅ | ✅ | ✅ verified |
-
-> **Note on ARM64 krc binaries:** The shipped `krc-*-arm64` executables use the legacy codegen (13 % larger than IR) as a workaround for an IR ARM64 miscompile of `compile_fat` itself. User programs compiled by those binaries still go through IR on ARM64 and get the smaller, optimized output. The underlying codegen bug is the next milestone.
 
 ## License
 

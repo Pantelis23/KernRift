@@ -4,7 +4,7 @@ This document defines what "ABI compatibility" means in KernRift, which
 versions are compatible with which, and what we promise not to break
 between releases.
 
-The current release is **v2.8.14**. KernRift is pre-1.0. The policy below
+The current release is **v2.8.24**. KernRift is pre-1.0. The policy below
 describes what we do today; it will tighten at 1.0.
 
 ## Scope of the ABI
@@ -76,6 +76,7 @@ Currently frozen: all helpers documented in `docs/ERROR_HANDLING.md`
 | `--emit=exe/obj/asm/ir`  | Stable    |
 | `--target=<triple>`      | Stable    |
 | `--legacy`               | Stable during the IR migration; may become a no-op later. |
+| `--coalesce` / `--no-coalesce` | Stable surface — the heuristic may change. |
 | `--O0` / `--O1`          | Stable surface — the underlying optimizations may change. |
 | `--check=<list>`         | Experimental — not yet present; reserved. |
 

@@ -1,16 +1,14 @@
-# KernRift — Android ARM64 debug-kit for R1 / R3
+# KernRift — Android ARM64 debug-kit for R3 (R1 archived)
 
 You are Claude, running on Pantelis's laptop with ADB access to an
 unlocked Android phone (no root). This file is the complete recipe for
-reproducing and diagnosing two bugs that the upstream (cloud) Claude
+reproducing and diagnosing bugs that the upstream (cloud) Claude
 could not chase on qemu-aarch64:
 
-- **R1** — The IR ARM64 backend miscompiles `compile_fat`. A
-  native-ARM64 krc built via the IR path segfaults somewhere inside the
-  LZ4 pair-compression loop. Cross-compiled on x86 the output looks
-  identical to a legal build; on x86 the fixed point reproduces; but on
-  real ARM64 it dies. We currently ship `--legacy` for all ARM64
-  slices as a workaround. We want to drop that.
+- **R1** — *Resolved 2026-04-19.* The IR ARM64 `compile_fat`
+  miscompile is fixed; ARM64 `krc-*` binaries now ship with the IR
+  backend by default. The R1 reproduction section below is kept as
+  historical documentation in case a similar regression appears.
 
 - **R3** — The `device_block_read_write` test uses
   `syscall_raw(mmap, 0x66666000, …)` at a fixed VA. qemu-user can't

@@ -303,15 +303,16 @@ Spill slot access uses `SP + slot*8` with a fallback to `MOV xN, imm ;
 ADD xN, sp, xN ; LDR` when the offset exceeds the imm12-scaled limit
 (32760 bytes on ARM64).
 
-## Known miscompiles (tracked in docs/roadmap-next.md)
+## Known miscompiles
 
-- **R1**: the IR ARM64 backend mis-compiles `compile_fat` when the
-  resulting binary runs natively on ARM64. Happens under `-O0` too, so
-  it's in codegen/regalloc, not the optimizer. Workaround in place: all
-  shipped `krc-*-arm64` binaries use `--legacy` codegen.
-- **R2**: IR x86_64 output is 10–34 % larger than legacy. Likely cause:
-  extra register-move inserts at graph-coloring boundaries and no
-  peephole after emission.
+- **R1** (resolved in 2026-04-19): the IR ARM64 `compile_fat`
+  miscompile. All shipped `krc-*-arm64` binaries now use the IR
+  backend by default.
+- **R2** (resolved through v2.8.21–v2.8.24): the IR-vs-legacy size
+  regression. Partial used-callee-save prologue + cross-register
+  spill-reload peephole (v2.8.21), the AST-level inliner (v2.8.24),
+  and Briggs/George copy coalescing (v2.8.24) closed the gap; the
+  IR path is now strictly smaller than legacy on both architectures.
 
 ## Adding a new opcode — checklist
 
