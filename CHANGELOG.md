@@ -2,6 +2,68 @@
 
 All notable changes to `kernriftc` are documented in this file.
 
+## v2.8.25 — 2026-05-07
+
+### Codegen correctness
+- **`struct_var_table` reset per function.** The codegen's struct-var
+  table is global and was never cleared between functions, so two
+  functions in the same compilation unit declaring a variable of the
+  same name but different struct types silently mis-resolved field
+  offsets — `struct_var_lookup` walked linearly and returned the first
+  registered match. Concretely:
+
+  ```
+  struct A { u64 a0; u64 a1; u64 a2 }
+  struct B { u64 b0; u64 b1; u64 b2; u64 b3; u64 b4; u64 b5 }
+  fn touch_a() -> u64 { A w = ...; return w.a2 }   // ok
+  fn touch_b() -> u64 { B w = ...; return w.b5 }   // BUG: lookup wins A
+  ```
+
+  `touch_b`'s `w.b5` lowered as offset 8 (A's `a1`) — or returned
+  `0xFFFFFFFF` for fields A doesn't have, garbage-reading from there.
+  A second symptom: two consecutive return-by-value calls of
+  *different* struct types from the same caller frame segfaulted on
+  the second call because the wrong struct's size flowed into sret-
+  slot allocation in the caller frame, scribbling saved registers /
+  return address.
+
+  Fix: reset `struct_var_count = 0` at the start of each function's
+  codegen, in both backends — `var_reset()` for the legacy x86 path
+  and `ir_lower_function()` for the IR backend (both x86 and aarch64).
+  Per-function entries now live only for the duration of that
+  function's lowering. Regression repro lives at
+  `examples/codegen_struct_var_collision.kr` and
+  `examples/codegen_consecutive_struct_returns.kr`.
+
+- **IR Assign-alias clobber for bare-Ident RHS.** The Assign lowering
+  in `src/ir.kr` aliased the LHS to the RHS's vreg whenever RHS was a
+  bare Ident — Ident lowering returns the existing vreg without
+  copying. Subsequent mutations to the LHS (e.g. `t = t + 1` inside a
+  loop) then physically clobbered the source variable's storage via
+  the back-edge IR_COPY emitted by `ir_emit_copy_to_snapshot`:
+
+  ```
+  u64 t_lo = 0
+  u64 t = 999
+  t = t_lo                  // Assign-alias: t and t_lo share vreg
+  while t < N {
+      t = t + 1             // back-edge IR_COPY clobbers t_lo
+  }
+  // t_lo is now N, not 0
+  ```
+
+  VarDecl already emitted a fresh vreg + IR_COPY on every init path;
+  Assign was missing the mirror. Fix: after the existing ITOF /
+  F64TOF32 / F32TOF64 cast paths (which already produce fresh vregs),
+  check whether `val` still equals the local-vreg of the RHS Ident,
+  and if so emit `IR_COPY fresh_val, val` and rebind the LHS. Statics
+  on the RHS already produce a fresh vreg via IR_STATIC_LOAD, so the
+  equality check naturally fails. Compound-assign / field / index /
+  call-result LHS paths are all unaffected. Regression repro lives at
+  `examples/codegen_bare_ident_repro.kr`.
+
+Both fixes are also pulled in by the v0.1.1 MLRift port.
+
 ## v2.8.24 — 2026-05-04
 
 ### Optimizations
