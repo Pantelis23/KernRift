@@ -642,6 +642,13 @@ fn var_reset() {
     var_table_size = 0
     arr_elem_count = 0
     var_type_count = 0
+    // struct_var_table is per-function: a variable named `w` typed as
+    // struct A in fn f() must NOT leak into fn g() where `w` is typed as
+    // struct B. Without this reset, struct_var_lookup(w) in g() would
+    // return A's struct index (registered first), and struct_field_offset
+    // would compute the wrong byte offset for fields shared by both
+    // structs — producing silent garbage reads.
+    struct_var_count = 0
 }
 
 fn var_type_init() {

@@ -4305,6 +4305,14 @@ fn ir_lower_function(uint64 fn_node) {
     ir_reset()
     ir_var_map_init()
     ir_defer_reset()
+    // struct_var_table is per-function: a variable named `w` typed as
+    // struct A in fn f() must NOT leak into fn g() where `w` is typed as
+    // struct B. Without this reset, struct_var_lookup(w) in g() would
+    // return A's struct index (registered first), so g.field accesses
+    // would compute the wrong byte offset (or 0xFFFFFFFF if A lacks the
+    // field, which then resolves to a garbage offset). See
+    // examples/codegen_struct_var_collision.kr.
+    struct_var_count = 0
     ir_stack_array_bytes = 0
     ir_current_bb = ir_new_bb()  // entry block
 

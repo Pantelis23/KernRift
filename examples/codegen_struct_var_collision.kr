@@ -1,0 +1,63 @@
+// Minimal reproducer for the cross-function struct_var_table collision bug.
+//
+// Bug: codegen's struct_var_table is global and never reset between functions.
+// When two functions declare a variable with the same name but different
+// struct types, the FIRST registration wins for both — silently returning
+// fields at the wrong offset for one of the functions.
+
+struct A {
+    u64 a0
+    u64 a1
+    u64 a2
+}
+
+struct B {
+    u64 b0
+    u64 b1
+    u64 b2
+    u64 b3   // extra field — different layout from A
+    u64 b4
+    u64 b5   // we'll read this; offset 40 in B
+}
+
+// First function uses variable name `w` typed as A.
+// Reading w.a2 should give offset 16 within A.
+fn touch_a() -> u64 {
+    A w = A { 100, 200, 300 }
+    return w.a2
+}
+
+// Second function uses the SAME variable name `w` typed as B.
+// Reading w.b5 should give offset 40 within B.
+// Bug: struct_var_lookup(w) returns A's struct index (registered first),
+// so w.b5 lowers as offset 8 (since A doesn't have b5, struct_field_offset
+// returns 0xFFFFFFFF — but the byte view differs).
+fn touch_b() -> u64 {
+    // Manually init a B with sentinel values per slot.
+    B w = B { 1, 2, 3, 4, 5, 999 }
+    // We expect 999 (b5 is slot index 5, offset 40).
+    return w.b5
+}
+
+fn main() {
+    u64 fail = 0
+    u64 va = touch_a()
+    if va != 300 {
+        print("BUG touch_a returned ")
+        println(va)
+        fail = fail + 1
+    }
+    u64 vb = touch_b()
+    if vb != 999 {
+        print("BUG touch_b returned ")
+        println(vb)
+        fail = fail + 1
+    }
+    if fail == 0 {
+        println("PASS")
+    } else {
+        print("FAIL count=")
+        println(fail)
+    }
+    exit(0)
+}
