@@ -1,0 +1,114 @@
+// Verify the agent-flagged "two consecutive return-by-value calls of
+// different struct types from the same caller frame segfaults on the
+// second" against current KernRift main (post 83cf462 + 3b02074 fixes).
+//
+// Tries multiple shapes — some via register-return (≤16 bytes), some via
+// sret hidden-arg (>16 bytes), to exercise both ABI paths the agent
+// suspected (sret-slot reuse).
+
+struct Small {
+    u64 s0
+    u64 s1
+}
+
+struct Mid {
+    u64 m0
+    u64 m1
+    u64 m2
+    u64 m3
+}
+
+struct Big {
+    u64 b0
+    u64 b1
+    u64 b2
+    u64 b3
+    u64 b4
+    u64 b5
+    u64 b6
+    u64 b7
+}
+
+fn make_small() -> Small {
+    Small r = Small { 11, 22 }
+    return r
+}
+
+fn make_mid() -> Mid {
+    Mid r = Mid { 100, 200, 300, 400 }
+    return r
+}
+
+fn make_big() -> Big {
+    Big r = Big { 1, 2, 3, 4, 5, 6, 7, 999 }
+    return r
+}
+
+fn case_small_then_big() -> u64 {
+    Small a = make_small()
+    Big   b = make_big()              // sret-slot pressure
+    if a.s0 != 11 { return 1 }
+    if a.s1 != 22 { return 2 }
+    if b.b0 != 1  { return 3 }
+    if b.b7 != 999 { return 4 }
+    return 0
+}
+
+fn case_big_then_small() -> u64 {
+    Big   b = make_big()
+    Small a = make_small()
+    if b.b7 != 999 { return 5 }
+    if a.s1 != 22 { return 6 }
+    return 0
+}
+
+fn case_mid_then_big() -> u64 {
+    Mid m = make_mid()                // 32 bytes — sret
+    Big b = make_big()                // 64 bytes — sret
+    if m.m3 != 400 { return 7 }
+    if b.b7 != 999 { return 8 }
+    return 0
+}
+
+fn case_big_then_mid_then_small() -> u64 {
+    Big   b = make_big()
+    Mid   m = make_mid()
+    Small s = make_small()
+    if b.b7 != 999 { return 9 }
+    if m.m3 != 400 { return 10 }
+    if s.s1 != 22  { return 11 }
+    return 0
+}
+
+fn case_three_bigs() -> u64 {
+    Big a = make_big()
+    Big b = make_big()
+    Big c = make_big()
+    if a.b7 != 999 { return 12 }
+    if b.b7 != 999 { return 13 }
+    if c.b7 != 999 { return 14 }
+    return 0
+}
+
+fn main() {
+    u64 fail = 0
+    u64 c
+    c = case_small_then_big()
+    if c != 0 { print("case_small_then_big failed at "); println(c); fail = fail + 1 }
+    c = case_big_then_small()
+    if c != 0 { print("case_big_then_small failed at "); println(c); fail = fail + 1 }
+    c = case_mid_then_big()
+    if c != 0 { print("case_mid_then_big failed at "); println(c); fail = fail + 1 }
+    c = case_big_then_mid_then_small()
+    if c != 0 { print("case_big_then_mid_then_small failed at "); println(c); fail = fail + 1 }
+    c = case_three_bigs()
+    if c != 0 { print("case_three_bigs failed at "); println(c); fail = fail + 1 }
+
+    if fail == 0 {
+        println("PASS")
+        exit(0)
+    }
+    print("FAIL count=")
+    println(fail)
+    exit(1)
+}
