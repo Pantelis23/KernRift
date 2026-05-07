@@ -3280,6 +3280,26 @@ fn ir_lower_stmt(uint64 node) {
                 ir_vreg_fkind_set(f64v, 1)
                 val = f64v
             }
+            // When the RHS is a bare Ident (AST kind 32), `val` is the
+            // *same* vreg as the source variable — Ident lowering returns
+            // the existing vreg without copying. Aliasing the LHS to that
+            // vreg means subsequent mutations to LHS (e.g. `t = t + 1`
+            // inside a loop) will, via ir_emit_copy_to_snapshot's back-
+            // edge IR_COPY, physically clobber the storage of the RHS's
+            // source variable. Concretely: `t = t_lo; while t < N { t =
+            // t + 1 }` rewrites t_lo to N. Mirror VarDecl's behavior:
+            // emit a fresh IR_COPY so the new binding owns its own vreg.
+            // Casts above (ITOF / F64TOF32 / F32TOF64) already produce a
+            // fresh vreg, so only the no-cast Ident path needs this.
+            uint32 rhs_kind_for_alias = ast_kind(val_node)
+            if rhs_kind_for_alias == 32 && val == ir_var_get(ast_data1(val_node)) {
+                uint64 fresh = ir_new_vreg()
+                ir_emit(IR_COPY, fresh, val, 0, 0, ir_current_bb)
+                uint64 src_fk = ir_vreg_fkind_get(val)
+                if src_fk != 0 { ir_vreg_fkind_set(fresh, src_fk) }
+                if ir_vreg_signed_get(val) != 0 { ir_vreg_signed_set(fresh, 1) }
+                val = fresh
+            }
             // Inherit the LHS local's signed flag onto the rvalue vreg so a
             // later `int64 x = ...; x = x - 1; if x < 0` still picks SCMP.
             if ir_vreg_signed_get(local_vreg) != 0 {

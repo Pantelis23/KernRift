@@ -1,0 +1,65 @@
+// Minimal reproducer for u64 bare-Ident RHS Assign codegen bug.
+//
+// Bug: `t = t_lo` (Assign form) creates an alias rather than a copy.
+// Subsequent `t = t + 1` mutations inside a loop body cause
+// ir_emit_copy_to_snapshot to emit `IR_COPY V_t_lo, V_t_after_body`
+// at the back-edge — which physically clobbers V_t_lo's storage.
+//
+// After the inner loop completes, t_lo no longer holds 0, so any
+// later `... = t_lo` reads garbage.
+
+fn run() -> u64 {
+    u64 seq_len = 4
+    u64 fail = 0
+
+    // Function-scope u64 init.
+    u64 t_lo = 0
+
+    // Outer-loop iteration 1: VarDecl from t_lo (this DOES make a fresh copy).
+    u64 first_pass_decl = t_lo  // VarDecl, fresh-copy path; ok.
+
+    // Now do an Assign-form alias and then mutate inside a loop.
+    u64 t = 999
+    t = t_lo                   // Assign-alias: t and t_lo share vreg.
+    while t < seq_len {
+        t = t + 1              // mutates t; back-edge IR_COPY clobbers t_lo.
+    }
+
+    // Did t_lo get clobbered?
+    if t_lo != 0 {
+        print("BUG: after first while, t_lo=")
+        println(t_lo)
+        fail = fail + 1
+    }
+
+    // Even worse: a second `t = t_lo` will pick up the clobbered value.
+    t = t_lo
+    if t != 0 {
+        print("BUG: t = t_lo after clobber, t=")
+        println(t)
+        fail = fail + 1
+    }
+
+    // VarDecl form should still work.
+    u64 t2 = t_lo
+    if t2 != 0 {
+        print("INFO: VarDecl t2 = t_lo got t2=")
+        println(t2)
+    }
+
+    // Print first_pass_decl to keep it from being optimized out.
+    if first_pass_decl > 1000 { println("?") }
+
+    return fail
+}
+
+fn main() {
+    u64 fail = run()
+    if fail == 0 {
+        println("PASS")
+    } else {
+        print("FAIL count=")
+        println(fail)
+    }
+    exit(0)
+}
